@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+:root {
+  --bg-primary: #313338;
+  --bg-secondary: #2b2d31;
+  --bg-tertiary: #1e1f22;
+  --text-primary: #f2f3f5;
+  --text-normal: #dbdee1;
+  --text-secondary: #b5bac1;
+  --text-muted: #949ba4;
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --green-online: #23a559;
+  --yellow-idle: #f0b232;
+  --red-dnd: #f23f43;
+  --border-subtle: #3f4147;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "gg sans", "Noto Sans", Helvetica, Arial, sans-serif;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#root {
+  height: 100vh;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1a1b1e;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #141517;
+}
+
+/* Markdown rendered message content */
+.msg-content a {
+  color: #00a8fc;
+  text-decoration: none;
+}
+.msg-content a:hover {
+  text-decoration: underline;
+}
+.msg-content {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.msg-content code {
+  background: #2b2b2b;
+  color: #e8912d;
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+}
+.msg-content pre {
+  background: #2b2d31;
+  border: 1px solid #1e1f22;
+  padding: 0.6em 0.8em;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0.25em 0;
+}
+.msg-content pre code {
+  background: none;
+  color: var(--text-normal);
+  padding: 0;
+}
+.msg-content strong, .msg-content b {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.msg-content h1, .msg-content h2, .msg-content h3,
+.msg-content h4, .msg-content h5, .msg-content h6 {
+  color: var(--text-primary);
+  font-weight: 700;
+  margin: 0.3em 0 0.1em;
+}
+.msg-content em {
+  font-style: italic;
+}
+.msg-content blockquote {
+  border-left: 3px solid var(--border-subtle);
+  padding-left: 0.75em;
+  margin: 0.25em 0;
+  color: var(--text-muted);
+}
+.msg-content ul, .msg-content ol {
+  padding-left: 1.5em;
+  margin: 0.25em 0;
+}
+.msg-content p {
+  margin: 0;
+}
+.msg-content img {
+  max-width: 200px;
+  max-height: 150px;
+  border-radius: 4px;
+  object-fit: contain;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.msg-content img:active {
+  max-width: 500px;
+  max-height: 400px;
+}
+/* Custom emotes: small inline images with data-mx-emoticon attribute */
+.msg-content img[data-mx-emoticon] {
+  max-width: 1.5em;
+  max-height: 1.5em;
+  display: inline;
+  cursor: default;
+}
