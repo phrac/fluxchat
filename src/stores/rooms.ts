@@ -29,32 +29,40 @@ export async function loadSpaceRooms(spaceId: string) {
   setRooms(r);
 }
 
-export async function selectSpace(spaceId: string | null) {
+export function selectSpace(spaceId: string | null) {
   setSelectedSpaceId(spaceId);
+  // Fire and forget — don't block UI
   if (spaceId) {
-    await loadSpaceRooms(spaceId);
+    loadSpaceRooms(spaceId).catch(() => {});
   } else {
-    const r = await api.getRooms();
-    setRooms(r);
+    api.getRooms().then(setRooms).catch(() => {});
   }
 }
 
-export async function selectRoom(roomId: string) {
+export function selectRoom(roomId: string) {
+  // Instant UI update
   setSelectedRoomId(roomId);
 
-  // Switch to the room's parent space view
+  // Update space highlight without blocking
   const room = rooms.find((r) => r.room_id === roomId);
   if (room?.space_name) {
     const space = spaces.find((s) => s.name === room.space_name);
     if (space && selectedSpaceId() !== space.room_id) {
-      // Switch to that space's view (loads only its rooms)
-      await selectSpace(space.room_id);
-      setSelectedRoomId(roomId); // Re-set since selectSpace may clear it
+      setSelectedSpaceId(space.room_id);
+      // Load space rooms in background — don't await
+      loadSpaceRooms(space.room_id).catch(() => {});
     }
   }
 }
 
 // Listen for room list updates from sync
 listen("matrix://room-list-update", () => {
-  loadRooms();
+  // Refresh spaces list always
+  api.getSpaces().then(setSpaces).catch(() => {});
+
+  // Only refresh room list if we're on the home view
+  // If viewing a space, the space rooms stay as-is until user switches
+  if (!selectedSpaceId()) {
+    api.getRooms().then(setRooms).catch(() => {});
+  }
 });

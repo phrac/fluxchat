@@ -107,6 +107,13 @@ export async function pinMessage(
   return invoke("pin_message", { roomId, eventId });
 }
 
+export async function uploadFile(
+  roomId: string,
+  filePath: string
+): Promise<string> {
+  return invoke("upload_file", { roomId, filePath });
+}
+
 export async function sendTyping(
   roomId: string,
   typing: boolean

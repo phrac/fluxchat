@@ -24,11 +24,13 @@ export default function MainLayout() {
         showPins={showPins()}
         onTogglePins={() => setShowPins((p) => !p)}
       />
-      <Show when={showPins()}>
-        <PinnedSidebar onClose={() => setShowPins(false)} />
-      </Show>
       <Show when={showMembers() && selectedRoomId()}>
         <MemberList />
+      </Show>
+
+      {/* Pinned messages modal overlay */}
+      <Show when={showPins()}>
+        <PinnedSidebar onClose={() => setShowPins(false)} />
       </Show>
     </div>
   );

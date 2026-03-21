@@ -35,11 +35,14 @@ export default function MessageArea(props: Props) {
     return `${names[0]} and ${names.length - 1} others are typing...`;
   });
 
-  // Simple message search (client-side for now)
+  // Simple message search (client-side for now) — only compute when search is active
   const searchResults = createMemo(() => {
+    if (!showSearch()) return [];
     const q = searchQuery().toLowerCase().trim();
-    if (!q || !selectedRoomId()) return [];
-    const msgs = messagesByRoom[selectedRoomId()!] || [];
+    if (!q) return [];
+    const roomId = selectedRoomId();
+    if (!roomId) return [];
+    const msgs = messagesByRoom[roomId] || [];
     return msgs.filter((m) => m.body.toLowerCase().includes(q)).slice(-20);
   });
 
@@ -260,24 +263,13 @@ export default function MessageArea(props: Props) {
       </Show>
 
 
-      {/* Content */}
-      <Show
-        when={selectedRoomId()}
-        fallback={
-          <div
-            class="flex flex-1 items-center justify-center"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <div class="text-center">
-              <p class="mb-2 text-4xl">💬</p>
-              <p class="text-lg">Select a room to start chatting</p>
-            </div>
-          </div>
-        }
+      {/* Content — always mounted to avoid DOM thrashing on room switch */}
+      <div
+        class="flex flex-1 flex-col overflow-hidden"
+        style={{ display: selectedRoomId() ? "flex" : "none" }}
       >
-        <MessageList roomId={selectedRoomId()!} />
+        <MessageList roomId={selectedRoomId() || ""} />
 
-        {/* Typing indicator */}
         <Show when={typingText()}>
           <div
             class="flex-shrink-0 px-4 pb-1"
@@ -294,8 +286,21 @@ export default function MessageArea(props: Props) {
           </div>
         </Show>
 
-        <MessageInput roomId={selectedRoomId()!} />
-      </Show>
+        <MessageInput roomId={selectedRoomId() || ""} />
+      </div>
+
+      <div
+        class="flex flex-1 items-center justify-center"
+        style={{
+          color: "var(--text-muted)",
+          display: selectedRoomId() ? "none" : "flex",
+        }}
+      >
+        <div class="text-center">
+          <p class="mb-2 text-4xl">💬</p>
+          <p class="text-lg">Select a room to start chatting</p>
+        </div>
+      </div>
     </div>
   );
 }

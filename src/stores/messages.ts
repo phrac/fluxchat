@@ -19,9 +19,15 @@ const [typingByRoom, setTypingByRoom] = createStore<
 >({});
 const [replyingTo, setReplyingTo] = createSignal<MessageInfo | null>(null);
 
+// Track rooms we've already attempted to load (even if no messages decrypted)
+const loadedRooms = new Set<string>();
+
 export { messagesByRoom, membersByRoom, typingByRoom, replyingTo, setReplyingTo, insertSystemMessage };
 
 export async function loadMessages(roomId: string) {
+  if (loadedRooms.has(roomId)) return;
+  loadedRooms.add(roomId);
+
   const result = await api.getRoomMessages(roomId);
   const messages = enrichReplies(result.messages.reverse());
   setMessagesByRoom(roomId, messages);
@@ -53,6 +59,7 @@ export async function sendMessage(roomId: string, body: string) {
     body,
     formatted_body: null,
     image_mxc: null,
+    reactions: [],
     reply_to_id: reply?.event_id ?? null,
     reply_to_sender: reply?.sender_name ?? null,
     reply_to_body: reply?.body ?? null,
@@ -61,15 +68,28 @@ export async function sendMessage(roomId: string, body: string) {
   };
   setMessagesByRoom(roomId, (prev) => [...(prev || []), optimistic]);
 
-  if (reply) {
-    setReplyingTo(null);
-    await api.sendReply(roomId, body, reply.event_id);
-  } else {
-    await api.sendMessage(roomId, body);
+  try {
+    if (reply) {
+      setReplyingTo(null);
+      await api.sendReply(roomId, body, reply.event_id);
+    } else {
+      await api.sendMessage(roomId, body);
+    }
+  } catch (err) {
+    // Remove optimistic message on failure
+    setMessagesByRoom(roomId, (prev) =>
+      (prev || []).filter((m) => m.event_id !== tempId)
+    );
+    throw err;
   }
 }
 
+const loadedMembers = new Set<string>();
+
 export async function loadMembers(roomId: string) {
+  if (loadedMembers.has(roomId)) return;
+  loadedMembers.add(roomId);
+
   const members = await api.getRoomMembers(roomId);
   setMembersByRoom(roomId, members);
 }

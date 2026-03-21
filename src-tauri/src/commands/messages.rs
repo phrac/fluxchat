@@ -1,4 +1,5 @@
 use matrix_sdk::{
+    attachment::AttachmentConfig,
     room::{reply::Reply, MessagesOptions},
     ruma::events::{
         reaction::ReactionEventContent,
@@ -60,6 +61,38 @@ pub async fn get_room_messages(
 
     let response = room.messages(options).await?;
 
+    // First pass: collect reactions keyed by target event_id
+    let mut reaction_map: std::collections::HashMap<String, Vec<(String, String)>> =
+        std::collections::HashMap::new(); // event_id -> Vec<(emoji, sender)>
+
+    for event in &response.chunk {
+        let raw = event.raw();
+        if let Ok(deserialized) = raw.deserialize() {
+            use matrix_sdk::ruma::events::AnySyncTimelineEvent;
+            if let AnySyncTimelineEvent::MessageLike(
+                matrix_sdk::ruma::events::AnySyncMessageLikeEvent::Reaction(
+                    matrix_sdk::ruma::events::SyncMessageLikeEvent::Original(reaction),
+                ),
+            ) = deserialized
+            {
+                let target = reaction.content.relates_to.event_id.to_string();
+                let emoji = reaction.content.relates_to.key.clone();
+                let sender = reaction.sender.to_string();
+                reaction_map
+                    .entry(target)
+                    .or_default()
+                    .push((emoji, sender));
+            }
+        }
+    }
+
+    // Cache member lookups to avoid redundant async calls
+    let mut member_cache: std::collections::HashMap<
+        String,
+        (String, Option<String>),
+    > = std::collections::HashMap::new(); // sender -> (display_name, avatar_mxc)
+
+    // Second pass: collect messages and attach reactions
     let mut messages = Vec::new();
     for event in &response.chunk {
         let raw = event.raw();
@@ -106,30 +139,57 @@ pub async fn get_room_messages(
                 _ => ("[unsupported message]".into(), None, None),
             };
 
-            let member = room.get_member_no_sync(&msg.sender).await.ok().flatten();
-
-            let sender_name = member
-                .as_ref()
-                .and_then(|m| m.display_name().map(|s| s.to_string()))
-                .unwrap_or_else(|| msg.sender.to_string());
-
-            let avatar_url = member
-                .as_ref()
-                .and_then(|m| m.avatar_url())
-                .map(|mxc| mxc.to_string());
+            let sender_key = msg.sender.to_string();
+            let (sender_name, avatar_url) = if let Some(cached) = member_cache.get(&sender_key) {
+                cached.clone()
+            } else {
+                let member = room.get_member_no_sync(&msg.sender).await.ok().flatten();
+                let name = member
+                    .as_ref()
+                    .and_then(|m| m.display_name().map(|s| s.to_string()))
+                    .unwrap_or_else(|| msg.sender.to_string());
+                let avatar = member
+                    .as_ref()
+                    .and_then(|m| m.avatar_url())
+                    .map(|mxc| mxc.to_string());
+                member_cache.insert(sender_key, (name.clone(), avatar.clone()));
+                (name, avatar)
+            };
 
             // Extract reply info
             let reply_to_id = extract_reply_info(&msg.content.relates_to);
 
+            // Build reactions from the reaction map
+            let event_id_str = msg.event_id.to_string();
+            let reactions = if let Some(raw_reactions) = reaction_map.get(&event_id_str) {
+                let mut by_emoji: std::collections::HashMap<String, (u32, Vec<String>)> =
+                    std::collections::HashMap::new();
+                for (emoji, sender) in raw_reactions {
+                    let entry = by_emoji.entry(emoji.clone()).or_insert((0, Vec::new()));
+                    entry.0 += 1;
+                    entry.1.push(sender.clone());
+                }
+                by_emoji
+                    .into_iter()
+                    .map(|(emoji, (count, users))| super::ReactionInfo {
+                        emoji,
+                        count,
+                        users,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
             messages.push(MessageInfo {
-                event_id: msg.event_id.to_string(),
+                event_id: event_id_str,
                 sender: msg.sender.to_string(),
                 sender_name,
                 body,
                 formatted_body,
                 image_mxc,
                 reply_to_id,
-                reactions: Vec::new(),
+                reactions,
                 reply_to_sender: None,
                 reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
@@ -505,4 +565,54 @@ pub async fn pin_message(
         .map_err(|e| AppError::Other(format!("Failed to pin message: {e}")))?;
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn upload_file(
+    state: State<'_, AppState>,
+    room_id: String,
+    file_path: String,
+) -> Result<String, AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let path = std::path::Path::new(&file_path);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+
+    let data = std::fs::read(path)
+        .map_err(|e| AppError::Other(format!("Failed to read file: {e}")))?;
+
+    // Detect MIME type from extension
+    let content_type: mime::Mime = match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png".parse().unwrap(),
+        Some("jpg") | Some("jpeg") => "image/jpeg".parse().unwrap(),
+        Some("gif") => "image/gif".parse().unwrap(),
+        Some("webp") => "image/webp".parse().unwrap(),
+        Some("svg") => "image/svg+xml".parse().unwrap(),
+        Some("mp4") => "video/mp4".parse().unwrap(),
+        Some("webm") => "video/webm".parse().unwrap(),
+        Some("mp3") => "audio/mpeg".parse().unwrap(),
+        Some("ogg") => "audio/ogg".parse().unwrap(),
+        Some("wav") => "audio/wav".parse().unwrap(),
+        Some("pdf") => "application/pdf".parse().unwrap(),
+        Some("txt") => "text/plain".parse().unwrap(),
+        _ => "application/octet-stream".parse().unwrap(),
+    };
+
+    let response = room
+        .send_attachment(&filename, &content_type, data, AttachmentConfig::new())
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to upload: {e}")))?;
+
+    Ok(response.event_id.to_string())
 }

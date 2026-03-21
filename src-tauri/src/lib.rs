@@ -14,7 +14,13 @@ fn data_dir() -> PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::new(
+                "info,matrix_sdk_crypto=error,matrix_sdk::http_client=warn"
+            )
+        )
+        .init();
 
     // Open FluxDB with batch_size=1 so every write flushes immediately
     let db_path = data_dir().join("fluxdb_data");
@@ -49,6 +55,7 @@ pub fn run() {
             commands::messages::delete_message,
             commands::messages::get_pinned_messages,
             commands::messages::pin_message,
+            commands::messages::upload_file,
             commands::messages::get_room_members,
             commands::spaces::get_spaces,
             commands::spaces::get_space_rooms,

@@ -3,13 +3,19 @@ import type { RoomInfo } from "../../lib/types";
 import {
   rooms,
   selectedRoomId,
-  selectRoom,
+  setSelectedRoomId,
+  setSelectedSpaceId,
   selectedSpaceId,
   spaces,
 } from "../../stores/rooms";
-import { loadMessages, loadMembers } from "../../stores/messages";
 import { Avatar, nameColor } from "../chat/MessageBubble";
 import { getMediaUrl } from "../../lib/tauri";
+
+// Track which room is "clicked" separately from selectedRoomId
+// so we can highlight BEFORE the heavy render happens
+const [clickedRoomId, setClickedRoomId] = createSignal<string | null>(null);
+
+export { clickedRoomId };
 
 export default function RoomList() {
   const currentSpace = () => {
@@ -19,7 +25,6 @@ export default function RoomList() {
 
   const currentSpaceName = () => currentSpace()?.name || "All Rooms";
 
-  // Resolve space banner image
   const [bannerSrc, setBannerSrc] = createSignal<string | null>(null);
   const bannerCache = new Map<string, string>();
 
@@ -41,14 +46,19 @@ export default function RoomList() {
   });
 
   const handleRoomClick = (roomId: string) => {
-    selectRoom(roomId);
-    Promise.all([
-      loadMessages(roomId).catch(() => {}),
-      loadMembers(roomId).catch(() => {}),
-    ]);
+    setClickedRoomId(roomId);
+    setSelectedRoomId(roomId);
+
+    // Update space if needed
+    const room = rooms.find((r) => r.room_id === roomId);
+    if (room?.space_name) {
+      const space = spaces.find((s) => s.name === room.space_name);
+      if (space && selectedSpaceId() !== space.room_id) {
+        setSelectedSpaceId(space.room_id);
+      }
+    }
   };
 
-  // Group rooms into sections
   const sections = createMemo(() => {
     const dms: RoomInfo[] = [];
     const bySpace: Record<string, RoomInfo[]> = {};
@@ -67,19 +77,16 @@ export default function RoomList() {
 
     const result: { label: string; rooms: RoomInfo[]; isDm: boolean; avatarMxc: string | null }[] = [];
 
-    // Ungrouped channels first
     if (ungrouped.length > 0) {
       result.push({ label: "Channels", rooms: ungrouped, isDm: false, avatarMxc: null });
     }
 
-    // Then space groups, sorted by name
     const spaceNames = Object.keys(bySpace).sort();
     for (const name of spaceNames) {
       const space = spaces.find((s) => s.name === name);
       result.push({ label: name, rooms: bySpace[name], isDm: false, avatarMxc: space?.avatar_url ?? null });
     }
 
-    // DMs last
     if (dms.length > 0) {
       result.push({ label: "Direct Messages", rooms: dms, isDm: true, avatarMxc: null });
     }
@@ -92,7 +99,6 @@ export default function RoomList() {
       class="flex w-60 flex-shrink-0 flex-col"
       style={{ background: "var(--bg-secondary)" }}
     >
-      {/* Header / Space Banner */}
       <Show
         when={bannerSrc()}
         fallback={
@@ -136,7 +142,7 @@ export default function RoomList() {
                 {(room) => (
                   <RoomEntry
                     room={room}
-                    isSelected={selectedRoomId() === room.room_id}
+                    isSelected={(clickedRoomId() || selectedRoomId()) === room.room_id}
                     hasUnread={room.unread_count > 0}
                     isDm={section.isDm}
                     onClick={() => handleRoomClick(room.room_id)}
@@ -224,7 +230,6 @@ function RoomEntry(props: {
         }
       }}
     >
-      {/* Icon */}
       <span class="mr-1.5 flex w-5 flex-shrink-0 items-center justify-center">
         {props.isDm ? (
           <RoomAvatar name={room.name} avatarMxc={room.avatar_url} />
@@ -245,7 +250,6 @@ function RoomEntry(props: {
         )}
       </span>
 
-      {/* Name */}
       <span
         class="min-w-0 flex-1 truncate"
         style={{
@@ -256,7 +260,6 @@ function RoomEntry(props: {
         {displayName()}
       </span>
 
-      {/* Unread badge */}
       <Show when={room.unread_count > 0}>
         <span
           class="ml-auto flex h-4 min-w-[16px] flex-shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-bold text-white"

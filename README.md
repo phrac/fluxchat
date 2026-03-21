@@ -17,13 +17,14 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - **Login & session persistence** — Log in with any Matrix homeserver. Sessions are saved locally via [FluxDB](https://github.com/phrac/fluxdb) and restored on relaunch.
 - **Room list** — Rooms organized by space with category headers, avatars, DMs separated from channels. Unread badges and encryption indicators.
 - **Spaces** — Browse Matrix spaces with avatar banners. Clicking a room auto-switches to its parent space view.
-- **Messaging** — Send and receive text messages in real-time via Matrix sync with optimistic local insertion.
+- **Messaging** — Send and receive text messages in real-time via Matrix sync with optimistic local insertion. Instant room switching via DOM caching (last 5 rooms kept in memory).
 - **Message history** — Scroll up to load older messages with backward pagination.
+- **File uploads** — Upload images, videos, audio, documents via the + button in the message input.
 - **Typing indicators** — See when others are typing, send typing notifications while composing.
 - **Replies** — Reply to messages with context preview. Reply threads shown inline with colored quote bars.
 - **Reactions** — Quick emoji reactions (😂🔥❤️👍😮😢) via hover action bar. Reaction badges shown below messages with counts.
 - **Message actions** — Hover action bar with quick reactions, reply, and a context menu (pin, copy, show source, delete).
-- **Pinned messages** — Pin/unpin messages, view pinned messages in a dedicated sidebar panel.
+- **Pinned messages** — Pin/unpin messages, view pinned messages in a Discord-style modal overlay. Click to jump to message in chat.
 - **Message deletion** — Redact messages via the context menu.
 - **User avatars** — Avatars fetched through the authenticated Matrix media API with three-tier caching (memory → FluxDB disk → network).
 - **Formatted messages** — Renders HTML `formatted_body` from Matrix events (bold, italic, code, links, line breaks). Falls back to markdown parsing for plain text.
@@ -41,7 +42,6 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - Thread view (full thread panel)
 - Read receipts
 - Room creation and settings
-- File uploads
 - Voice/video calls
 - Desktop notifications
 - User profile editing

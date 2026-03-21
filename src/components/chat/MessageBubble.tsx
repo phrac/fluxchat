@@ -1,4 +1,4 @@
-import { Show, createSignal, createEffect } from "solid-js";
+import { Show, createSignal, createEffect, untrack } from "solid-js";
 import { marked } from "marked";
 import type { MessageInfo } from "../../lib/types";
 import { getMediaUrl } from "../../lib/tauri";
@@ -174,20 +174,27 @@ function Avatar(props: { mxcUrl: string | null; name: string; color: string; siz
   );
 }
 
+// Cache rendered HTML to avoid re-parsing on room switch
+const htmlCache = new Map<string, string>();
+
 function MessageContent(props: { message: MessageInfo }) {
+  const cached = htmlCache.get(props.message.event_id);
   const [html, setHtml] = createSignal(
-    renderBodySync(props.message.body, props.message.formatted_body)
+    cached || renderBodySync(props.message.body, props.message.formatted_body)
   );
 
   // Resolve mxc:// URLs in formatted HTML (custom emotes, inline images)
-  createEffect(() => {
+  if (!cached) {
     const raw = renderBodySync(props.message.body, props.message.formatted_body);
     if (raw.includes("mxc://")) {
-      resolveHtmlMedia(raw).then(setHtml);
+      resolveHtmlMedia(raw).then((resolved) => {
+        htmlCache.set(props.message.event_id, resolved);
+        setHtml(resolved);
+      });
     } else {
-      setHtml(raw);
+      htmlCache.set(props.message.event_id, raw);
     }
-  });
+  }
 
   return (
     <>
@@ -278,21 +285,21 @@ export default function MessageBubble(props: Props) {
   const handleReply = () => setReplyingTo(props.message);
 
   const handleReact = (emoji: string) => {
-    const roomId = selectedRoomId();
+    const roomId = untrack(selectedRoomId);
     if (roomId && !isPending()) {
       sendReaction(roomId, props.message.event_id, emoji).catch(() => {});
     }
   };
 
   const handleDelete = () => {
-    const roomId = selectedRoomId();
+    const roomId = untrack(selectedRoomId);
     if (roomId && !isPending()) {
       deleteMessage(roomId, props.message.event_id).catch(() => {});
     }
   };
 
   const handlePin = async () => {
-    const roomId = selectedRoomId();
+    const roomId = untrack(selectedRoomId);
     if (roomId && !isPending()) {
       try {
         await pinMessage(roomId, props.message.event_id);
@@ -320,10 +327,11 @@ export default function MessageBubble(props: Props) {
     <div
       class="group relative py-0.5 transition-colors"
       classList={{ "mt-4": props.showHeader }}
+      data-event-id={props.message.event_id}
       style={{
         "padding-left": props.showHeader ? undefined : "56px",
         opacity: isPending() ? "0.5" : "1",
-        transition: "opacity 0.3s",
+        transition: "opacity 0.3s, background 0.5s",
       }}
       onMouseOver={(e) => {
         e.currentTarget.style.background = "rgba(0,0,0,0.1)";
