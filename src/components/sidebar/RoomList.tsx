@@ -1,4 +1,4 @@
-import { For, Show, createMemo } from "solid-js";
+import { For, Show, createMemo, createSignal, createEffect } from "solid-js";
 import type { RoomInfo } from "../../lib/types";
 import {
   rooms,
@@ -9,13 +9,36 @@ import {
 } from "../../stores/rooms";
 import { loadMessages, loadMembers } from "../../stores/messages";
 import { Avatar, nameColor } from "../chat/MessageBubble";
+import { getMediaUrl } from "../../lib/tauri";
 
 export default function RoomList() {
-  const currentSpaceName = () => {
-    if (!selectedSpaceId()) return "All Rooms";
-    const space = spaces.find((s) => s.room_id === selectedSpaceId());
-    return space?.name || "Space";
+  const currentSpace = () => {
+    if (!selectedSpaceId()) return null;
+    return spaces.find((s) => s.room_id === selectedSpaceId()) || null;
   };
+
+  const currentSpaceName = () => currentSpace()?.name || "All Rooms";
+
+  // Resolve space banner image
+  const [bannerSrc, setBannerSrc] = createSignal<string | null>(null);
+  const bannerCache = new Map<string, string>();
+
+  createEffect(() => {
+    const space = currentSpace();
+    if (!space?.avatar_url) {
+      setBannerSrc(null);
+      return;
+    }
+    const cached = bannerCache.get(space.avatar_url);
+    if (cached) {
+      setBannerSrc(cached);
+      return;
+    }
+    getMediaUrl(space.avatar_url).then((uri) => {
+      bannerCache.set(space.avatar_url!, uri);
+      setBannerSrc(uri);
+    }).catch(() => setBannerSrc(null));
+  });
 
   const handleRoomClick = (roomId: string) => {
     selectRoom(roomId);
@@ -69,17 +92,40 @@ export default function RoomList() {
       class="flex w-60 flex-shrink-0 flex-col"
       style={{ background: "var(--bg-secondary)" }}
     >
-      {/* Header */}
-      <div
-        class="flex h-12 flex-shrink-0 items-center px-4 font-semibold shadow-sm"
-        style={{
-          color: "var(--text-primary)",
-          "border-bottom": "1px solid rgba(0,0,0,0.2)",
-          "font-size": "0.9375rem",
-        }}
+      {/* Header / Space Banner */}
+      <Show
+        when={bannerSrc()}
+        fallback={
+          <div
+            class="flex h-12 flex-shrink-0 items-center px-4 font-semibold shadow-sm"
+            style={{
+              color: "var(--text-primary)",
+              "border-bottom": "1px solid rgba(0,0,0,0.2)",
+              "font-size": "0.9375rem",
+            }}
+          >
+            {currentSpaceName()}
+          </div>
+        }
       >
-        {currentSpaceName()}
-      </div>
+        <div class="relative flex-shrink-0 overflow-hidden">
+          <img
+            src={bannerSrc()!}
+            alt={currentSpaceName()}
+            class="h-24 w-full object-cover"
+          />
+          <div
+            class="absolute inset-0"
+            style={{ background: "linear-gradient(transparent 30%, rgba(0,0,0,0.7))" }}
+          />
+          <span
+            class="absolute bottom-2 left-3 font-bold text-white"
+            style={{ "font-size": "1.05rem", "text-shadow": "0 1px 3px rgba(0,0,0,0.5)" }}
+          >
+            {currentSpaceName()}
+          </span>
+        </div>
+      </Show>
 
       <div class="flex-1 overflow-y-auto px-2 pt-1 pb-2">
         <For each={sections()}>

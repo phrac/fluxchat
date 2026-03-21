@@ -60,6 +60,13 @@ export async function leaveRoom(roomId: string): Promise<void> {
   return invoke("leave_room", { roomId });
 }
 
+export async function inviteUser(
+  roomId: string,
+  userId: string
+): Promise<void> {
+  return invoke("invite_user", { roomId, userId });
+}
+
 export async function getMediaUrl(mxcUri: string): Promise<string> {
   return invoke("get_media_url", { mxcUri });
 }
@@ -85,6 +92,19 @@ export async function deleteMessage(
   eventId: string
 ): Promise<void> {
   return invoke("delete_message", { roomId, eventId });
+}
+
+export async function getPinnedMessages(
+  roomId: string
+): Promise<import("./types").MessageInfo[]> {
+  return invoke("get_pinned_messages", { roomId });
+}
+
+export async function pinMessage(
+  roomId: string,
+  eventId: string
+): Promise<void> {
+  return invoke("pin_message", { roomId, eventId });
 }
 
 export async function sendTyping(

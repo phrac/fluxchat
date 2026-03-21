@@ -19,7 +19,7 @@ const [typingByRoom, setTypingByRoom] = createStore<
 >({});
 const [replyingTo, setReplyingTo] = createSignal<MessageInfo | null>(null);
 
-export { messagesByRoom, membersByRoom, typingByRoom, replyingTo, setReplyingTo };
+export { messagesByRoom, membersByRoom, typingByRoom, replyingTo, setReplyingTo, insertSystemMessage };
 
 export async function loadMessages(roomId: string) {
   const result = await api.getRoomMessages(roomId);
@@ -72,6 +72,24 @@ export async function sendMessage(roomId: string, body: string) {
 export async function loadMembers(roomId: string) {
   const members = await api.getRoomMembers(roomId);
   setMembersByRoom(roomId, members);
+}
+
+function insertSystemMessage(roomId: string, text: string) {
+  const msg: MessageInfo = {
+    event_id: `~system-${Date.now()}`,
+    sender: "",
+    sender_name: "",
+    body: text,
+    formatted_body: null,
+    image_mxc: null,
+    reactions: [],
+    reply_to_id: null,
+    reply_to_sender: null,
+    reply_to_body: null,
+    timestamp: Math.floor(Date.now() / 1000),
+    avatar_url: null,
+  };
+  setMessagesByRoom(roomId, (prev) => [...(prev || []), msg]);
 }
 
 /// Enrich messages with reply context from the same batch

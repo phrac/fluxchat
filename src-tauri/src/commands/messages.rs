@@ -3,9 +3,12 @@ use matrix_sdk::{
     ruma::events::{
         reaction::ReactionEventContent,
         relation::Annotation,
-        room::message::{
-            MessageType, Relation, RoomMessageEventContent,
-            RoomMessageEventContentWithoutRelation,
+        room::{
+            message::{
+                MessageType, Relation, RoomMessageEventContent,
+                RoomMessageEventContentWithoutRelation,
+            },
+            pinned_events::RoomPinnedEventsEventContent,
         },
     },
     RoomMemberships,
@@ -341,6 +344,165 @@ pub async fn delete_message(
     room.redact(&event_id, None, None)
         .await
         .map_err(|e| AppError::Other(format!("Failed to delete message: {e}")))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_pinned_messages(
+    state: State<'_, AppState>,
+    room_id: String,
+) -> Result<Vec<MessageInfo>, AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    // Get pinned event IDs
+    let pinned_ids: Vec<matrix_sdk::ruma::OwnedEventId> = room
+        .get_state_events_static::<RoomPinnedEventsEventContent>()
+        .await
+        .ok()
+        .and_then(|events| {
+            events.into_iter().next().and_then(|e| {
+                e.deserialize().ok().and_then(|ev| {
+                    ev.as_sync().map(|s| match s {
+                        matrix_sdk::ruma::events::SyncStateEvent::Original(o) => {
+                            o.content.pinned.clone()
+                        }
+                        _ => Vec::new(),
+                    })
+                })
+            })
+        })
+        .unwrap_or_default();
+
+    let mut messages = Vec::new();
+    for event_id in &pinned_ids {
+        // Fetch each pinned event
+        let event = match room.event(event_id, None).await {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let raw = event.raw();
+        let deserialized = match raw.deserialize() {
+            Ok(ev) => ev,
+            Err(_) => continue,
+        };
+
+        use matrix_sdk::ruma::events::AnySyncTimelineEvent;
+        if let AnySyncTimelineEvent::MessageLike(
+            matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(
+                matrix_sdk::ruma::events::SyncMessageLikeEvent::Original(msg),
+            ),
+        ) = deserialized
+        {
+            let (body, formatted_body, image_mxc) = match &msg.content.msgtype {
+                MessageType::Text(t) => (
+                    t.body.clone(),
+                    t.formatted.as_ref().map(|f| f.body.clone()),
+                    None,
+                ),
+                MessageType::Notice(t) => (
+                    t.body.clone(),
+                    t.formatted.as_ref().map(|f| f.body.clone()),
+                    None,
+                ),
+                MessageType::Image(img) => {
+                    let mxc = match &img.source {
+                        matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => {
+                            Some(uri.to_string())
+                        }
+                        _ => None,
+                    };
+                    (img.body.clone(), None, mxc)
+                }
+                _ => ("[message]".into(), None, None),
+            };
+
+            let member = room.get_member_no_sync(&msg.sender).await.ok().flatten();
+            let sender_name = member
+                .as_ref()
+                .and_then(|m| m.display_name().map(|s| s.to_string()))
+                .unwrap_or_else(|| msg.sender.to_string());
+            let avatar_url = member
+                .as_ref()
+                .and_then(|m| m.avatar_url())
+                .map(|mxc| mxc.to_string());
+
+            messages.push(MessageInfo {
+                event_id: msg.event_id.to_string(),
+                sender: msg.sender.to_string(),
+                sender_name,
+                body,
+                formatted_body,
+                image_mxc,
+                reactions: Vec::new(),
+                reply_to_id: None,
+                reply_to_sender: None,
+                reply_to_body: None,
+                timestamp: msg.origin_server_ts.as_secs().into(),
+                avatar_url,
+            });
+        }
+    }
+
+    Ok(messages)
+}
+
+#[tauri::command]
+pub async fn pin_message(
+    state: State<'_, AppState>,
+    room_id: String,
+    event_id: String,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let event_id = matrix_sdk::ruma::EventId::parse(&event_id)
+        .map_err(|_| AppError::Other("Invalid event ID".into()))?;
+
+    // Get current pinned events
+    let mut pinned: Vec<matrix_sdk::ruma::OwnedEventId> = room
+        .get_state_events_static::<RoomPinnedEventsEventContent>()
+        .await
+        .ok()
+        .and_then(|events| {
+            events.into_iter().next().and_then(|e| {
+                e.deserialize().ok().and_then(|ev| {
+                    ev.as_sync().map(|s| match s {
+                        matrix_sdk::ruma::events::SyncStateEvent::Original(o) => {
+                            o.content.pinned.clone()
+                        }
+                        _ => Vec::new(),
+                    })
+                })
+            })
+        })
+        .unwrap_or_default();
+
+    // Toggle pin
+    if pinned.contains(&event_id) {
+        pinned.retain(|id| id != &event_id);
+    } else {
+        pinned.push(event_id);
+    }
+
+    let content = RoomPinnedEventsEventContent::new(pinned);
+    room.send_state_event(content)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to pin message: {e}")))?;
 
     Ok(())
 }

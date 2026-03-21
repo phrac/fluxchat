@@ -15,39 +15,47 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 ### Current Features
 
 - **Login & session persistence** — Log in with any Matrix homeserver. Sessions are saved locally via [FluxDB](https://github.com/phrac/fluxdb) and restored on relaunch.
-- **Room list** — View all joined rooms, sorted alphabetically with unread badges and encryption indicators.
-- **Spaces** — Browse Matrix spaces (Discord server equivalent) and their child rooms.
-- **Messaging** — Send and receive text messages in real-time via Matrix sync.
+- **Room list** — Rooms organized by space with category headers, avatars, DMs separated from channels. Unread badges and encryption indicators.
+- **Spaces** — Browse Matrix spaces with avatar banners. Clicking a room auto-switches to its parent space view.
+- **Messaging** — Send and receive text messages in real-time via Matrix sync with optimistic local insertion.
 - **Message history** — Scroll up to load older messages with backward pagination.
-- **User avatars** — Avatars are fetched through the authenticated Matrix media API and cached in memory.
+- **Typing indicators** — See when others are typing, send typing notifications while composing.
+- **Replies** — Reply to messages with context preview. Reply threads shown inline with colored quote bars.
+- **Reactions** — Quick emoji reactions (😂🔥❤️👍😮😢) via hover action bar. Reaction badges shown below messages with counts.
+- **Message actions** — Hover action bar with quick reactions, reply, and a context menu (pin, copy, show source, delete).
+- **Pinned messages** — Pin/unpin messages, view pinned messages in a dedicated sidebar panel.
+- **Message deletion** — Redact messages via the context menu.
+- **User avatars** — Avatars fetched through the authenticated Matrix media API with three-tier caching (memory → FluxDB disk → network).
 - **Formatted messages** — Renders HTML `formatted_body` from Matrix events (bold, italic, code, links, line breaks). Falls back to markdown parsing for plain text.
 - **Image messages** — Displays image attachments inline with click-to-expand.
 - **Custom emotes** — Resolves `mxc://` URLs in formatted HTML for inline custom emoji.
-- **Member list** — Toggleable right sidebar showing room members with avatars.
+- **Member list** — Toggleable right sidebar showing room members grouped by role (Admin/Moderator/Member) with presence indicators and homeserver names.
+- **Invite users** — Invite users to rooms via modal dialog.
+- **Message search** — Client-side search across loaded messages.
 - **End-to-end encryption** — E2EE via matrix-sdk with SQLite crypto store. Supports device verification (SAS emoji matching).
 - **Cross-platform** — Targets Linux, macOS, and Android (via Tauri v2).
 
 ### Not Yet Implemented
 
-- Message editing and deletion
-- Reply/thread support
-- Typing indicators
+- Message editing
+- Thread view (full thread panel)
 - Read receipts
 - Room creation and settings
 - File uploads
 - Voice/video calls
-- Notification system
+- Desktop notifications
 - User profile editing
-- Room search
-- Message search
+- Server-side message search
 - Emoji picker
 - Virtual scrolling for large rooms
+- Room topic editing
+- User status/custom status
 
 ## Tech Stack
 
 - **Backend:** [Tauri v2](https://v2.tauri.app/) + [matrix-sdk](https://github.com/matrix-org/matrix-rust-sdk) (Rust)
 - **Frontend:** [SolidJS](https://www.solidjs.com/) + [Tailwind CSS](https://tailwindcss.com/) + [Vite](https://vitejs.dev/)
-- **Storage:** [FluxDB](https://github.com/phrac/fluxdb) (session persistence) + SQLite (matrix-sdk crypto/sync state)
+- **Storage:** [FluxDB](https://github.com/phrac/fluxdb) (session + media cache persistence) + SQLite (matrix-sdk crypto/sync state)
 - **Markdown:** [marked](https://github.com/markedjs/marked)
 
 ## Building

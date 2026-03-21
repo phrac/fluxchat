@@ -2,8 +2,8 @@ import { Show, createSignal, createEffect } from "solid-js";
 import { marked } from "marked";
 import type { MessageInfo } from "../../lib/types";
 import { getMediaUrl } from "../../lib/tauri";
-import { setReplyingTo } from "../../stores/messages";
-import { sendReaction, deleteMessage } from "../../lib/tauri";
+import { setReplyingTo, insertSystemMessage } from "../../stores/messages";
+import { sendReaction, deleteMessage, pinMessage } from "../../lib/tauri";
 import { selectedRoomId } from "../../stores/rooms";
 
 // Configure marked: only standard markdown, no GFM extensions that cause false positives
@@ -256,10 +256,24 @@ function ReplyContext(props: { message: MessageInfo }) {
 }
 
 export default function MessageBubble(props: Props) {
+  // System messages (pins, etc.) render as centered muted text
+  if (props.message.event_id.startsWith("~system-")) {
+    return (
+      <div class="flex items-center justify-center gap-2 py-1 px-4">
+        <div class="h-px flex-1" style={{ background: "var(--border-subtle)" }} />
+        <span class="text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>
+          {props.message.body}
+        </span>
+        <div class="h-px flex-1" style={{ background: "var(--border-subtle)" }} />
+      </div>
+    );
+  }
+
   const color = () => nameColor(props.message.sender);
 
   const quickEmojis = ["😂", "🔥", "❤️", "👍", "😮", "😢"];
   const isPending = () => props.message.event_id.startsWith("~local-");
+  const [showMenu, setShowMenu] = createSignal(false);
 
   const handleReply = () => setReplyingTo(props.message);
 
@@ -275,6 +289,31 @@ export default function MessageBubble(props: Props) {
     if (roomId && !isPending()) {
       deleteMessage(roomId, props.message.event_id).catch(() => {});
     }
+  };
+
+  const handlePin = async () => {
+    const roomId = selectedRoomId();
+    if (roomId && !isPending()) {
+      try {
+        await pinMessage(roomId, props.message.event_id);
+        insertSystemMessage(
+          roomId,
+          `📌 pinned a message: "${props.message.body.slice(0, 80)}${props.message.body.length > 80 ? "..." : ""}"`
+        );
+      } catch {}
+    }
+    setShowMenu(false);
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(props.message.body).catch(() => {});
+    setShowMenu(false);
+  };
+
+  const handleShowSource = () => {
+    const source = JSON.stringify(props.message, null, 2);
+    navigator.clipboard.writeText(source).catch(() => {});
+    setShowMenu(false);
   };
 
   return (
@@ -294,11 +333,13 @@ export default function MessageBubble(props: Props) {
         if (time) time.style.display = "inline";
       }}
       onMouseOut={(e) => {
+        if (showMenu()) return; // Keep visible while menu is open
         e.currentTarget.style.background = "transparent";
         const bar = e.currentTarget.querySelector("[data-action-bar]") as HTMLElement;
         if (bar) bar.style.display = "none";
         const time = e.currentTarget.querySelector("[data-hover-time]") as HTMLElement;
         if (time) time.style.display = "none";
+        setShowMenu(false);
       }}
     >
       {/* Action bar on hover */}
@@ -332,16 +373,49 @@ export default function MessageBubble(props: Props) {
               <path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/>
             </svg>
           </button>
-          <button
-            class="flex items-center px-1.5 py-1.5 hover:bg-white/5 rounded-r"
-            style={{ color: "var(--text-muted)" }}
-            onClick={handleDelete}
-            title="Delete"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-            </svg>
-          </button>
+          {/* More options */}
+          <div class="relative">
+            <button
+              class="flex items-center px-1.5 py-1.5 hover:bg-white/5 rounded-r"
+              style={{ color: "var(--text-muted)" }}
+              onClick={() => setShowMenu(!showMenu())}
+              title="More"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
+              </svg>
+            </button>
+
+            <Show when={showMenu()}>
+              <div
+                class="absolute right-0 top-full mt-1 w-48 rounded-md py-1 shadow-xl z-20"
+                style={{ background: "var(--bg-tertiary)", border: "1px solid rgba(0,0,0,0.3)" }}
+              >
+                <MenuButton
+                  label="Pin Message"
+                  icon="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"
+                  onClick={handlePin}
+                />
+                <MenuButton
+                  label="Copy Text"
+                  icon="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
+                  onClick={handleCopy}
+                />
+                <MenuButton
+                  label="Show Source"
+                  icon="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"
+                  onClick={handleShowSource}
+                />
+                <div class="mx-2 my-1 h-px" style={{ background: "var(--border-subtle)" }} />
+                <MenuButton
+                  label="Delete Message"
+                  icon="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                  onClick={handleDelete}
+                  danger
+                />
+              </div>
+            </Show>
+          </div>
         </div>
       </Show>
 
@@ -384,6 +458,32 @@ export default function MessageBubble(props: Props) {
         <MessageContent message={props.message} />
       </Show>
     </div>
+  );
+}
+
+function MenuButton(props: {
+  label: string;
+  icon: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={props.onClick}
+      class="flex w-full items-center justify-between px-3 py-1.5 text-sm transition-colors"
+      style={{ color: props.danger ? "var(--red-dnd)" : "var(--text-normal)" }}
+      onMouseOver={(e) =>
+        (e.currentTarget.style.background = props.danger
+          ? "rgba(242, 63, 67, 0.1)"
+          : "rgba(79, 84, 92, 0.3)")
+      }
+      onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
+    >
+      <span>{props.label}</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="opacity-60">
+        <path d={props.icon} />
+      </svg>
+    </button>
   );
 }
 

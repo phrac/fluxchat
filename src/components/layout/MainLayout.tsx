@@ -1,12 +1,14 @@
-import { createSignal, onMount } from "solid-js";
+import { createSignal, onMount, Show } from "solid-js";
 import SpaceSidebar from "../sidebar/SpaceSidebar";
 import RoomList from "../sidebar/RoomList";
 import MessageArea from "../chat/MessageArea";
 import MemberList from "../members/MemberList";
+import PinnedSidebar from "../chat/PinnedSidebar";
 import { loadRooms, selectedRoomId } from "../../stores/rooms";
 
 export default function MainLayout() {
   const [showMembers, setShowMembers] = createSignal(true);
+  const [showPins, setShowPins] = createSignal(false);
 
   onMount(() => {
     loadRooms();
@@ -19,8 +21,15 @@ export default function MainLayout() {
       <MessageArea
         showMembers={showMembers()}
         onToggleMembers={() => setShowMembers((p) => !p)}
+        showPins={showPins()}
+        onTogglePins={() => setShowPins((p) => !p)}
       />
-      {showMembers() && selectedRoomId() && <MemberList />}
+      <Show when={showPins()}>
+        <PinnedSidebar onClose={() => setShowPins(false)} />
+      </Show>
+      <Show when={showMembers() && selectedRoomId()}>
+        <MemberList />
+      </Show>
     </div>
   );
 }

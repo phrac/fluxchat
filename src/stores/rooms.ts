@@ -41,6 +41,17 @@ export async function selectSpace(spaceId: string | null) {
 
 export async function selectRoom(roomId: string) {
   setSelectedRoomId(roomId);
+
+  // Switch to the room's parent space view
+  const room = rooms.find((r) => r.room_id === roomId);
+  if (room?.space_name) {
+    const space = spaces.find((s) => s.name === room.space_name);
+    if (space && selectedSpaceId() !== space.room_id) {
+      // Switch to that space's view (loads only its rooms)
+      await selectSpace(space.room_id);
+      setSelectedRoomId(roomId); // Re-set since selectSpace may clear it
+    }
+  }
 }
 
 // Listen for room list updates from sync

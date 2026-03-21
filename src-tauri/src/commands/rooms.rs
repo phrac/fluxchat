@@ -131,3 +131,25 @@ pub async fn leave_room(state: State<'_, AppState>, room_id: String) -> Result<(
     room.leave().await?;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn invite_user(
+    state: State<'_, AppState>,
+    room_id: String,
+    user_id: String,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let user_id = matrix_sdk::ruma::UserId::parse(&user_id)
+        .map_err(|_| AppError::Other("Invalid user ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    room.invite_user_by_id(&user_id).await?;
+    Ok(())
+}
