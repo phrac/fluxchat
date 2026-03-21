@@ -3,9 +3,11 @@ export interface RoomInfo {
   name: string;
   is_encrypted: boolean;
   is_space: boolean;
+  is_direct: boolean;
   unread_count: number;
   avatar_url: string | null;
   topic: string | null;
+  space_name: string | null;
 }
 
 export interface MessageInfo {
@@ -23,6 +25,10 @@ export interface MemberInfo {
   user_id: string;
   display_name: string;
   avatar_url: string | null;
+  power_level: number;
+  role: string;
+  presence: string;
+  server_name: string;
 }
 
 export interface PaginatedMessages {

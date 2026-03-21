@@ -13,9 +13,11 @@ pub struct RoomInfo {
     pub name: String,
     pub is_encrypted: bool,
     pub is_space: bool,
+    pub is_direct: bool,
     pub unread_count: u64,
     pub avatar_url: Option<String>,
     pub topic: Option<String>,
+    pub space_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -35,6 +37,10 @@ pub struct MemberInfo {
     pub user_id: String,
     pub display_name: String,
     pub avatar_url: Option<String>,
+    pub power_level: i64,
+    pub role: String,
+    pub presence: String,
+    pub server_name: String,
 }
 
 #[derive(Debug, Serialize)]

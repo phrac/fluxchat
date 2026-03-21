@@ -4,18 +4,19 @@ use matrix_sdk::{
 };
 use tauri::State;
 
+use crate::db;
 use crate::state::AppState;
 
 use super::AppError;
 
 /// Download media via the Matrix client and return it as a base64 data URI.
-/// Results are cached in memory to avoid re-downloading.
+/// Three-tier cache: in-memory HashMap → FluxDB on disk → network fetch.
 #[tauri::command]
 pub async fn get_media_url(
     state: State<'_, AppState>,
     mxc_uri: String,
 ) -> Result<String, AppError> {
-    // Check cache first
+    // L1: in-memory cache
     {
         let cache = state.media_cache.lock().unwrap();
         if let Some(data_uri) = cache.get(&mxc_uri) {
@@ -23,6 +24,15 @@ pub async fn get_media_url(
         }
     }
 
+    // L2: FluxDB disk cache
+    if let Some(data_uri) = db::get_cached_media(&state.db, &mxc_uri) {
+        // Promote to L1
+        let mut cache = state.media_cache.lock().unwrap();
+        cache.insert(mxc_uri, data_uri.clone());
+        return Ok(data_uri);
+    }
+
+    // L3: network fetch
     let client = {
         let lock = state.client.lock().await;
         lock.as_ref().cloned().ok_or(AppError::NotLoggedIn)?
@@ -59,11 +69,14 @@ pub async fn get_media_url(
     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
     let data_uri = format!("data:{};base64,{}", content_type, b64);
 
-    // Cache it
+    // Store in L1 (memory)
     {
         let mut cache = state.media_cache.lock().unwrap();
-        cache.insert(mxc_uri, data_uri.clone());
+        cache.insert(mxc_uri.clone(), data_uri.clone());
     }
+
+    // Store in L2 (FluxDB disk) — fire and forget
+    db::cache_media(&state.db, &mxc_uri, &data_uri);
 
     Ok(data_uri)
 }

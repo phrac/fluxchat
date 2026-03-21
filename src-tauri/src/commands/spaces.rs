@@ -28,9 +28,11 @@ pub async fn get_spaces(state: State<'_, AppState>) -> Result<Vec<RoomInfo>, App
                 name,
                 is_encrypted: false,
                 is_space: true,
+                is_direct: false,
                 unread_count: 0,
-                avatar_url: None,
+                avatar_url: room.avatar_url().map(|mxc| mxc.to_string()),
                 topic: room.topic(),
+                space_name: None,
             });
         }
     }
@@ -81,14 +83,17 @@ pub async fn get_space_rooms(
 
                 let is_encrypted = room.encryption_state().is_encrypted();
 
+                let is_direct = room.is_direct().await.unwrap_or(false);
                 rooms.push(RoomInfo {
                     room_id: room.room_id().to_string(),
                     name,
                     is_encrypted,
                     is_space: false,
+                    is_direct,
                     unread_count: room.unread_notification_counts().notification_count,
-                    avatar_url: None,
+                    avatar_url: room.avatar_url().map(|mxc| mxc.to_string()),
                     topic: room.topic(),
+                    space_name: None,
                 });
             }
         }

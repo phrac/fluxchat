@@ -152,22 +152,70 @@ pub async fn get_room_members(
 
     let members = room.members(RoomMemberships::JOIN).await?;
 
-    let mut result: Vec<MemberInfo> = members
-        .iter()
-        .map(|m| MemberInfo {
+    // Fetch presence for all members
+    let store = client.state_store();
+
+    let mut result: Vec<MemberInfo> = Vec::new();
+    for m in &members {
+        let power_level = match m.power_level() {
+            matrix_sdk::ruma::events::room::power_levels::UserPowerLevel::Infinite => 100,
+            matrix_sdk::ruma::events::room::power_levels::UserPowerLevel::Int(n) => {
+                i64::from(n)
+            }
+            _ => 0,
+        };
+
+        let role = if power_level >= 100 {
+            "Admin".to_string()
+        } else if power_level >= 50 {
+            "Moderator".to_string()
+        } else {
+            "Member".to_string()
+        };
+
+        let presence = match store.get_presence_event(m.user_id()).await {
+            Ok(Some(raw)) => raw
+                .deserialize()
+                .ok()
+                .map(|ev| match ev.content.presence {
+                    matrix_sdk::ruma::presence::PresenceState::Online => "online",
+                    matrix_sdk::ruma::presence::PresenceState::Unavailable => "idle",
+                    matrix_sdk::ruma::presence::PresenceState::Offline => "offline",
+                    _ => "offline",
+                })
+                .unwrap_or("offline")
+                .to_string(),
+            _ => "offline".to_string(),
+        };
+
+        let server_name = m
+            .user_id()
+            .server_name()
+            .to_string();
+
+        result.push(MemberInfo {
             user_id: m.user_id().to_string(),
             display_name: m
                 .display_name()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| m.user_id().to_string()),
             avatar_url: m.avatar_url().map(|mxc| mxc.to_string()),
-        })
-        .collect();
+            power_level,
+            role,
+            presence,
+            server_name,
+        });
+    }
 
+    // Sort by power level (highest first), then alphabetically
     result.sort_by(|a, b| {
-        a.display_name
-            .to_lowercase()
-            .cmp(&b.display_name.to_lowercase())
+        b.power_level
+            .cmp(&a.power_level)
+            .then_with(|| {
+                a.display_name
+                    .to_lowercase()
+                    .cmp(&b.display_name.to_lowercase())
+            })
     });
     Ok(result)
 }
