@@ -3,6 +3,8 @@ import { marked } from "marked";
 import type { MessageInfo } from "../../lib/types";
 import { getMediaUrl } from "../../lib/tauri";
 import { setReplyingTo } from "../../stores/messages";
+import { sendReaction, deleteMessage } from "../../lib/tauri";
+import { selectedRoomId } from "../../stores/rooms";
 
 // Configure marked: only standard markdown, no GFM extensions that cause false positives
 marked.setOptions({
@@ -205,6 +207,24 @@ function MessageContent(props: { message: MessageInfo }) {
       <Show when={props.message.image_mxc}>
         <ImageMessage mxc={props.message.image_mxc!} alt={props.message.body} />
       </Show>
+      <Show when={props.message.reactions.length > 0}>
+        <div class="mt-1 flex flex-wrap gap-1">
+          {props.message.reactions.map((r) => (
+            <span
+              class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs cursor-pointer hover:brightness-125"
+              style={{
+                background: "rgba(88, 101, 242, 0.15)",
+                border: "1px solid rgba(88, 101, 242, 0.3)",
+                color: "var(--text-normal)",
+              }}
+              title={r.users.join(", ")}
+            >
+              <span>{r.emoji}</span>
+              <span style={{ color: "var(--text-muted)" }}>{r.count}</span>
+            </span>
+          ))}
+        </div>
+      </Show>
     </>
   );
 }
@@ -238,12 +258,24 @@ function ReplyContext(props: { message: MessageInfo }) {
 export default function MessageBubble(props: Props) {
   const color = () => nameColor(props.message.sender);
 
-  const handleReply = (e: MouseEvent) => {
-    e.stopPropagation();
-    setReplyingTo(props.message);
+  const quickEmojis = ["😂", "🔥", "❤️", "👍", "😮", "😢"];
+  const isPending = () => props.message.event_id.startsWith("~local-");
+
+  const handleReply = () => setReplyingTo(props.message);
+
+  const handleReact = (emoji: string) => {
+    const roomId = selectedRoomId();
+    if (roomId && !isPending()) {
+      sendReaction(roomId, props.message.event_id, emoji).catch(() => {});
+    }
   };
 
-  const isPending = () => props.message.event_id.startsWith("~local-");
+  const handleDelete = () => {
+    const roomId = selectedRoomId();
+    if (roomId && !isPending()) {
+      deleteMessage(roomId, props.message.event_id).catch(() => {});
+    }
+  };
 
   return (
     <div
@@ -254,22 +286,64 @@ export default function MessageBubble(props: Props) {
         opacity: isPending() ? "0.5" : "1",
         transition: "opacity 0.3s",
       }}
-      onMouseOver={(e) =>
-        (e.currentTarget.style.background = "rgba(0,0,0,0.1)")
-      }
-      onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
+      onMouseOver={(e) => {
+        e.currentTarget.style.background = "rgba(0,0,0,0.1)";
+        const bar = e.currentTarget.querySelector("[data-action-bar]") as HTMLElement;
+        if (bar) bar.style.display = "flex";
+        const time = e.currentTarget.querySelector("[data-hover-time]") as HTMLElement;
+        if (time) time.style.display = "inline";
+      }}
+      onMouseOut={(e) => {
+        e.currentTarget.style.background = "transparent";
+        const bar = e.currentTarget.querySelector("[data-action-bar]") as HTMLElement;
+        if (bar) bar.style.display = "none";
+        const time = e.currentTarget.querySelector("[data-hover-time]") as HTMLElement;
+        if (time) time.style.display = "none";
+      }}
     >
-      {/* Reply action button */}
-      <button
-        class="absolute right-2 top-0 hidden rounded px-1.5 py-0.5 group-hover:flex items-center"
-        style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)" }}
-        onClick={handleReply}
-        title="Reply"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/>
-        </svg>
-      </button>
+      {/* Action bar on hover */}
+      <Show when={!isPending()}>
+        <div
+          class="absolute right-2 -top-3 items-center rounded shadow-lg z-10"
+          style={{
+            background: "var(--bg-tertiary)",
+            border: "1px solid rgba(0,0,0,0.2)",
+            display: "none",
+          }}
+          data-action-bar
+        >
+          {quickEmojis.map((emoji) => (
+            <button
+              class="px-1.5 py-1 text-base transition-transform hover:scale-125 hover:bg-white/5 first:rounded-l"
+              onClick={() => handleReact(emoji)}
+              title={emoji}
+            >
+              {emoji}
+            </button>
+          ))}
+          <div class="mx-0.5 h-5 w-px" style={{ background: "var(--border-subtle)" }} />
+          <button
+            class="flex items-center px-1.5 py-1.5 hover:bg-white/5"
+            style={{ color: "var(--text-muted)" }}
+            onClick={handleReply}
+            title="Reply"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/>
+            </svg>
+          </button>
+          <button
+            class="flex items-center px-1.5 py-1.5 hover:bg-white/5 rounded-r"
+            style={{ color: "var(--text-muted)" }}
+            onClick={handleDelete}
+            title="Delete"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+            </svg>
+          </button>
+        </div>
+      </Show>
 
       <ReplyContext message={props.message} />
 
@@ -298,8 +372,9 @@ export default function MessageBubble(props: Props) {
 
       <Show when={!props.showHeader}>
         <span
-          class="pointer-events-none absolute left-1 top-1 hidden text-[10px] group-hover:inline"
-          style={{ color: "var(--text-muted)" }}
+          class="pointer-events-none absolute left-1 top-1 text-[10px]"
+          style={{ color: "var(--text-muted)", display: "none" }}
+          data-hover-time
         >
           {new Date(props.message.timestamp * 1000).toLocaleTimeString([], {
             hour: "2-digit",

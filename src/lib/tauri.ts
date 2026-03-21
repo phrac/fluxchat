@@ -72,6 +72,21 @@ export async function sendReply(
   return invoke("send_reply", { roomId, body, replyToEventId });
 }
 
+export async function sendReaction(
+  roomId: string,
+  eventId: string,
+  emoji: string
+): Promise<void> {
+  return invoke("send_reaction", { roomId, eventId, emoji });
+}
+
+export async function deleteMessage(
+  roomId: string,
+  eventId: string
+): Promise<void> {
+  return invoke("delete_message", { roomId, eventId });
+}
+
 export async function sendTyping(
   roomId: string,
   typing: boolean

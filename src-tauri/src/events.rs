@@ -2,6 +2,7 @@ use std::time::Duration;
 use matrix_sdk::{
     config::SyncSettings,
     ruma::events::{
+        reaction::OriginalSyncReactionEvent,
         room::message::{MessageType, OriginalSyncRoomMessageEvent, Relation},
         typing::SyncTypingEvent,
     },
@@ -16,6 +17,14 @@ use crate::commands::MessageInfo;
 struct NewMessagePayload {
     room_id: String,
     message: MessageInfo,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct ReactionPayload {
+    room_id: String,
+    event_id: String,
+    emoji: String,
+    sender: String,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -100,6 +109,7 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                         body,
                         formatted_body,
                         image_mxc,
+                        reactions: Vec::new(),
                         reply_to_id,
                         reply_to_sender: None,
                         reply_to_body: None,
@@ -139,6 +149,23 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                         user_ids,
                     };
                     let _ = handle.emit("matrix://typing-indicator", &payload);
+                }
+            }
+        });
+
+        // Register reaction handler
+        client.add_event_handler({
+            let handle = app_handle.clone();
+            move |ev: OriginalSyncReactionEvent, room: Room| {
+                let handle = handle.clone();
+                async move {
+                    let payload = ReactionPayload {
+                        room_id: room.room_id().to_string(),
+                        event_id: ev.content.relates_to.event_id.to_string(),
+                        emoji: ev.content.relates_to.key.clone(),
+                        sender: ev.sender.to_string(),
+                    };
+                    let _ = handle.emit("matrix://reaction", &payload);
                 }
             }
         });

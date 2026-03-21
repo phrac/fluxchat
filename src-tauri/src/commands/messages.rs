@@ -1,8 +1,12 @@
 use matrix_sdk::{
     room::{reply::Reply, MessagesOptions},
-    ruma::events::room::message::{
-        MessageType, Relation, RoomMessageEventContent,
-        RoomMessageEventContentWithoutRelation,
+    ruma::events::{
+        reaction::ReactionEventContent,
+        relation::Annotation,
+        room::message::{
+            MessageType, Relation, RoomMessageEventContent,
+            RoomMessageEventContentWithoutRelation,
+        },
     },
     RoomMemberships,
 };
@@ -122,7 +126,8 @@ pub async fn get_room_messages(
                 formatted_body,
                 image_mxc,
                 reply_to_id,
-                reply_to_sender: None, // Populated by frontend from local cache
+                reactions: Vec::new(),
+                reply_to_sender: None,
                 reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url,
@@ -287,4 +292,55 @@ pub async fn get_room_members(
             })
     });
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn send_reaction(
+    state: State<'_, AppState>,
+    room_id: String,
+    event_id: String,
+    emoji: String,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let event_id = matrix_sdk::ruma::EventId::parse(&event_id)
+        .map_err(|_| AppError::Other("Invalid event ID".into()))?;
+
+    let annotation = Annotation::new(event_id, emoji);
+    let content = ReactionEventContent::from(annotation);
+    room.send(content).await?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_message(
+    state: State<'_, AppState>,
+    room_id: String,
+    event_id: String,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let event_id = matrix_sdk::ruma::EventId::parse(&event_id)
+        .map_err(|_| AppError::Other("Invalid event ID".into()))?;
+
+    room.redact(&event_id, None, None)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to delete message: {e}")))?;
+
+    Ok(())
 }

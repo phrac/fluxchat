@@ -17,6 +17,7 @@ export interface MessageInfo {
   body: string;
   formatted_body: string | null;
   image_mxc: string | null;
+  reactions: ReactionInfo[];
   reply_to_id: string | null;
   reply_to_sender: string | null;
   reply_to_body: string | null;
@@ -32,6 +33,12 @@ export interface MemberInfo {
   role: string;
   presence: string;
   server_name: string;
+}
+
+export interface ReactionInfo {
+  emoji: string;
+  count: number;
+  users: string[];
 }
 
 export interface PaginatedMessages {

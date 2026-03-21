@@ -125,6 +125,30 @@ listen<{ room_id: string; message: MessageInfo }>(
   }
 );
 
+// Reaction updates
+listen<{ room_id: string; event_id: string; emoji: string; sender: string }>(
+  "matrix://reaction",
+  (event) => {
+    const { room_id, event_id, emoji, sender } = event.payload;
+    setMessagesByRoom(room_id, (prev) =>
+      (prev || []).map((m) => {
+        if (m.event_id !== event_id) return m;
+        const reactions = [...m.reactions];
+        const existing = reactions.find((r) => r.emoji === emoji);
+        if (existing) {
+          if (!existing.users.includes(sender)) {
+            existing.count++;
+            existing.users.push(sender);
+          }
+        } else {
+          reactions.push({ emoji, count: 1, users: [sender] });
+        }
+        return { ...m, reactions };
+      })
+    );
+  }
+);
+
 // Typing indicator updates
 listen<{ room_id: string; user_ids: string[] }>(
   "matrix://typing-indicator",

@@ -28,6 +28,7 @@ pub struct MessageInfo {
     pub body: String,
     pub formatted_body: Option<String>,
     pub image_mxc: Option<String>,
+    pub reactions: Vec<ReactionInfo>,
     pub reply_to_id: Option<String>,
     pub reply_to_sender: Option<String>,
     pub reply_to_body: Option<String>,
@@ -44,6 +45,13 @@ pub struct MemberInfo {
     pub role: String,
     pub presence: String,
     pub server_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ReactionInfo {
+    pub emoji: String,
+    pub count: u32,
+    pub users: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
