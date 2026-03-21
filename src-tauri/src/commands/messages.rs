@@ -1,6 +1,9 @@
 use matrix_sdk::{
-    room::MessagesOptions,
-    ruma::events::room::message::{MessageType, RoomMessageEventContent},
+    room::{reply::Reply, MessagesOptions},
+    ruma::events::room::message::{
+        MessageType, Relation, RoomMessageEventContent,
+        RoomMessageEventContentWithoutRelation,
+    },
     RoomMemberships,
 };
 use tauri::State;
@@ -9,10 +12,22 @@ use crate::state::AppState;
 
 use super::{AppError, MemberInfo, MessageInfo, PaginatedMessages};
 
-/// Clone the client and drop the lock immediately so other commands aren't blocked.
 async fn get_client(state: &State<'_, AppState>) -> Result<matrix_sdk::Client, AppError> {
     let lock = state.client.lock().await;
     lock.as_ref().cloned().ok_or(AppError::NotLoggedIn)
+}
+
+/// Extract reply info from a message's relates_to field
+fn extract_reply_info(
+    relates_to: &Option<Relation<RoomMessageEventContentWithoutRelation>>,
+) -> Option<String> {
+    match relates_to {
+        Some(Relation::Reply { in_reply_to }) => Some(in_reply_to.event_id.to_string()),
+        Some(Relation::Thread(thread)) => {
+            thread.in_reply_to.as_ref().map(|r| r.event_id.to_string())
+        }
+        _ => None,
+    }
 }
 
 #[tauri::command]
@@ -96,6 +111,9 @@ pub async fn get_room_messages(
                 .and_then(|m| m.avatar_url())
                 .map(|mxc| mxc.to_string());
 
+            // Extract reply info
+            let reply_to_id = extract_reply_info(&msg.content.relates_to);
+
             messages.push(MessageInfo {
                 event_id: msg.event_id.to_string(),
                 sender: msg.sender.to_string(),
@@ -103,6 +121,9 @@ pub async fn get_room_messages(
                 body,
                 formatted_body,
                 image_mxc,
+                reply_to_id,
+                reply_to_sender: None, // Populated by frontend from local cache
+                reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url,
             });
@@ -137,6 +158,59 @@ pub async fn send_message(
 }
 
 #[tauri::command]
+pub async fn send_reply(
+    state: State<'_, AppState>,
+    room_id: String,
+    body: String,
+    reply_to_event_id: String,
+) -> Result<String, AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let event_id = matrix_sdk::ruma::EventId::parse(&reply_to_event_id)
+        .map_err(|_| AppError::Other("Invalid event ID".into()))?;
+
+    let content = RoomMessageEventContentWithoutRelation::text_plain(&body);
+    let reply = Reply {
+        event_id,
+        enforce_thread: matrix_sdk::room::reply::EnforceThread::Unthreaded,
+    };
+
+    let reply_content = room
+        .make_reply_event(content, reply)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to create reply: {e}")))?;
+
+    let response = room.send(reply_content).await?;
+    Ok(response.event_id.to_string())
+}
+
+#[tauri::command]
+pub async fn send_typing(
+    state: State<'_, AppState>,
+    room_id: String,
+    typing: bool,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    room.typing_notice(typing).await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_room_members(
     state: State<'_, AppState>,
     room_id: String,
@@ -152,7 +226,6 @@ pub async fn get_room_members(
 
     let members = room.members(RoomMemberships::JOIN).await?;
 
-    // Fetch presence for all members
     let store = client.state_store();
 
     let mut result: Vec<MemberInfo> = Vec::new();
@@ -188,10 +261,7 @@ pub async fn get_room_members(
             _ => "offline".to_string(),
         };
 
-        let server_name = m
-            .user_id()
-            .server_name()
-            .to_string();
+        let server_name = m.user_id().server_name().to_string();
 
         result.push(MemberInfo {
             user_id: m.user_id().to_string(),
@@ -207,7 +277,6 @@ pub async fn get_room_members(
         });
     }
 
-    // Sort by power level (highest first), then alphabetically
     result.sort_by(|a, b| {
         b.power_level
             .cmp(&a.power_level)

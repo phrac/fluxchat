@@ -1,7 +1,8 @@
 import { Show, createSignal, createEffect } from "solid-js";
-import { marked, type MarkedExtension } from "marked";
+import { marked } from "marked";
 import type { MessageInfo } from "../../lib/types";
 import { getMediaUrl } from "../../lib/tauri";
+import { setReplyingTo } from "../../stores/messages";
 
 // Configure marked: only standard markdown, no GFM extensions that cause false positives
 marked.setOptions({
@@ -55,7 +56,17 @@ function avatarInitials(name: string): string {
 
 function renderBodySync(body: string, formattedBody: string | null): string {
   if (formattedBody) {
-    return formattedBody;
+    // Strip Matrix reply quotes — we render our own reply context
+    return formattedBody.replace(/<mx-reply>[\s\S]*?<\/mx-reply>/gi, "").trim();
+  }
+  // Strip plain text reply fallback (> quoted lines at start)
+  if (body.startsWith("> ")) {
+    const lines = body.split("\n");
+    let i = 0;
+    while (i < lines.length && lines[i].startsWith("> ")) i++;
+    // Skip the blank line after the quote
+    if (i < lines.length && lines[i].trim() === "") i++;
+    body = lines.slice(i).join("\n");
   }
   try {
     const html = marked.parse(body, { async: false }) as string;
@@ -198,19 +209,70 @@ function MessageContent(props: { message: MessageInfo }) {
   );
 }
 
+function ReplyContext(props: { message: MessageInfo }) {
+  const replyColor = () => nameColor(props.message.reply_to_sender || "");
+  return (
+    <Show when={props.message.reply_to_id}>
+      <div
+        class="mb-0.5 flex items-center gap-1.5 text-xs"
+        style={{ "padding-left": "52px" }}
+      >
+        <div
+          class="h-3 w-0.5 rounded-full"
+          style={{ background: replyColor() }}
+        />
+        <span style={{ color: replyColor() }} class="font-medium">
+          {props.message.reply_to_sender || "Unknown"}
+        </span>
+        <span
+          class="truncate"
+          style={{ color: "var(--text-muted)", "max-width": "400px" }}
+        >
+          {props.message.reply_to_body || "..."}
+        </span>
+      </div>
+    </Show>
+  );
+}
+
 export default function MessageBubble(props: Props) {
   const color = () => nameColor(props.message.sender);
+
+  const handleReply = (e: MouseEvent) => {
+    e.stopPropagation();
+    setReplyingTo(props.message);
+  };
+
+  const isPending = () => props.message.event_id.startsWith("~local-");
 
   return (
     <div
       class="group relative py-0.5 transition-colors"
       classList={{ "mt-4": props.showHeader }}
-      style={{ "padding-left": props.showHeader ? undefined : "56px" }}
+      style={{
+        "padding-left": props.showHeader ? undefined : "56px",
+        opacity: isPending() ? "0.5" : "1",
+        transition: "opacity 0.3s",
+      }}
       onMouseOver={(e) =>
         (e.currentTarget.style.background = "rgba(0,0,0,0.1)")
       }
       onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
     >
+      {/* Reply action button */}
+      <button
+        class="absolute right-2 top-0 hidden rounded px-1.5 py-0.5 group-hover:flex items-center"
+        style={{ background: "var(--bg-tertiary)", color: "var(--text-muted)" }}
+        onClick={handleReply}
+        title="Reply"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/>
+        </svg>
+      </button>
+
+      <ReplyContext message={props.message} />
+
       <Show when={props.showHeader}>
         <div class="flex items-start gap-3">
           <Avatar

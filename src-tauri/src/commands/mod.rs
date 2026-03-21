@@ -28,6 +28,9 @@ pub struct MessageInfo {
     pub body: String,
     pub formatted_body: Option<String>,
     pub image_mxc: Option<String>,
+    pub reply_to_id: Option<String>,
+    pub reply_to_sender: Option<String>,
+    pub reply_to_body: Option<String>,
     pub timestamp: u64,
     pub avatar_url: Option<String>,
 }

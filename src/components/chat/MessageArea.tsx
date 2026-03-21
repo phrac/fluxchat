@@ -1,5 +1,6 @@
-import { Show } from "solid-js";
+import { Show, createMemo } from "solid-js";
 import { selectedRoomId, rooms } from "../../stores/rooms";
+import { typingByRoom } from "../../stores/messages";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 
@@ -10,6 +11,22 @@ interface Props {
 
 export default function MessageArea(props: Props) {
   const currentRoom = () => rooms.find((r) => r.room_id === selectedRoomId());
+
+  const typingUsers = createMemo(() => {
+    const roomId = selectedRoomId();
+    if (!roomId) return [];
+    return typingByRoom[roomId] || [];
+  });
+
+  const typingText = createMemo(() => {
+    const users = typingUsers();
+    if (users.length === 0) return null;
+    // Extract display names from user IDs (strip @....:server)
+    const names = users.map((u) => u.replace(/^@/, "").split(":")[0]);
+    if (names.length === 1) return `${names[0]} is typing...`;
+    if (names.length === 2) return `${names[0]} and ${names[1]} are typing...`;
+    return `${names[0]} and ${names.length - 1} others are typing...`;
+  });
 
   return (
     <div
@@ -88,6 +105,24 @@ export default function MessageArea(props: Props) {
         }
       >
         <MessageList roomId={selectedRoomId()!} />
+
+        {/* Typing indicator */}
+        <Show when={typingText()}>
+          <div
+            class="flex-shrink-0 px-4 pb-1"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <span class="text-xs font-medium">
+              <span class="inline-flex gap-0.5 mr-1">
+                <span class="animate-bounce" style={{ "animation-delay": "0ms" }}>.</span>
+                <span class="animate-bounce" style={{ "animation-delay": "150ms" }}>.</span>
+                <span class="animate-bounce" style={{ "animation-delay": "300ms" }}>.</span>
+              </span>
+              {typingText()}
+            </span>
+          </div>
+        </Show>
+
         <MessageInput roomId={selectedRoomId()!} />
       </Show>
     </div>

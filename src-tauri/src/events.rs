@@ -1,6 +1,10 @@
+use std::time::Duration;
 use matrix_sdk::{
     config::SyncSettings,
-    ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent},
+    ruma::events::{
+        room::message::{MessageType, OriginalSyncRoomMessageEvent, Relation},
+        typing::SyncTypingEvent,
+    },
     Client, Room,
 };
 use tauri::{AppHandle, Emitter};
@@ -12,6 +16,12 @@ use crate::commands::MessageInfo;
 struct NewMessagePayload {
     room_id: String,
     message: MessageInfo,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct TypingPayload {
+    room_id: String,
+    user_ids: Vec<String>,
 }
 
 pub fn spawn_sync(client: Client, app_handle: AppHandle) {
@@ -33,7 +43,9 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                         ),
                         MessageType::Image(img) => {
                             let mxc = match &img.source {
-                                matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
+                                matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => {
+                                    Some(uri.to_string())
+                                }
                                 _ => None,
                             };
                             (img.body.clone(), None, mxc)
@@ -70,6 +82,17 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                         .and_then(|m| m.avatar_url())
                         .map(|mxc| mxc.to_string());
 
+                    // Extract reply info
+                    let reply_to_id = match &ev.content.relates_to {
+                        Some(Relation::Reply { in_reply_to }) => {
+                            Some(in_reply_to.event_id.to_string())
+                        }
+                        Some(Relation::Thread(thread)) => {
+                            thread.in_reply_to.as_ref().map(|r| r.event_id.to_string())
+                        }
+                        _ => None,
+                    };
+
                     let msg = MessageInfo {
                         event_id: ev.event_id.to_string(),
                         sender: ev.sender.to_string(),
@@ -77,6 +100,9 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                         body,
                         formatted_body,
                         image_mxc,
+                        reply_to_id,
+                        reply_to_sender: None,
+                        reply_to_body: None,
                         timestamp: ev.origin_server_ts.as_secs().into(),
                         avatar_url,
                     };
@@ -93,10 +119,35 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
             }
         });
 
+        // Register typing handler
+        let own_user_id = client.user_id().map(|u| u.to_owned());
+        client.add_event_handler({
+            let handle = app_handle.clone();
+            move |ev: SyncTypingEvent, room: Room| {
+                let handle = handle.clone();
+                let own_id = own_user_id.clone();
+                async move {
+                    let user_ids: Vec<String> = ev
+                        .content
+                        .user_ids
+                        .iter()
+                        .filter(|u| own_id.as_ref().map_or(true, |own| *u != own))
+                        .map(|u| u.to_string())
+                        .collect();
+                    let payload = TypingPayload {
+                        room_id: room.room_id().to_string(),
+                        user_ids,
+                    };
+                    let _ = handle.emit("matrix://typing-indicator", &payload);
+                }
+            }
+        });
+
         info!("Starting initial sync...");
 
-        // Initial sync
-        match client.sync_once(SyncSettings::default()).await {
+        let sync_settings = SyncSettings::default().timeout(Duration::from_secs(10));
+
+        match client.sync_once(sync_settings.clone()).await {
             Ok(_) => {
                 info!("Initial sync complete");
                 let _ = app_handle.emit("matrix://room-list-update", ());
@@ -107,10 +158,9 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
             }
         }
 
-        // Continuous sync — sync() manages the token internally
         info!("Starting continuous sync...");
         client
-            .sync(SyncSettings::default())
+            .sync(sync_settings)
             .await
             .unwrap_or_else(|e| {
                 error!("Sync loop ended with error: {e}");

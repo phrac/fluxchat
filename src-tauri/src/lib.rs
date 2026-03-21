@@ -42,6 +42,8 @@ pub fn run() {
             commands::rooms::leave_room,
             commands::messages::get_room_messages,
             commands::messages::send_message,
+            commands::messages::send_reply,
+            commands::messages::send_typing,
             commands::messages::get_room_members,
             commands::spaces::get_spaces,
             commands::spaces::get_space_rooms,

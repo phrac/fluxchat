@@ -64,6 +64,21 @@ export async function getMediaUrl(mxcUri: string): Promise<string> {
   return invoke("get_media_url", { mxcUri });
 }
 
+export async function sendReply(
+  roomId: string,
+  body: string,
+  replyToEventId: string
+): Promise<string> {
+  return invoke("send_reply", { roomId, body, replyToEventId });
+}
+
+export async function sendTyping(
+  roomId: string,
+  typing: boolean
+): Promise<void> {
+  return invoke("send_typing", { roomId, typing });
+}
+
 export async function acceptVerification(
   userId: string,
   flowId: string

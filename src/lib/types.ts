@@ -17,6 +17,9 @@ export interface MessageInfo {
   body: string;
   formatted_body: string | null;
   image_mxc: string | null;
+  reply_to_id: string | null;
+  reply_to_sender: string | null;
+  reply_to_body: string | null;
   timestamp: number;
   avatar_url: string | null;
 }
