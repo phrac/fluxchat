@@ -26,9 +26,10 @@ pub fn MessageArea() -> Element {
                 for (id, name) in tabs.iter() {
                     { let tab_id = id.clone();
                       let is_active = selected.as_ref() == Some(id);
+                      let tab_class = if is_active { "channel-tab active" } else { "channel-tab" };
                       rsx! {
                         div {
-                            class: "channel-tab {if is_active { \"active\" } else { \"\" }}",
+                            class: "{tab_class}",
                             onclick: move |_| { ui.selected_room_id.set(Some(tab_id.clone())); },
                             "#{name}"
                         }

@@ -46,9 +46,13 @@ pub fn RoomList() -> Element {
                           let is_selected = selected.as_ref() == Some(&room.room_id);
                           let name = room.name.to_lowercase().replace(' ', "-");
                           let has_unread = room.unread_count > 0;
+                          let bg = if is_selected { "var(--bg-light)" } else { "transparent" };
+                          let color = if is_selected || has_unread { "var(--text-bright)" } else { "var(--text-muted)" };
+                          let weight = if has_unread { "600" } else { "400" };
+                          let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 4px; background: {bg}; color: {color}; font-weight: {weight};");
                           rsx! {
                             div {
-                                style: "padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 4px; background: {if is_selected { \"var(--bg-light)\" } else { \"transparent\" }}; color: {if is_selected || has_unread { \"var(--text-bright)\" } else { \"var(--text-muted)\" }}; font-weight: {if has_unread { \"600\" } else { \"400\" }};",
+                                style: "{style}",
                                 onclick: {
                                     let core = core.clone();
                                     let ui = ui.clone();
@@ -80,9 +84,12 @@ pub fn RoomList() -> Element {
                     for room in dms.iter() {
                         { let room_id = room.room_id.clone();
                           let is_selected = selected.as_ref() == Some(&room.room_id);
+                          let bg = if is_selected { "var(--bg-light)" } else { "transparent" };
+                          let color = if is_selected { "var(--text-bright)" } else { "var(--text-muted)" };
+                          let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; background: {bg}; color: {color};");
                           rsx! {
                             div {
-                                style: "padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; background: {if is_selected { \"var(--bg-light)\" } else { \"transparent\" }}; color: {if is_selected { \"var(--text-bright)\" } else { \"var(--text-muted)\" }};",
+                                style: "{style}",
                                 onclick: {
                                     let core = core.clone();
                                     let ui = ui.clone();
