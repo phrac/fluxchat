@@ -1,0 +1,7 @@
+[package]
+name = "fluxchat-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fluxchat-core = { path = "../core" }
