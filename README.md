@@ -6,7 +6,7 @@ A cross-platform Matrix chat client with an IRC-inspired UI, built entirely in R
 
 ## Screenshot
 
-![fluxchat screenshot](assets/screenshot.png)
+![fluxchat screenshot](assets/screenshot.png?v=2)
 
 ## Design
 
