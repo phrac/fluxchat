@@ -60,25 +60,29 @@ body {
   overflow-wrap: break-word;
 }
 .msg-content code {
-  background: #2b2b2b;
-  color: #e8912d;
-  padding: 0.15em 0.4em;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dbb9ee;
   border-radius: 3px;
-  font-size: 0.85em;
-  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: inherit;
+  font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
+  border: 3px solid transparent;
+  outline: 1px solid rgba(255, 255, 255, 0.06);
 }
 .msg-content pre {
-  background: #2b2d31;
-  border: 1px solid #1e1f22;
-  padding: 0.6em 0.8em;
-  border-radius: 4px;
+  background: #1e1f22;
+  border: 1px solid #191a1d;
+  padding: 8px 12px;
+  border-radius: 6px;
   overflow-x: auto;
-  margin: 0.25em 0;
+  margin: 4px 0;
+  line-height: 1.4;
 }
 .msg-content pre code {
   background: none;
   color: var(--text-normal);
   padding: 0;
+  font-size: 0.875rem;
+  font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", "Consolas", monospace;
 }
 .msg-content strong, .msg-content b {
   color: var(--text-primary);

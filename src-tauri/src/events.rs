@@ -3,7 +3,10 @@ use matrix_sdk::{
     config::SyncSettings,
     ruma::events::{
         reaction::OriginalSyncReactionEvent,
-        room::message::{MessageType, OriginalSyncRoomMessageEvent, Relation},
+        room::{
+            member::OriginalSyncRoomMemberEvent,
+            message::{MessageType, OriginalSyncRoomMessageEvent, Relation},
+        },
         typing::SyncTypingEvent,
     },
     Client, Room,
@@ -17,6 +20,14 @@ use crate::commands::MessageInfo;
 struct NewMessagePayload {
     room_id: String,
     message: MessageInfo,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct EditPayload {
+    room_id: String,
+    event_id: String,
+    new_body: String,
+    new_formatted_body: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -55,6 +66,9 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                                 matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => {
                                     Some(uri.to_string())
                                 }
+                                matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => {
+                                    Some(enc.url.to_string())
+                                }
                                 _ => None,
                             };
                             (img.body.clone(), None, mxc)
@@ -90,6 +104,25 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                         .as_ref()
                         .and_then(|m| m.avatar_url())
                         .map(|mxc| mxc.to_string());
+
+                    // Check if this is an edit (replacement)
+                    if let Some(Relation::Replacement(replacement)) = &ev.content.relates_to {
+                        let (new_body, new_formatted_body) = match &replacement.new_content.msgtype {
+                            MessageType::Text(t) => (
+                                t.body.clone(),
+                                t.formatted.as_ref().map(|f| f.body.clone()),
+                            ),
+                            _ => (body.clone(), formatted_body.clone()),
+                        };
+                        let payload = EditPayload {
+                            room_id: room.room_id().to_string(),
+                            event_id: replacement.event_id.to_string(),
+                            new_body,
+                            new_formatted_body,
+                        };
+                        let _ = handle.emit("matrix://message-edit", &payload);
+                        return;
+                    }
 
                     // Extract reply info
                     let reply_to_id = match &ev.content.relates_to {
@@ -166,6 +199,17 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
                         sender: ev.sender.to_string(),
                     };
                     let _ = handle.emit("matrix://reaction", &payload);
+                }
+            }
+        });
+
+        // Register membership change handler
+        client.add_event_handler({
+            let handle = app_handle.clone();
+            move |_ev: OriginalSyncRoomMemberEvent, room: Room| {
+                let handle = handle.clone();
+                async move {
+                    let _ = handle.emit("matrix://membership-change", room.room_id().to_string());
                 }
             }
         });

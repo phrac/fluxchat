@@ -1,8 +1,9 @@
 import { Show, createSignal, createEffect, untrack } from "solid-js";
 import { marked } from "marked";
 import type { MessageInfo } from "../../lib/types";
-import { getMediaUrl } from "../../lib/tauri";
-import { setReplyingTo, insertSystemMessage } from "../../stores/messages";
+import { getMediaUrl, getEventMedia } from "../../lib/tauri";
+import { setReplyingTo, setEditingMessage, insertSystemMessage } from "../../stores/messages";
+import { userId } from "../../stores/auth";
 import { sendReaction, deleteMessage, pinMessage } from "../../lib/tauri";
 import { selectedRoomId } from "../../stores/rooms";
 
@@ -82,6 +83,37 @@ function renderBodySync(body: string, formattedBody: string | null): string {
   }
 }
 
+// Track emoji usage for quick reactions
+const defaultEmojis = ["😂", "🔥", "❤️", "👍", "😮", "😢"];
+const emojiUsage: Record<string, number> = {};
+
+// Load from localStorage
+try {
+  const saved = localStorage.getItem("fluxchat-emoji-usage");
+  if (saved) Object.assign(emojiUsage, JSON.parse(saved));
+} catch {}
+
+function trackEmoji(emoji: string) {
+  emojiUsage[emoji] = (emojiUsage[emoji] || 0) + 1;
+  try {
+    localStorage.setItem("fluxchat-emoji-usage", JSON.stringify(emojiUsage));
+  } catch {}
+}
+
+function getTopEmojis(count: number): string[] {
+  const sorted = Object.entries(emojiUsage)
+    .sort((a, b) => b[1] - a[1])
+    .map(([emoji]) => emoji);
+
+  // Fill with defaults if not enough usage data
+  const result = [...sorted];
+  for (const e of defaultEmojis) {
+    if (!result.includes(e)) result.push(e);
+    if (result.length >= count) break;
+  }
+  return result.slice(0, count);
+}
+
 // Cache resolved media URLs in memory
 const mediaCache = new Map<string, string>();
 
@@ -115,12 +147,18 @@ async function resolveHtmlMedia(html: string): Promise<string> {
   return result;
 }
 
-function ImageMessage(props: { mxc: string; alt: string }) {
+function ImageMessage(props: { mxc: string; alt: string; eventId: string; roomId: string }) {
   const [src, setSrc] = createSignal<string | null>(null);
   const [expanded, setExpanded] = createSignal(false);
 
   createEffect(() => {
-    resolveMedia(props.mxc).then(setSrc);
+    // Use get_event_media which handles both encrypted and plain images
+    getEventMedia(props.roomId, props.eventId)
+      .then(setSrc)
+      .catch(() => {
+        // Fallback to plain MXC resolve
+        resolveMedia(props.mxc).then(setSrc);
+      });
   });
 
   return (
@@ -176,6 +214,9 @@ function Avatar(props: { mxcUrl: string | null; name: string; color: string; siz
 
 // Cache rendered HTML to avoid re-parsing on room switch
 const htmlCache = new Map<string, string>();
+if (typeof window !== "undefined") {
+  (window as any).__fluxchat_html_cache = htmlCache;
+}
 
 function MessageContent(props: { message: MessageInfo }) {
   const cached = htmlCache.get(props.message.event_id);
@@ -198,21 +239,28 @@ function MessageContent(props: { message: MessageInfo }) {
 
   return (
     <>
-      <div
-        ref={(el) => {
-          el.addEventListener("click", (e) => {
-            const target = e.target as HTMLElement;
-            if (target.tagName === "IMG" && !target.hasAttribute("data-mx-emoticon")) {
-              target.classList.toggle("expanded");
-            }
-          });
-        }}
-        class="msg-content leading-[1.375rem]"
-        style={{ color: "var(--text-normal)", "font-size": "1rem" }}
-        innerHTML={html()}
-      />
+      <Show when={!props.message.image_mxc}>
+        <div
+          ref={(el) => {
+            el.addEventListener("click", (e) => {
+              const target = e.target as HTMLElement;
+              if (target.tagName === "IMG" && !target.hasAttribute("data-mx-emoticon")) {
+                target.classList.toggle("expanded");
+              }
+            });
+          }}
+          class="msg-content leading-[1.375rem]"
+          style={{ color: "var(--text-normal)", "font-size": "1rem" }}
+          innerHTML={html()}
+        />
+      </Show>
       <Show when={props.message.image_mxc}>
-        <ImageMessage mxc={props.message.image_mxc!} alt={props.message.body} />
+        <ImageMessage
+          mxc={props.message.image_mxc!}
+          alt={props.message.body}
+          eventId={props.message.event_id}
+          roomId={untrack(selectedRoomId) || ""}
+        />
       </Show>
       <Show when={props.message.reactions.length > 0}>
         <div class="mt-1 flex flex-wrap gap-1">
@@ -278,7 +326,7 @@ export default function MessageBubble(props: Props) {
 
   const color = () => nameColor(props.message.sender);
 
-  const quickEmojis = ["😂", "🔥", "❤️", "👍", "😮", "😢"];
+  const quickEmojis = () => getTopEmojis(6);
   const isPending = () => props.message.event_id.startsWith("~local-");
   const [showMenu, setShowMenu] = createSignal(false);
 
@@ -287,6 +335,7 @@ export default function MessageBubble(props: Props) {
   const handleReact = (emoji: string) => {
     const roomId = untrack(selectedRoomId);
     if (roomId && !isPending()) {
+      trackEmoji(emoji);
       sendReaction(roomId, props.message.event_id, emoji).catch(() => {});
     }
   };
@@ -314,6 +363,13 @@ export default function MessageBubble(props: Props) {
 
   const handleCopy = () => {
     navigator.clipboard.writeText(props.message.body).catch(() => {});
+    setShowMenu(false);
+  };
+
+  const isOwnMessage = () => props.message.sender === untrack(userId);
+
+  const handleEdit = () => {
+    setEditingMessage(props.message);
     setShowMenu(false);
   };
 
@@ -361,7 +417,7 @@ export default function MessageBubble(props: Props) {
           }}
           data-action-bar
         >
-          {quickEmojis.map((emoji) => (
+          {quickEmojis().map((emoji) => (
             <button
               class="px-1.5 py-1 text-base transition-transform hover:scale-125 hover:bg-white/5 first:rounded-l"
               onClick={() => handleReact(emoji)}
@@ -399,6 +455,13 @@ export default function MessageBubble(props: Props) {
                 class="absolute right-0 top-full mt-1 w-48 rounded-md py-1 shadow-xl z-20"
                 style={{ background: "var(--bg-tertiary)", border: "1px solid rgba(0,0,0,0.3)" }}
               >
+                <Show when={isOwnMessage()}>
+                  <MenuButton
+                    label="Edit Message"
+                    icon="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+                    onClick={handleEdit}
+                  />
+                </Show>
                 <MenuButton
                   label="Pin Message"
                   icon="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"

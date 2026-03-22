@@ -53,7 +53,7 @@ pub async fn login(
     client
         .matrix_auth()
         .login_username(&username, &password)
-        .initial_device_display_name("fluxchat")
+        .initial_device_display_name("FluxChat")
         .await?;
 
     let user_id = client

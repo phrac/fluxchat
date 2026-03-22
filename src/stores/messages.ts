@@ -18,11 +18,12 @@ const [typingByRoom, setTypingByRoom] = createStore<
   Record<string, string[]>
 >({});
 const [replyingTo, setReplyingTo] = createSignal<MessageInfo | null>(null);
+const [editingMessage, setEditingMessage] = createSignal<MessageInfo | null>(null);
 
 // Track rooms we've already attempted to load (even if no messages decrypted)
 const loadedRooms = new Set<string>();
 
-export { messagesByRoom, membersByRoom, typingByRoom, replyingTo, setReplyingTo, insertSystemMessage };
+export { messagesByRoom, membersByRoom, typingByRoom, replyingTo, setReplyingTo, editingMessage, setEditingMessage, insertSystemMessage };
 
 export async function loadMessages(roomId: string) {
   if (loadedRooms.has(roomId)) return;
@@ -163,6 +164,25 @@ listen<{ room_id: string; message: MessageInfo }>(
   }
 );
 
+// Message edit updates
+listen<{ room_id: string; event_id: string; new_body: string; new_formatted_body: string | null }>(
+  "matrix://message-edit",
+  (event) => {
+    const { room_id, event_id, new_body, new_formatted_body } = event.payload;
+    setMessagesByRoom(room_id, (prev) =>
+      (prev || []).map((m) => {
+        if (m.event_id !== event_id) return m;
+        // Clear render cache by giving it a new event_id variant
+        return { ...m, body: new_body, formatted_body: new_formatted_body };
+      })
+    );
+    // Clear the HTML render cache for this message
+    if (typeof window !== "undefined") {
+      (window as any).__fluxchat_html_cache?.delete(event_id);
+    }
+  }
+);
+
 // Reaction updates
 listen<{ room_id: string; event_id: string; emoji: string; sender: string }>(
   "matrix://reaction",
@@ -184,6 +204,16 @@ listen<{ room_id: string; event_id: string; emoji: string; sender: string }>(
         return { ...m, reactions };
       })
     );
+  }
+);
+
+// Membership changes — invalidate member cache and reload
+listen<string>(
+  "matrix://membership-change",
+  (event) => {
+    const roomId = event.payload;
+    loadedMembers.delete(roomId);
+    loadMembers(roomId).catch(() => {});
   }
 );
 

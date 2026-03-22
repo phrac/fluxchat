@@ -1,6 +1,6 @@
 use matrix_sdk::{
     attachment::AttachmentConfig,
-    room::{reply::Reply, MessagesOptions},
+    room::{edit::EditedContent, reply::Reply, MessagesOptions},
     ruma::events::{
         reaction::ReactionEventContent,
         relation::Annotation,
@@ -118,6 +118,9 @@ pub async fn get_room_messages(
                     let mxc = match &img.source {
                         matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => {
                             Some(uri.to_string())
+                        }
+                        matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => {
+                            Some(enc.url.to_string())
                         }
                         _ => None,
                     };
@@ -478,6 +481,9 @@ pub async fn get_pinned_messages(
                         matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => {
                             Some(uri.to_string())
                         }
+                        matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => {
+                            Some(enc.url.to_string())
+                        }
                         _ => None,
                     };
                     (img.body.clone(), None, mxc)
@@ -571,7 +577,9 @@ pub async fn pin_message(
 pub async fn upload_file(
     state: State<'_, AppState>,
     room_id: String,
-    file_path: String,
+    filename: String,
+    mime_type: String,
+    data: Vec<u8>,
 ) -> Result<String, AppError> {
     let client = get_client(&state).await?;
 
@@ -582,32 +590,9 @@ pub async fn upload_file(
         .get_room(&room_id)
         .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
 
-    let path = std::path::Path::new(&file_path);
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file")
-        .to_string();
-
-    let data = std::fs::read(path)
-        .map_err(|e| AppError::Other(format!("Failed to read file: {e}")))?;
-
-    // Detect MIME type from extension
-    let content_type: mime::Mime = match path.extension().and_then(|e| e.to_str()) {
-        Some("png") => "image/png".parse().unwrap(),
-        Some("jpg") | Some("jpeg") => "image/jpeg".parse().unwrap(),
-        Some("gif") => "image/gif".parse().unwrap(),
-        Some("webp") => "image/webp".parse().unwrap(),
-        Some("svg") => "image/svg+xml".parse().unwrap(),
-        Some("mp4") => "video/mp4".parse().unwrap(),
-        Some("webm") => "video/webm".parse().unwrap(),
-        Some("mp3") => "audio/mpeg".parse().unwrap(),
-        Some("ogg") => "audio/ogg".parse().unwrap(),
-        Some("wav") => "audio/wav".parse().unwrap(),
-        Some("pdf") => "application/pdf".parse().unwrap(),
-        Some("txt") => "text/plain".parse().unwrap(),
-        _ => "application/octet-stream".parse().unwrap(),
-    };
+    let content_type: mime::Mime = mime_type
+        .parse()
+        .unwrap_or("application/octet-stream".parse().unwrap());
 
     let response = room
         .send_attachment(&filename, &content_type, data, AttachmentConfig::new())
@@ -615,4 +600,35 @@ pub async fn upload_file(
         .map_err(|e| AppError::Other(format!("Failed to upload: {e}")))?;
 
     Ok(response.event_id.to_string())
+}
+
+#[tauri::command]
+pub async fn edit_message(
+    state: State<'_, AppState>,
+    room_id: String,
+    event_id: String,
+    new_body: String,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let event_id = matrix_sdk::ruma::EventId::parse(&event_id)
+        .map_err(|_| AppError::Other("Invalid event ID".into()))?;
+
+    let new_content = RoomMessageEventContentWithoutRelation::text_plain(&new_body);
+    let edit_content = EditedContent::RoomMessage(new_content);
+
+    let edit_event = room
+        .make_edit_event(&event_id, edit_content)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to edit: {e}")))?;
+
+    room.send(edit_event).await?;
+    Ok(())
 }

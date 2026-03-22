@@ -19,11 +19,12 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - **Spaces** — Browse Matrix spaces with avatar banners. Clicking a room auto-switches to its parent space view.
 - **Messaging** — Send and receive text messages in real-time via Matrix sync with optimistic local insertion. Instant room switching via DOM caching (last 5 rooms kept in memory).
 - **Message history** — Scroll up to load older messages with backward pagination.
-- **File uploads** — Upload images, videos, audio, documents via the + button in the message input.
+- **File uploads** — Upload images, videos, audio, documents via the + menu. Files are staged with thumbnail previews before sending, supporting multiple files and optional text.
 - **Typing indicators** — See when others are typing, send typing notifications while composing.
 - **Replies** — Reply to messages with context preview. Reply threads shown inline with colored quote bars.
 - **Reactions** — Quick emoji reactions (😂🔥❤️👍😮😢) via hover action bar. Reaction badges shown below messages with counts.
-- **Message actions** — Hover action bar with quick reactions, reply, and a context menu (pin, copy, show source, delete).
+- **Message editing** — Edit your own messages via context menu with inline edit preview bar.
+- **Message actions** — Hover action bar with personalized quick reactions, reply, and a context menu (edit, pin, copy, show source, delete).
 - **Pinned messages** — Pin/unpin messages, view pinned messages in a Discord-style modal overlay. Click to jump to message in chat.
 - **Message deletion** — Redact messages via the context menu.
 - **User avatars** — Avatars fetched through the authenticated Matrix media API with three-tier caching (memory → FluxDB disk → network).
@@ -38,8 +39,8 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 
 ### Not Yet Implemented
 
-- Message editing
 - Thread view (full thread panel)
+- Polls
 - Read receipts
 - Room creation and settings
 - Voice/video calls
@@ -50,6 +51,7 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - Virtual scrolling for large rooms
 - Room topic editing
 - User status/custom status
+- Drag & drop file uploads
 
 ## Tech Stack
 

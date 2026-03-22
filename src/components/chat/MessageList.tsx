@@ -98,11 +98,7 @@ export default function MessageList(props: Props) {
             >
               <Show when={messages().length === 0}>
                 <div class="flex h-full items-center justify-center" style={{ color: "var(--text-muted)" }}>
-                  <div
-                    class="mr-2 h-5 w-5 animate-spin rounded-full border-2 border-t-transparent"
-                    style={{ "border-color": "var(--accent)", "border-top-color": "transparent" }}
-                  />
-                  Loading messages...
+                  No messages yet
                 </div>
               </Show>
 

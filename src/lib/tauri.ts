@@ -71,6 +71,13 @@ export async function getMediaUrl(mxcUri: string): Promise<string> {
   return invoke("get_media_url", { mxcUri });
 }
 
+export async function getEventMedia(
+  roomId: string,
+  eventId: string
+): Promise<string> {
+  return invoke("get_event_media", { roomId, eventId });
+}
+
 export async function sendReply(
   roomId: string,
   body: string,
@@ -107,11 +114,21 @@ export async function pinMessage(
   return invoke("pin_message", { roomId, eventId });
 }
 
+export async function editMessage(
+  roomId: string,
+  eventId: string,
+  newBody: string
+): Promise<void> {
+  return invoke("edit_message", { roomId, eventId, newBody });
+}
+
 export async function uploadFile(
   roomId: string,
-  filePath: string
+  filename: string,
+  mimeType: string,
+  data: number[]
 ): Promise<string> {
-  return invoke("upload_file", { roomId, filePath });
+  return invoke("upload_file", { roomId, filename, mimeType, data });
 }
 
 export async function sendTyping(
