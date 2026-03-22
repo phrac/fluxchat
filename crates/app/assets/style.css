@@ -63,6 +63,19 @@ body {
   overflow: hidden;
 }
 
+/* Terminal-style caret */
+input, textarea {
+  caret-color: var(--accent);
+  caret-shape: block;
+  animation: none;
+}
+
+@supports not (caret-shape: block) {
+  input, textarea {
+    caret-color: var(--accent);
+  }
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -169,17 +182,33 @@ body {
   width: 48px;
 }
 
-/* Channel tabs */
+/* Channel tabs — Chrome-style */
 .channel-tab {
-  padding: 4px 12px;
-  font-size: 13px;
-  border-bottom: 2px solid transparent;
+  padding: 6px 8px;
+  font-size: 12px;
   cursor: pointer;
   color: var(--text-muted);
-  transition: color 0.15s, border-color 0.15s;
+  background: var(--bg-deep);
+  border-right: 1px solid var(--border);
+  flex: 1;
+  min-width: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+  border-radius: 6px 6px 0 0;
+  margin-top: 4px;
 }
-.channel-tab:hover { color: var(--text-normal); }
+.channel-tab:hover {
+  color: var(--text-normal);
+  background: var(--bg-mid);
+}
 .channel-tab.active {
   color: var(--text-bright);
-  border-bottom-color: var(--accent);
+  background: var(--bg-mid);
+  border-bottom: none;
+}
+.channel-tab:last-child {
+  border-right: none;
 }

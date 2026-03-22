@@ -62,10 +62,11 @@ pub fn MessageArea() -> Element {
                             { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
                               if is_system {
                                 rsx! {
-                                    div { style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: baseline;",
+                                    div { style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: center;",
                                         span { class: "msg-time", "" }
-                                        span { style: "width: 110px; text-align: right; flex-shrink: 0;" }
-                                        span { style: "margin: 0 6px; flex-shrink: 0; color: var(--green);", "──" }
+                                        span { style: "width: 120px; flex-shrink: 0;" }
+                                        div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
+                                        span { style: "color: var(--green); margin-right: 4px;", "-->" }
                                         "{msg.body}"
                                     }
                                 }
@@ -93,8 +94,8 @@ pub fn MessageArea() -> Element {
                                                 "{msg.sender_name}"
                                             }
                                         }
-                                        // IRC separator
-                                        span { style: "color: var(--text-dim); margin: 0 6px; flex-shrink: 0; font-family: var(--font-mono); align-self: baseline;", "│" }
+                                        // IRC separator — solid vertical line
+                                        div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
                                         // Message body
                                         if let Some(ref html) = msg.formatted_body {
                                             span { class: "msg-body", dangerous_inner_html: "{html}" }

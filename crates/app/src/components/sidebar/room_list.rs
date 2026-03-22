@@ -82,18 +82,6 @@ pub fn RoomList() -> Element {
                 }
             }
 
-            // User panel
-            div { style: "height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-top: 1px solid var(--border); flex-shrink: 0;",
-                div { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0;" }
-                div { style: "flex: 1; min-width: 0;",
-                    div { style: "font-size: 13px; font-weight: 500; color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-                        {ui.display_name.read().as_ref().unwrap_or(&ui.user_id.read().split(':').next().unwrap_or("user").trim_start_matches('@').to_string()).clone()}
-                    }
-                    div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);",
-                        {ui.user_id.read().split(':').nth(1).unwrap_or("").to_string()}
-                    }
-                }
-            }
         }
     }
 }

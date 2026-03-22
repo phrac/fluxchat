@@ -45,13 +45,12 @@ pub fn MessageInput() -> Element {
     };
 
     rsx! {
-        div { style: "display: flex; align-items: center; padding: 6px 12px; border-top: 1px solid var(--border); flex-shrink: 0; gap: 8px;",
-            span { style: "color: var(--text-dim); font-family: var(--font-mono); flex-shrink: 0;", ">" }
+        div { style: "display: flex; align-items: center; height: 40px; margin: 4px 12px 8px; border-radius: 6px; background: var(--bg-deep); border: 1px solid var(--border); flex-shrink: 0;",
+            span { style: "color: var(--accent); font-family: var(--font-mono); font-size: 15px; font-weight: 700; padding: 0 10px; flex-shrink: 0; opacity: 0.6;", ">" }
             input {
-                style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-body);",
+                style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-mono); padding-right: 12px;",
                 r#type: "text",
                 value: "{text}",
-                placeholder: "Message #{room_name}",
                 oninput: move |e| text.set(e.value()),
                 onkeydown: move |e| {
                     if e.key() == Key::Enter && !e.modifiers().shift() {
