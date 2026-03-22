@@ -7,7 +7,7 @@ use crate::state::UiState;
 #[component]
 pub fn MessageInput() -> Element {
     let core = use_context::<Arc<AppState>>();
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let mut text = use_signal(|| String::new());
     let mut sending = use_signal(|| false);
 
@@ -15,12 +15,12 @@ pub fn MessageInput() -> Element {
         .and_then(|id| ui.rooms.read().iter().find(|r| r.room_id == *id).map(|r| r.name.clone()))
         .unwrap_or_default();
 
-    let handle_send = move |_| {
+    let mut handle_send = move |_: ()| {
         let body = text().trim().to_string();
         if body.is_empty() || *sending.read() { return; }
         let room_id = match ui.selected_room_id.read().clone() { Some(id) => id, None => return };
         let core = core.clone();
-        let ui = ui.clone();
+        let mut ui = ui.clone();
 
         // Optimistic insert
         let temp_id = format!("~local-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());

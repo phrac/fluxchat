@@ -7,7 +7,7 @@ use crate::state::UiState;
 #[component]
 pub fn RoomList() -> Element {
     let core = use_context::<Arc<AppState>>();
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let rooms = ui.rooms.read().clone();
     let selected = ui.selected_room_id.read().clone();
     let selected_space = ui.selected_space_id.read().clone();
@@ -117,7 +117,7 @@ pub fn RoomList() -> Element {
     }
 }
 
-fn select_room(core: Arc<AppState>, ui: UiState, room_id: String, room_name: String) {
+fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name: String) {
     ui.selected_room_id.set(Some(room_id.clone()));
 
     // Add to tabs if not already there

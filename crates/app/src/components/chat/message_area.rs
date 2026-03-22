@@ -14,7 +14,7 @@ pub fn nick_color_class(name: &str) -> String {
 
 #[component]
 pub fn MessageArea() -> Element {
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let selected = ui.selected_room_id.read().clone();
     let tabs = ui.open_tabs.read().clone();
 

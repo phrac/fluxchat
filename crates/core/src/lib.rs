@@ -16,3 +16,4 @@ pub use db::AppDb;
 pub use error::AppError;
 pub use models::*;
 pub use state::AppState;
+pub use matrix_sdk::Client;

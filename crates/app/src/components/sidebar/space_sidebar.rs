@@ -3,7 +3,7 @@ use crate::state::UiState;
 
 #[component]
 pub fn SpaceSidebar() -> Element {
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let spaces = ui.spaces.read().clone();
     let selected = ui.selected_space_id.read().clone();
 

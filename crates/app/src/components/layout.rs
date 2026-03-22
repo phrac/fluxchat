@@ -8,7 +8,7 @@ use crate::components::members::member_list::MemberList;
 
 #[component]
 pub fn MainLayout() -> Element {
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
 
     let user_id = ui.user_id.read().clone();
     let server = user_id.split(':').nth(1).unwrap_or("matrix.org");

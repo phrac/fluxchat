@@ -4,7 +4,7 @@ use crate::components::chat::message_area::nick_color_class;
 
 #[component]
 pub fn MemberList() -> Element {
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let selected = ui.selected_room_id.read().clone();
     let members = selected.as_ref()
         .and_then(|id| ui.members_by_room.read().get(id).cloned())

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use fluxchat_core::AppState;
 
 use crate::state::UiState;
-use crate::app::load_initial_data;
 
 #[component]
 pub fn Login() -> Element {
@@ -30,7 +29,7 @@ pub fn Login() -> Element {
                     ui.user_id.set(result.user_id);
                     ui.display_name.set(result.display_name);
                     ui.logged_in.set(true);
-                    load_initial_data(&core, &mut ui).await;
+                    // Rooms/sync will load when MainLayout mounts
                 }
                 Err(e) => error.set(e.to_string()),
             }
