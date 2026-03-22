@@ -1,11 +1,17 @@
 pub mod auth;
 pub mod db;
 pub mod error;
+pub mod media;
+pub mod messages;
 pub mod models;
+pub mod preview;
+pub mod profile;
+pub mod rooms;
 pub mod state;
 pub mod sync;
+pub mod threads;
+pub mod verification;
 
-// Re-export key types
 pub use db::AppDb;
 pub use error::AppError;
 pub use models::*;
