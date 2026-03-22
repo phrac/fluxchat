@@ -96,16 +96,16 @@ export default function MessageArea(props: Props) {
       {/* Header bar */}
       <div
         class="flex h-12 flex-shrink-0 items-center justify-between px-4 shadow-sm"
-        style={{ "border-bottom": "1px solid rgba(0,0,0,0.2)" }}
+        style={{ background: "var(--bg-secondary)", "border-bottom": "1px solid rgba(0,0,0,0.2)" }}
       >
-        <div class="flex items-center min-w-0">
+        <div class="flex items-center min-w-0 flex-1 overflow-hidden">
           <Show when={currentRoom()}>
-            <span style={{ color: "var(--text-muted)" }} class="mr-2 text-lg">
+            <span style={{ color: "var(--text-muted)" }} class="mr-1.5 flex-shrink-0">
               #
             </span>
             <span
-              class="cursor-pointer font-semibold hover:underline"
-              style={{ color: "var(--text-primary)" }}
+              class="cursor-pointer flex-shrink-0 truncate font-semibold text-sm hover:underline"
+              style={{ color: "var(--text-primary)", "max-width": "200px" }}
               onClick={() => setShowRoomSettings(true)}
               title="Room Settings"
             >
@@ -113,11 +113,11 @@ export default function MessageArea(props: Props) {
             </span>
             <Show when={currentRoom()!.topic}>
               <div
-                class="mx-3 h-5 w-px flex-shrink-0"
+                class="mx-2.5 h-5 w-px flex-shrink-0"
                 style={{ background: "var(--border-subtle)" }}
               />
               <span
-                class="truncate text-sm"
+                class="truncate text-xs"
                 style={{ color: "var(--text-muted)" }}
               >
                 {currentRoom()!.topic}

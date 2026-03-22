@@ -165,13 +165,11 @@ export default function RoomList() {
         </Show>
       </div>
 
-      {/* User panel — Discord style */}
-      <UserPanel />
     </div>
   );
 }
 
-function UserPanel() {
+export function UserPanel() {
   const [avatarSrc, setAvatarSrc] = createSignal<string | null>(null);
   const [name, setName] = createSignal("");
 
@@ -193,8 +191,8 @@ function UserPanel() {
 
   return (
     <div
-      class="flex flex-shrink-0 items-center gap-2 px-2 py-2"
-      style={{ background: "var(--bg-tertiary)" }}
+      class="flex h-[60px] flex-shrink-0 items-center gap-2 px-2"
+      style={{ background: "var(--bg-secondary)", "border-top": "1px solid rgba(0,0,0,0.2)" }}
     >
       {/* Avatar */}
       <div class="relative flex-shrink-0">
@@ -222,8 +220,8 @@ function UserPanel() {
         <div class="truncate text-sm font-medium" style={{ color: "var(--text-primary)" }}>
           {name() || userShort()}
         </div>
-        <div class="truncate text-[11px]" style={{ color: "var(--green-online)" }}>
-          Online
+        <div class="truncate text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {userId().split(":")[1] || "matrix.org"}
         </div>
       </div>
 

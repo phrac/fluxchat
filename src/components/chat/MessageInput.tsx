@@ -3,6 +3,7 @@ import { sendMessage, replyingTo, setReplyingTo, editingMessage, setEditingMessa
 import { rooms, selectedRoomId } from "../../stores/rooms";
 import { sendTyping, uploadFile, editMessage } from "../../lib/tauri";
 import { nameColor } from "./MessageBubble";
+import EmojiPicker from "./EmojiPicker";
 
 interface Props {
   roomId: string;
@@ -113,6 +114,48 @@ export default function MessageInput(props: Props) {
     }
   };
 
+  const handlePaste = async (e: ClipboardEvent) => {
+    // Try standard clipboard API first
+    const items = e.clipboardData?.items;
+    if (items) {
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+          stageFile(file);
+          return;
+        }
+      }
+    }
+
+    // Fallback: try navigator.clipboard.read() for Wayland
+    try {
+      const clipItems = await navigator.clipboard.read();
+      for (const item of clipItems) {
+        for (const type of item.types) {
+          if (type.startsWith("image/")) {
+            e.preventDefault();
+            const blob = await item.getType(type);
+            const name = `pasted-image-${Date.now()}.${type.split("/")[1] || "png"}`;
+            const file = new File([blob], name, { type });
+            stageFile(file);
+            return;
+          }
+        }
+      }
+    } catch {}
+  };
+
+  const stageFile = (file: File) => {
+    let preview: string | null = null;
+    if (file.type.startsWith("image/")) {
+      preview = URL.createObjectURL(file);
+    }
+    const name = file.name || `file-${Date.now()}`;
+    setStagedFiles((prev) => [...prev, { file, preview, name }]);
+  };
+
   const handleInput = (e: InputEvent) => {
     const target = e.currentTarget as HTMLTextAreaElement;
     setText(target.value);
@@ -158,13 +201,14 @@ export default function MessageInput(props: Props) {
   };
 
   const [showPlusMenu, setShowPlusMenu] = createSignal(false);
+  const [showEmoji, setShowEmoji] = createSignal(false);
 
   const reply = () => replyingTo();
   const replyColor = () => nameColor(reply()?.sender || "");
   const hasTopBar = () => editingMessage() || (reply() && !editingMessage()) || stagedFiles().length > 0;
 
   return (
-    <div class="flex-shrink-0 px-4 pb-4">
+    <div class="flex-shrink-0" style={{ "border-top": "1px solid rgba(0,0,0,0.2)" }}>
       {/* Edit preview */}
       <Show when={editingMessage()}>
         <div
@@ -278,9 +322,9 @@ export default function MessageInput(props: Props) {
 
       {/* Input bar */}
       <div
-        class="flex items-end"
+        class="mx-4 my-2 flex h-[44px] items-center"
         style={{
-          background: "var(--bg-secondary)",
+          background: "var(--bg-tertiary)",
           "border-radius": hasTopBar() || sending() ? "0 0 8px 8px" : "8px",
         }}
       >
@@ -288,7 +332,7 @@ export default function MessageInput(props: Props) {
         <div class="relative flex-shrink-0">
           <button
             onClick={() => setShowPlusMenu(!showPlusMenu())}
-            class="rounded-l-lg p-3 transition-colors"
+            class="rounded-l-lg p-2.5 transition-colors"
             style={{ color: showPlusMenu() ? "var(--text-primary)" : "var(--text-muted)" }}
             onMouseOver={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
             onMouseOut={(e) => {
@@ -352,7 +396,10 @@ export default function MessageInput(props: Props) {
         />
 
         <textarea
-          ref={textareaRef}
+          ref={(el) => {
+            textareaRef = el;
+            el.addEventListener("paste", handlePaste as any);
+          }}
           value={text()}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
@@ -364,9 +411,43 @@ export default function MessageInput(props: Props) {
                 : `Message #${currentRoom()?.name || "room"}`
           }
           rows={1}
-          class="max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-2 py-3 text-sm outline-none"
+          class="max-h-[200px] min-h-[42px] flex-1 resize-none bg-transparent px-3 py-2.5 text-sm outline-none"
           style={{ color: "var(--text-primary)" }}
         />
+
+        {/* Right side icons */}
+        <div class="flex flex-shrink-0 items-center gap-0.5 pr-2">
+          {/* Emoji picker */}
+          <div class="relative">
+            <button
+              onClick={() => setShowEmoji(!showEmoji())}
+              class="rounded p-1.5 transition-colors"
+              style={{ color: showEmoji() ? "var(--text-primary)" : "var(--text-muted)" }}
+              onMouseOver={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
+              onMouseOut={(e) => { if (!showEmoji()) e.currentTarget.style.color = "var(--text-muted)"; }}
+              title="Emoji"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/>
+              </svg>
+            </button>
+            <Show when={showEmoji()}>
+              <div
+                class="absolute bottom-full right-0 mb-2 z-30"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <EmojiPicker
+                  onSelect={(emoji) => {
+                    setText(text() + emoji);
+                    setShowEmoji(false);
+                    textareaRef?.focus();
+                  }}
+                  onClose={() => setShowEmoji(false)}
+                />
+              </div>
+            </Show>
+          </div>
+        </div>
       </div>
     </div>
   );

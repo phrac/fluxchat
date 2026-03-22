@@ -40,6 +40,9 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - **User profile editing** — Edit display name, upload/change avatar and banner with hover overlays and inline editing.
 - **Invite users** — Invite users to rooms via modal dialog.
 - **URL previews** — Fetches OpenGraph metadata via Matrix preview API, renders as cards with image, title, description.
+- **Emoji picker** — Full emoji picker with categories (Smileys, Gestures, People, Animals, Food, Objects, Symbols, Flags), search, frequently used, and personalized quick reactions.
+- **Clipboard paste** — Paste images from clipboard (Ctrl+V) to stage them for upload, including Wayland support.
+- **Space home** — Space overview page with avatar, description, room list, invite button, and add room.
 - **Message search** — Client-side search across loaded messages.
 - **End-to-end encryption** — E2EE via matrix-sdk with SQLite crypto store. Supports device verification (SAS emoji matching).
 - **Cross-platform** — Targets Linux, macOS, and Android (via Tauri v2).
@@ -51,9 +54,7 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - Desktop notifications
 - Server-side message search
 - Theme customization
-- Emoji picker
 - Virtual scrolling for large rooms
-- Room topic editing
 - User status/custom status
 - Drag & drop file uploads
 

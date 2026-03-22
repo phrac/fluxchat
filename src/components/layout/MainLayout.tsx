@@ -1,6 +1,6 @@
 import { createSignal, onMount, Show } from "solid-js";
 import SpaceSidebar from "../sidebar/SpaceSidebar";
-import RoomList from "../sidebar/RoomList";
+import RoomList, { UserPanel } from "../sidebar/RoomList";
 import MessageArea from "../chat/MessageArea";
 import MemberList from "../members/MemberList";
 import PinnedSidebar from "../chat/PinnedSidebar";
@@ -27,8 +27,14 @@ export default function MainLayout() {
 
   return (
     <div class="flex h-screen">
-      <SpaceSidebar />
-      <RoomList />
+      {/* Left sidebar: spaces + rooms + user panel */}
+      <div class="flex flex-shrink-0 flex-col" style={{ background: "var(--bg-secondary)" }}>
+        <div class="flex flex-1 min-h-0">
+          <SpaceSidebar />
+          <RoomList />
+        </div>
+        <UserPanel />
+      </div>
       <MessageArea
         showMembers={showMembers()}
         onToggleMembers={() => setShowMembers((p) => !p)}
