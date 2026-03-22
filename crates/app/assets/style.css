@@ -1,0 +1,175 @@
+/* fluxchat — IRC meets modern */
+
+:root {
+  --bg-deep: #1a1b1e;
+  --bg-dark: #222327;
+  --bg-mid: #2a2c31;
+  --bg-light: #32353b;
+  --bg-hover: #3a3d44;
+
+  --text-bright: #e4e4e7;
+  --text-normal: #c8c9cd;
+  --text-muted: #8b8d93;
+  --text-dim: #5c5e66;
+
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --green: #22c55e;
+  --yellow: #eab308;
+  --red: #ef4444;
+  --purple: #a855f7;
+
+  --border: rgba(255, 255, 255, 0.06);
+
+  --font-body: "Inter", "Noto Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg-deep);
+  color: var(--text-normal);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  height: 100vh;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#main {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Allow text selection in messages */
+.msg-body {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* Nick colors */
+.nick-0 { color: #e74c3c; }
+.nick-1 { color: #e67e22; }
+.nick-2 { color: #f1c40f; }
+.nick-3 { color: #2ecc71; }
+.nick-4 { color: #1abc9c; }
+.nick-5 { color: #3498db; }
+.nick-6 { color: #9b59b6; }
+.nick-7 { color: #e91e63; }
+.nick-8 { color: #ed4245; }
+.nick-9 { color: #57f287; }
+.nick-10 { color: #5865f2; }
+.nick-11 { color: #eb459e; }
+.nick-12 { color: #fee75c; }
+.nick-13 { color: #71a6d2; }
+.nick-14 { color: #f47067; }
+
+/* Inline code */
+.msg-body code {
+  background: rgba(255, 255, 255, 0.06);
+  color: #dbb9ee;
+  border-radius: 3px;
+  font-size: inherit;
+  font-family: var(--font-mono);
+  border: 3px solid transparent;
+  outline: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.msg-body pre {
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.msg-body pre code {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-normal);
+}
+
+.msg-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.msg-body a:hover { text-decoration: underline; }
+
+.msg-body strong, .msg-body b { color: var(--text-bright); font-weight: 600; }
+.msg-body em { font-style: italic; }
+
+.msg-body blockquote {
+  border-left: 3px solid var(--text-dim);
+  padding-left: 8px;
+  margin: 4px 0;
+  color: var(--text-muted);
+}
+
+.msg-body img {
+  max-width: 200px;
+  max-height: 150px;
+  border-radius: 4px;
+  object-fit: contain;
+  cursor: pointer;
+}
+
+/* Status bar at bottom */
+.status-bar {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-dark);
+  border-top: 1px solid var(--border);
+  padding: 2px 12px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.status-bar .sep {
+  color: var(--text-dim);
+}
+
+/* Timestamp in messages — monospace */
+.msg-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  width: 48px;
+}
+
+/* Channel tabs */
+.channel-tab {
+  padding: 4px 12px;
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color 0.15s, border-color 0.15s;
+}
+.channel-tab:hover { color: var(--text-normal); }
+.channel-tab.active {
+  color: var(--text-bright);
+  border-bottom-color: var(--accent);
+}
