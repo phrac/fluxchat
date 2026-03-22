@@ -17,7 +17,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::new(
-                "info,matrix_sdk_crypto=error,matrix_sdk::http_client=warn"
+                "warn,fluxchat=info,matrix_sdk_crypto=error"
             )
         )
         .init();
