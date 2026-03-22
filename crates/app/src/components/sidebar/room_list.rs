@@ -1,8 +1,9 @@
 use dioxus::prelude::*;
 use std::sync::Arc;
-use fluxchat_core::AppState;
+use fluxchat_core::{AppState, RoomInfo};
 
 use crate::state::UiState;
+use crate::components::chat::message_area::nick_color_class;
 
 #[component]
 pub fn RoomList() -> Element {
@@ -12,17 +13,30 @@ pub fn RoomList() -> Element {
     let selected = ui.selected_room_id.read().clone();
     let selected_space = ui.selected_space_id.read().clone();
 
-    // Filter rooms by space
-    let filtered: Vec<_> = if selected_space.is_some() {
-        rooms.iter().filter(|r| r.space_name == selected_space.as_ref().and_then(|sid| {
-            ui.spaces.read().iter().find(|s| s.room_id == *sid).map(|s| s.name.clone())
-        })).cloned().collect()
+    // Filter rooms by space if one is selected
+    let filtered: Vec<_> = if let Some(ref sid) = selected_space {
+        let space_name = ui.spaces.read().iter()
+            .find(|s| s.room_id == *sid)
+            .map(|s| s.name.clone());
+        rooms.iter().filter(|r| r.space_name == space_name).cloned().collect()
     } else {
         rooms.clone()
     };
 
-    let channels: Vec<_> = filtered.iter().filter(|r| !r.is_direct).cloned().collect();
-    let dms: Vec<_> = filtered.iter().filter(|r| r.is_direct).cloned().collect();
+    // Group into sections
+    let mut ungrouped: Vec<RoomInfo> = Vec::new();
+    let mut by_space: std::collections::BTreeMap<String, Vec<RoomInfo>> = std::collections::BTreeMap::new();
+    let mut dms: Vec<RoomInfo> = Vec::new();
+
+    for room in filtered.iter() {
+        if room.is_direct {
+            dms.push(room.clone());
+        } else if let Some(ref sn) = room.space_name {
+            by_space.entry(sn.clone()).or_default().push(room.clone());
+        } else {
+            ungrouped.push(room.clone());
+        }
+    }
 
     let header = selected_space.as_ref()
         .and_then(|sid| ui.spaces.read().iter().find(|s| s.room_id == *sid).map(|s| s.name.clone()))
@@ -37,79 +51,39 @@ pub fn RoomList() -> Element {
 
             // Room list
             div { style: "flex: 1; overflow-y: auto; padding: 8px 6px;",
-                if !channels.is_empty() {
-                    div { style: "color: var(--text-dim); font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 4px 8px; letter-spacing: 0.5px;",
-                        "Channels"
-                    }
-                    for room in channels.iter() {
-                        { let room_id = room.room_id.clone();
-                          let is_selected = selected.as_ref() == Some(&room.room_id);
-                          let name = room.name.to_lowercase().replace(' ', "-");
-                          let has_unread = room.unread_count > 0;
-                          let bg = if is_selected { "var(--bg-light)" } else { "transparent" };
-                          let color = if is_selected || has_unread { "var(--text-bright)" } else { "var(--text-muted)" };
-                          let weight = if has_unread { "600" } else { "400" };
-                          let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 4px; background: {bg}; color: {color}; font-weight: {weight};");
-                          rsx! {
-                            div {
-                                style: "{style}",
-                                onclick: {
-                                    let core = core.clone();
-                                    let ui = ui.clone();
-                                    let rid = room_id.clone();
-                                    let rname = room.name.clone();
-                                    move |_| {
-                                        select_room(core.clone(), ui.clone(), rid.clone(), rname.clone());
-                                    }
-                                },
-                                span { style: "font-family: var(--font-mono); opacity: 0.5;",
-                                    if room.is_encrypted { "🔒" } else { "#" }
-                                }
-                                span { "{name}" }
-                                if room.unread_count > 0 {
-                                    span { style: "margin-left: auto; background: var(--red); color: white; font-size: 10px; padding: 0 5px; border-radius: 8px; font-weight: 700;",
-                                        "{room.unread_count}"
-                                    }
-                                }
-                            }
-                          }
-                        }
+                // Ungrouped channels
+                if !ungrouped.is_empty() {
+                    SectionHeader { label: "Channels".to_string() }
+                    for room in ungrouped.iter() {
+                        RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
                     }
                 }
 
-                if !dms.is_empty() {
-                    div { style: "color: var(--text-dim); font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 12px 8px 4px; letter-spacing: 0.5px;",
-                        "Direct Messages"
+                // Space-grouped channels
+                for (space_name, space_rooms) in by_space.iter() {
+                    SectionHeader { label: space_name.clone() }
+                    for room in space_rooms.iter() {
+                        RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
                     }
+                }
+
+                // DMs
+                if !dms.is_empty() {
+                    SectionHeader { label: "Direct Messages".to_string() }
                     for room in dms.iter() {
-                        { let room_id = room.room_id.clone();
-                          let is_selected = selected.as_ref() == Some(&room.room_id);
-                          let bg = if is_selected { "var(--bg-light)" } else { "transparent" };
-                          let color = if is_selected { "var(--text-bright)" } else { "var(--text-muted)" };
-                          let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; background: {bg}; color: {color};");
-                          rsx! {
-                            div {
-                                style: "{style}",
-                                onclick: {
-                                    let core = core.clone();
-                                    let ui = ui.clone();
-                                    let rid = room_id.clone();
-                                    let rname = room.name.clone();
-                                    move |_| {
-                                        select_room(core.clone(), ui.clone(), rid.clone(), rname.clone());
-                                    }
-                                },
-                                "{room.name}"
-                            }
-                          }
-                        }
+                        DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                    }
+                }
+
+                if filtered.is_empty() {
+                    div { style: "padding: 16px; text-align: center; color: var(--text-dim); font-size: 13px;",
+                        "No rooms"
                     }
                 }
             }
 
             // User panel
             div { style: "height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-top: 1px solid var(--border); flex-shrink: 0;",
-                // Status dot
                 div { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0;" }
                 div { style: "flex: 1; min-width: 0;",
                     div { style: "font-size: 13px; font-weight: 500; color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
@@ -124,10 +98,130 @@ pub fn RoomList() -> Element {
     }
 }
 
+#[component]
+fn SectionHeader(label: String) -> Element {
+    rsx! {
+        div { style: "color: var(--text-dim); font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 10px 8px 4px; letter-spacing: 0.5px;",
+            "{label}"
+        }
+    }
+}
+
+#[component]
+fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
+    let core = use_context::<Arc<AppState>>();
+    let mut ui = use_context::<UiState>();
+    let has_unread = room.unread_count > 0;
+    let name = room.name.to_lowercase().replace(' ', "-");
+    let room_id = room.room_id.clone();
+    let room_name = room.name.clone();
+
+    let bg = if is_selected { "var(--bg-light)" } else { "transparent" };
+    let color = if is_selected || has_unread { "var(--text-bright)" } else { "var(--text-muted)" };
+    let weight = if has_unread { "600" } else { "400" };
+    let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px; background: {bg}; color: {color}; font-weight: {weight};");
+
+    // Resolve room avatar
+    let avatar_src = use_resource({
+        let mxc = room.avatar_url.clone();
+        let core = core.clone();
+        move || {
+            let mxc = mxc.clone();
+            let core = core.clone();
+            async move {
+                if let Some(mxc) = mxc {
+                    let client = core.get_client().await.ok()?;
+                    fluxchat_core::media::get_media_url(&client, &core.db, &core.media_cache, &mxc).await.ok()
+                } else { None }
+            }
+        }
+    });
+    let has_avatar = avatar_src.read().as_ref().and_then(|v| v.as_ref()).is_some();
+
+    rsx! {
+        div {
+            style: "{style}",
+            onclick: move |_| {
+                select_room(core.clone(), ui.clone(), room_id.clone(), room_name.clone());
+            },
+            // Avatar or icon
+            if has_avatar {
+                img {
+                    src: "{avatar_src.read().as_ref().and_then(|v| v.as_ref()).unwrap()}",
+                    style: "width: 18px; height: 18px; border-radius: 4px; object-fit: cover; flex-shrink: 0;",
+                }
+            } else {
+                span { style: "font-family: var(--font-mono); opacity: 0.4; font-size: 12px; width: 18px; text-align: center; flex-shrink: 0;",
+                    if room.is_encrypted { "🔒" } else { "#" }
+                }
+            }
+            span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;",
+                "{name}"
+            }
+            if room.unread_count > 0 {
+                span { style: "background: var(--red); color: white; font-size: 9px; padding: 0 4px; border-radius: 6px; font-weight: 700; flex-shrink: 0;",
+                    "{room.unread_count}"
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
+    let core = use_context::<Arc<AppState>>();
+    let mut ui = use_context::<UiState>();
+    let room_id = room.room_id.clone();
+    let room_name = room.name.clone();
+    let nick_class = nick_color_class(&room.name);
+
+    let bg = if is_selected { "var(--bg-light)" } else { "transparent" };
+    let color = if is_selected { "var(--text-bright)" } else { "var(--text-muted)" };
+    let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px; background: {bg}; color: {color};");
+
+    // Resolve DM avatar
+    let avatar_src = use_resource({
+        let mxc = room.avatar_url.clone();
+        let core = core.clone();
+        move || {
+            let mxc = mxc.clone();
+            let core = core.clone();
+            async move {
+                if let Some(mxc) = mxc {
+                    let client = core.get_client().await.ok()?;
+                    fluxchat_core::media::get_media_url(&client, &core.db, &core.media_cache, &mxc).await.ok()
+                } else { None }
+            }
+        }
+    });
+    let has_avatar = avatar_src.read().as_ref().and_then(|v| v.as_ref()).is_some();
+    let initial = room.name.chars().next().unwrap_or('?').to_uppercase().to_string();
+
+    rsx! {
+        div {
+            style: "{style}",
+            onclick: move |_| {
+                select_room(core.clone(), ui.clone(), room_id.clone(), room_name.clone());
+            },
+            if has_avatar {
+                img {
+                    src: "{avatar_src.read().as_ref().and_then(|v| v.as_ref()).unwrap()}",
+                    style: "width: 18px; height: 18px; border-radius: 50%; object-fit: cover; flex-shrink: 0;",
+                }
+            } else {
+                div { class: "{nick_class}", style: "width: 18px; height: 18px; border-radius: 50%; background: var(--bg-light); display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; flex-shrink: 0; line-height: 1;",
+                    "{initial}"
+                }
+            }
+            "{room.name}"
+        }
+    }
+}
+
 fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name: String) {
     ui.selected_room_id.set(Some(room_id.clone()));
 
-    // Find space info for this room
+    // Find space info
     let space_name = ui.rooms.read().iter()
         .find(|r| r.room_id == room_id)
         .and_then(|r| r.space_name.clone());
@@ -135,7 +229,7 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
         ui.spaces.read().iter().find(|s| s.name == *sn).and_then(|s| s.avatar_url.clone())
     });
 
-    // Add to tabs if not already there
+    // Add to tabs
     let mut tabs = ui.open_tabs.write();
     if !tabs.iter().any(|(id, _, _, _)| id == &room_id) {
         if tabs.len() >= 8 { tabs.remove(0); }
@@ -150,6 +244,7 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
             let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
             if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, None).await {
                 let msgs: Vec<_> = paginated.messages.into_iter().rev().collect();
+
                 ui.messages_by_room.write().insert(room_id.clone(), msgs);
             }
             if let Ok(members) = fluxchat_core::messages::get_room_members(&client, &room_id).await {

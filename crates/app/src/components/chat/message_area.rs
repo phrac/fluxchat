@@ -14,6 +14,7 @@ pub fn nick_color_class(name: &str) -> String {
 
 #[component]
 pub fn MessageArea() -> Element {
+    let app_state = use_context::<Arc<AppState>>();
     let mut ui = use_context::<UiState>();
     let selected = ui.selected_room_id.read().clone();
     let tabs = ui.open_tabs.read().clone();
@@ -51,7 +52,7 @@ pub fn MessageArea() -> Element {
                   });
 
                   rsx! {
-                    div { id: "msg-scroll", style: "flex: 1; overflow-y: auto; padding: 8px 12px;",
+                    div { id: "msg-scroll", style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px;",
                         if messages.is_empty() {
                             div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim);",
                                 "No messages yet"
@@ -61,8 +62,10 @@ pub fn MessageArea() -> Element {
                             { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
                               if is_system {
                                 rsx! {
-                                    div { style: "padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono);",
-                                        span { style: "color: var(--green);", "--> " }
+                                    div { style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: baseline;",
+                                        span { class: "msg-time", "" }
+                                        span { style: "width: 110px; text-align: right; flex-shrink: 0;" }
+                                        span { style: "margin: 0 6px; flex-shrink: 0; color: var(--green);", "──" }
                                         "{msg.body}"
                                     }
                                 }
@@ -75,14 +78,23 @@ pub fn MessageArea() -> Element {
                                     let m = (secs % 3600) / 60;
                                     format!("{:02}:{:02}", h, m)
                                 };
+                                { let initial = msg.sender_name.chars().next().unwrap_or('?').to_uppercase().to_string();
                                 rsx! {
-                                    div { style: "display: flex; gap: 6px; padding: 1px 0; align-items: baseline;",
+                                    div { style: "display: flex; padding: 1px 0; align-items: center; overflow: hidden;",
                                         // Timestamp
-                                        span { class: "msg-time", "{time}" }
-                                        // Nick
-                                        span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px; flex-shrink: 0;",
-                                            "{msg.sender_name}"
+                                        span { class: "msg-time", style: "align-self: baseline;", "{time}" }
+                                        // Mini avatar (colored initial)
+                                        div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; background: var(--bg-light);",
+                                            "{initial}"
                                         }
+                                        // Nick — right-aligned in fixed-width column
+                                        span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: baseline;",
+                                            span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px;",
+                                                "{msg.sender_name}"
+                                            }
+                                        }
+                                        // IRC separator
+                                        span { style: "color: var(--text-dim); margin: 0 6px; flex-shrink: 0; font-family: var(--font-mono); align-self: baseline;", "│" }
                                         // Message body
                                         if let Some(ref html) = msg.formatted_body {
                                             span { class: "msg-body", dangerous_inner_html: "{html}" }
@@ -96,6 +108,7 @@ pub fn MessageArea() -> Element {
                                             }
                                         }
                                     }
+                                }
                                 }
                               }
                             }

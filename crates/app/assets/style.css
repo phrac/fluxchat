@@ -53,6 +53,14 @@ body {
 .msg-body {
   -webkit-user-select: text;
   user-select: text;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#main {
+  overflow: hidden;
 }
 
 /* Scrollbar */
@@ -95,9 +103,11 @@ body {
   padding: 8px 12px;
   border-radius: 4px;
   overflow-x: auto;
+  overflow-y: hidden;
   margin: 4px 0;
   font-family: var(--font-mono);
   font-size: 13px;
+  max-width: 100%;
 }
 
 .msg-body pre code {

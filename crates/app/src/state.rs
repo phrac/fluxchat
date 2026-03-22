@@ -35,6 +35,10 @@ pub struct UiState {
 
     pub loading: Signal<bool>,
 
+    // Resolved avatar data URIs — shared between render and background tasks
+    pub avatar_cache: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pub avatar_version: Signal<u32>, // bump to trigger re-render
+
     // Channel tabs — recently visited rooms
     // (room_id, room_name, space_name, space_avatar_mxc)
     pub open_tabs: Signal<Vec<(String, String, Option<String>, Option<String>)>>,
@@ -54,6 +58,8 @@ impl UiState {
             members_by_room: Signal::new(HashMap::new()),
             typing_by_room: Signal::new(HashMap::new()),
             loading: Signal::new(true),
+            avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            avatar_version: Signal::new(0),
             open_tabs: Signal::new(Vec::new()),
         }
     }
