@@ -181,7 +181,11 @@ function ImageMessage(props: { mxc: string; alt: string; eventId: string; roomId
 
 function Avatar(props: { mxcUrl: string | null; name: string; color: string; size?: string }) {
   const sz = props.size || "h-10 w-10";
-  const textSz = props.size === "h-8 w-8" ? "text-xs" : "text-sm";
+  const textSz = props.size === "h-5 w-5" || props.size === "h-4 w-4" || props.size === "h-6 w-6"
+    ? "text-[9px]"
+    : props.size === "h-8 w-8"
+      ? "text-xs"
+      : "text-sm";
   const [resolved, setResolved] = createSignal<string | null>(null);
 
   createEffect(() => {
@@ -198,7 +202,7 @@ function Avatar(props: { mxcUrl: string | null; name: string; color: string; siz
       when={resolved()}
       fallback={
         <div
-          class={`flex ${sz} flex-shrink-0 items-center justify-center rounded-full ${textSz} font-medium text-white`}
+          class={`flex ${sz} flex-shrink-0 items-center justify-center rounded-full ${textSz} font-medium leading-none text-white`}
           style={{ background: props.color }}
         >
           {avatarInitials(props.name)}

@@ -102,9 +102,10 @@ export async function createRoom(
   topic: string | null,
   isPublic: boolean,
   isEncrypted: boolean,
-  inviteUserIds: string[]
+  inviteUserIds: string[],
+  spaceId: string | null = null
 ): Promise<string> {
-  return invoke("create_room", { name, topic, isPublic, isEncrypted, inviteUserIds });
+  return invoke("create_room", { name, topic, isPublic, isEncrypted, inviteUserIds, spaceId });
 }
 
 export async function setRoomName(roomId: string, name: string): Promise<void> {

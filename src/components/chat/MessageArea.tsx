@@ -1,5 +1,6 @@
 import { Show, createMemo, createSignal } from "solid-js";
-import { selectedRoomId, rooms } from "../../stores/rooms";
+import { selectedRoomId, selectedSpaceId, rooms } from "../../stores/rooms";
+import SpaceHome from "./SpaceHome";
 import { activeThreadId, setActiveThreadId, setShowRoomSettings } from "../layout/MainLayout";
 import { typingByRoom, messagesByRoom } from "../../stores/messages";
 import { inviteUser } from "../../lib/tauri";
@@ -314,16 +315,22 @@ export default function MessageArea(props: Props) {
       </div>
 
       <div
-        class="flex flex-1 items-center justify-center"
-        style={{
-          color: "var(--text-muted)",
-          display: selectedRoomId() ? "none" : "flex",
-        }}
+        style={{ display: selectedRoomId() ? "none" : "flex" }}
+        class="flex-1"
       >
-        <div class="text-center">
-          <p class="mb-2 text-4xl">💬</p>
-          <p class="text-lg">Select a room to start chatting</p>
-        </div>
+        <Show
+          when={selectedSpaceId()}
+          fallback={
+            <div class="flex h-full items-center justify-center" style={{ color: "var(--text-muted)" }}>
+              <div class="text-center">
+                <p class="mb-2 text-4xl">💬</p>
+                <p class="text-lg">Select a room to start chatting</p>
+              </div>
+            </div>
+          }
+        >
+          <SpaceHome />
+        </Show>
       </div>
     </div>
   );

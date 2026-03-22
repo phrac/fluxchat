@@ -31,6 +31,7 @@ export async function loadSpaceRooms(spaceId: string) {
 
 export function selectSpace(spaceId: string | null) {
   setSelectedSpaceId(spaceId);
+  setSelectedRoomId(null); // Clear room selection to show space home
   // Fire and forget — don't block UI
   if (spaceId) {
     loadSpaceRooms(spaceId).catch(() => {});

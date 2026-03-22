@@ -23,6 +23,8 @@ body {
   font-family: "gg sans", "Noto Sans", Helvetica, Arial, sans-serif;
   overflow: hidden;
   height: 100vh;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 #root {
@@ -58,6 +60,8 @@ body {
 .msg-content {
   word-wrap: break-word;
   overflow-wrap: break-word;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .msg-content code {
   background: rgba(255, 255, 255, 0.06);

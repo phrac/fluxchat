@@ -1,6 +1,6 @@
 import { createSignal, Show } from "solid-js";
 import { createRoom } from "../../lib/tauri";
-import { loadRooms } from "../../stores/rooms";
+import { loadRooms, selectedSpaceId } from "../../stores/rooms";
 
 interface Props {
   onClose: () => void;
@@ -30,7 +30,8 @@ export default function CreateRoomModal(props: Props) {
         topic().trim() || null,
         isPublic(),
         isEncrypted(),
-        inviteIds
+        inviteIds,
+        selectedSpaceId()
       );
       await loadRooms();
       props.onClose();

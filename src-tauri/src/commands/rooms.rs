@@ -166,6 +166,7 @@ pub async fn create_room(
     is_public: bool,
     is_encrypted: bool,
     invite_user_ids: Vec<String>,
+    space_id: Option<String>,
 ) -> Result<String, AppError> {
     let client = get_client(&state).await?;
 
@@ -193,6 +194,23 @@ pub async fn create_room(
         .create_room(request)
         .await
         .map_err(|e| AppError::Other(format!("Failed to create room: {e}")))?;
+
+    // Add room to space if specified
+    if let Some(sid) = space_id {
+        if let Ok(space_room_id) = matrix_sdk::ruma::RoomId::parse(&sid) {
+            if let Some(space) = client.get_room(&space_room_id) {
+                let mut content = SpaceChildEventContent::new(Vec::new());
+                if let Some(host) = client.homeserver().host_str() {
+                    if let Ok(server) = matrix_sdk::ruma::ServerName::parse(host) {
+                        content.via = vec![server.to_owned()];
+                    }
+                }
+                let _ = space
+                    .send_state_event_for_key(room.room_id(), content)
+                    .await;
+            }
+        }
+    }
 
     // Enable encryption after creation if requested
     if is_encrypted {
