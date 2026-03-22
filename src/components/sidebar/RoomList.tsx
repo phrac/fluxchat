@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, createEffect } from "solid-js";
+import { For, Show, createMemo, createSignal, createEffect, onMount } from "solid-js";
 import type { RoomInfo } from "../../lib/types";
 import {
   rooms,
@@ -8,8 +8,10 @@ import {
   selectedSpaceId,
   spaces,
 } from "../../stores/rooms";
+import { userId } from "../../stores/auth";
 import { Avatar, nameColor } from "../chat/MessageBubble";
-import { getMediaUrl } from "../../lib/tauri";
+import { getMediaUrl, getProfile } from "../../lib/tauri";
+import { setShowProfile } from "../layout/MainLayout";
 
 // Track which room is "clicked" separately from selectedRoomId
 // so we can highlight BEFORE the heavy render happens
@@ -162,6 +164,82 @@ export default function RoomList() {
           </p>
         </Show>
       </div>
+
+      {/* User panel — Discord style */}
+      <UserPanel />
+    </div>
+  );
+}
+
+function UserPanel() {
+  const [avatarSrc, setAvatarSrc] = createSignal<string | null>(null);
+  const [name, setName] = createSignal("");
+
+  onMount(async () => {
+    try {
+      const profile = await getProfile();
+      setName(profile.display_name || profile.user_id.replace(/^@/, "").split(":")[0]);
+      if (profile.avatar_url) {
+        const src = await getMediaUrl(profile.avatar_url).catch(() => null);
+        setAvatarSrc(src);
+      }
+    } catch {}
+  });
+
+  const userShort = () => {
+    const id = userId();
+    return id ? id.split(":")[0].replace(/^@/, "") : "";
+  };
+
+  return (
+    <div
+      class="flex flex-shrink-0 items-center gap-2 px-2 py-2"
+      style={{ background: "var(--bg-tertiary)" }}
+    >
+      {/* Avatar */}
+      <div class="relative flex-shrink-0">
+        <Show
+          when={avatarSrc()}
+          fallback={
+            <div
+              class="flex h-8 w-8 items-center justify-center rounded-full text-xs font-medium text-white"
+              style={{ background: nameColor(userId()) }}
+            >
+              {(name() || userShort())[0]?.toUpperCase() || "?"}
+            </div>
+          }
+        >
+          <img src={avatarSrc()!} class="h-8 w-8 rounded-full object-cover" />
+        </Show>
+        <div
+          class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2"
+          style={{ background: "var(--green-online)", "border-color": "var(--bg-tertiary)" }}
+        />
+      </div>
+
+      {/* Name + status */}
+      <div class="min-w-0 flex-1">
+        <div class="truncate text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+          {name() || userShort()}
+        </div>
+        <div class="truncate text-[11px]" style={{ color: "var(--green-online)" }}>
+          Online
+        </div>
+      </div>
+
+      {/* Settings gear */}
+      <button
+        onClick={() => setShowProfile(true)}
+        class="flex-shrink-0 rounded p-1.5 transition-colors"
+        style={{ color: "var(--text-muted)" }}
+        onMouseOver={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
+        onMouseOut={(e) => (e.currentTarget.style.color = "var(--text-muted)")}
+        title="User Settings"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+        </svg>
+      </button>
     </div>
   );
 }

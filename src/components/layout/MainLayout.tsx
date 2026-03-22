@@ -7,13 +7,15 @@ import PinnedSidebar from "../chat/PinnedSidebar";
 import ThreadPanel from "../chat/ThreadPanel";
 import CreateRoomModal from "../modals/CreateRoomModal";
 import RoomSettingsModal from "../modals/RoomSettingsModal";
+import ProfileModal from "../modals/ProfileModal";
 import { loadRooms, selectedRoomId } from "../../stores/rooms";
 
 // Export shared state
 const [activeThreadId, setActiveThreadId] = createSignal<string | null>(null);
 const [showCreateRoom, setShowCreateRoom] = createSignal(false);
 const [showRoomSettings, setShowRoomSettings] = createSignal(false);
-export { activeThreadId, setActiveThreadId, showCreateRoom, setShowCreateRoom, showRoomSettings, setShowRoomSettings };
+const [showProfile, setShowProfile] = createSignal(false);
+export { activeThreadId, setActiveThreadId, showCreateRoom, setShowCreateRoom, showRoomSettings, setShowRoomSettings, showProfile, setShowProfile };
 
 export default function MainLayout() {
   const [showMembers, setShowMembers] = createSignal(true);
@@ -55,6 +57,10 @@ export default function MainLayout() {
 
       <Show when={showRoomSettings()}>
         <RoomSettingsModal onClose={() => setShowRoomSettings(false)} />
+      </Show>
+
+      <Show when={showProfile()}>
+        <ProfileModal onClose={() => setShowProfile(false)} />
       </Show>
     </div>
   );

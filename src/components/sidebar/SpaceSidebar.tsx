@@ -156,6 +156,7 @@ export default function SpaceSidebar() {
           </svg>
         </button>
       </div>
+
     </div>
   );
 }

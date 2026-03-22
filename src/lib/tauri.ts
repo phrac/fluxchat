@@ -60,6 +60,43 @@ export async function leaveRoom(roomId: string): Promise<void> {
   return invoke("leave_room", { roomId });
 }
 
+export interface UserProfile {
+  user_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  banner_url: string | null;
+}
+
+export async function getProfile(): Promise<UserProfile> {
+  return invoke("get_profile");
+}
+
+export async function setDisplayName(name: string): Promise<void> {
+  return invoke("set_display_name", { name });
+}
+
+export async function uploadAvatar(
+  mimeType: string,
+  data: number[]
+): Promise<string> {
+  return invoke("upload_avatar", { mimeType, data });
+}
+
+export async function removeAvatar(): Promise<void> {
+  return invoke("remove_avatar");
+}
+
+export async function uploadBanner(
+  mimeType: string,
+  data: number[]
+): Promise<string> {
+  return invoke("upload_banner", { mimeType, data });
+}
+
+export async function removeBanner(): Promise<void> {
+  return invoke("remove_banner");
+}
+
 export async function createRoom(
   name: string,
   topic: string | null,
