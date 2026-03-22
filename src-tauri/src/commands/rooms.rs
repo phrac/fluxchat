@@ -1,4 +1,8 @@
-use matrix_sdk::ruma::{events::space::child::SpaceChildEventContent, RoomOrAliasId};
+use matrix_sdk::ruma::{
+    api::client::room::create_room::v3::{Request as CreateRoomRequest, RoomPreset},
+    events::space::child::SpaceChildEventContent,
+    RoomOrAliasId,
+};
 use std::collections::HashMap;
 use tauri::State;
 
@@ -151,5 +155,94 @@ pub async fn invite_user(
         .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
 
     room.invite_user_by_id(&user_id).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_room(
+    state: State<'_, AppState>,
+    name: String,
+    topic: Option<String>,
+    is_public: bool,
+    is_encrypted: bool,
+    invite_user_ids: Vec<String>,
+) -> Result<String, AppError> {
+    let client = get_client(&state).await?;
+
+    let mut request = CreateRoomRequest::new();
+    request.name = Some(name);
+    request.topic = topic;
+    request.preset = Some(if is_public {
+        RoomPreset::PublicChat
+    } else {
+        RoomPreset::PrivateChat
+    });
+
+    if is_public {
+        request.visibility = matrix_sdk::ruma::api::client::room::Visibility::Public;
+    }
+
+    // Parse invite user IDs
+    for uid in &invite_user_ids {
+        if let Ok(user_id) = matrix_sdk::ruma::UserId::parse(uid) {
+            request.invite.push(user_id);
+        }
+    }
+
+    let room = client
+        .create_room(request)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to create room: {e}")))?;
+
+    // Enable encryption after creation if requested
+    if is_encrypted {
+        use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
+        let _ = room.send_state_event(RoomEncryptionEventContent::with_recommended_defaults()).await;
+    }
+
+    Ok(room.room_id().to_string())
+}
+
+#[tauri::command]
+pub async fn set_room_name(
+    state: State<'_, AppState>,
+    room_id: String,
+    name: String,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    room.set_name(name)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to set name: {e}")))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_room_topic(
+    state: State<'_, AppState>,
+    room_id: String,
+    topic: String,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let room = client
+        .get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    room.set_room_topic(&topic)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to set topic: {e}")))?;
+
     Ok(())
 }

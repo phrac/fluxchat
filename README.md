@@ -6,7 +6,7 @@ A cross-platform Matrix chat client with a Discord-style UI, built with Tauri v2
 
 ## Screenshot
 
-*Coming soon*
+![fluxchat screenshot](assets/screenshot.png)
 
 ## Status
 
@@ -34,7 +34,10 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - **Image messages** — Displays image attachments inline with click-to-expand.
 - **Custom emotes** — Resolves `mxc://` URLs in formatted HTML for inline custom emoji.
 - **Member list** — Toggleable right sidebar showing room members grouped by role (Admin/Moderator/Member) with presence indicators and homeserver names.
+- **Room creation** — Create rooms with name, topic, encryption toggle, public/private, and invite users.
+- **Room settings** — Edit room name, topic, and leave room via settings modal (click room name in header).
 - **Invite users** — Invite users to rooms via modal dialog.
+- **URL previews** — Fetches OpenGraph metadata via Matrix preview API, renders as cards with image, title, description.
 - **Message search** — Client-side search across loaded messages.
 - **End-to-end encryption** — E2EE via matrix-sdk with SQLite crypto store. Supports device verification (SAS emoji matching).
 - **Cross-platform** — Targets Linux, macOS, and Android (via Tauri v2).
@@ -42,7 +45,6 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 ### Not Yet Implemented
 
 - Polls
-- Room creation and settings
 - Voice/video calls
 - Desktop notifications
 - User profile editing

@@ -60,6 +60,24 @@ export async function leaveRoom(roomId: string): Promise<void> {
   return invoke("leave_room", { roomId });
 }
 
+export async function createRoom(
+  name: string,
+  topic: string | null,
+  isPublic: boolean,
+  isEncrypted: boolean,
+  inviteUserIds: string[]
+): Promise<string> {
+  return invoke("create_room", { name, topic, isPublic, isEncrypted, inviteUserIds });
+}
+
+export async function setRoomName(roomId: string, name: string): Promise<void> {
+  return invoke("set_room_name", { roomId, name });
+}
+
+export async function setRoomTopic(roomId: string, topic: string): Promise<void> {
+  return invoke("set_room_topic", { roomId, topic });
+}
+
 export async function inviteUser(
   roomId: string,
   userId: string

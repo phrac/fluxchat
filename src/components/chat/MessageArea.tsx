@@ -1,6 +1,6 @@
 import { Show, createMemo, createSignal } from "solid-js";
 import { selectedRoomId, rooms } from "../../stores/rooms";
-import { activeThreadId, setActiveThreadId } from "../layout/MainLayout";
+import { activeThreadId, setActiveThreadId, setShowRoomSettings } from "../layout/MainLayout";
 import { typingByRoom, messagesByRoom } from "../../stores/messages";
 import { inviteUser } from "../../lib/tauri";
 import MessageList from "./MessageList";
@@ -103,8 +103,10 @@ export default function MessageArea(props: Props) {
               #
             </span>
             <span
-              class="font-semibold"
+              class="cursor-pointer font-semibold hover:underline"
               style={{ color: "var(--text-primary)" }}
+              onClick={() => setShowRoomSettings(true)}
+              title="Room Settings"
             >
               {currentRoom()!.name}
             </span>

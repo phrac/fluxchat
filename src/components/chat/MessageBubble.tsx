@@ -419,6 +419,19 @@ export default function MessageBubble(props: Props) {
   const isPending = () => props.message.event_id.startsWith("~local-");
   const [showMenu, setShowMenu] = createSignal(false);
 
+  // Close menu on any click outside
+  createEffect(() => {
+    if (showMenu()) {
+      const closeMenu = (e: MouseEvent) => {
+        setShowMenu(false);
+      };
+      // Delay to avoid closing immediately from the click that opened it
+      setTimeout(() => {
+        document.addEventListener("click", closeMenu, { once: true });
+      }, 0);
+    }
+  });
+
   const handleReply = () => setReplyingTo(props.message);
 
   const handleReact = (emoji: string) => {
@@ -491,13 +504,12 @@ export default function MessageBubble(props: Props) {
         if (time) time.style.display = "inline";
       }}
       onMouseOut={(e) => {
-        if (showMenu()) return; // Keep visible while menu is open
+        if (showMenu()) return;
         e.currentTarget.style.background = "transparent";
         const bar = e.currentTarget.querySelector("[data-action-bar]") as HTMLElement;
         if (bar) bar.style.display = "none";
         const time = e.currentTarget.querySelector("[data-hover-time]") as HTMLElement;
         if (time) time.style.display = "none";
-        setShowMenu(false);
       }}
     >
       {/* Action bar on hover */}

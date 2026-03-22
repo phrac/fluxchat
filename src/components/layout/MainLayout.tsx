@@ -5,11 +5,15 @@ import MessageArea from "../chat/MessageArea";
 import MemberList from "../members/MemberList";
 import PinnedSidebar from "../chat/PinnedSidebar";
 import ThreadPanel from "../chat/ThreadPanel";
+import CreateRoomModal from "../modals/CreateRoomModal";
+import RoomSettingsModal from "../modals/RoomSettingsModal";
 import { loadRooms, selectedRoomId } from "../../stores/rooms";
 
-// Export thread state so MessageBubble can open threads
+// Export shared state
 const [activeThreadId, setActiveThreadId] = createSignal<string | null>(null);
-export { activeThreadId, setActiveThreadId };
+const [showCreateRoom, setShowCreateRoom] = createSignal(false);
+const [showRoomSettings, setShowRoomSettings] = createSignal(false);
+export { activeThreadId, setActiveThreadId, showCreateRoom, setShowCreateRoom, showRoomSettings, setShowRoomSettings };
 
 export default function MainLayout() {
   const [showMembers, setShowMembers] = createSignal(true);
@@ -30,7 +34,6 @@ export default function MainLayout() {
         onTogglePins={() => setShowPins((p) => !p)}
       />
 
-      {/* Thread panel */}
       <Show when={activeThreadId()}>
         <ThreadPanel
           threadRootId={activeThreadId()!}
@@ -42,9 +45,16 @@ export default function MainLayout() {
         <MemberList />
       </Show>
 
-      {/* Pinned messages modal overlay */}
       <Show when={showPins()}>
         <PinnedSidebar onClose={() => setShowPins(false)} />
+      </Show>
+
+      <Show when={showCreateRoom()}>
+        <CreateRoomModal onClose={() => setShowCreateRoom(false)} />
+      </Show>
+
+      <Show when={showRoomSettings()}>
+        <RoomSettingsModal onClose={() => setShowRoomSettings(false)} />
       </Show>
     </div>
   );

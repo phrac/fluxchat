@@ -1,5 +1,6 @@
 import { For, Show, createSignal, createEffect } from "solid-js";
 import { spaces, selectedSpaceId, selectSpace } from "../../stores/rooms";
+import { setShowCreateRoom } from "../layout/MainLayout";
 import { getMediaUrl } from "../../lib/tauri";
 
 const mediaCache = new Map<string, string>();
@@ -125,6 +126,36 @@ export default function SpaceSidebar() {
           />
         )}
       </For>
+
+      {/* Separator */}
+      <div
+        class="mx-auto mb-2 mt-1 h-[2px] w-8 rounded"
+        style={{ background: "var(--border-subtle)" }}
+      />
+
+      {/* Create room button */}
+      <div class="group relative mb-2 flex justify-center">
+        <button
+          onClick={() => setShowCreateRoom(true)}
+          class="flex h-12 w-12 items-center justify-center rounded-full transition-all"
+          style={{ background: "var(--bg-primary)", color: "var(--green-online)" }}
+          onMouseOver={(e) => {
+            e.currentTarget.style.borderRadius = "16px";
+            e.currentTarget.style.background = "var(--green-online)";
+            e.currentTarget.style.color = "white";
+          }}
+          onMouseOut={(e) => {
+            e.currentTarget.style.borderRadius = "9999px";
+            e.currentTarget.style.background = "var(--bg-primary)";
+            e.currentTarget.style.color = "var(--green-online)";
+          }}
+          title="Create Room"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }
