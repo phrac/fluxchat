@@ -131,6 +131,20 @@ export async function uploadFile(
   return invoke("upload_file", { roomId, filename, mimeType, data });
 }
 
+export async function sendReadReceipt(
+  roomId: string,
+  eventId: string
+): Promise<void> {
+  return invoke("send_read_receipt", { roomId, eventId });
+}
+
+export async function getThreadMessages(
+  roomId: string,
+  threadRootId: string
+): Promise<import("./types").MessageInfo[]> {
+  return invoke("get_thread_messages", { roomId, threadRootId });
+}
+
 export async function sendTyping(
   roomId: string,
   typing: boolean

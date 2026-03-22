@@ -4,7 +4,12 @@ import RoomList from "../sidebar/RoomList";
 import MessageArea from "../chat/MessageArea";
 import MemberList from "../members/MemberList";
 import PinnedSidebar from "../chat/PinnedSidebar";
+import ThreadPanel from "../chat/ThreadPanel";
 import { loadRooms, selectedRoomId } from "../../stores/rooms";
+
+// Export thread state so MessageBubble can open threads
+const [activeThreadId, setActiveThreadId] = createSignal<string | null>(null);
+export { activeThreadId, setActiveThreadId };
 
 export default function MainLayout() {
   const [showMembers, setShowMembers] = createSignal(true);
@@ -24,6 +29,15 @@ export default function MainLayout() {
         showPins={showPins()}
         onTogglePins={() => setShowPins((p) => !p)}
       />
+
+      {/* Thread panel */}
+      <Show when={activeThreadId()}>
+        <ThreadPanel
+          threadRootId={activeThreadId()!}
+          onClose={() => setActiveThreadId(null)}
+        />
+      </Show>
+
       <Show when={showMembers() && selectedRoomId()}>
         <MemberList />
       </Show>

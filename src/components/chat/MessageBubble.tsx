@@ -4,6 +4,7 @@ import type { MessageInfo } from "../../lib/types";
 import { getMediaUrl, getEventMedia } from "../../lib/tauri";
 import { setReplyingTo, setEditingMessage, insertSystemMessage } from "../../stores/messages";
 import { userId } from "../../stores/auth";
+import { setActiveThreadId } from "../layout/MainLayout";
 import { sendReaction, deleteMessage, pinMessage } from "../../lib/tauri";
 import { selectedRoomId } from "../../stores/rooms";
 
@@ -373,6 +374,11 @@ export default function MessageBubble(props: Props) {
     setShowMenu(false);
   };
 
+  const handleThread = () => {
+    setActiveThreadId(props.message.event_id);
+    setShowMenu(false);
+  };
+
   const handleShowSource = () => {
     const source = JSON.stringify(props.message, null, 2);
     navigator.clipboard.writeText(source).catch(() => {});
@@ -455,6 +461,11 @@ export default function MessageBubble(props: Props) {
                 class="absolute right-0 top-full mt-1 w-48 rounded-md py-1 shadow-xl z-20"
                 style={{ background: "var(--bg-tertiary)", border: "1px solid rgba(0,0,0,0.3)" }}
               >
+                <MenuButton
+                  label="Reply in Thread"
+                  icon="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"
+                  onClick={handleThread}
+                />
                 <Show when={isOwnMessage()}>
                   <MenuButton
                     label="Edit Message"

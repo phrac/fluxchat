@@ -1,5 +1,6 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
 import { messagesByRoom, loadMessages, loadOlderMessages, loadMembers } from "../../stores/messages";
+import { sendReadReceipt } from "../../lib/tauri";
 import MessageBubble from "./MessageBubble";
 
 interface Props {
@@ -71,7 +72,8 @@ export default function MessageList(props: Props) {
 
           // Auto-scroll to bottom when new messages arrive in this room
           createEffect(() => {
-            const len = messages().length;
+            const msgs = messages();
+            const len = msgs.length;
             if (len > 0 && isActive()) {
               const el = scrollRefs[roomId];
               if (el) {
@@ -81,6 +83,11 @@ export default function MessageList(props: Props) {
                   requestAnimationFrame(() => {
                     el.scrollTop = el.scrollHeight;
                   });
+                  // Send read receipt for the latest message
+                  const lastMsg = msgs[len - 1];
+                  if (lastMsg && !lastMsg.event_id.startsWith("~")) {
+                    sendReadReceipt(roomId, lastMsg.event_id).catch(() => {});
+                  }
                 }
               }
             }

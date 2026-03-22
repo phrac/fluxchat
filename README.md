@@ -22,6 +22,8 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - **File uploads** — Upload images, videos, audio, documents via the + menu. Files are staged with thumbnail previews before sending, supporting multiple files and optional text.
 - **Typing indicators** — See when others are typing, send typing notifications while composing.
 - **Replies** — Reply to messages with context preview. Reply threads shown inline with colored quote bars.
+- **Threads** — Reply in Thread from the context menu opens a dedicated thread panel sidebar with full message rendering and inline reply input.
+- **Read receipts** — Automatically sends read receipts and fully-read markers when viewing messages.
 - **Reactions** — Quick emoji reactions (😂🔥❤️👍😮😢) via hover action bar. Reaction badges shown below messages with counts.
 - **Message editing** — Edit your own messages via context menu with inline edit preview bar.
 - **Message actions** — Hover action bar with personalized quick reactions, reply, and a context menu (edit, pin, copy, show source, delete).
@@ -39,9 +41,7 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 
 ### Not Yet Implemented
 
-- Thread view (full thread panel)
 - Polls
-- Read receipts
 - Room creation and settings
 - Voice/video calls
 - Desktop notifications
