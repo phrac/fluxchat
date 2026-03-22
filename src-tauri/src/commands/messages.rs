@@ -101,7 +101,71 @@ pub async fn get_room_messages(
             Err(_) => continue,
         };
 
-        use matrix_sdk::ruma::events::AnySyncTimelineEvent;
+        use matrix_sdk::ruma::events::{AnySyncTimelineEvent, AnySyncStateEvent, SyncStateEvent};
+        use matrix_sdk::ruma::events::room::member::MembershipState;
+
+        // Handle state events (membership changes)
+        if let AnySyncTimelineEvent::State(AnySyncStateEvent::RoomMember(
+            SyncStateEvent::Original(member_ev),
+        )) = &deserialized
+        {
+            let action = match member_ev.content.membership {
+                MembershipState::Join => {
+                    if member_ev.prev_content().map(|p| &p.membership) == Some(&MembershipState::Invite) {
+                        "accepted the invitation"
+                    } else {
+                        "joined the room"
+                    }
+                }
+                MembershipState::Leave => {
+                    if member_ev.state_key.as_str() == member_ev.sender.as_str() {
+                        "left the room"
+                    } else {
+                        "was removed from the room"
+                    }
+                }
+                MembershipState::Invite => "was invited",
+                MembershipState::Ban => "was banned",
+                _ => "",
+            };
+
+            if !action.is_empty() {
+                let target_name = member_ev
+                    .content
+                    .displayname
+                    .as_deref()
+                    .unwrap_or(member_ev.state_key.as_str());
+
+                let body = if member_ev.state_key.as_str() != member_ev.sender.as_str()
+                    && !action.starts_with("accepted")
+                    && !action.starts_with("joined")
+                {
+                    let sender_display = member_cache
+                        .get(&member_ev.sender.to_string())
+                        .map(|(n, _)| n.clone())
+                        .unwrap_or_else(|| member_ev.sender.to_string());
+                    format!("{} {} {}", sender_display, action.trim_start_matches("was "), target_name)
+                } else {
+                    format!("{} {}", target_name, action)
+                };
+
+                messages.push(MessageInfo {
+                    event_id: format!("~state-{}", member_ev.event_id),
+                    sender: String::new(),
+                    sender_name: String::new(),
+                    body,
+                    formatted_body: None,
+                    image_mxc: None,
+                    reactions: Vec::new(),
+                    reply_to_id: None,
+                    reply_to_sender: None,
+                    reply_to_body: None,
+                    timestamp: member_ev.origin_server_ts.as_secs().into(),
+                    avatar_url: None,
+                });
+            }
+        }
+
         if let AnySyncTimelineEvent::MessageLike(
             matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(
                 matrix_sdk::ruma::events::SyncMessageLikeEvent::Original(msg),

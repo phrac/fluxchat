@@ -1,5 +1,5 @@
 import { createSignal, Show, For, onCleanup, createEffect } from "solid-js";
-import { sendMessage, replyingTo, setReplyingTo, editingMessage, setEditingMessage, insertSystemMessage } from "../../stores/messages";
+import { sendMessage, replyingTo, setReplyingTo, editingMessage, setEditingMessage, insertSystemMessage, messagesByRoom } from "../../stores/messages";
 import { rooms, selectedRoomId } from "../../stores/rooms";
 import { sendTyping, uploadFile, editMessage } from "../../lib/tauri";
 import { nameColor } from "./MessageBubble";
@@ -322,7 +322,17 @@ export default function MessageInput(props: Props) {
               <PlusMenuItem
                 label="Create Thread"
                 icon="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"
-                onClick={() => { setShowPlusMenu(false); insertSystemMessage(props.roomId, "Threads are not yet supported"); }}
+                onClick={() => {
+                  setShowPlusMenu(false);
+                  // Start a thread on the last message in the room
+                  const msgs = messagesByRoom[props.roomId] || [];
+                  const lastReal = [...msgs].reverse().find(m => !m.event_id.startsWith("~"));
+                  if (lastReal) {
+                    import("../layout/MainLayout").then(mod => mod.setActiveThreadId(lastReal.event_id));
+                  } else {
+                    insertSystemMessage(props.roomId, "No messages to create a thread from. Send a message first.");
+                  }
+                }}
               />
               <PlusMenuItem
                 label="Create Poll"

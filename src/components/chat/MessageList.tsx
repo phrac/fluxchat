@@ -7,49 +7,60 @@ interface Props {
   roomId: string;
 }
 
-// Keep last N rooms in DOM, evict oldest
 const MAX_CACHED_ROOMS = 5;
 const roomOrder: string[] = [];
 
+// Track scroll-to-bottom state per room
+const roomAtBottom: Record<string, boolean> = {};
+// Track last seen message count per room to detect new messages
+const roomLastCount: Record<string, number> = {};
+
 export default function MessageList(props: Props) {
   let scrollRefs: Record<string, HTMLDivElement> = {};
-  let isAtBottom = true;
   let loadingOlder = false;
 
-  // All rooms we've ever visited — we render a hidden div for each
   const [visitedRooms, setVisitedRooms] = createSignal<string[]>([]);
 
   createEffect(() => {
     const roomId = props.roomId;
     if (!roomId) return;
 
-    // Move to front of recency list
     const idx = roomOrder.indexOf(roomId);
     if (idx !== -1) roomOrder.splice(idx, 1);
     roomOrder.unshift(roomId);
 
-    // Evict oldest if over limit
     while (roomOrder.length > MAX_CACHED_ROOMS) {
-      roomOrder.pop();
+      const evicted = roomOrder.pop()!;
+      delete roomAtBottom[evicted];
+      delete roomLastCount[evicted];
     }
 
     setVisitedRooms([...roomOrder]);
 
-    // Load data if needed (loadMessages/loadMembers skip if already attempted)
+    // Default new rooms to "at bottom"
+    if (!(roomId in roomAtBottom)) {
+      roomAtBottom[roomId] = true;
+    }
+
     loadMessages(roomId).catch(() => {});
     loadMembers(roomId).catch(() => {});
 
-    // Scroll to bottom of the newly active room
+    // Scroll to bottom when switching to a room
     requestAnimationFrame(() => {
       const el = scrollRefs[roomId];
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+        roomAtBottom[roomId] = true;
+      }
     });
   });
 
   const handleScroll = async (roomId: string, el: HTMLDivElement) => {
     const { scrollTop, scrollHeight, clientHeight } = el;
-    isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+    // Consider "at bottom" if within 80px of the bottom
+    roomAtBottom[roomId] = scrollHeight - scrollTop - clientHeight < 80;
 
+    // Load older messages when scrolled near top
     if (scrollTop < 100 && !loadingOlder) {
       loadingOlder = true;
       const prevScrollHeight = el.scrollHeight;
@@ -70,26 +81,40 @@ export default function MessageList(props: Props) {
           const messages = () => messagesByRoom[roomId] || [];
           const isActive = () => props.roomId === roomId;
 
-          // Auto-scroll to bottom when new messages arrive in this room
+          // Watch for new messages and auto-scroll if at bottom
           createEffect(() => {
             const msgs = messages();
             const len = msgs.length;
-            if (len > 0 && isActive()) {
-              const el = scrollRefs[roomId];
-              if (el) {
-                const { scrollTop, scrollHeight, clientHeight } = el;
-                const atBottom = scrollHeight - scrollTop - clientHeight < 100;
-                if (atBottom) {
-                  requestAnimationFrame(() => {
-                    el.scrollTop = el.scrollHeight;
-                  });
-                  // Send read receipt for the latest message
-                  const lastMsg = msgs[len - 1];
-                  if (lastMsg && !lastMsg.event_id.startsWith("~")) {
-                    sendReadReceipt(roomId, lastMsg.event_id).catch(() => {});
-                  }
+            const prevLen = roomLastCount[roomId] || 0;
+            roomLastCount[roomId] = len;
+
+            // Only act on NEW messages (not initial load which is handled above)
+            if (len > prevLen && prevLen > 0 && isActive()) {
+              if (roomAtBottom[roomId]) {
+                requestAnimationFrame(() => {
+                  const el = scrollRefs[roomId];
+                  if (el) el.scrollTop = el.scrollHeight;
+                });
+              }
+
+              // Send read receipt for latest message if at bottom
+              if (roomAtBottom[roomId]) {
+                const lastMsg = msgs[len - 1];
+                if (lastMsg && !lastMsg.event_id.startsWith("~")) {
+                  sendReadReceipt(roomId, lastMsg.event_id).catch(() => {});
                 }
               }
+            }
+
+            // Initial load — scroll to bottom
+            if (prevLen === 0 && len > 0) {
+              requestAnimationFrame(() => {
+                const el = scrollRefs[roomId];
+                if (el) {
+                  el.scrollTop = el.scrollHeight;
+                  roomAtBottom[roomId] = true;
+                }
+              });
             }
           });
 

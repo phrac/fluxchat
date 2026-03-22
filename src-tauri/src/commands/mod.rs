@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod media;
 pub mod messages;
+pub mod preview;
 pub mod receipts;
 pub mod rooms;
 pub mod spaces;

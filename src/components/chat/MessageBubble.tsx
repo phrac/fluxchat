@@ -1,7 +1,7 @@
-import { Show, createSignal, createEffect, untrack } from "solid-js";
+import { Show, For, createSignal, createEffect, untrack } from "solid-js";
 import { marked } from "marked";
 import type { MessageInfo } from "../../lib/types";
-import { getMediaUrl, getEventMedia } from "../../lib/tauri";
+import { getMediaUrl, getEventMedia, getUrlPreview, type UrlPreview } from "../../lib/tauri";
 import { setReplyingTo, setEditingMessage, insertSystemMessage } from "../../stores/messages";
 import { userId } from "../../stores/auth";
 import { setActiveThreadId } from "../layout/MainLayout";
@@ -213,6 +213,79 @@ function Avatar(props: { mxcUrl: string | null; name: string; color: string; siz
   );
 }
 
+// URL preview component
+const previewCache = new Map<string, UrlPreview | null>();
+
+function extractUrls(text: string): string[] {
+  const urlRegex = /https?:\/\/[^\s<>"')\]]+/g;
+  return [...new Set(text.match(urlRegex) || [])];
+}
+
+function LinkPreviews(props: { body: string }) {
+  const [previews, setPreviews] = createSignal<UrlPreview[]>([]);
+
+  const urls = extractUrls(props.body);
+  if (urls.length === 0) return null;
+
+  // Resolve previews
+  Promise.all(
+    urls.slice(0, 3).map(async (url) => {
+      if (previewCache.has(url)) return previewCache.get(url);
+      const preview = await getUrlPreview(url).catch(() => null);
+      previewCache.set(url, preview);
+      return preview;
+    })
+  ).then((results) => {
+    setPreviews(results.filter((p): p is UrlPreview => p !== null));
+  });
+
+  return (
+    <For each={previews()}>
+      {(preview) => (
+        <div
+          class="mt-2 max-w-[400px] overflow-hidden rounded-lg"
+          style={{ background: "var(--bg-tertiary)", "border-left": "3px solid var(--accent)" }}
+        >
+          <Show when={preview.image_url}>
+            <img
+              src={preview.image_url!}
+              alt=""
+              class="h-32 w-full object-cover"
+              onError={(e) => (e.currentTarget.style.display = "none")}
+            />
+          </Show>
+          <div class="px-3 py-2">
+            <Show when={preview.site_name}>
+              <div class="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
+                {preview.site_name}
+              </div>
+            </Show>
+            <Show when={preview.title}>
+              <a
+                href={preview.url}
+                target="_blank"
+                class="text-sm font-semibold hover:underline"
+                style={{ color: "#00a8fc" }}
+              >
+                {preview.title}
+              </a>
+            </Show>
+            <Show when={preview.description}>
+              <div
+                class="mt-0.5 text-xs leading-relaxed"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {preview.description!.slice(0, 200)}
+                {preview.description!.length > 200 ? "..." : ""}
+              </div>
+            </Show>
+          </div>
+        </div>
+      )}
+    </For>
+  );
+}
+
 // Cache rendered HTML to avoid re-parsing on room switch
 const htmlCache = new Map<string, string>();
 if (typeof window !== "undefined") {
@@ -262,6 +335,9 @@ function MessageContent(props: { message: MessageInfo }) {
           eventId={props.message.event_id}
           roomId={untrack(selectedRoomId) || ""}
         />
+      </Show>
+      <Show when={!props.message.image_mxc && !props.message.event_id.startsWith("~")}>
+        <LinkPreviews body={props.message.body} />
       </Show>
       <Show when={props.message.reactions.length > 0}>
         <div class="mt-1 flex flex-wrap gap-1">
@@ -313,14 +389,26 @@ function ReplyContext(props: { message: MessageInfo }) {
 
 export default function MessageBubble(props: Props) {
   // System messages (pins, etc.) render as centered muted text
-  if (props.message.event_id.startsWith("~system-")) {
+  if (props.message.event_id.startsWith("~system-") || props.message.event_id.startsWith("~state-")) {
+    const icon = () => {
+      const body = props.message.body.toLowerCase();
+      if (body.includes("invited")) return "👋";
+      if (body.includes("accepted") || body.includes("joined")) return "➡️";
+      if (body.includes("left")) return "⬅️";
+      if (body.includes("kicked") || body.includes("removed")) return "🚪";
+      if (body.includes("banned")) return "🔨";
+      if (body.includes("pinned")) return "📌";
+      return "ℹ️";
+    };
+
     return (
-      <div class="flex items-center justify-center gap-2 py-1 px-4">
-        <div class="h-px flex-1" style={{ background: "var(--border-subtle)" }} />
-        <span class="text-xs flex-shrink-0" style={{ color: "var(--text-muted)" }}>
+      <div class="my-2 flex items-center gap-2 rounded-md px-4 py-2"
+        style={{ background: "rgba(255,255,255,0.02)" }}
+      >
+        <span class="text-sm">{icon()}</span>
+        <span class="text-xs" style={{ color: "var(--text-muted)" }}>
           {props.message.body}
         </span>
-        <div class="h-px flex-1" style={{ background: "var(--border-subtle)" }} />
       </div>
     );
   }

@@ -62,6 +62,7 @@ pub fn run() {
             commands::spaces::get_space_rooms,
             commands::media::get_media_url,
             commands::media::get_event_media,
+            commands::preview::get_url_preview,
             commands::receipts::send_read_receipt,
             commands::threads::get_thread_messages,
             commands::verification::accept_verification,

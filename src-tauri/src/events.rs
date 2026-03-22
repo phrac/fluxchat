@@ -206,10 +206,72 @@ pub fn spawn_sync(client: Client, app_handle: AppHandle) {
         // Register membership change handler
         client.add_event_handler({
             let handle = app_handle.clone();
-            move |_ev: OriginalSyncRoomMemberEvent, room: Room| {
+            move |ev: OriginalSyncRoomMemberEvent, room: Room| {
                 let handle = handle.clone();
                 async move {
+                    // Emit membership change for member list refresh
                     let _ = handle.emit("matrix://membership-change", room.room_id().to_string());
+
+                    // Also emit as a system message for the timeline
+                    use matrix_sdk::ruma::events::room::member::MembershipState;
+
+                    let action = match ev.content.membership {
+                        MembershipState::Join => {
+                            if ev.prev_content().map(|p| &p.membership) == Some(&MembershipState::Invite) {
+                                "accepted the invitation"
+                            } else {
+                                "joined the room"
+                            }
+                        }
+                        MembershipState::Leave => {
+                            if ev.state_key.as_str() == ev.sender.as_str() {
+                                "left the room"
+                            } else {
+                                "was removed from the room"
+                            }
+                        }
+                        MembershipState::Invite => "was invited",
+                        MembershipState::Ban => "was banned",
+                        _ => "",
+                    };
+
+                    if !action.is_empty() {
+                        let name = ev
+                            .content
+                            .displayname
+                            .as_deref()
+                            .unwrap_or(ev.state_key.as_str());
+
+                        let body = if ev.state_key.as_str() != ev.sender.as_str()
+                            && !action.starts_with("accepted")
+                            && !action.starts_with("joined")
+                        {
+                            format!("{} {} {}", ev.sender, action.trim_start_matches("was "), name)
+                        } else {
+                            format!("{} {}", name, action)
+                        };
+
+                        let msg = MessageInfo {
+                            event_id: format!("~state-{}", ev.event_id),
+                            sender: String::new(),
+                            sender_name: String::new(),
+                            body,
+                            formatted_body: None,
+                            image_mxc: None,
+                            reactions: Vec::new(),
+                            reply_to_id: None,
+                            reply_to_sender: None,
+                            reply_to_body: None,
+                            timestamp: ev.origin_server_ts.as_secs().into(),
+                            avatar_url: None,
+                        };
+
+                        let payload = NewMessagePayload {
+                            room_id: room.room_id().to_string(),
+                            message: msg,
+                        };
+                        let _ = handle.emit("matrix://sync-room-message", &payload);
+                    }
                 }
             }
         });

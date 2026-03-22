@@ -131,6 +131,18 @@ export async function uploadFile(
   return invoke("upload_file", { roomId, filename, mimeType, data });
 }
 
+export interface UrlPreview {
+  url: string;
+  title: string | null;
+  description: string | null;
+  image_url: string | null;
+  site_name: string | null;
+}
+
+export async function getUrlPreview(url: string): Promise<UrlPreview | null> {
+  return invoke("get_url_preview", { url });
+}
+
 export async function sendReadReceipt(
   roomId: string,
   eventId: string

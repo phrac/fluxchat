@@ -1,5 +1,6 @@
 import { Show, createMemo, createSignal } from "solid-js";
 import { selectedRoomId, rooms } from "../../stores/rooms";
+import { activeThreadId, setActiveThreadId } from "../layout/MainLayout";
 import { typingByRoom, messagesByRoom } from "../../stores/messages";
 import { inviteUser } from "../../lib/tauri";
 import MessageList from "./MessageList";
@@ -132,6 +133,27 @@ export default function MessageArea(props: Props) {
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+              </svg>
+            </HeaderButton>
+
+            {/* Threads */}
+            <HeaderButton
+              title="Threads"
+              active={!!activeThreadId()}
+              onClick={() => {
+                if (activeThreadId()) {
+                  setActiveThreadId(null);
+                } else {
+                  // Open thread on last message
+                  const msgs = messagesByRoom[selectedRoomId()!] || [];
+                  const lastReal = [...msgs].reverse().find(m => !m.event_id.startsWith("~"));
+                  if (lastReal) setActiveThreadId(lastReal.event_id);
+                }
+                setShowSearch(false); setShowInvite(false);
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a4 4 0 0 0-4 4c0 1.5.8 2.8 2 3.5v1L8 12l2 1.5v1c-1.2.7-2 2-2 3.5a4 4 0 0 0 8 0c0-1.5-.8-2.8-2-3.5v-1l2-1.5-2-1.5v-1c1.2-.7 2-2 2-3.5a4 4 0 0 0-4-4z"/>
               </svg>
             </HeaderButton>
 
