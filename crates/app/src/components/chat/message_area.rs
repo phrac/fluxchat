@@ -23,17 +23,13 @@ pub fn MessageArea() -> Element {
 
             // Channel tabs
             div { style: "display: flex; align-items: center; height: 36px; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 8px; gap: 0; overflow-x: auto; background: var(--bg-dark);",
-                for (id, name) in tabs.iter() {
-                    { let tab_id = id.clone();
-                      let is_active = selected.as_ref() == Some(id);
-                      let tab_class = if is_active { "channel-tab active" } else { "channel-tab" };
-                      rsx! {
-                        div {
-                            class: "{tab_class}",
-                            onclick: move |_| { ui.selected_room_id.set(Some(tab_id.clone())); },
-                            "#{name}"
-                        }
-                      }
+                for (id, name, space, space_mxc) in tabs.iter() {
+                    ChannelTab {
+                        room_id: id.clone(),
+                        name: name.clone(),
+                        space_name: space.clone(),
+                        space_avatar_mxc: space_mxc.clone(),
+                        is_active: selected.as_ref() == Some(id),
                     }
                 }
             }
@@ -41,8 +37,21 @@ pub fn MessageArea() -> Element {
             // Messages
             if let Some(room_id) = &selected {
                 { let messages = ui.messages_by_room.read().get(room_id).cloned().unwrap_or_default();
+                  let msg_count = messages.len();
+
+                  // Auto-scroll to bottom when messages change
+                  use_effect(move || {
+                      let _ = msg_count; // track dependency
+                      document::eval(r#"
+                          setTimeout(() => {
+                              let el = document.getElementById('msg-scroll');
+                              if (el) el.scrollTop = el.scrollHeight;
+                          }, 10);
+                      "#);
+                  });
+
                   rsx! {
-                    div { style: "flex: 1; overflow-y: auto; padding: 8px 12px;",
+                    div { id: "msg-scroll", style: "flex: 1; overflow-y: auto; padding: 8px 12px;",
                         if messages.is_empty() {
                             div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim);",
                                 "No messages yet"
@@ -119,6 +128,79 @@ pub fn MessageArea() -> Element {
             // Message input
             if selected.is_some() {
                 MessageInput {}
+            }
+        }
+    }
+}
+
+#[component]
+fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_avatar_mxc: Option<String>, is_active: bool) -> Element {
+    let mut ui = use_context::<UiState>();
+    let core = use_context::<Arc<AppState>>();
+
+    let tab_class = if is_active { "channel-tab active" } else { "channel-tab" };
+    let label = if let Some(ref s) = space_name {
+        format!("#{name}")
+    } else {
+        format!("#{name}")
+    };
+
+    // Resolve space avatar
+    let avatar_src = use_resource({
+        let mxc = space_avatar_mxc.clone();
+        let core = core.clone();
+        move || {
+            let mxc = mxc.clone();
+            let core = core.clone();
+            async move {
+                if let Some(mxc) = mxc {
+                    let client = core.get_client().await.ok()?;
+                    fluxchat_core::media::get_media_url(&client, &core.db, &core.media_cache, &mxc).await.ok()
+                } else { None }
+            }
+        }
+    });
+    let has_space_avatar = avatar_src.read().as_ref().and_then(|v| v.as_ref()).is_some();
+
+    let tab_id = room_id.clone();
+    let close_id = room_id.clone();
+
+    rsx! {
+        div {
+            class: "{tab_class}",
+            style: "display: flex; align-items: center; gap: 4px;",
+            onclick: move |_| { ui.selected_room_id.set(Some(tab_id.clone())); },
+
+            // Space avatar
+            if has_space_avatar {
+                img {
+                    src: "{avatar_src.read().as_ref().and_then(|v| v.as_ref()).unwrap()}",
+                    style: "width: 14px; height: 14px; border-radius: 3px; object-fit: cover;",
+                }
+            } else if space_name.is_some() {
+                span { style: "font-size: 10px; opacity: 0.5; font-family: var(--font-mono);",
+                    {space_name.as_ref().map(|s| s.chars().take(2).collect::<String>().to_uppercase()).unwrap_or_default()}
+                }
+            }
+
+            "{label}"
+
+            span {
+                style: "font-size: 10px; opacity: 0.4; cursor: pointer; padding: 0 2px;",
+                onclick: {
+                    let cid = close_id.clone();
+                    move |e: Event<MouseData>| {
+                        e.stop_propagation();
+                        let mut tabs = ui.open_tabs.write();
+                        tabs.retain(|(id, _, _, _)| id != &cid);
+                        if ui.selected_room_id.read().as_ref() == Some(&cid) {
+                            let next = tabs.last().map(|(id, _, _, _)| id.clone());
+                            drop(tabs);
+                            ui.selected_room_id.set(next);
+                        }
+                    }
+                },
+                "×"
             }
         }
     }

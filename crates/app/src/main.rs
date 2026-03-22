@@ -3,6 +3,7 @@ mod state;
 mod components;
 
 use dioxus::prelude::*;
+use dioxus::desktop::{Config, WindowBuilder};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -11,5 +12,16 @@ fn main() {
         )
         .init();
 
-    dioxus::launch(app::App);
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(
+            Config::new()
+                .with_window(
+                    WindowBuilder::new()
+                        .with_title("fluxchat")
+                        .with_decorations(false)
+                        .with_inner_size(dioxus::desktop::LogicalSize::new(1200, 800))
+                )
+                .with_menu(None)
+        )
+        .launch(app::App);
 }

@@ -36,7 +36,8 @@ pub struct UiState {
     pub loading: Signal<bool>,
 
     // Channel tabs — recently visited rooms
-    pub open_tabs: Signal<Vec<(String, String)>>, // (room_id, room_name)
+    // (room_id, room_name, space_name, space_avatar_mxc)
+    pub open_tabs: Signal<Vec<(String, String, Option<String>, Option<String>)>>,
 }
 
 impl UiState {

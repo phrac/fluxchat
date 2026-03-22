@@ -21,6 +21,7 @@ pub enum SyncEvent {
 // Global channel for sync events
 static SYNC_TX: std::sync::OnceLock<std::sync::mpsc::Sender<SyncEvent>> = std::sync::OnceLock::new();
 static SYNC_RX: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Receiver<SyncEvent>>> = std::sync::OnceLock::new();
+static CORE: std::sync::OnceLock<Arc<AppState>> = std::sync::OnceLock::new();
 
 fn init_sync_channel() {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -30,7 +31,11 @@ fn init_sync_channel() {
 
 #[component]
 pub fn App() -> Element {
-    let core = use_context_provider(|| init_core());
+    let core = use_context_provider(|| {
+        let c = init_core();
+        let _ = CORE.set(c.clone());
+        c
+    });
     let mut ui = use_context_provider(|| {
         init_sync_channel();
         UiState::new()
@@ -114,7 +119,19 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
         }
         SyncEvent::Typing(room_id, user_ids) => { ui.typing_by_room.write().insert(room_id, user_ids); }
         SyncEvent::Membership(room_id, msg) => { ui.messages_by_room.write().entry(room_id).or_insert_with(Vec::new).push(msg); }
-        SyncEvent::RoomListUpdate => {}
+        SyncEvent::RoomListUpdate => {
+            // Reload rooms from the core — needs to be async so we spawn
+            if let Some(core) = CORE.get() {
+                let core = core.clone();
+                spawn(async move {
+                    let mut ui = consume_context::<UiState>();
+                    if let Ok(client) = core.get_client().await {
+                        if let Ok(rooms) = fluxchat_core::rooms::get_rooms(&client).await { ui.rooms.set(rooms); }
+                        if let Ok(spaces) = fluxchat_core::rooms::get_spaces(&client).await { ui.spaces.set(spaces); }
+                    }
+                });
+            }
+        }
     }
 }
 

@@ -127,11 +127,19 @@ pub fn RoomList() -> Element {
 fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name: String) {
     ui.selected_room_id.set(Some(room_id.clone()));
 
+    // Find space info for this room
+    let space_name = ui.rooms.read().iter()
+        .find(|r| r.room_id == room_id)
+        .and_then(|r| r.space_name.clone());
+    let space_avatar = space_name.as_ref().and_then(|sn| {
+        ui.spaces.read().iter().find(|s| s.name == *sn).and_then(|s| s.avatar_url.clone())
+    });
+
     // Add to tabs if not already there
     let mut tabs = ui.open_tabs.write();
-    if !tabs.iter().any(|(id, _)| id == &room_id) {
+    if !tabs.iter().any(|(id, _, _, _)| id == &room_id) {
         if tabs.len() >= 8 { tabs.remove(0); }
-        tabs.push((room_id.clone(), room_name));
+        tabs.push((room_id.clone(), room_name, space_name, space_avatar));
     }
     drop(tabs);
 
