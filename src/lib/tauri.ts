@@ -115,6 +115,18 @@ export async function setRoomTopic(roomId: string, topic: string): Promise<void>
   return invoke("set_room_topic", { roomId, topic });
 }
 
+export async function kickUser(roomId: string, userId: string, reason?: string): Promise<void> {
+  return invoke("kick_user", { roomId, userId, reason: reason ?? null });
+}
+
+export async function banUser(roomId: string, userId: string, reason?: string): Promise<void> {
+  return invoke("ban_user", { roomId, userId, reason: reason ?? null });
+}
+
+export async function setUserPowerLevel(roomId: string, userId: string, powerLevel: number): Promise<void> {
+  return invoke("set_user_power_level", { roomId, userId, powerLevel });
+}
+
 export async function inviteUser(
   roomId: string,
   userId: string

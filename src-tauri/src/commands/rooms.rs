@@ -246,3 +246,68 @@ pub async fn set_room_topic(
 
     Ok(())
 }
+
+#[tauri::command]
+pub async fn kick_user(
+    state: State<'_, AppState>,
+    room_id: String,
+    user_id: String,
+    reason: Option<String>,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let user_id = matrix_sdk::ruma::UserId::parse(&user_id)
+        .map_err(|_| AppError::Other("Invalid user ID".into()))?;
+    let room = client.get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    room.kick_user(&user_id, reason.as_deref())
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to kick: {e}")))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ban_user(
+    state: State<'_, AppState>,
+    room_id: String,
+    user_id: String,
+    reason: Option<String>,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let user_id = matrix_sdk::ruma::UserId::parse(&user_id)
+        .map_err(|_| AppError::Other("Invalid user ID".into()))?;
+    let room = client.get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    room.ban_user(&user_id, reason.as_deref())
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to ban: {e}")))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_user_power_level(
+    state: State<'_, AppState>,
+    room_id: String,
+    user_id: String,
+    power_level: i64,
+) -> Result<(), AppError> {
+    let client = get_client(&state).await?;
+    let room_id = matrix_sdk::ruma::RoomId::parse(&room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let user_id = matrix_sdk::ruma::UserId::parse(&user_id)
+        .map_err(|_| AppError::Other("Invalid user ID".into()))?;
+    let room = client.get_room(&room_id)
+        .ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    use matrix_sdk::ruma::Int;
+
+    room.update_power_levels(vec![(&user_id, Int::new(power_level).unwrap_or(Int::MIN))])
+        .await?;
+
+    Ok(())
+}
