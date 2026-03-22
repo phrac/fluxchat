@@ -1,2 +1,0 @@
-cargo:rerun-if-changed=bin/bidi.bin
-cargo:rerun-if-changed=bin/codepoints.bin
