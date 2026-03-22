@@ -36,6 +36,8 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - **Member list** — Toggleable right sidebar showing room members grouped by role (Admin/Moderator/Member) with presence indicators and homeserver names.
 - **Room creation** — Create rooms with name, topic, encryption toggle, public/private, and invite users.
 - **Room settings** — Edit room name, topic, and leave room via settings modal (click room name in header).
+- **Settings** — Full-screen Discord-style settings view with sidebar navigation (My Account, Appearance, Notifications, Devices, About).
+- **User profile editing** — Edit display name, upload/change avatar and banner with hover overlays and inline editing.
 - **Invite users** — Invite users to rooms via modal dialog.
 - **URL previews** — Fetches OpenGraph metadata via Matrix preview API, renders as cards with image, title, description.
 - **Message search** — Client-side search across loaded messages.
@@ -47,8 +49,8 @@ This is an **MVP** (Minimum Viable Product). It works, but expect rough edges.
 - Polls
 - Voice/video calls
 - Desktop notifications
-- User profile editing
 - Server-side message search
+- Theme customization
 - Emoji picker
 - Virtual scrolling for large rooms
 - Room topic editing

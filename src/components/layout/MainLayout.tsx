@@ -7,7 +7,7 @@ import PinnedSidebar from "../chat/PinnedSidebar";
 import ThreadPanel from "../chat/ThreadPanel";
 import CreateRoomModal from "../modals/CreateRoomModal";
 import RoomSettingsModal from "../modals/RoomSettingsModal";
-import ProfileModal from "../modals/ProfileModal";
+import SettingsView from "../modals/SettingsView";
 import { loadRooms, selectedRoomId } from "../../stores/rooms";
 
 // Export shared state
@@ -60,7 +60,7 @@ export default function MainLayout() {
       </Show>
 
       <Show when={showProfile()}>
-        <ProfileModal onClose={() => setShowProfile(false)} />
+        <SettingsView onClose={() => setShowProfile(false)} />
       </Show>
     </div>
   );
