@@ -1,0 +1,8 @@
+[application]
+name = "fluxchat"
+
+[web.app]
+title = "fluxchat"
+
+[desktop]
+decorations = false
