@@ -6,6 +6,10 @@ use fluxchat_core::{AppState, RoomInfo};
 use crate::state::UiState;
 use crate::components::chat::message_area::nick_color_class;
 
+const ICO_HASH: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>"#;
+const ICO_DM: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>"#;
+const ICO_SPACE: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>"#;
+
 #[component]
 pub fn RoomList() -> Element {
     let _core = use_context::<Arc<AppState>>();
@@ -40,9 +44,34 @@ pub fn RoomList() -> Element {
         }
     }
 
-    let header = selected_space.as_ref()
-        .and_then(|sid| ui.spaces.read().iter().find(|s| s.room_id == *sid).map(|s| s.name.clone()))
+    let core = use_context::<Arc<AppState>>();
+
+    let selected_space_info = selected_space.as_ref()
+        .and_then(|sid| ui.spaces.read().iter().find(|s| s.room_id == *sid).cloned());
+    let header = selected_space_info.as_ref().map(|s| s.name.clone())
         .unwrap_or_else(|| "fluxchat".to_string());
+    let header_avatar_mxc = selected_space_info.as_ref().and_then(|s| s.avatar_url.clone());
+
+    // Resolve header avatar
+    let header_avatar = use_resource({
+        let mxc = header_avatar_mxc.clone();
+        let core = core.clone();
+        move || {
+            let mxc = mxc.clone();
+            let core = core.clone();
+            async move {
+                let mxc = mxc?;
+                let client = core.get_client().await.ok()?;
+                fluxchat_core::media::get_media_url(&client, &core.db, &core.media_cache, &mxc).await.ok()
+            }
+        }
+    });
+    let header_avatar_src = header_avatar.read().clone().flatten();
+
+    // Build a map of space_name -> avatar_mxc for section headers
+    let space_avatars: std::collections::HashMap<String, Option<String>> = ui.spaces.read().iter()
+        .map(|s| (s.name.clone(), s.avatar_url.clone()))
+        .collect();
 
     let collapsed_set = collapsed.read().clone();
 
@@ -50,7 +79,17 @@ pub fn RoomList() -> Element {
         div { style: "width: 200px; flex-shrink: 0; background: var(--bg-dark); display: flex; flex-direction: column; border-right: 1px solid var(--border);",
             // Header
             div { style: "height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-weight: 600; font-size: 14px; color: var(--text-bright); border-bottom: 1px solid var(--border); flex-shrink: 0;",
-                "{header}"
+                div { style: "display: flex; align-items: center; gap: 8px; overflow: hidden;",
+                    if let Some(ref src) = header_avatar_src {
+                        img { src: "{src}", style: "width: 20px; height: 20px; border-radius: 4px; object-fit: cover; flex-shrink: 0;" }
+                    } else if selected_space.is_some() {
+                        // Space without avatar — generic space icon
+                        span { style: "color: var(--text-dim); display: inline-flex; flex-shrink: 0;",
+                            dangerous_inner_html: ICO_SPACE,
+                        }
+                    }
+                    span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;", "{header}" }
+                }
                 span {
                     style: "color: var(--text-dim); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: 3px;",
                     title: "Create room or join",
@@ -63,7 +102,7 @@ pub fn RoomList() -> Element {
             div { style: "flex: 1; overflow-y: auto; padding: 8px 6px;",
                 // Ungrouped channels
                 if !ungrouped.is_empty() {
-                    SectionHeader { label: "Channels".to_string(), collapsed: collapsed, section_key: "channels".to_string() }
+                    SectionHeader { label: "Channels".to_string(), collapsed: collapsed, section_key: "channels".to_string(), icon: Some(ICO_HASH.to_string()), avatar_mxc: None }
                     if !collapsed_set.contains("channels") {
                         for room in ungrouped.iter() {
                             RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
@@ -73,7 +112,11 @@ pub fn RoomList() -> Element {
 
                 // Space-grouped channels
                 for (space_name, space_rooms) in by_space.iter() {
-                    SectionHeader { label: space_name.clone(), collapsed: collapsed, section_key: space_name.clone() }
+                    { let mxc = space_avatars.get(space_name).cloned().flatten();
+                      rsx! {
+                        SectionHeader { label: space_name.clone(), collapsed: collapsed, section_key: space_name.clone(), icon: Some(ICO_SPACE.to_string()), avatar_mxc: mxc }
+                      }
+                    }
                     if !collapsed_set.contains(space_name) {
                         for room in space_rooms.iter() {
                             RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
@@ -83,7 +126,7 @@ pub fn RoomList() -> Element {
 
                 // DMs
                 if !dms.is_empty() {
-                    SectionHeader { label: "Direct Messages".to_string(), collapsed: collapsed, section_key: "dms".to_string() }
+                    SectionHeader { label: "Direct Messages".to_string(), collapsed: collapsed, section_key: "dms".to_string(), icon: Some(ICO_DM.to_string()), avatar_mxc: None }
                     if !collapsed_set.contains("dms") {
                         for room in dms.iter() {
                             DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
@@ -103,10 +146,27 @@ pub fn RoomList() -> Element {
 }
 
 #[component]
-fn SectionHeader(label: String, mut collapsed: Signal<HashSet<String>>, section_key: String) -> Element {
+fn SectionHeader(label: String, mut collapsed: Signal<HashSet<String>>, section_key: String, icon: Option<String>, avatar_mxc: Option<String>) -> Element {
+    let core = use_context::<Arc<AppState>>();
     let is_collapsed = collapsed.read().contains(&section_key);
     let caret = if is_collapsed { "▸" } else { "▾" };
     let key = section_key.clone();
+
+    // Resolve space avatar if provided
+    let avatar_src = use_resource({
+        let mxc = avatar_mxc.clone();
+        let core = core.clone();
+        move || {
+            let mxc = mxc.clone();
+            let core = core.clone();
+            async move {
+                let mxc = mxc?;
+                let client = core.get_client().await.ok()?;
+                fluxchat_core::media::get_media_url(&client, &core.db, &core.media_cache, &mxc).await.ok()
+            }
+        }
+    });
+    let resolved_avatar = avatar_src.read().clone().flatten();
 
     rsx! {
         div {
@@ -120,6 +180,14 @@ fn SectionHeader(label: String, mut collapsed: Signal<HashSet<String>>, section_
                 }
             },
             span { style: "font-size: 18px; width: 14px; flex-shrink: 0; line-height: 1;", "{caret}" }
+            // Avatar or fallback SVG icon
+            if let Some(ref src) = resolved_avatar {
+                img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 3px; object-fit: cover; flex-shrink: 0;" }
+            } else if let Some(ref ico) = icon {
+                span { style: "display: inline-flex; align-items: center; flex-shrink: 0; opacity: 0.5;",
+                    dangerous_inner_html: "{ico}",
+                }
+            }
             "{label}"
         }
     }
