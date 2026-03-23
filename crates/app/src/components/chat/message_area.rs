@@ -36,6 +36,15 @@ pub fn MessageArea() -> Element {
         let mut eval = document::eval(r#"
             window.__fluxchat_dioxus = dioxus;
 
+            // Suppress all WebView sounds
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' || e.key === 'Tab') e.preventDefault();
+            });
+            window.Audio = function() { return { play:()=>{}, pause:()=>{}, load:()=>{} }; };
+            window.alert = () => {};
+            // Override Notification API to prevent any native notifications
+            window.Notification = { permission: 'denied', requestPermission: () => Promise.resolve('denied') };
+
             // Intercept link clicks — open in system browser, not the WebView
             document.addEventListener('click', (e) => {
                 let a = e.target.closest('a[href]');

@@ -1,3 +1,6 @@
+/* Suppress all audio/video playback in the WebView */
+audio, video { display: none !important; muted: true; }
+
 /* fluxchat — IRC meets modern */
 
 :root {

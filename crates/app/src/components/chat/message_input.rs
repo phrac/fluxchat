@@ -426,9 +426,43 @@ pub fn MessageInput() -> Element {
                                 style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); cursor: pointer; padding: 2px 5px; border-radius: 2px; font-weight: {fw}; font-style: {fs};",
                                 class: "cmd-item",
                                 title: "{title}",
-                                onclick: move |_| {
-                                    let current = text();
-                                    text.set(format!("{current}{prefix}{suffix}"));
+                                onclick: {
+                                    let prefix = prefix.clone();
+                                    let suffix = suffix.clone();
+                                    move |_| {
+                                        let prefix = prefix.clone();
+                                        let suffix = suffix.clone();
+                                        // Use JS to get selection range from the input
+                                        spawn(async move {
+                                            let mut eval = document::eval(r#"
+                                                let inputs = document.querySelectorAll('input[type="text"]');
+                                                let input = inputs[inputs.length - 1];
+                                                if (input) {
+                                                    dioxus.send(input.selectionStart + ',' + input.selectionEnd);
+                                                } else {
+                                                    dioxus.send('-1,-1');
+                                                }
+                                            "#);
+                                            if let Ok(data) = eval.recv::<String>().await {
+                                                let parts: Vec<&str> = data.split(',').collect();
+                                                if parts.len() == 2 {
+                                                    let start: usize = parts[0].parse().unwrap_or(0);
+                                                    let end: usize = parts[1].parse().unwrap_or(0);
+                                                    let current = text();
+                                                    if start != end && start < current.len() && end <= current.len() {
+                                                        // Wrap selected text
+                                                        let before = &current[..start];
+                                                        let selected = &current[start..end];
+                                                        let after = &current[end..];
+                                                        text.set(format!("{before}{prefix}{selected}{suffix}{after}"));
+                                                    } else {
+                                                        // No selection — append at cursor or end
+                                                        text.set(format!("{current}{prefix}{suffix}"));
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
                                 },
                                 "{label}"
                             }
