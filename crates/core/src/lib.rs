@@ -10,6 +10,7 @@ pub mod rooms;
 pub mod state;
 pub mod sync;
 pub mod threads;
+pub mod timeline;
 pub mod verification;
 
 pub use db::AppDb;

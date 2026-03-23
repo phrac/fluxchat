@@ -56,6 +56,11 @@ pub async fn login(
         info!("Session saved for {}", user_id);
     }
 
+    // Enable event cache for Timeline API
+    if let Err(e) = client.event_cache().subscribe() {
+        warn!("Failed to subscribe event cache: {e}");
+    }
+
     let display_name = client.account().get_display_name().await.ok().flatten();
 
     state.set_client(client.clone()).await;
@@ -122,6 +127,11 @@ pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginRe
             if matrix_store.exists() { let _ = std::fs::remove_dir_all(&matrix_store); }
             return Ok(None);
         }
+    }
+
+    // Enable event cache for Timeline API
+    if let Err(e) = client.event_cache().subscribe() {
+        warn!("Failed to subscribe event cache: {e}");
     }
 
     let display_name = client.account().get_display_name().await.ok().flatten();

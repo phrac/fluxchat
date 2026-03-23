@@ -9,6 +9,7 @@ pub struct AppState {
     pub client: Arc<Mutex<Option<Client>>>,
     pub db: AppDb,
     pub media_cache: std::sync::Mutex<HashMap<String, String>>,
+    pub timelines: crate::timeline::RoomTimelines,
 }
 
 impl AppState {
@@ -17,6 +18,7 @@ impl AppState {
             client: Arc::new(Mutex::new(None)),
             db,
             media_cache: std::sync::Mutex::new(HashMap::new()),
+            timelines: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
