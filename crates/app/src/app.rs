@@ -10,11 +10,8 @@ const STYLE: Asset = asset!("assets/style.css");
 
 #[derive(Clone)]
 pub enum SyncEvent {
-    Message(String, fluxchat_core::MessageInfo),
-    Edit(String, String, String, Option<String>),
-    Reaction(String, String, String, String),
+    // Message, Edit, Reaction, Membership — now handled by Timeline diff stream
     Typing(String, Vec<String>),
-    Membership(String, fluxchat_core::MessageInfo),
     RoomListUpdate,
     Verification(fluxchat_core::VerificationInfo),
 }
@@ -94,79 +91,8 @@ pub fn App() -> Element {
 
 fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
     match event {
-        SyncEvent::Message(room_id, mut msg) => {
-            // Pre-calculate transformed_body with user_id → avatar map
-            if let Some(ref html) = msg.formatted_body {
-                if let Some(core) = CORE.get() {
-                    let media_cache = core.media_cache.lock().unwrap();
-                    let mention_map: std::collections::HashMap<String, String> = ui.members_by_room.read()
-                        .get(&room_id)
-                        .map(|members| members.iter().filter_map(|m| {
-                            let mxc = m.avatar_url.as_ref()?;
-                            Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
-                        }).collect())
-                        .unwrap_or_default();
-                    msg.transformed_body = Some(crate::state::transform_mentions(html, &mention_map));
-                }
-            }
-
-            let mut messages = ui.messages_by_room.write();
-            let room_msgs = messages.entry(room_id.clone()).or_insert_with(Vec::new);
-            room_msgs.retain(|m| !(m.event_id.starts_with("~local-") && m.sender == msg.sender && m.body == msg.body));
-            if !room_msgs.iter().any(|m| m.event_id == msg.event_id) {
-                room_msgs.push(msg);
-                if room_msgs.len() > 200 {
-                    let drain_count = room_msgs.len() - 200;
-                    room_msgs.drain(..drain_count);
-                }
-            }
-            drop(messages);
-            // Mark as read if this is the active room
-            // (scroll handled by CSS column-reverse — browser auto-shows new content at bottom)
-            if ui.selected_room_id.read().as_ref() == Some(&room_id) {
-                // Send read receipt for the new message
-                let last_eid = ui.messages_by_room.read().get(&room_id)
-                    .and_then(|msgs| msgs.last())
-                    .map(|m| m.event_id.clone())
-                    .filter(|eid| !eid.starts_with("~"));
-                if let Some(eid) = last_eid {
-                    // Zero unread locally
-                    let mut rooms = ui.rooms.write();
-                    if let Some(r) = rooms.iter_mut().find(|r| r.room_id == room_id) {
-                        r.unread_count = 0;
-                    }
-                    drop(rooms);
-                    if let Some(core) = CORE.get() {
-                        let core = core.clone();
-                        let room_id = room_id.clone();
-                        spawn(async move {
-                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::messages::send_read_receipt(&client, &room_id, &eid).await;
-                        });
-                    }
-                }
-            }
-        }
-        SyncEvent::Edit(room_id, event_id, body, formatted) => {
-            let mut messages = ui.messages_by_room.write();
-            if let Some(room_msgs) = messages.get_mut(&room_id) {
-                if let Some(msg) = room_msgs.iter_mut().find(|m| m.event_id == event_id) {
-                    msg.body = body; msg.formatted_body = formatted;
-                }
-            }
-        }
-        SyncEvent::Reaction(room_id, event_id, emoji, sender) => {
-            let mut messages = ui.messages_by_room.write();
-            if let Some(room_msgs) = messages.get_mut(&room_id) {
-                if let Some(msg) = room_msgs.iter_mut().find(|m| m.event_id == event_id) {
-                    if let Some(r) = msg.reactions.iter_mut().find(|r| r.emoji == emoji) {
-                        if !r.users.contains(&sender) { r.count += 1; r.users.push(sender); }
-                    } else { msg.reactions.push(fluxchat_core::ReactionInfo { emoji, count: 1, users: vec![sender] }); }
-                }
-            }
-        }
+        // Message, Edit, Reaction, Membership are now handled by Timeline diff stream
         SyncEvent::Typing(room_id, user_ids) => { ui.typing_by_room.write().insert(room_id, user_ids); }
-        SyncEvent::Membership(room_id, msg) => { ui.messages_by_room.write().entry(room_id).or_insert_with(Vec::new).push(msg); }
         SyncEvent::Verification(info) => {
             ui.verification_request.set(Some(info));
         }
@@ -223,11 +149,12 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
 struct ChannelSyncBridge { tx: std::sync::mpsc::Sender<SyncEvent> }
 
 impl fluxchat_core::sync::SyncCallbacks for ChannelSyncBridge {
-    fn on_message(&self, room_id: String, msg: fluxchat_core::MessageInfo) { let _ = self.tx.send(SyncEvent::Message(room_id, msg)); }
-    fn on_edit(&self, room_id: String, event_id: String, body: String, formatted: Option<String>) { let _ = self.tx.send(SyncEvent::Edit(room_id, event_id, body, formatted)); }
-    fn on_reaction(&self, room_id: String, event_id: String, emoji: String, sender: String) { let _ = self.tx.send(SyncEvent::Reaction(room_id, event_id, emoji, sender)); }
+    // Message, Edit, Reaction, Membership — now handled by Timeline diff stream, no-op here
+    fn on_message(&self, _room_id: String, _msg: fluxchat_core::MessageInfo) {}
+    fn on_edit(&self, _room_id: String, _event_id: String, _body: String, _formatted: Option<String>) {}
+    fn on_reaction(&self, _room_id: String, _event_id: String, _emoji: String, _sender: String) {}
     fn on_typing(&self, room_id: String, user_ids: Vec<String>) { let _ = self.tx.send(SyncEvent::Typing(room_id, user_ids)); }
-    fn on_membership_change(&self, room_id: String, msg: fluxchat_core::MessageInfo) { let _ = self.tx.send(SyncEvent::Membership(room_id, msg)); }
+    fn on_membership_change(&self, _room_id: String, _msg: fluxchat_core::MessageInfo) {}
     fn on_room_list_update(&self) { let _ = self.tx.send(SyncEvent::RoomListUpdate); }
     fn on_verification_request(&self, info: fluxchat_core::VerificationInfo) { let _ = self.tx.send(SyncEvent::Verification(info)); }
 }
