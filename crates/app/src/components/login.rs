@@ -14,6 +14,49 @@ pub fn Login() -> Element {
     let mut password = use_signal(|| String::new());
     let mut error = use_signal(|| String::new());
     let mut submitting = use_signal(|| false);
+    let mut sso_available = use_signal(|| Option::<bool>::None);
+
+    // Detect login types when homeserver changes
+    let _login_types = use_resource({
+        move || {
+            let hs = homeserver().clone();
+            async move {
+                if hs.is_empty() { return; }
+                match fluxchat_core::auth::get_login_types(&hs).await {
+                    Ok(types) => {
+                        let has_sso = types.iter().any(|t| t == "sso");
+                        sso_available.set(Some(has_sso));
+                    }
+                    Err(_) => {
+                        sso_available.set(None);
+                    }
+                }
+            }
+        }
+    });
+
+    let handle_sso = {
+        let core = core.clone();
+        let ui = ui.clone();
+        move |_| {
+            let core = core.clone();
+            let mut ui = ui.clone();
+            let hs = homeserver().clone();
+            spawn(async move {
+                submitting.set(true);
+                error.set(String::new());
+                match fluxchat_core::auth::login_sso(&core, &hs).await {
+                    Ok((_client, result)) => {
+                        ui.user_id.set(result.user_id);
+                        ui.display_name.set(result.display_name);
+                        ui.logged_in.set(true);
+                    }
+                    Err(e) => error.set(e.to_string()),
+                }
+                submitting.set(false);
+            });
+        }
+    };
 
     let handle_login = move |_| {
         let core = core.clone();
@@ -29,13 +72,14 @@ pub fn Login() -> Element {
                     ui.user_id.set(result.user_id);
                     ui.display_name.set(result.display_name);
                     ui.logged_in.set(true);
-                    // Rooms/sync will load when MainLayout mounts
                 }
                 Err(e) => error.set(e.to_string()),
             }
             submitting.set(false);
         });
     };
+
+    let has_sso = sso_available.read().unwrap_or(false);
 
     rsx! {
         div {
@@ -64,6 +108,22 @@ pub fn Login() -> Element {
                     r#type: "text",
                     value: "{homeserver}",
                     oninput: move |e| homeserver.set(e.value()),
+                }
+
+                // SSO login button
+                if has_sso {
+                    button {
+                        style: "width: 100%; background: var(--bg-light); color: var(--text-bright); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; margin-bottom: 16px; display: flex; align-items: center; justify-content: center; gap: 8px;",
+                        disabled: *submitting.read(),
+                        onclick: handle_sso,
+                        if *submitting.read() { "Opening browser..." } else { "Sign in with SSO" }
+                    }
+
+                    div { style: "display: flex; align-items: center; gap: 12px; margin-bottom: 16px;",
+                        div { style: "flex: 1; height: 1px; background: var(--border);" }
+                        span { style: "color: var(--text-dim); font-size: 12px;", "or" }
+                        div { style: "flex: 1; height: 1px; background: var(--border);" }
+                    }
                 }
 
                 label { style: "display: block; color: var(--text-muted); font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 4px;",

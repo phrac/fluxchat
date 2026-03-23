@@ -272,3 +272,78 @@ pub async fn send_read_receipt(client: &matrix_sdk::Client, room_id: &str, event
     room.send_multiple_receipts(receipts).await.map_err(|e| AppError::Other(format!("Failed to send receipt: {e}")))?;
     Ok(())
 }
+
+/// Server-side message search result.
+#[derive(Clone, Debug)]
+pub struct SearchResult {
+    pub event_id: String,
+    pub sender: String,
+    pub sender_name: String,
+    pub body: String,
+    pub timestamp: u64,
+    pub room_id: String,
+}
+
+/// Search messages server-side via the Matrix search API.
+pub async fn search_messages(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    query: &str,
+    next_batch: Option<&str>,
+) -> Result<(Vec<SearchResult>, Option<String>), AppError> {
+    use matrix_sdk::ruma::api::client::search::search_events;
+
+    let rid = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+
+    let mut criteria = search_events::v3::Criteria::new(query.to_string());
+
+    // Filter to this room only
+    let mut filter = matrix_sdk::ruma::api::client::filter::RoomEventFilter::default();
+    filter.rooms = Some(vec![rid.to_owned()]);
+    criteria.filter = filter;
+    criteria.order_by = Some(search_events::v3::OrderBy::Recent);
+
+    let mut categories = search_events::v3::Categories::new();
+    categories.room_events = Some(criteria);
+
+    let mut request = search_events::v3::Request::new(categories);
+    request.next_batch = next_batch.map(|s| s.to_string());
+
+    let response = client.send(request).await
+        .map_err(|e| AppError::Other(format!("Search failed: {e}")))?;
+
+    let mut results = Vec::new();
+    {
+        let room_events = &response.search_categories.room_events;
+        for item in &room_events.results {
+            if let Some(ref raw_event) = item.result {
+                // Parse from raw JSON to extract fields
+                let json = raw_event.json();
+                let val: serde_json::Value = match serde_json::from_str(json.get()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let event_id = val["event_id"].as_str().unwrap_or_default().to_string();
+                let sender = val["sender"].as_str().unwrap_or_default().to_string();
+                let sender_name = sender.split(':').next().unwrap_or(&sender)
+                    .trim_start_matches('@').to_string();
+                let body = val["content"]["body"].as_str().unwrap_or_default().to_string();
+                let timestamp = val["origin_server_ts"].as_u64().unwrap_or(0) / 1000;
+                if !event_id.is_empty() && !body.is_empty() {
+                    results.push(SearchResult {
+                        event_id,
+                        sender,
+                        sender_name,
+                        body,
+                        timestamp,
+                        room_id: room_id.to_string(),
+                    });
+                }
+            }
+        }
+        return Ok((results, room_events.next_batch.clone()));
+    }
+
+    Ok((results, None))
+}

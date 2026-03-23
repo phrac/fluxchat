@@ -806,32 +806,59 @@ fn PinsHud() -> Element {
     }
 }
 
-/// Search HUD — drops down from the tab bar.
+/// Search HUD — server-side message search.
 #[component]
 fn SearchHud() -> Element {
     let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
     let mut query = use_signal(|| String::new());
     let mut results = use_signal(|| Vec::<(String, String, String)>::new()); // (event_id, sender, body)
     let mut current_idx = use_signal(|| 0usize);
+    let mut searching = use_signal(|| false);
 
     let selected = ui.selected_room_id.read().clone();
 
-    let mut do_search = move |_: ()| {
-        let q = query().trim().to_lowercase();
-        if q.is_empty() {
-            results.set(Vec::new());
-            return;
-        }
-        if let Some(ref room_id) = selected {
-            let matches: Vec<_> = ui.messages_by_room.read()
-                .get(room_id)
-                .map(|msgs| msgs.iter()
-                    .filter(|m| m.body.to_lowercase().contains(&q))
-                    .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone()))
-                    .collect())
-                .unwrap_or_default();
-            current_idx.set(if matches.is_empty() { 0 } else { matches.len() - 1 });
-            results.set(matches);
+    let mut do_search = {
+        let app_state = app_state.clone();
+        let selected = selected.clone();
+        move |_: ()| {
+            let q = query().trim().to_string();
+            if q.is_empty() {
+                results.set(Vec::new());
+                return;
+            }
+            if let Some(ref room_id) = selected {
+                let app_state = app_state.clone();
+                let room_id = room_id.clone();
+                let q = q.clone();
+                searching.set(true);
+                spawn(async move {
+                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { searching.set(false); return; } };
+                    match fluxchat_core::messages::search_messages(&client, &room_id, &q, None).await {
+                        Ok((search_results, _next_batch)) => {
+                            let matches: Vec<_> = search_results.iter()
+                                .map(|r| (r.event_id.clone(), r.sender_name.clone(), r.body.clone()))
+                                .collect();
+                            current_idx.set(if matches.is_empty() { 0 } else { 0 });
+                            results.set(matches);
+                        }
+                        Err(_) => {
+                            // Fallback to client-side search
+                            let mut ui = consume_context::<UiState>();
+                            let matches: Vec<_> = ui.messages_by_room.read()
+                                .get(&room_id)
+                                .map(|msgs| msgs.iter()
+                                    .filter(|m| m.body.to_lowercase().contains(&q.to_lowercase()))
+                                    .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone()))
+                                    .collect())
+                                .unwrap_or_default();
+                            current_idx.set(if matches.is_empty() { 0 } else { 0 });
+                            results.set(matches);
+                        }
+                    }
+                    searching.set(false);
+                });
+            }
         }
     };
 
@@ -844,33 +871,61 @@ fn SearchHud() -> Element {
             input {
                 r#type: "text",
                 placeholder: "search messages...",
+                autofocus: true,
                 value: "{query}",
                 oninput: move |e| {
                     query.set(e.value());
-                    do_search(());
                 },
                 onkeydown: {
                     let mut ui = ui.clone();
+                    let app_state = app_state.clone();
+                    let selected = selected.clone();
                     move |e: Event<KeyboardData>| {
                         if e.key() == Key::Escape {
                             ui.search_open.set(false);
                         } else if e.key() == Key::Enter {
                             if result_count > 0 {
-                                let new_idx = if idx > 0 { idx - 1 } else { result_count - 1 };
+                                let new_idx = if idx + 1 < result_count { idx + 1 } else { 0 };
                                 current_idx.set(new_idx);
+                            } else {
+                                // Trigger search
+                                let q = query().trim().to_string();
+                                if !q.is_empty() {
+                                    if let Some(ref room_id) = selected {
+                                        let app_state = app_state.clone();
+                                        let room_id = room_id.clone();
+                                        searching.set(true);
+                                        spawn(async move {
+                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { searching.set(false); return; } };
+                                            match fluxchat_core::messages::search_messages(&client, &room_id, &q, None).await {
+                                                Ok((search_results, _)) => {
+                                                    let matches: Vec<_> = search_results.iter()
+                                                        .map(|r| (r.event_id.clone(), r.sender_name.clone(), r.body.clone()))
+                                                        .collect();
+                                                    current_idx.set(0);
+                                                    results.set(matches);
+                                                }
+                                                Err(_) => {}
+                                            }
+                                            searching.set(false);
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
                 },
             }
-            if result_count > 0 {
+            if *searching.read() {
+                span { class: "search-count", style: "animation: pulse 1s ease-in-out infinite;", "searching..." }
+            } else if result_count > 0 {
                 span { class: "search-count", "{idx + 1}/{result_count}" }
                 span { class: "search-nav",
                     onclick: move |_| { if idx > 0 { current_idx.set(idx - 1); } },
                     "▲"
                 }
                 span { class: "search-nav",
-                    onclick: move |_| { if idx < result_count - 1 { current_idx.set(idx + 1); } },
+                    onclick: move |_| { if idx + 1 < result_count { current_idx.set(idx + 1); } },
                     "▼"
                 }
             } else if !query().is_empty() {
