@@ -405,6 +405,37 @@ pub fn MessageInput() -> Element {
                 }
               } else { rsx! {} }
             }
+            // Formatting toolbar
+            div { style: "display: flex; align-items: center; gap: 2px; padding: 0 12px; flex-shrink: 0;",
+                { let fmt_buttons: &[(&str, &str, &str, &str)] = &[
+                    ("B", "Bold", "**", "**"),
+                    ("I", "Italic", "*", "*"),
+                    ("S", "Strikethrough", "~~", "~~"),
+                    ("C", "Code", "`", "`"),
+                    ("⟨⟩", "Code block", "```\n", "\n```"),
+                    ("🔗", "Link", "[", "](url)"),
+                ];
+                rsx! {
+                    for (label, title, prefix, suffix) in fmt_buttons.iter() {
+                        { let prefix = prefix.to_string();
+                          let suffix = suffix.to_string();
+                          let fw = if *label == "B" { "700" } else { "400" };
+                          let fs = if *label == "I" { "italic" } else { "normal" };
+                          rsx! {
+                            span {
+                                style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); cursor: pointer; padding: 2px 5px; border-radius: 2px; font-weight: {fw}; font-style: {fs};",
+                                class: "cmd-item",
+                                title: "{title}",
+                                onclick: move |_| {
+                                    let current = text();
+                                    text.set(format!("{current}{prefix}{suffix}"));
+                                },
+                                "{label}"
+                            }
+                        } }
+                    }
+                } }
+            }
             // Input row
             div { style: "display: flex; align-items: center; height: 40px; margin: 4px 12px 8px; border-radius: 6px; background: var(--bg-deep); border: 1px solid var(--border);",
                 // Attach button

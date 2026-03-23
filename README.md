@@ -67,6 +67,13 @@ This is an **MVP** with active development. Core chat functionality works.
 - Thread view UI
 - Desktop notifications
 - Virtual scrolling (for very large rooms)
+- Keyboard shortcuts (Ctrl+K room switcher, etc.)
+- Notification badges on spaces (aggregate unread counts)
+- Right-click context menus
+- Multi-account support
+- System tray (minimize to tray, badge)
+- Room directory (browse public rooms)
+- Room avatars in room list
 
 ## Architecture
 

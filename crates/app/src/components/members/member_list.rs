@@ -19,6 +19,29 @@ pub fn MemberList() -> Element {
         visible_count.set(BATCH_SIZE);
     });
 
+    // Periodically refresh members for presence updates (every 30s)
+    {
+        let app_state = app_state.clone();
+        use_future(move || {
+            let app_state = app_state.clone();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    let ui = consume_context::<UiState>();
+                    let room_id = ui.selected_room_id.peek().clone();
+                    if let Some(rid) = room_id {
+                        if let Ok(client) = app_state.get_client().await {
+                            if let Ok(members) = fluxchat_core::messages::get_room_members(&client, &rid).await {
+                                let mut ui = consume_context::<UiState>();
+                                ui.members_by_room.write().insert(rid, members);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let members = selected.as_ref()
         .and_then(|id| ui.members_by_room.read().get(id).cloned())
         .unwrap_or_default();

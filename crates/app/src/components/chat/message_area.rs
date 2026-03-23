@@ -36,6 +36,19 @@ pub fn MessageArea() -> Element {
         let mut eval = document::eval(r#"
             window.__fluxchat_dioxus = dioxus;
 
+            // Intercept link clicks — open in system browser, not the WebView
+            document.addEventListener('click', (e) => {
+                let a = e.target.closest('a[href]');
+                if (a && !a.classList.contains('mention-pill')) {
+                    let href = a.getAttribute('href');
+                    if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        dioxus.send('openurl:' + href);
+                    }
+                }
+            });
+
             // Drag-drop file handler
             document.addEventListener('dragover', (e) => { e.preventDefault(); });
             document.addEventListener('drop', async (e) => {
@@ -96,6 +109,10 @@ pub fn MessageArea() -> Element {
                                 }
                             }
                         }
+                    } else if msg.starts_with("openurl:") {
+                        // Open URL in system browser
+                        let url = msg[8..].to_string();
+                        let _ = open::that(&url);
                     } else if msg.starts_with("paginate:") {
                         // Pagination via Timeline API — just call paginate_backwards
                         // The diff stream watcher (spawned in select_room) will update messages_by_room
