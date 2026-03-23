@@ -16,6 +16,7 @@ const ICO_EDIT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="
 const ICO_DELETE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>"#;
 const ICO_SETTINGS: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
 use crate::components::chat::message_input::MessageInput;
+use crate::components::chat::emoji_picker::EmojiPicker;
 
 /// Nick color from a string hash.
 pub fn nick_color_class(name: &str) -> String {
@@ -343,9 +344,16 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
             // column-reverse on parent makes this appear at the bottom of the scroll area.
             div {
             if messages.is_empty() {
-                div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim);",
-                    "No messages yet"
-                }
+                { let is_loaded = ui.messages_by_room.peek().contains_key(&room_id);
+                rsx! {
+                    div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); font-family: var(--font-mono); font-size: 13px; gap: 8px;",
+                        if is_loaded {
+                            "No messages yet"
+                        } else {
+                            span { style: "animation: pulse 1.5s ease-in-out infinite;", "loading messages..." }
+                        }
+                    }
+                } }
             }
             for (_idx, msg) in messages.iter().enumerate() {
                 { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
@@ -456,9 +464,24 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                             span { class: "msg-action", onclick: { let eid = eid_del.clone(); let rid = rid_del.clone(); let app_state = app_state.clone(); move |_| { if let Some(msgs) = ui.messages_by_room.write().get_mut(&rid) { msgs.retain(|m| m.event_id != eid); } let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::delete_message(&client, &rid, &eid).await; }); } }, dangerous_inner_html: ICO_DELETE }
                                         }
                                         if showing_react {
-                                            div { class: "react-picker",
-                                                for emoji in ["👍", "❤️", "😂", "🎉", "😮", "😢"].iter() {
-                                                    span { onclick: { let emoji = emoji.to_string(); let eid = eid.clone(); let rid = rid_react.clone(); let app_state = app_state.clone(); move |_| { react_menu_event.set(None); let emoji = emoji.clone(); let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::send_reaction(&client, &rid, &eid, &emoji).await; }); } }, "{emoji}" }
+                                            div { style: "position: absolute; right: 0; bottom: 100%; margin-bottom: 4px; z-index: 100;",
+                                                EmojiPicker {
+                                                    on_select: {
+                                                        let eid = eid.clone();
+                                                        let rid = rid_react.clone();
+                                                        let app_state = app_state.clone();
+                                                        move |emoji: String| {
+                                                            react_menu_event.set(None);
+                                                            let emoji = emoji.clone();
+                                                            let eid = eid.clone();
+                                                            let rid = rid.clone();
+                                                            let app_state = app_state.clone();
+                                                            spawn(async move {
+                                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                                let _ = fluxchat_core::messages::send_reaction(&client, &rid, &eid, &emoji).await;
+                                                            });
+                                                        }
+                                                    },
                                                 }
                                             }
                                         }

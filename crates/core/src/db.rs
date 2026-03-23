@@ -94,4 +94,19 @@ impl AppDb {
             |row| row.get(0),
         ).ok()
     }
+
+    // ── Message cache ──
+
+    pub fn cache_room_messages(&self, room_id: &str, messages_json: &str) {
+        let _ = self.set_setting(&format!("msgs:{room_id}"), messages_json);
+    }
+
+    pub fn get_cached_room_messages(&self, room_id: &str) -> Option<String> {
+        self.get_setting(&format!("msgs:{room_id}"))
+    }
+
+    pub fn clear_cached_room_messages(&self, room_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("msgs:{room_id}")]);
+    }
 }

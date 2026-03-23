@@ -11,10 +11,9 @@ pub fn SpaceSidebar() -> Element {
     let selected = ui.selected_space_id.read().clone();
 
     let home_style = format!(
-        "width: 40px; height: 40px; border-radius: {}; background: {}; display: flex; align-items: center; justify-content: center; cursor: pointer; margin-bottom: 8px; color: {};",
+        "width: 40px; height: 40px; border-radius: {}; background: var(--bg-mid); display: flex; align-items: center; justify-content: center; cursor: pointer; margin-bottom: 8px; color: {}; font-size: 20px; transition: border-radius 0.15s;",
         if selected.is_none() { "12px" } else { "20px" },
-        if selected.is_none() { "var(--accent)" } else { "var(--bg-mid)" },
-        if selected.is_none() { "white" } else { "var(--text-muted)" },
+        if selected.is_none() { "var(--text-bright)" } else { "var(--text-muted)" },
     );
 
     rsx! {

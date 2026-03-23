@@ -65,6 +65,17 @@ body {
   overflow: hidden;
 }
 
+/* Loading pulse */
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* Slash command autocomplete */
+.cmd-item:hover {
+  background: var(--bg-hover);
+}
+
 /* Force font inheritance on inputs + steady caret */
 input, textarea {
   font-family: inherit;

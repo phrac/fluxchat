@@ -275,31 +275,44 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
     if !loaded {
         spawn(async move {
             let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-            if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, None).await {
-                let mut msgs: Vec<_> = paginated.messages.into_iter().rev().collect();
-                
-                // Pre-calculate transformed_body with user_id → avatar map
-                {
-                    let media_cache = core.media_cache.lock().unwrap();
-                    let mention_map: std::collections::HashMap<String, String> = ui.members_by_room.read()
-                        .get(&room_id)
-                        .map(|members| members.iter().filter_map(|m| {
-                            let mxc = m.avatar_url.as_ref()?;
-                            Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
-                        }).collect())
-                        .unwrap_or_default();
-                    for m in msgs.iter_mut() {
-                        if let Some(ref html) = m.formatted_body {
-                            m.transformed_body = Some(crate::state::transform_mentions(html, &mention_map));
-                        }
+            // Load enough messages to fill the viewport (~30 real messages or 3 batches max)
+            let mut all_msgs = Vec::new();
+            let mut token: Option<String> = None;
+            for _ in 0..3 {
+                let from = token.as_deref();
+                if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, from).await {
+                    let batch: Vec<_> = paginated.messages.into_iter().rev().collect();
+                    let has_more = paginated.end_token.is_some();
+                    token = paginated.end_token;
+                    let mut combined = batch;
+                    combined.append(&mut all_msgs);
+                    all_msgs = combined;
+                    let real_count = all_msgs.iter()
+                        .filter(|m| !m.event_id.starts_with("~state-") && !m.event_id.starts_with("~system-"))
+                        .count();
+                    if real_count >= 30 || !has_more { break; }
+                } else { break; }
+            }
+            // Pre-calculate transformed_body
+            {
+                let media_cache = core.media_cache.lock().unwrap();
+                let mention_map: std::collections::HashMap<String, String> = ui.members_by_room.read()
+                    .get(&room_id)
+                    .map(|members| members.iter().filter_map(|m| {
+                        let mxc = m.avatar_url.as_ref()?;
+                        Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
+                    }).collect())
+                    .unwrap_or_default();
+                for m in all_msgs.iter_mut() {
+                    if let Some(ref html) = m.formatted_body {
+                        m.transformed_body = Some(crate::state::transform_mentions(html, &mention_map));
                     }
                 }
-
-                if let Some(token) = paginated.end_token {
-                    ui.pagination_tokens.write().insert(room_id.clone(), token);
-                }
-                ui.messages_by_room.write().insert(room_id.clone(), msgs);
             }
+            if let Some(t) = token {
+                ui.pagination_tokens.write().insert(room_id.clone(), t);
+            }
+            ui.messages_by_room.write().insert(room_id.clone(), all_msgs);
             // Send read receipt and clear unread count
             if let Some(last_eid) = ui.messages_by_room.read().get(&room_id)
                 .and_then(|msgs| msgs.last())

@@ -3,8 +3,25 @@ use std::sync::Arc;
 use fluxchat_core::AppState;
 
 use crate::state::UiState;
+use crate::components::chat::emoji_picker::EmojiPicker;
 
 const ICO_PLUS: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>"#;
+
+const SLASH_COMMANDS: &[(&str, &str, &str)] = &[
+    ("/join", "<room>", "Join a room by alias or ID"),
+    ("/leave", "", "Leave the current room"),
+    ("/invite", "<user>", "Invite a user to this room"),
+    ("/kick", "<user> [reason]", "Kick a user from this room"),
+    ("/ban", "<user> [reason]", "Ban a user from this room"),
+    ("/topic", "<text>", "Set the room topic"),
+    ("/nick", "<name>", "Set the room display name"),
+    ("/me", "<action>", "Send an action message"),
+    ("/shrug", "[message]", "Append ¯\\_(ツ)_/¯"),
+    ("/tableflip", "[message]", "Append (╯°□°)╯︵ ┻━┻"),
+    ("/unflip", "[message]", "Append ┬─┬ノ( º _ ºノ)"),
+    ("/lenny", "[message]", "Append ( ͡° ͜ʖ ͡°)"),
+    ("/spoiler", "<text>", "Send a spoiler message"),
+];
 
 #[component]
 pub fn MessageInput() -> Element {
@@ -14,6 +31,7 @@ pub fn MessageInput() -> Element {
     let mut sending = use_signal(|| false);
     let mut uploading = use_signal(|| false);
     let mut typing_sent = use_signal(|| false);
+    let mut emoji_open = use_signal(|| false);
 
     let reply_to = ui.reply_to.read().clone();
     let edit_event = ui.edit_event.read().clone();
@@ -50,7 +68,132 @@ pub fn MessageInput() -> Element {
     };
 
     let mut handle_send = move |_: ()| {
-        let body = text().trim().to_string();
+        let mut body = text().trim().to_string();
+
+        // Handle slash commands
+        if body.starts_with('/') {
+            let room_id = match ui.selected_room_id.read().clone() { Some(id) => id, None => return };
+            let core = core.clone();
+            let parts: Vec<&str> = body.splitn(2, ' ').collect();
+            let cmd = parts[0];
+            let args = parts.get(1).unwrap_or(&"").trim().to_string();
+
+            match cmd {
+                "/join" => {
+                    if !args.is_empty() {
+                        text.set(String::new());
+                        let core = core.clone();
+                        spawn(async move {
+                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::rooms::join_room(&client, &args).await;
+                        });
+                        return;
+                    }
+                }
+                "/leave" => {
+                    text.set(String::new());
+                    let core = core.clone();
+                    let rid = room_id.clone();
+                    spawn(async move {
+                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                        let _ = fluxchat_core::rooms::leave_room(&client, &rid).await;
+                    });
+                    return;
+                }
+                "/invite" => {
+                    if !args.is_empty() {
+                        text.set(String::new());
+                        let core = core.clone();
+                        let rid = room_id.clone();
+                        spawn(async move {
+                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::rooms::invite_user(&client, &rid, &args).await;
+                        });
+                        return;
+                    }
+                }
+                "/kick" => {
+                    if !args.is_empty() {
+                        text.set(String::new());
+                        let core = core.clone();
+                        let rid = room_id.clone();
+                        let kparts: Vec<&str> = args.splitn(2, ' ').collect();
+                        let user = kparts[0].to_string();
+                        let reason = kparts.get(1).map(|s| s.to_string());
+                        spawn(async move {
+                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::rooms::kick_user(&client, &rid, &user, reason.as_deref()).await;
+                        });
+                        return;
+                    }
+                }
+                "/ban" => {
+                    if !args.is_empty() {
+                        text.set(String::new());
+                        let core = core.clone();
+                        let rid = room_id.clone();
+                        let bparts: Vec<&str> = args.splitn(2, ' ').collect();
+                        let user = bparts[0].to_string();
+                        let reason = bparts.get(1).map(|s| s.to_string());
+                        spawn(async move {
+                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::rooms::ban_user(&client, &rid, &user, reason.as_deref()).await;
+                        });
+                        return;
+                    }
+                }
+                "/topic" => {
+                    if !args.is_empty() {
+                        text.set(String::new());
+                        let core = core.clone();
+                        let rid = room_id.clone();
+                        spawn(async move {
+                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::rooms::set_room_topic(&client, &rid, &args).await;
+                        });
+                        return;
+                    }
+                }
+                "/nick" => {
+                    if !args.is_empty() {
+                        text.set(String::new());
+                        let core = core.clone();
+                        spawn(async move {
+                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::profile::set_display_name(&client, &args).await;
+                        });
+                        return;
+                    }
+                }
+                "/me" => {
+                    body = format!("* {args}");
+                    // Fall through to send as normal message
+                }
+                "/shrug" => {
+                    body = if args.is_empty() { "¯\\_(ツ)_/¯".into() } else { format!("{args} ¯\\_(ツ)_/¯") };
+                }
+                "/tableflip" => {
+                    body = if args.is_empty() { "(╯°□°)╯︵ ┻━┻".into() } else { format!("{args} (╯°□°)╯︵ ┻━┻") };
+                }
+                "/unflip" => {
+                    body = if args.is_empty() { "┬─┬ノ( º _ ºノ)".into() } else { format!("{args} ┬─┬ノ( º _ ºノ)") };
+                }
+                "/lenny" => {
+                    body = if args.is_empty() { "( ͡° ͜ʖ ͡°)".into() } else { format!("{args} ( ͡° ͜ʖ ͡°)") };
+                }
+                "/spoiler" => {
+                    if !args.is_empty() {
+                        body = args;
+                        // TODO: wrap in spoiler tags when formatted_body is supported for sending
+                    }
+                }
+                _ => {
+                    // Unknown command — send as plain text
+                }
+            }
+        }
+
+        let body = body; // rebind as immutable
         let pending_upload = {
             let val = ui.upload_pending.read().clone();
             val
@@ -216,6 +359,41 @@ pub fn MessageInput() -> Element {
                     }
                 }
             }
+            // Slash command autocomplete popup
+            { let current_text = text();
+              let show_cmds = current_text.starts_with('/') && !current_text.contains(' ');
+              let cmd_filter = if show_cmds { &current_text[..] } else { "" };
+              let filtered: Vec<_> = if show_cmds {
+                  SLASH_COMMANDS.iter()
+                      .filter(|(name, _, _)| name.starts_with(cmd_filter) || cmd_filter == "/")
+                      .collect()
+              } else { Vec::new() };
+              if !filtered.is_empty() {
+                rsx! {
+                    div { style: "margin: 0 12px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px 6px 0 0; border-bottom: none; max-height: 200px; overflow-y: auto; padding: 4px 0;",
+                        for (_i, (name, usage, desc)) in filtered.iter().enumerate() {
+                            {
+                              let cmd_text = format!("{name} {usage}");
+                              rsx! {
+                                div {
+                                    class: "cmd-item",
+                                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer;",
+                                    onclick: move |_| {
+                                        text.set(format!("{name} "));
+                                    },
+                                    span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--accent); font-weight: 600; flex-shrink: 0;",
+                                        "{cmd_text}"
+                                    }
+                                    span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);",
+                                        "{desc}"
+                                    }
+                                }
+                            } }
+                        }
+                    }
+                }
+              } else { rsx! {} }
+            }
             // Input row
             div { style: "display: flex; align-items: center; height: 40px; margin: 4px 12px 8px; border-radius: 6px; background: var(--bg-deep); border: 1px solid var(--border);",
                 // Attach button
@@ -297,7 +475,32 @@ pub fn MessageInput() -> Element {
                     onkeydown: {
                         let mut ui = ui_cancel3.clone();
                         move |e: Event<KeyboardData>| {
+                            let val = text();
+                            let in_autocomplete = val.starts_with('/') && !val.contains(' ');
+
+                            if e.key() == Key::Tab && in_autocomplete {
+                                // Accept first matching command on Tab
+                                let filtered: Vec<_> = SLASH_COMMANDS.iter()
+                                    .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
+                                    .collect();
+                                if !filtered.is_empty() {
+                                    text.set(format!("{} ", filtered[0].0));
+                                }
+                                return;
+                            }
+
                             if e.key() == Key::Enter && !e.modifiers().shift() {
+                                // If in autocomplete, accept highlighted command
+                                if in_autocomplete {
+                                    let filtered: Vec<_> = SLASH_COMMANDS.iter()
+                                        .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
+                                        .collect();
+                                    if filtered.len() == 1 {
+                                        // Exact single match — accept it
+                                        text.set(format!("{} ", filtered[0].0));
+                                        return;
+                                    }
+                                }
                                 handle_send(());
                             } else if e.key() == Key::Escape {
                                 ui.reply_to.set(None);
@@ -306,6 +509,25 @@ pub fn MessageInput() -> Element {
                             }
                         }
                     },
+                }
+                // Emoji button
+                div { style: "position: relative; flex-shrink: 0;",
+                    span {
+                        style: "color: var(--text-dim); cursor: pointer; padding: 0 8px; display: inline-flex; align-items: center; font-size: 16px;",
+                        onclick: move |_| { let v = *emoji_open.read(); emoji_open.set(!v); },
+                        "☺"
+                    }
+                    if *emoji_open.read() {
+                        div { style: "position: absolute; bottom: 100%; right: 0; margin-bottom: 8px; z-index: 100;",
+                            EmojiPicker {
+                                on_select: move |emoji: String| {
+                                    let current = text();
+                                    text.set(format!("{current}{emoji}"));
+                                    emoji_open.set(false);
+                                },
+                            }
+                        }
+                    }
                 }
             }
         }

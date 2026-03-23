@@ -378,6 +378,30 @@ fn SettingsModal() -> Element {
     let app_state = use_context::<Arc<AppState>>();
     let user_id = ui.user_id.read().clone();
     let display_name = ui.display_name.read().clone().unwrap_or_else(|| user_id.clone());
+    let mut edit_name = use_signal(|| display_name.clone());
+    let mut status_msg = use_signal(|| Option::<String>::None);
+
+    // Fetch current profile with avatar
+    let profile = use_resource({
+        let app_state = app_state.clone();
+        move || {
+            let app_state = app_state.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                let p = fluxchat_core::profile::get_profile(&client).await.ok()?;
+                let avatar_data = if let Some(ref mxc) = p.avatar_url {
+                    fluxchat_core::media::get_media_url(&client, &app_state.db, &app_state.media_cache, mxc).await.ok()
+                } else { None };
+                let banner_data = if let Some(ref mxc) = p.banner_url {
+                    fluxchat_core::media::get_media_url(&client, &app_state.db, &app_state.media_cache, mxc).await.ok()
+                } else { None };
+                Some((p, avatar_data, banner_data))
+            }
+        }
+    });
+    let profile_data = profile.read().clone().flatten();
+    let avatar_resolved = profile_data.as_ref().and_then(|(_, a, _)| a.clone());
+    let banner_resolved = profile_data.as_ref().and_then(|(_, _, b)| b.clone());
 
     rsx! {
         div {
@@ -401,31 +425,196 @@ fn SettingsModal() -> Element {
                 // Content
                 div { style: "padding: 20px; display: flex; flex-direction: column; gap: 16px;",
 
-                    // Account section
+                    // Profile section
                     div {
                         div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
-                            "account"
+                            "profile"
                         }
-                        div { style: "display: flex; flex-direction: column; gap: 6px; font-size: 13px;",
-                            div { style: "display: flex; justify-content: space-between;",
-                                span { style: "color: var(--text-muted);", "User ID" }
-                                span { style: "color: var(--text-normal); font-family: var(--font-mono);", "{user_id}" }
+                        // Avatar
+                        div { style: "display: flex; align-items: center; gap: 12px; margin-bottom: 12px;",
+                            if let Some(ref src) = avatar_resolved {
+                                img { src: "{src}", style: "width: 64px; height: 64px; border-radius: 50%; object-fit: cover;" }
+                            } else {
+                                div { style: "width: 64px; height: 64px; border-radius: 50%; background: var(--bg-light); display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: var(--text-muted);",
+                                    { display_name.chars().next().unwrap_or('?').to_uppercase().to_string() }
+                                }
                             }
-                            div { style: "display: flex; justify-content: space-between;",
-                                span { style: "color: var(--text-muted);", "Display Name" }
-                                span { style: "color: var(--text-normal);", "{display_name}" }
+                            div { style: "display: flex; flex-direction: column; gap: 4px;",
+                                // Upload avatar
+                                span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer;",
+                                    onclick: {
+                                        let app_state = app_state.clone();
+                                        move |_| {
+                                            let app_state = app_state.clone();
+                                            spawn(async move {
+                                                let mut eval = document::eval(r#"
+                                                    let input = document.createElement('input');
+                                                    input.type = 'file';
+                                                    input.accept = 'image/*';
+                                                    input.onchange = async () => {
+                                                        if (input.files.length > 0) {
+                                                            let file = input.files[0];
+                                                            let reader = new FileReader();
+                                                            reader.onload = () => {
+                                                                let base64 = reader.result.split(',')[1];
+                                                                dioxus.send(JSON.stringify({ type: file.type, data: base64 }));
+                                                            };
+                                                            reader.readAsDataURL(file);
+                                                        }
+                                                    };
+                                                    input.click();
+                                                "#);
+                                                if let Ok(json) = eval.recv::<String>().await {
+                                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                                                        let mime = parsed["type"].as_str().unwrap_or("image/png").to_string();
+                                                        if let Some(b64) = parsed["data"].as_str() {
+                                                            use base64::Engine;
+                                                            if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                                match fluxchat_core::profile::upload_avatar(&client, &mime, data).await {
+                                                                    Ok(_) => { status_msg.set(Some("avatar updated".into())); }
+                                                                    Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    },
+                                    "change avatar"
+                                }
+                                // Remove avatar
+                                span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); cursor: pointer;",
+                                    onclick: {
+                                        let app_state = app_state.clone();
+                                        move |_| {
+                                            let app_state = app_state.clone();
+                                            spawn(async move {
+                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                match fluxchat_core::profile::remove_avatar(&client).await {
+                                                    Ok(_) => { status_msg.set(Some("avatar removed".into())); }
+                                                    Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                                }
+                                            });
+                                        }
+                                    },
+                                    "remove avatar"
+                                }
+                            }
+                        }
+                        // User ID
+                        div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 8px;", "{user_id}" }
+                        // Display name
+                        div { style: "display: flex; gap: 6px;",
+                            input {
+                                style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                                value: "{edit_name}",
+                                oninput: move |e| edit_name.set(e.value()),
+                            }
+                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                                onclick: {
+                                    let app_state = app_state.clone();
+                                    move |_| {
+                                        let new_name = edit_name().trim().to_string();
+                                        if new_name.is_empty() { return; }
+                                        let app_state = app_state.clone();
+                                        spawn(async move {
+                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            match fluxchat_core::profile::set_display_name(&client, &new_name).await {
+                                                Ok(_) => {
+                                                    let mut ui = consume_context::<UiState>();
+                                                    ui.display_name.set(Some(new_name));
+                                                    status_msg.set(Some("name updated".into()));
+                                                }
+                                                Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                            }
+                                        });
+                                    }
+                                },
+                                "save"
                             }
                         }
                     }
 
-                    // Appearance section
+                    // Banner section
                     div {
                         div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
-                            "appearance"
+                            "banner"
                         }
-                        div { style: "font-size: 13px; color: var(--text-muted);",
-                            "Theme and font settings coming soon."
+                        if let Some(ref src) = banner_resolved {
+                            img { src: "{src}", style: "width: 100%; height: 80px; object-fit: cover; border-radius: 4px; margin-bottom: 8px;" }
+                        } else {
+                            div { style: "width: 100%; height: 80px; background: var(--bg-light); border-radius: 4px; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px; font-family: var(--font-mono);",
+                                "no banner"
+                            }
                         }
+                        div { style: "display: flex; gap: 8px;",
+                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer;",
+                                onclick: {
+                                    let app_state = app_state.clone();
+                                    move |_| {
+                                        let app_state = app_state.clone();
+                                        spawn(async move {
+                                            let mut eval = document::eval(r#"
+                                                let input = document.createElement('input');
+                                                input.type = 'file';
+                                                input.accept = 'image/*';
+                                                input.onchange = async () => {
+                                                    if (input.files.length > 0) {
+                                                        let file = input.files[0];
+                                                        let reader = new FileReader();
+                                                        reader.onload = () => {
+                                                            let base64 = reader.result.split(',')[1];
+                                                            dioxus.send(JSON.stringify({ type: file.type, data: base64 }));
+                                                        };
+                                                        reader.readAsDataURL(file);
+                                                    }
+                                                };
+                                                input.click();
+                                            "#);
+                                            if let Ok(json) = eval.recv::<String>().await {
+                                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                                                    let mime = parsed["type"].as_str().unwrap_or("image/png").to_string();
+                                                    if let Some(b64) = parsed["data"].as_str() {
+                                                        use base64::Engine;
+                                                        if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                            match fluxchat_core::profile::upload_banner(&client, &mime, data).await {
+                                                                Ok(_) => { status_msg.set(Some("banner updated".into())); }
+                                                                Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                },
+                                "change banner"
+                            }
+                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); cursor: pointer;",
+                                onclick: {
+                                    let app_state = app_state.clone();
+                                    move |_| {
+                                        let app_state = app_state.clone();
+                                        spawn(async move {
+                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            match fluxchat_core::profile::remove_banner(&client).await {
+                                                Ok(_) => { status_msg.set(Some("banner removed".into())); }
+                                                Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                            }
+                                        });
+                                    }
+                                },
+                                "remove banner"
+                            }
+                        }
+                    }
+
+                    // Status
+                    if let Some(ref msg) = *status_msg.read() {
+                        div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);", "{msg}" }
                     }
 
                     // Session section
