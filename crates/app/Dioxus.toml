@@ -1,8 +1,16 @@
 [application]
 name = "fluxchat"
+default_platform = "desktop"
+
+[application.tools.dx]
+
+[bundle]
+identifier = "com.fluxchat.app"
+publisher = "fluxchat"
+icon = ["../../assets/icons/icon_32x32.png", "../../assets/icons/icon_128x128.png", "../../assets/icons/icon_256x256.png", "../../assets/icons/icon_512x512.png"]
+
+[bundle.macos]
+frameworks = []
 
 [web.app]
 title = "fluxchat"
-
-[desktop]
-# decorations controlled at runtime in main.rs via cfg!(target_os)

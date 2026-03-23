@@ -33,12 +33,6 @@ fn main() {
                 .with_window(window_builder)
                 .with_menu(None)
                 .with_disable_context_menu(true)
-                .with_custom_head(r#"<style>*{-webkit-tap-highlight-color:transparent;}</style><script>
-                    // Suppress all sounds/notifications in WebView
-                    window.Audio = function(){return{play:()=>{},pause:()=>{},load:()=>{}}};
-                    window.Notification = {permission:'denied',requestPermission:()=>Promise.resolve('denied')};
-                    window.alert = ()=>{};
-                </script>"#.to_string())
         )
         .launch(app::App);
 }
