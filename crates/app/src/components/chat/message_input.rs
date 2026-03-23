@@ -242,24 +242,56 @@ pub fn MessageInput() -> Element {
             let body = body.clone();
             spawn(async move {
                 sending.set(true);
-                // Fall back to direct API for edit (Timeline.edit needs EventId not String)
-                let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
-                let _ = fluxchat_core::messages::edit_message(&client, &room_id, &event_id, &body).await;
+                if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                    let timelines = core.timelines.lock().await;
+                    if let Some(timeline) = timelines.get(&*rid) {
+                        if let Ok(eid) = fluxchat_core::ruma::EventId::parse(&event_id) {
+                            use matrix_sdk::room::edit::EditedContent;
+                            use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+                            let content = RoomMessageEventContentWithoutRelation::text_plain(&body);
+                            let item_id = matrix_sdk_ui::timeline::TimelineEventItemId::EventId(eid);
+                            let _ = timeline.edit(&item_id, EditedContent::RoomMessage(content)).await;
+                        }
+                    } else {
+                        let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
+                        let _ = fluxchat_core::messages::edit_message(&client, &room_id, &event_id, &body).await;
+                    }
+                }
                 sending.set(false);
             });
         } else if let Some((event_id, _, _)) = reply {
             spawn(async move {
                 sending.set(true);
-                let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
-                let _ = fluxchat_core::messages::send_reply(&client, &room_id, &body, &event_id).await;
+                if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                    let timelines = core.timelines.lock().await;
+                    if let Some(timeline) = timelines.get(&*rid) {
+                        if let Ok(eid) = fluxchat_core::ruma::EventId::parse(&event_id) {
+                            use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+                            let content = RoomMessageEventContentWithoutRelation::text_plain(&body);
+                            let _ = timeline.send_reply(content, eid).await;
+                        }
+                    } else {
+                        let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
+                        let _ = fluxchat_core::messages::send_reply(&client, &room_id, &body, &event_id).await;
+                    }
+                }
                 sending.set(false);
             });
         } else {
-            // Normal send — Timeline handles local echo via diff stream
+            // Normal send via Timeline
             spawn(async move {
                 sending.set(true);
-                let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
-                let _ = fluxchat_core::messages::send_message(&client, &room_id, &body).await;
+                if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                    let timelines = core.timelines.lock().await;
+                    if let Some(timeline) = timelines.get(&*rid) {
+                        use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+                        let content = RoomMessageEventContent::text_plain(&body);
+                        let _ = timeline.send(content.into()).await;
+                    } else {
+                        let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
+                        let _ = fluxchat_core::messages::send_message(&client, &room_id, &body).await;
+                    }
+                }
                 sending.set(false);
             });
         }

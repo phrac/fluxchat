@@ -431,7 +431,7 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                         span { class: "msg-action", onclick: { let eid = eid_pin.clone(); let rid = rid_pin.clone(); let app_state = app_state.clone(); move |_| { let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::pin_message(&client, &rid, &eid).await; }); } }, dangerous_inner_html: ICO_PIN }
                                         if is_own {
                                             span { class: "msg-action", onclick: { let body = edit_body.clone(); let eid = eid_edit.clone(); move |_| { ui.edit_event.set(Some((eid.clone(), body.clone()))); ui.reply_to.set(None); } }, dangerous_inner_html: ICO_EDIT }
-                                            span { class: "msg-action", onclick: { let eid = eid_del.clone(); let rid = rid_del.clone(); let app_state = app_state.clone(); move |_| { let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::delete_message(&client, &rid, &eid).await; }); } }, dangerous_inner_html: ICO_DELETE }
+                                            span { class: "msg-action", onclick: { let eid = eid_del.clone(); let rid = rid_del.clone(); let app_state = app_state.clone(); move |_| { let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { if let Ok(rid_parsed) = fluxchat_core::ruma::RoomId::parse(&rid) { let timelines = app_state.timelines.lock().await; if let Some(timeline) = timelines.get(&*rid_parsed) { if let Ok(eid_parsed) = fluxchat_core::ruma::EventId::parse(&eid) { let item_id = matrix_sdk_ui::timeline::TimelineEventItemId::EventId(eid_parsed); let _ = timeline.redact(&item_id, None).await; } } } }); } }, dangerous_inner_html: ICO_DELETE }
                                         }
                                         if showing_react {
                                             div { style: "position: absolute; right: 0; bottom: 100%; margin-bottom: 4px; z-index: 100;",
@@ -447,8 +447,15 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                                             let rid = rid.clone();
                                                             let app_state = app_state.clone();
                                                             spawn(async move {
-                                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                                                let _ = fluxchat_core::messages::send_reaction(&client, &rid, &eid, &emoji).await;
+                                                                if let Ok(rid_parsed) = fluxchat_core::ruma::RoomId::parse(&rid) {
+                                                                    let timelines = app_state.timelines.lock().await;
+                                                                    if let Some(timeline) = timelines.get(&*rid_parsed) {
+                                                                        if let Ok(eid_parsed) = fluxchat_core::ruma::EventId::parse(&eid) {
+                                                                            let item_id = matrix_sdk_ui::timeline::TimelineEventItemId::EventId(eid_parsed);
+                                                                            let _ = timeline.toggle_reaction(&item_id, &emoji).await;
+                                                                        }
+                                                                    }
+                                                                }
                                                             });
                                                         }
                                                     },

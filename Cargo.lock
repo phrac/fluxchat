@@ -1939,6 +1939,8 @@ dependencies = [
  "dirs",
  "fluxchat-core",
  "futures-util",
+ "matrix-sdk",
+ "matrix-sdk-ui",
  "rfd 0.15.4",
  "serde_json",
  "tokio",
