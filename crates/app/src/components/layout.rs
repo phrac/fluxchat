@@ -60,6 +60,16 @@ pub fn MainLayout() -> Element {
             SettingsModal {}
         }
 
+        // Create room modal
+        if *ui.create_room_open.read() {
+            CreateRoomModal {}
+        }
+
+        // Room settings modal
+        if *ui.room_settings_open.read() {
+            RoomSettingsModal {}
+        }
+
         // Image lightbox
         { let lb = ui.lightbox_url.read().clone();
           if let Some(ref url) = lb {
@@ -662,6 +672,236 @@ fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
                                 "{btn_label}"
                             }
                           }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Create Room modal.
+#[component]
+fn CreateRoomModal() -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+
+    let mut name = use_signal(|| String::new());
+    let mut topic = use_signal(|| String::new());
+    let mut is_public = use_signal(|| false);
+    let mut encrypted = use_signal(|| true);
+    let mut join_input = use_signal(|| String::new());
+    let mut creating = use_signal(|| false);
+    let mut error_msg = use_signal(|| Option::<String>::None);
+
+    rsx! {
+        div {
+            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;",
+            onclick: move |_| { ui.create_room_open.set(false); },
+            div {
+                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 400px; max-width: 480px;",
+                onclick: move |e| { e.stop_propagation(); },
+                div { style: "display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);",
+                    span { style: "font-size: 14px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);", "create room" }
+                    span { style: "cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 4px;",
+                        onclick: move |_| { ui.create_room_open.set(false); }, "×"
+                    }
+                }
+                div { style: "padding: 20px; display: flex; flex-direction: column; gap: 12px;",
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "name" }
+                        input {
+                            style: "width: 100%; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                            placeholder: "room-name", value: "{name}", oninput: move |e| name.set(e.value()),
+                        }
+                    }
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "topic" }
+                        input {
+                            style: "width: 100%; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                            placeholder: "optional topic", value: "{topic}", oninput: move |e| topic.set(e.value()),
+                        }
+                    }
+                    div { style: "display: flex; gap: 16px; font-size: 13px; font-family: var(--font-mono);",
+                        label { style: "display: flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer;",
+                            input { r#type: "checkbox", checked: *is_public.read(), onchange: move |e| is_public.set(e.checked()) }
+                            "public"
+                        }
+                        label { style: "display: flex; align-items: center; gap: 4px; color: var(--text-muted); cursor: pointer;",
+                            input { r#type: "checkbox", checked: *encrypted.read(), onchange: move |e| encrypted.set(e.checked()) }
+                            "encrypted"
+                        }
+                    }
+                    div { style: "border-top: 1px solid var(--border); margin: 4px 0;" }
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "or join room" }
+                        input {
+                            style: "width: 100%; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                            placeholder: "#room:server.org or !roomid:server.org", value: "{join_input}", oninput: move |e| join_input.set(e.value()),
+                        }
+                    }
+                    if let Some(ref err) = *error_msg.read() {
+                        div { style: "font-size: 12px; color: var(--red); font-family: var(--font-mono);", "{err}" }
+                    }
+                    div { style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;",
+                        span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border);",
+                            onclick: move |_| { ui.create_room_open.set(false); }, "cancel"
+                        }
+                        if !join_input().trim().is_empty() {
+                            span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--accent); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--accent);",
+                                onclick: {
+                                    let app_state = app_state.clone();
+                                    move |_| {
+                                        let r = join_input().trim().to_string();
+                                        let app_state = app_state.clone();
+                                        creating.set(true); error_msg.set(None);
+                                        spawn(async move {
+                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { creating.set(false); return; } };
+                                            match fluxchat_core::rooms::join_room(&client, &r).await {
+                                                Ok(_) => { consume_context::<UiState>().create_room_open.set(false); }
+                                                Err(e) => { error_msg.set(Some(format!("{e}"))); }
+                                            }
+                                            creating.set(false);
+                                        });
+                                    }
+                                },
+                                if *creating.read() { "joining..." } else { "join" }
+                            }
+                        }
+                        if !name().trim().is_empty() {
+                            span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--green); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--green);",
+                                onclick: {
+                                    let app_state = app_state.clone();
+                                    move |_| {
+                                        let rn = name().trim().to_string();
+                                        let rt = topic().trim().to_string();
+                                        let public = *is_public.read(); let enc = *encrypted.read();
+                                        let app_state = app_state.clone();
+                                        creating.set(true); error_msg.set(None);
+                                        spawn(async move {
+                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { creating.set(false); return; } };
+                                            let t = if rt.is_empty() { None } else { Some(rt.as_str()) };
+                                            match fluxchat_core::rooms::create_room(&client, &rn, t, public, enc, &[], None).await {
+                                                Ok(_) => { consume_context::<UiState>().create_room_open.set(false); }
+                                                Err(e) => { error_msg.set(Some(format!("{e}"))); }
+                                            }
+                                            creating.set(false);
+                                        });
+                                    }
+                                },
+                                if *creating.read() { "creating..." } else { "create" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Room Settings modal.
+#[component]
+fn RoomSettingsModal() -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+    let selected = ui.selected_room_id.read().clone();
+    let room_info = selected.as_ref()
+        .and_then(|id| ui.rooms.read().iter().find(|r| r.room_id == *id).cloned());
+    let room = match room_info { Some(r) => r, None => { ui.room_settings_open.set(false); return rsx! {}; } };
+
+    let mut edit_name = use_signal(|| room.name.clone());
+    let mut edit_topic = use_signal(|| room.topic.clone().unwrap_or_default());
+    let mut invite_user = use_signal(|| String::new());
+    let mut status_msg = use_signal(|| Option::<String>::None);
+    let room_id = room.room_id.clone();
+
+    rsx! {
+        div {
+            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;",
+            onclick: move |_| { ui.room_settings_open.set(false); },
+            div {
+                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 400px; max-width: 480px;",
+                onclick: move |e| { e.stop_propagation(); },
+                div { style: "display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);",
+                    span { style: "font-size: 14px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);", "room settings" }
+                    span { style: "cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 4px;",
+                        onclick: move |_| { ui.room_settings_open.set(false); }, "×"
+                    }
+                }
+                div { style: "padding: 20px; display: flex; flex-direction: column; gap: 12px;",
+                    div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);", "{room_id}" }
+                    // Name
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "name" }
+                        div { style: "display: flex; gap: 6px;",
+                            input { style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                                value: "{edit_name}", oninput: move |e| edit_name.set(e.value()),
+                            }
+                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                                onclick: { let app_state = app_state.clone(); let rid = room_id.clone();
+                                    move |_| { let n = edit_name().trim().to_string(); let app_state = app_state.clone(); let rid = rid.clone();
+                                        spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            match fluxchat_core::rooms::set_room_name(&client, &rid, &n).await { Ok(_) => { status_msg.set(Some("name updated".into())); } Err(e) => { status_msg.set(Some(format!("{e}"))); } }
+                                        });
+                                    }
+                                }, "save"
+                            }
+                        }
+                    }
+                    // Topic
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "topic" }
+                        div { style: "display: flex; gap: 6px;",
+                            input { style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                                value: "{edit_topic}", oninput: move |e| edit_topic.set(e.value()),
+                            }
+                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                                onclick: { let app_state = app_state.clone(); let rid = room_id.clone();
+                                    move |_| { let t = edit_topic().trim().to_string(); let app_state = app_state.clone(); let rid = rid.clone();
+                                        spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            match fluxchat_core::rooms::set_room_topic(&client, &rid, &t).await { Ok(_) => { status_msg.set(Some("topic updated".into())); } Err(e) => { status_msg.set(Some(format!("{e}"))); } }
+                                        });
+                                    }
+                                }, "save"
+                            }
+                        }
+                    }
+                    div { style: "display: flex; gap: 16px; font-size: 12px; font-family: var(--font-mono); color: var(--text-muted);",
+                        if room.is_encrypted { span { style: "color: var(--green);", "encrypted" } } else { span { "unencrypted" } }
+                        if room.is_direct { span { "direct message" } }
+                    }
+                    // Invite
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "invite user" }
+                        div { style: "display: flex; gap: 6px;",
+                            input { style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                                placeholder: "@user:server.org", value: "{invite_user}", oninput: move |e| invite_user.set(e.value()),
+                            }
+                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--green); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                                onclick: { let app_state = app_state.clone(); let rid = room_id.clone();
+                                    move |_| { let u = invite_user().trim().to_string(); if u.is_empty() { return; }
+                                        let app_state = app_state.clone(); let rid = rid.clone();
+                                        spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            match fluxchat_core::rooms::invite_user(&client, &rid, &u).await { Ok(_) => { invite_user.set(String::new()); status_msg.set(Some(format!("invited {u}"))); } Err(e) => { status_msg.set(Some(format!("{e}"))); } }
+                                        });
+                                    }
+                                }, "invite"
+                            }
+                        }
+                    }
+                    if let Some(ref msg) = *status_msg.read() {
+                        div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);", "{msg}" }
+                    }
+                    div { style: "border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px;",
+                        span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--red); cursor: pointer;",
+                            onclick: { let app_state = app_state.clone(); let rid = room_id.clone();
+                                move |_| { let app_state = app_state.clone(); let rid = rid.clone();
+                                    spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::rooms::leave_room(&client, &rid).await;
+                                        let mut ui = consume_context::<UiState>(); ui.room_settings_open.set(false); ui.selected_room_id.set(None);
+                                    });
+                                }
+                            }, "leave room"
                         }
                     }
                 }

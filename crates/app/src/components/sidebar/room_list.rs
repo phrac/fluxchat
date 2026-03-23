@@ -8,7 +8,7 @@ use crate::components::chat::message_area::nick_color_class;
 #[component]
 pub fn RoomList() -> Element {
     let _core = use_context::<Arc<AppState>>();
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let rooms = ui.rooms.read().clone();
     let selected = ui.selected_room_id.read().clone();
     let selected_space = ui.selected_space_id.read().clone();
@@ -45,8 +45,14 @@ pub fn RoomList() -> Element {
     rsx! {
         div { style: "width: 200px; flex-shrink: 0; background: var(--bg-dark); display: flex; flex-direction: column; border-right: 1px solid var(--border);",
             // Header
-            div { style: "height: 40px; display: flex; align-items: center; padding: 0 12px; font-weight: 600; font-size: 14px; color: var(--text-bright); border-bottom: 1px solid var(--border); flex-shrink: 0;",
+            div { style: "height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-weight: 600; font-size: 14px; color: var(--text-bright); border-bottom: 1px solid var(--border); flex-shrink: 0;",
                 "{header}"
+                span {
+                    style: "color: var(--text-dim); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 4px; border-radius: 3px;",
+                    title: "Create room or join",
+                    onclick: move |_| { ui.create_room_open.set(true); },
+                    "+"
+                }
             }
 
             // Room list
@@ -204,6 +210,11 @@ fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
             "{room.name}"
         }
     }
+}
+
+/// Public entry point for selecting a room from outside this module.
+pub fn select_room_public(core: Arc<AppState>, ui: UiState, room_id: String, room_name: String) {
+    select_room(core, ui, room_id, room_name);
 }
 
 fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name: String) {

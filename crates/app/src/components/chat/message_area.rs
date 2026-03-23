@@ -14,6 +14,7 @@ const ICO_REACT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill=
 const ICO_REPLY: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>"#;
 const ICO_EDIT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>"#;
 const ICO_DELETE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>"#;
+const ICO_SETTINGS: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
 use crate::components::chat::message_input::MessageInput;
 
 
@@ -225,8 +226,16 @@ pub fn MessageArea() -> Element {
             }
 
             if selected.is_none() {
-                div { style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim);",
-                    "Select a channel to start chatting"
+                { let space_id = ui.selected_space_id.read().clone();
+                  if let Some(sid) = space_id {
+                    rsx! { SpaceOverview { space_id: sid } }
+                  } else {
+                    rsx! {
+                        div { style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim);",
+                            "Select a channel to start chatting"
+                        }
+                    }
+                  }
                 }
             }
 
@@ -946,6 +955,13 @@ fn RoomActions() -> Element {
                 onclick: move |_| { ui.show_member_list.set(!members_visible); },
                 dangerous_inner_html: ICO_MEMBERS,
             }
+            // Room settings
+            span {
+                class: if *ui.room_settings_open.read() { "room-action active" } else { "room-action" },
+                title: "Room settings",
+                onclick: move |_| { let v = *ui.room_settings_open.read(); ui.room_settings_open.set(!v); },
+                dangerous_inner_html: ICO_SETTINGS,
+            }
         }
     }
 }
@@ -1003,5 +1019,125 @@ fn UrlPreviewCard(url: String) -> Element {
         }
     } else {
         rsx! {}
+    }
+}
+
+/// Space overview — shown when a space is selected but no room is open.
+#[component]
+fn SpaceOverview(space_id: String) -> Element {
+    let ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+
+    let space_info = ui.spaces.read().iter().find(|s| s.room_id == space_id).cloned();
+    let space = match space_info { Some(s) => s, None => return rsx! {} };
+
+    // Fetch space rooms
+    let space_rooms = use_resource({
+        let app_state = app_state.clone();
+        let sid = space_id.clone();
+        move || {
+            let app_state = app_state.clone();
+            let sid = sid.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                fluxchat_core::rooms::get_space_rooms(&client, &sid).await.ok()
+            }
+        }
+    });
+
+    let rooms = space_rooms.read().clone().flatten().unwrap_or_default();
+    let mut invite_user = use_signal(|| String::new());
+    let mut status_msg = use_signal(|| Option::<String>::None);
+
+    rsx! {
+        div { style: "flex: 1; display: flex; flex-direction: column; padding: 24px; overflow-y: auto;",
+            // Space header
+            div { style: "margin-bottom: 20px;",
+                div { style: "font-size: 20px; font-weight: 700; color: var(--text-bright); font-family: var(--font-mono); margin-bottom: 4px;",
+                    "{space.name}"
+                }
+                if let Some(ref topic) = space.topic {
+                    div { style: "font-size: 13px; color: var(--text-muted); font-family: var(--font-mono);",
+                        "{topic}"
+                    }
+                }
+                div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-top: 4px;",
+                    "{space_id}"
+                }
+            }
+
+            // Rooms in space
+            div { style: "margin-bottom: 20px;",
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                    "channels — {rooms.len()}"
+                }
+                for room in rooms.iter() {
+                    { let rid = room.room_id.clone();
+                      let rname = room.name.clone();
+                      let encrypted = room.is_encrypted;
+                      let unread = room.unread_count;
+                      rsx! {
+                        div {
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-family: var(--font-mono); font-size: 13px; color: var(--text-muted);",
+                            onmouseenter: move |_| {},
+                            onclick: {
+                                let core = app_state.clone();
+                                let ui = ui.clone();
+                                let rid = rid.clone();
+                                let rname = rname.clone();
+                                move |_| {
+                                    crate::components::sidebar::room_list::select_room_public(core.clone(), ui.clone(), rid.clone(), rname.clone());
+                                }
+                            },
+                            span { style: "color: var(--text-dim); font-size: 12px;",
+                                if encrypted { "🔒" } else { "#" }
+                            }
+                            span { style: "flex: 1;", "{rname}" }
+                            if unread > 0 {
+                                span { style: "background: var(--red); color: white; font-size: 9px; padding: 0 4px; border-radius: 6px; font-weight: 700;",
+                                    "{unread}"
+                                }
+                            }
+                        }
+                    } }
+                }
+            }
+
+            // Invite to space
+            div {
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "invite to space" }
+                div { style: "display: flex; gap: 6px; max-width: 400px;",
+                    input {
+                        style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                        placeholder: "@user:server.org",
+                        value: "{invite_user}",
+                        oninput: move |e| invite_user.set(e.value()),
+                    }
+                    span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--green); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                        onclick: {
+                            let app_state = app_state.clone();
+                            let sid = space_id.clone();
+                            move |_| {
+                                let u = invite_user().trim().to_string();
+                                if u.is_empty() { return; }
+                                let app_state = app_state.clone();
+                                let sid = sid.clone();
+                                spawn(async move {
+                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                    match fluxchat_core::rooms::invite_user(&client, &sid, &u).await {
+                                        Ok(_) => { invite_user.set(String::new()); status_msg.set(Some(format!("invited {u}"))); }
+                                        Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                    }
+                                });
+                            }
+                        },
+                        "invite"
+                    }
+                }
+                if let Some(ref msg) = *status_msg.read() {
+                    div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 4px;", "{msg}" }
+                }
+            }
+        }
     }
 }

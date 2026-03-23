@@ -56,6 +56,8 @@ pub struct UiState {
     pub read_rooms: Signal<std::collections::HashSet<String>>,  // rooms we've marked as read this session
     pub upload_pending: Signal<Option<(String, String, Vec<u8>)>>,  // (filename, mime_type, data)
     pub lightbox_url: Signal<Option<String>>,  // data URI for full-size image viewer
+    pub create_room_open: Signal<bool>,
+    pub room_settings_open: Signal<bool>,
 
     pub loading: Signal<bool>,
 
@@ -94,6 +96,8 @@ impl UiState {
             read_rooms: Signal::new(std::collections::HashSet::new()),
             upload_pending: Signal::new(None),
             lightbox_url: Signal::new(None),
+            create_room_open: Signal::new(false),
+            room_settings_open: Signal::new(false),
             loading: Signal::new(true),
             _avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             _avatar_version: Signal::new(0),
