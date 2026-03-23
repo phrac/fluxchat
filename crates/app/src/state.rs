@@ -30,8 +30,10 @@ pub struct UiState {
     pub selected_space_id: Signal<Option<String>>,
 
     pub messages_by_room: Signal<HashMap<String, Vec<MessageInfo>>>,
+    pub pagination_tokens: Signal<HashMap<String, String>>,
     pub members_by_room: Signal<HashMap<String, Vec<MemberInfo>>>,
     pub typing_by_room: Signal<HashMap<String, Vec<String>>>,
+    pub profile_user_id: Signal<Option<String>>,
 
     pub loading: Signal<bool>,
 
@@ -55,8 +57,10 @@ impl UiState {
             selected_room_id: Signal::new(None),
             selected_space_id: Signal::new(None),
             messages_by_room: Signal::new(HashMap::new()),
+            pagination_tokens: Signal::new(HashMap::new()),
             members_by_room: Signal::new(HashMap::new()),
             typing_by_room: Signal::new(HashMap::new()),
+            profile_user_id: Signal::new(None),
             loading: Signal::new(true),
             avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             avatar_version: Signal::new(0),

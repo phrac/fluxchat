@@ -18,7 +18,7 @@ fn main() {
                 .with_window(
                     WindowBuilder::new()
                         .with_title("fluxchat")
-                        .with_decorations(false)
+                        .with_decorations(cfg!(target_os = "macos"))
                         .with_inner_size(dioxus::desktop::LogicalSize::new(1200, 800))
                 )
                 .with_menu(None)

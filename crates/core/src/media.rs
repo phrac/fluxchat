@@ -37,7 +37,15 @@ pub async fn get_media_url(
     let data = client.media().get_media_content(&request, true).await
         .map_err(|e| AppError::Other(format!("Failed to download media: {e}")))?;
     let data_uri = bytes_to_data_uri(&data);
-    cache.lock().unwrap().insert(mxc_uri.to_string(), data_uri.clone());
+    let mut c = cache.lock().unwrap();
+    // Cap memory cache at 500 entries — evict oldest when full
+    if c.len() >= 500 {
+        // Remove ~100 entries to avoid evicting on every insert
+        let keys: Vec<String> = c.keys().take(100).cloned().collect();
+        for k in keys { c.remove(&k); }
+    }
+    c.insert(mxc_uri.to_string(), data_uri.clone());
+    drop(c);
     db.cache_media(mxc_uri, &data_uri);
     Ok(data_uri)
 }
@@ -76,7 +84,13 @@ pub async fn get_event_media(
     let data = client.media().get_media_content(&request, true).await
         .map_err(|e| AppError::Other(format!("Failed to download: {e}")))?;
     let data_uri = bytes_to_data_uri(&data);
-    cache.lock().unwrap().insert(cache_key.clone(), data_uri.clone());
+    let mut c = cache.lock().unwrap();
+    if c.len() >= 500 {
+        let keys: Vec<String> = c.keys().take(100).cloned().collect();
+        for k in keys { c.remove(&k); }
+    }
+    c.insert(cache_key.clone(), data_uri.clone());
+    drop(c);
     db.cache_media(&cache_key, &data_uri);
     Ok(data_uri)
 }

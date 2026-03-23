@@ -232,8 +232,18 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
             let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
             if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, None).await {
                 let msgs: Vec<_> = paginated.messages.into_iter().rev().collect();
-
+                if let Some(token) = paginated.end_token {
+                    ui.pagination_tokens.write().insert(room_id.clone(), token);
+                }
                 ui.messages_by_room.write().insert(room_id.clone(), msgs);
+                // Scroll after messages loaded into DOM
+                let scroll_id = format!("msg-scroll-{}", room_id);
+                document::eval(&format!(r#"
+                    requestAnimationFrame(() => requestAnimationFrame(() => {{
+                        let el = document.getElementById('{scroll_id}');
+                        if (el) el.scrollTop = el.scrollHeight;
+                    }}));
+                "#));
             }
             if let Ok(members) = fluxchat_core::messages::get_room_members(&client, &room_id).await {
                 ui.members_by_room.write().insert(room_id, members);

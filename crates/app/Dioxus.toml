@@ -5,4 +5,4 @@ name = "fluxchat"
 title = "fluxchat"
 
 [desktop]
-decorations = false
+# decorations controlled at runtime in main.rs via cfg!(target_os)

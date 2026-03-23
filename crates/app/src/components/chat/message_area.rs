@@ -1,15 +1,72 @@
 use dioxus::prelude::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use fluxchat_core::AppState;
 
 use crate::state::UiState;
 use crate::components::chat::message_input::MessageInput;
 
-/// Nick color from a string hash.
-pub fn nick_color_class(name: &str) -> String {
+
+/// Nick color index from a string hash.
+fn nick_color_index(name: &str) -> u32 {
     let mut hash: u32 = 0;
     for b in name.bytes() { hash = b as u32 + ((hash << 5).wrapping_sub(hash)); }
-    format!("nick-{}", (hash % 15))
+    hash % 15
+}
+
+/// Nick color from a string hash.
+pub fn nick_color_class(name: &str) -> String {
+    format!("nick-{}", nick_color_index(name))
+}
+
+/// Transform Matrix mention links into styled mention pills.
+/// `avatar_cache` maps user_id -> resolved data URI for avatars.
+fn transform_mentions(html: &str, avatar_cache: &HashMap<String, String>) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut remaining = html;
+    let prefix = r#"<a href="https://matrix.to/#/"#;
+
+    while let Some(start) = remaining.find(prefix) {
+        result.push_str(&remaining[..start]);
+        let after_prefix = &remaining[start + prefix.len()..];
+
+        if let Some(quote_end) = after_prefix.find("\">") {
+            let user_id_raw = &after_prefix[..quote_end];
+            let user_id = user_id_raw.replace("%40", "@");
+            let after_quote = &after_prefix[quote_end + 2..];
+
+            if user_id.starts_with('@') {
+                if let Some(end_tag) = after_quote.find("</a>") {
+                    let display_name = &after_quote[..end_tag];
+                    remaining = &after_quote[end_tag + 4..];
+
+                    let color_idx = nick_color_index(display_name);
+
+                    // Build avatar HTML — real image or colored initial
+                    let avatar_html = if let Some(data_uri) = avatar_cache.get(&user_id) {
+                        format!(r#"<img src="{data_uri}" style="width:14px;height:14px;border-radius:50%;object-fit:cover;vertical-align:middle;">"#)
+                    } else {
+                        let initial = display_name.chars().next()
+                            .unwrap_or('?').to_uppercase().to_string();
+                        format!(r#"<span class="mention-avatar nick-{color_idx}">{initial}</span>"#)
+                    };
+
+                    result.push_str(&format!(
+                        r#"<span class="mention-pill" data-userid="{user_id}" onclick="if(window.__fluxchat_dioxus)window.__fluxchat_dioxus.send(this.dataset.userid);">{avatar_html}{display_name}</span>"#
+                    ));
+                    continue;
+                }
+            }
+            // Not a user mention — keep original link
+            result.push_str(prefix);
+            remaining = after_prefix;
+        } else {
+            result.push_str(prefix);
+            remaining = after_prefix;
+        }
+    }
+    result.push_str(remaining);
+    result
 }
 
 #[component]
@@ -18,6 +75,38 @@ pub fn MessageArea() -> Element {
     let mut ui = use_context::<UiState>();
     let selected = ui.selected_room_id.read().clone();
     let tabs = ui.open_tabs.read().clone();
+
+    // Scroll active room to bottom on room switch
+    use_effect(move || {
+        let sel = ui.selected_room_id.read().clone();
+        if let Some(id) = sel {
+            let scroll_id = format!("msg-scroll-{}", id);
+            document::eval(&format!(r#"
+                requestAnimationFrame(() => requestAnimationFrame(() => {{
+                    let el = document.getElementById('{scroll_id}');
+                    if (el) el.scrollTop = el.scrollHeight;
+                }}));
+            "#));
+        }
+    });
+
+    // Set up JS→Rust channel for mention pill clicks
+    use_future(move || async move {
+        let mut eval = document::eval(r#"
+            window.__fluxchat_dioxus = dioxus;
+        "#);
+        loop {
+            match eval.recv::<String>().await {
+                Ok(user_id) => {
+                    if !user_id.is_empty() {
+                        let mut ui = consume_context::<UiState>();
+                        ui.profile_user_id.set(Some(user_id));
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-mid);",
@@ -35,89 +124,19 @@ pub fn MessageArea() -> Element {
                 }
             }
 
-            // Messages
-            if let Some(room_id) = &selected {
-                { let messages = ui.messages_by_room.read().get(room_id).cloned().unwrap_or_default();
-                  let msg_count = messages.len();
-
-                  // Auto-scroll to bottom when messages change
-                  use_effect(move || {
-                      let _ = msg_count; // track dependency
-                      document::eval(r#"
-                          setTimeout(() => {
-                              let el = document.getElementById('msg-scroll');
-                              if (el) el.scrollTop = el.scrollHeight;
-                          }, 10);
-                      "#);
-                  });
-
+            // Render ALL open tabs' messages — show/hide via CSS for instant switching
+            for (tab_room_id, _tab_name, _tab_space, _tab_mxc) in tabs.iter() {
+                { let is_active = selected.as_ref() == Some(tab_room_id);
+                  let display = if is_active { "flex: 1; display: flex; flex-direction: column; min-height: 0;" } else { "display: none;" };
                   rsx! {
-                    div { id: "msg-scroll", style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px;",
-                        if messages.is_empty() {
-                            div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim);",
-                                "No messages yet"
-                            }
-                        }
-                        for msg in messages.iter() {
-                            { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
-                              if is_system {
-                                rsx! {
-                                    div { style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: center;",
-                                        span { class: "msg-time", "" }
-                                        span { style: "width: 120px; flex-shrink: 0;" }
-                                        div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
-                                        span { style: "color: var(--green); margin-right: 4px;", "-->" }
-                                        "{msg.body}"
-                                    }
-                                }
-                              } else {
-                                let nick_class = nick_color_class(&msg.sender);
-                                let time = {
-                                    let ts = msg.timestamp;
-                                    let secs = ts % 86400;
-                                    let h = secs / 3600;
-                                    let m = (secs % 3600) / 60;
-                                    format!("{:02}:{:02}", h, m)
-                                };
-                                { let initial = msg.sender_name.chars().next().unwrap_or('?').to_uppercase().to_string();
-                                rsx! {
-                                    div { style: "display: flex; padding: 1px 0; align-items: center; overflow: hidden;",
-                                        // Timestamp
-                                        span { class: "msg-time", style: "align-self: baseline;", "{time}" }
-                                        // Mini avatar (colored initial)
-                                        div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; background: var(--bg-light);",
-                                            "{initial}"
-                                        }
-                                        // Nick — right-aligned in fixed-width column
-                                        span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: baseline;",
-                                            span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px;",
-                                                "{msg.sender_name}"
-                                            }
-                                        }
-                                        // IRC separator — solid vertical line
-                                        div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
-                                        // Message body
-                                        if let Some(ref html) = msg.formatted_body {
-                                            span { class: "msg-body", dangerous_inner_html: "{html}" }
-                                        } else {
-                                            span { class: "msg-body", "{msg.body}" }
-                                        }
-                                        // Reactions inline
-                                        for r in msg.reactions.iter() {
-                                            span { style: "font-size: 11px; background: rgba(59,130,246,0.15); border-radius: 8px; padding: 0 4px; color: var(--text-muted); flex-shrink: 0;",
-                                                "{r.emoji} {r.count}"
-                                            }
-                                        }
-                                    }
-                                }
-                                }
-                              }
-                            }
-                        }
+                    div { style: "{display}",
+                        RoomMessages { room_id: tab_room_id.clone(), is_active: is_active }
                     }
                   }
                 }
-            } else {
+            }
+
+            if selected.is_none() {
                 div { style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim);",
                     "Select a channel to start chatting"
                 }
@@ -147,17 +166,118 @@ pub fn MessageArea() -> Element {
     }
 }
 
+/// Per-room message list — stays in DOM, shown/hidden via CSS.
+#[component]
+fn RoomMessages(room_id: String, is_active: bool) -> Element {
+    let ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+
+    let messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
+
+    // Build avatar maps with one cache lock
+    let (avatar_map, mention_avatars) = {
+        let cache = app_state.media_cache.lock().unwrap();
+        let amap: HashMap<String, String> = messages.iter()
+            .filter_map(|m| {
+                let mxc = m.avatar_url.as_ref()?;
+                Some((mxc.clone(), cache.get(mxc)?.clone()))
+            })
+            .collect();
+        let mmap: HashMap<String, String> = ui.members_by_room.read()
+            .get(&room_id)
+            .map(|members| members.iter().filter_map(|m| {
+                let mxc = m.avatar_url.as_ref()?;
+                Some((m.user_id.clone(), cache.get(mxc)?.clone()))
+            }).collect())
+            .unwrap_or_default();
+        (amap, mmap)
+    };
+
+    let scroll_id = format!("msg-scroll-{}", room_id);
+
+    rsx! {
+        div { id: "{scroll_id}", style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px;",
+            if messages.is_empty() {
+                div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim);",
+                    "No messages yet"
+                }
+            }
+            for msg in messages.iter() {
+                { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
+                  if is_system {
+                    rsx! {
+                        div { style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: center;",
+                            span { class: "msg-time", "" }
+                            span { style: "width: 120px; flex-shrink: 0;" }
+                            div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
+                            span { style: "color: var(--green); margin-right: 4px;", "-->" }
+                            "{msg.body}"
+                        }
+                    }
+                  } else {
+                    let nick_class = nick_color_class(&msg.sender);
+                    let time = {
+                        let ts = msg.timestamp;
+                        let secs = ts % 86400;
+                        let h = secs / 3600;
+                        let m = (secs % 3600) / 60;
+                        format!("{:02}:{:02}", h, m)
+                    };
+                    let avatar_src = msg.avatar_url.as_ref().and_then(|mxc| avatar_map.get(mxc));
+                    let initial = msg.sender_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                    { rsx! {
+                        div { style: "display: flex; padding: 1px 0; align-items: center; overflow: hidden;",
+                            span { class: "msg-time", style: "align-self: baseline;", "{time}" }
+                            if let Some(src) = avatar_src {
+                                img {
+                                    src: "{src}",
+                                    style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px;",
+                                }
+                            } else {
+                                div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; background: var(--bg-light);",
+                                    "{initial}"
+                                }
+                            }
+                            span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: baseline;",
+                                span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px;",
+                                    "{msg.sender_name}"
+                                }
+                            }
+                            div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
+                            if msg.image_mxc.is_some() {
+                                InlineImage {
+                                    room_id: room_id.clone(),
+                                    event_id: msg.event_id.clone(),
+                                    body: msg.body.clone(),
+                                }
+                            } else if let Some(ref html) = msg.formatted_body {
+                                { let transformed = transform_mentions(html, &mention_avatars);
+                                rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } } }
+                            } else {
+                                span { class: "msg-body", "{msg.body}" }
+                            }
+                            for r in msg.reactions.iter() {
+                                span { style: "font-size: 11px; background: rgba(59,130,246,0.15); border-radius: 8px; padding: 0 4px; color: var(--text-muted); flex-shrink: 0;",
+                                    "{r.emoji} {r.count}"
+                                }
+                            }
+                        }
+                    }
+                    }
+                  }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_avatar_mxc: Option<String>, is_active: bool) -> Element {
     let mut ui = use_context::<UiState>();
     let core = use_context::<Arc<AppState>>();
 
     let tab_class = if is_active { "channel-tab active" } else { "channel-tab" };
-    let label = if let Some(ref s) = space_name {
-        format!("#{name}")
-    } else {
-        format!("#{name}")
-    };
+    let label = format!("#{name}");
 
     // Resolve space avatar
     let avatar_src = use_resource({
@@ -167,14 +287,13 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
             let mxc = mxc.clone();
             let core = core.clone();
             async move {
-                if let Some(mxc) = mxc {
-                    let client = core.get_client().await.ok()?;
-                    fluxchat_core::media::get_media_url(&client, &core.db, &core.media_cache, &mxc).await.ok()
-                } else { None }
+                let mxc = mxc?;
+                let client = core.get_client().await.ok()?;
+                fluxchat_core::media::get_media_url(&client, &core.db, &core.media_cache, &mxc).await.ok()
             }
         }
     });
-    let has_space_avatar = avatar_src.read().as_ref().and_then(|v| v.as_ref()).is_some();
+    let avatar_resolved = avatar_src.read().clone().flatten();
 
     let tab_id = room_id.clone();
     let close_id = room_id.clone();
@@ -186,21 +305,21 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
             onclick: move |_| { ui.selected_room_id.set(Some(tab_id.clone())); },
 
             // Space avatar
-            if has_space_avatar {
+            if let Some(ref src) = avatar_resolved {
                 img {
-                    src: "{avatar_src.read().as_ref().and_then(|v| v.as_ref()).unwrap()}",
-                    style: "width: 14px; height: 14px; border-radius: 3px; object-fit: cover;",
+                    src: "{src}",
+                    style: "width: 14px; height: 14px; border-radius: 3px; object-fit: cover; flex-shrink: 0;",
                 }
             } else if space_name.is_some() {
-                span { style: "font-size: 10px; opacity: 0.5; font-family: var(--font-mono);",
+                span { style: "font-size: 10px; opacity: 0.5; font-family: var(--font-mono); flex-shrink: 0;",
                     {space_name.as_ref().map(|s| s.chars().take(2).collect::<String>().to_uppercase()).unwrap_or_default()}
                 }
             }
 
-            "{label}"
+            span { class: "tab-title", "{label}" }
 
             span {
-                style: "font-size: 10px; opacity: 0.4; cursor: pointer; padding: 0 2px;",
+                class: "tab-close",
                 onclick: {
                     let cid = close_id.clone();
                     move |e: Event<MouseData>| {
@@ -212,6 +331,10 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
                             drop(tabs);
                             ui.selected_room_id.set(next);
                         }
+                        // Free memory for closed tab
+                        ui.messages_by_room.write().remove(&cid);
+                        ui.members_by_room.write().remove(&cid);
+                        ui.pagination_tokens.write().remove(&cid);
                     }
                 },
                 "×"
@@ -219,3 +342,40 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
         }
     }
 }
+
+#[component]
+fn InlineImage(room_id: String, event_id: String, body: String) -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+
+    let image_data = use_resource(move || {
+        let app_state = app_state.clone();
+        let room_id = room_id.clone();
+        let event_id = event_id.clone();
+        async move {
+            let client = app_state.get_client().await.ok()?;
+            fluxchat_core::media::get_event_media(
+                &client, &app_state.db, &app_state.media_cache, &room_id, &event_id
+            ).await.ok()
+        }
+    });
+
+    let resolved = image_data.read().clone();
+    match resolved {
+        Some(Some(data_uri)) => rsx! {
+            div { style: "display: flex; flex-direction: column;",
+                img {
+                    src: "{data_uri}",
+                    alt: "{body}",
+                    style: "max-width: 400px; max-height: 300px; border-radius: 4px; margin: 2px 0; object-fit: contain;",
+                }
+            }
+        },
+        Some(None) => rsx! {
+            span { class: "msg-body", style: "color: var(--text-dim);", "[image: {body}]" }
+        },
+        None => rsx! {
+            span { class: "msg-body", style: "color: var(--text-dim);", "[loading {body}...]" }
+        },
+    }
+}
+

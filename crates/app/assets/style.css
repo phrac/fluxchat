@@ -136,6 +136,36 @@ input, textarea {
 }
 .msg-body a:hover { text-decoration: underline; }
 
+/* Mention pills — inline user mentions */
+.mention-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(59, 130, 246, 0.12);
+  border-radius: 3px;
+  padding: 0 5px;
+  cursor: pointer;
+  font-weight: 500;
+  vertical-align: baseline;
+  transition: background 0.15s;
+}
+.mention-pill:hover {
+  background: rgba(59, 130, 246, 0.25);
+}
+.mention-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 8px;
+  font-weight: 700;
+  color: white;
+  background: var(--bg-hover);
+  flex-shrink: 0;
+}
+
 .msg-body strong, .msg-body b { color: var(--text-bright); font-weight: 600; }
 .msg-body em { font-style: italic; }
 
@@ -182,7 +212,7 @@ input, textarea {
   width: 48px;
 }
 
-/* Channel tabs — Chrome-style */
+/* Channel tabs — Chrome-style, flex to fill, shrink with more tabs */
 .channel-tab {
   padding: 6px 8px;
   font-size: 12px;
@@ -190,11 +220,10 @@ input, textarea {
   color: var(--text-muted);
   background: var(--bg-deep);
   border-right: 1px solid var(--border);
-  flex: 1;
-  min-width: 0;
-  max-width: 200px;
+  flex: 1 1 0;
+  min-width: 60px;
+  max-width: 240px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   transition: background 0.15s, color 0.15s;
   border-radius: 6px 6px 0 0;
@@ -211,4 +240,25 @@ input, textarea {
 }
 .channel-tab:last-child {
   border-right: none;
+}
+.channel-tab .tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.channel-tab .tab-close {
+  font-size: 10px;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+.channel-tab:hover .tab-close,
+.channel-tab.active .tab-close {
+  opacity: 0.6;
+}
+.channel-tab .tab-close:hover {
+  opacity: 1;
 }

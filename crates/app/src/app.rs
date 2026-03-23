@@ -95,9 +95,26 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
     match event {
         SyncEvent::Message(room_id, msg) => {
             let mut messages = ui.messages_by_room.write();
-            let room_msgs = messages.entry(room_id).or_insert_with(Vec::new);
+            let room_msgs = messages.entry(room_id.clone()).or_insert_with(Vec::new);
             room_msgs.retain(|m| !(m.event_id.starts_with("~local-") && m.sender == msg.sender && m.body == msg.body));
-            if !room_msgs.iter().any(|m| m.event_id == msg.event_id) { room_msgs.push(msg); }
+            if !room_msgs.iter().any(|m| m.event_id == msg.event_id) {
+                room_msgs.push(msg);
+                if room_msgs.len() > 200 {
+                    let drain_count = room_msgs.len() - 200;
+                    room_msgs.drain(..drain_count);
+                }
+            }
+            drop(messages);
+            // Auto-scroll if this is the active room
+            if ui.selected_room_id.read().as_ref() == Some(&room_id) {
+                let scroll_id = format!("msg-scroll-{}", room_id);
+                document::eval(&format!(r#"
+                    requestAnimationFrame(() => {{
+                        let el = document.getElementById('{scroll_id}');
+                        if (el) el.scrollTop = el.scrollHeight;
+                    }});
+                "#));
+            }
         }
         SyncEvent::Edit(room_id, event_id, body, formatted) => {
             let mut messages = ui.messages_by_room.write();
