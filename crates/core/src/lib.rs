@@ -18,3 +18,4 @@ pub use error::AppError;
 pub use models::*;
 pub use state::AppState;
 pub use matrix_sdk::Client;
+pub use matrix_sdk::ruma;

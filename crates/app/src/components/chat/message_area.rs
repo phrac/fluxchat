@@ -97,43 +97,14 @@ pub fn MessageArea() -> Element {
                             }
                         }
                     } else if msg.starts_with("paginate:") {
-                        // Pagination request from scroll listener
+                        // Pagination via Timeline API — just call paginate_backwards
+                        // The diff stream watcher (spawned in select_room) will update messages_by_room
                         let room_id = msg[9..].to_string();
                         let app_state = consume_context::<Arc<AppState>>();
-                        let mut ui = consume_context::<UiState>();
-                        let token = ui.pagination_tokens.read().get(&room_id).cloned();
-                        if let Some(token) = token {
-                            if let Ok(client) = app_state.get_client().await {
-                                if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, Some(&token)).await {
-                                    let mut older: Vec<_> = paginated.messages.into_iter().rev().collect();
-                                    // Pre-calculate transformed_body
-                                    {
-                                        let media_cache = app_state.media_cache.lock().unwrap();
-                                        let mention_map: std::collections::HashMap<String, String> = ui.members_by_room.read()
-                                            .get(&room_id)
-                                            .map(|members| members.iter().filter_map(|m| {
-                                                let mxc = m.avatar_url.as_ref()?;
-                                                Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
-                                            }).collect())
-                                            .unwrap_or_default();
-                                        for m in older.iter_mut() {
-                                            if let Some(ref html) = m.formatted_body {
-                                                m.transformed_body = Some(transform_mentions(html, &mention_map));
-                                            }
-                                        }
-                                    }
-                                    if let Some(new_token) = paginated.end_token {
-                                        ui.pagination_tokens.write().insert(room_id.clone(), new_token);
-                                    } else {
-                                        ui.pagination_tokens.write().remove(&room_id);
-                                    }
-                                    let mut msgs = ui.messages_by_room.write();
-                                    if let Some(existing) = msgs.get_mut(&room_id) {
-                                        let mut combined = older;
-                                        combined.append(existing);
-                                        *existing = combined;
-                                    }
-                                }
+                        if let Ok(room_id_parsed) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                            let timelines = app_state.timelines.lock().await;
+                            if let Some(timeline) = timelines.get(&*room_id_parsed) {
+                                let _ = timeline.paginate_backwards(20).await;
                             }
                         }
                         // Release the JS loading lock after a delay

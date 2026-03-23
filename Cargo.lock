@@ -1938,6 +1938,7 @@ dependencies = [
  "dioxus",
  "dirs",
  "fluxchat-core",
+ "futures-util",
  "rfd 0.15.4",
  "serde_json",
  "tokio",

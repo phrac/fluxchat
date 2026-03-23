@@ -271,28 +271,24 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
         }
     }
 
-    // Load messages if needed
+    // Load messages via Timeline API
     if !loaded {
         spawn(async move {
             let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-            // Load enough messages to fill the viewport (~30 real messages or 3 batches max)
-            let mut all_msgs = Vec::new();
-            let mut token: Option<String> = None;
-            for _ in 0..3 {
-                let from = token.as_deref();
-                if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, from).await {
-                    let batch: Vec<_> = paginated.messages.into_iter().rev().collect();
-                    let has_more = paginated.end_token.is_some();
-                    token = paginated.end_token;
-                    let mut combined = batch;
-                    combined.append(&mut all_msgs);
-                    all_msgs = combined;
-                    let real_count = all_msgs.iter()
-                        .filter(|m| !m.event_id.starts_with("~state-") && !m.event_id.starts_with("~system-"))
-                        .count();
-                    if real_count >= 30 || !has_more { break; }
-                } else { break; }
-            }
+            let room_id_parsed = match fluxchat_core::ruma::RoomId::parse(&room_id) { Ok(r) => r, Err(_) => return };
+
+            // Get or create timeline for this room
+            let timeline = match fluxchat_core::timeline::get_or_create_timeline(&client, &core.timelines, &room_id_parsed).await {
+                Ok(tl) => tl,
+                Err(e) => { tracing::error!("Failed to create timeline: {e}"); return; }
+            };
+
+            // Subscribe to get initial items + live update stream
+            let (initial_items, stream) = timeline.subscribe().await;
+
+            // Convert initial items to MessageInfo
+            let mut msgs = fluxchat_core::timeline::timeline_items_to_messages(&initial_items.into_iter().collect::<Vec<_>>());
+
             // Pre-calculate transformed_body
             {
                 let media_cache = core.media_cache.lock().unwrap();
@@ -303,29 +299,61 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
                         Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
                     }).collect())
                     .unwrap_or_default();
-                for m in all_msgs.iter_mut() {
+                for m in msgs.iter_mut() {
                     if let Some(ref html) = m.formatted_body {
                         m.transformed_body = Some(crate::state::transform_mentions(html, &mention_map));
                     }
                 }
             }
-            if let Some(t) = token {
-                ui.pagination_tokens.write().insert(room_id.clone(), t);
+            ui.messages_by_room.write().insert(room_id.clone(), msgs);
+
+            // Paginate backwards to fill viewport if we don't have enough messages
+            let real_count = ui.messages_by_room.read().get(&room_id)
+                .map(|m| m.iter().filter(|msg| !msg.event_id.starts_with("~state-")).count())
+                .unwrap_or(0);
+            if real_count < 30 {
+                let _ = timeline.paginate_backwards(30).await;
             }
-            ui.messages_by_room.write().insert(room_id.clone(), all_msgs);
-            // Send read receipt and clear unread count
-            if let Some(last_eid) = ui.messages_by_room.read().get(&room_id)
-                .and_then(|msgs| msgs.last())
-                .map(|m| m.event_id.clone())
-                .filter(|eid| !eid.starts_with("~"))
+
+            // Mark as read
+            let _ = timeline.mark_as_read(fluxchat_core::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read).await;
+
+            // Spawn a task to watch the diff stream and update messages_by_room
             {
-                let mut rooms = ui.rooms.write();
-                if let Some(r) = rooms.iter_mut().find(|r| r.room_id == room_id) {
-                    r.unread_count = 0;
-                }
-                drop(rooms);
-                let _ = fluxchat_core::messages::send_read_receipt(&client, &room_id, &last_eid).await;
+                use futures_util::StreamExt;
+                let room_id = room_id.clone();
+                let timeline = timeline.clone();
+                let core = core.clone();
+                spawn(async move {
+                    futures_util::pin_mut!(stream);
+                    while let Some(_diffs) = stream.next().await {
+                        // On any diff, re-convert the full timeline items (Strategy A: simple)
+                        let items = timeline.items().await;
+                        let mut msgs = fluxchat_core::timeline::timeline_items_to_messages(
+                            &items.into_iter().collect::<Vec<_>>()
+                        );
+                        // Pre-calculate transformed_body
+                        {
+                            let media_cache = core.media_cache.lock().unwrap();
+                            let mut ui = consume_context::<UiState>();
+                            let mention_map: std::collections::HashMap<String, String> = ui.members_by_room.read()
+                                .get(&room_id)
+                                .map(|members| members.iter().filter_map(|m| {
+                                    let mxc = m.avatar_url.as_ref()?;
+                                    Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
+                                }).collect())
+                                .unwrap_or_default();
+                            for m in msgs.iter_mut() {
+                                if let Some(ref html) = m.formatted_body {
+                                    m.transformed_body = Some(crate::state::transform_mentions(html, &mention_map));
+                                }
+                            }
+                            ui.messages_by_room.write().insert(room_id.clone(), msgs);
+                        }
+                    }
+                });
             }
+
             if let Ok(members) = fluxchat_core::messages::get_room_members(&client, &room_id).await {
                 ui.members_by_room.write().insert(room_id, members);
             }
