@@ -1008,6 +1008,63 @@ fn ProfileModal(user_id: String) -> Element {
                             span { style: "color: var(--text-normal); font-family: var(--font-mono);", "{server}" }
                         }
                     }
+
+                    // Ignore/unignore button (don't show for own user)
+                    { let is_self = ui.user_id.peek().as_str() == user_id;
+                      let is_ignored = ui.ignored_users.read().contains(&user_id);
+                      if !is_self {
+                        let uid = user_id.clone();
+                        if is_ignored {
+                            rsx! {
+                                div { style: "margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);",
+                                    span {
+                                        style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent-muted); cursor: pointer;",
+                                        onclick: {
+                                            let uid = uid.clone();
+                                            let app_state = app_state.clone();
+                                            move |_| {
+                                                let uid = uid.clone();
+                                                let app_state = app_state.clone();
+                                                consume_context::<UiState>().ignored_users.write().remove(&uid);
+                                                spawn(async move {
+                                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    if let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) {
+                                                        let _ = client.account().unignore_user(&parsed).await;
+                                                    }
+                                                });
+                                            }
+                                        },
+                                        "unignore user"
+                                    }
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                div { style: "margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);",
+                                    span {
+                                        style: "font-family: var(--font-mono); font-size: 12px; color: var(--red); cursor: pointer;",
+                                        onclick: {
+                                            let uid = uid.clone();
+                                            let app_state = app_state.clone();
+                                            move |_| {
+                                                let uid = uid.clone();
+                                                let app_state = app_state.clone();
+                                                consume_context::<UiState>().ignored_users.write().insert(uid.clone());
+                                                spawn(async move {
+                                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    if let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) {
+                                                        let _ = client.account().ignore_user(&parsed).await;
+                                                    }
+                                                });
+                                            }
+                                        },
+                                        "ignore user"
+                                    }
+                                }
+                            }
+                        }
+                      } else { rsx! {} }
+                    }
                 }
             }
         }

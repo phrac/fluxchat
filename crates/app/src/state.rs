@@ -35,6 +35,7 @@ pub struct UiState {
 
     pub rooms: Signal<Vec<RoomInfo>>,
     pub spaces: Signal<Vec<RoomInfo>>,
+    pub invited_rooms: Signal<Vec<RoomInfo>>,
     pub selected_room_id: Signal<Option<String>>,
     pub selected_space_id: Signal<Option<String>>,
 
@@ -53,6 +54,8 @@ pub struct UiState {
     pub pins_open: Signal<bool>,
     pub verification_request: Signal<Option<fluxchat_core::VerificationInfo>>,
     pub read_rooms: Signal<std::collections::HashSet<String>>,  // rooms we've marked as read this session
+    pub last_read_event: Signal<HashMap<String, String>>,  // room_id -> last event_id when room was read
+    pub ignored_users: Signal<std::collections::HashSet<String>>,  // user IDs we're ignoring
     pub upload_pending: Signal<Option<(String, String, Vec<u8>)>>,  // (filename, mime_type, data)
     pub lightbox_url: Signal<Option<String>>,  // data URI for full-size image viewer
     pub create_room_open: Signal<bool>,
@@ -135,6 +138,7 @@ impl UiState {
             display_name: Signal::new(None),
             rooms: Signal::new(Vec::new()),
             spaces: Signal::new(Vec::new()),
+            invited_rooms: Signal::new(Vec::new()),
             selected_room_id: Signal::new(None),
             selected_space_id: Signal::new(None),
             messages_by_room: Signal::new(HashMap::new()),
@@ -150,6 +154,8 @@ impl UiState {
             pins_open: Signal::new(false),
             verification_request: Signal::new(None),
             read_rooms: Signal::new(std::collections::HashSet::new()),
+            last_read_event: Signal::new(HashMap::new()),
+            ignored_users: Signal::new(std::collections::HashSet::new()),
             upload_pending: Signal::new(None),
             lightbox_url: Signal::new(None),
             create_room_open: Signal::new(false),

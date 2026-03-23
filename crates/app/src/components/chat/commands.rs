@@ -78,6 +78,135 @@ pub fn all_commands() -> Vec<SlashCommand> {
         },
         // ── Room commands ────────────────────────────────────────
         SlashCommand {
+            name: "/ignore",
+            usage: "<user>",
+            description: "Ignore a user (hide their messages)",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                if args.is_empty() { return CommandAction::Noop; }
+                let user_id = if args.starts_with('@') { args.to_string() } else { format!("@{args}") };
+                let uid = user_id.clone();
+                ui.ignored_users.write().insert(user_id);
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    if let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) {
+                        let _ = client.account().ignore_user(&parsed).await;
+                    }
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/unignore",
+            usage: "<user>",
+            description: "Stop ignoring a user",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                if args.is_empty() { return CommandAction::Noop; }
+                let user_id = if args.starts_with('@') { args.to_string() } else { format!("@{args}") };
+                let uid = user_id.clone();
+                ui.ignored_users.write().remove(&user_id);
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    if let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) {
+                        let _ = client.account().unignore_user(&parsed).await;
+                    }
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/whois",
+            usage: "<user>",
+            description: "Show user profile",
+            scope: CommandScope::Global,
+            execute: |args, _, _, mut ui| {
+                if args.is_empty() { return CommandAction::Noop; }
+                let user_id = if args.starts_with('@') { args.to_string() } else { format!("@{args}") };
+                ui.profile_user_id.set(Some(user_id));
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/query",
+            usage: "<user>",
+            description: "Open a DM conversation",
+            scope: CommandScope::Global,
+            execute: |args, _, core, _| {
+                if args.is_empty() { return CommandAction::Noop; }
+                let user = args.to_string();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    // Create or find the DM room, then select it
+                    let _ = fluxchat_core::rooms::open_dm(&client, &user).await;
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/clear",
+            usage: "",
+            description: "Clear message scrollback",
+            scope: CommandScope::Room,
+            execute: |_, room_id, _, mut ui| {
+                let rid = room_id.unwrap_or_default().to_string();
+                ui.messages_by_room.write().insert(rid, Vec::new());
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/away",
+            usage: "[message]",
+            description: "Set away status or return",
+            scope: CommandScope::Global,
+            execute: |args, _, core, _| {
+                let is_away = !args.is_empty();
+                let status_msg = if is_away { Some(args.to_string()) } else { None };
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    use matrix_sdk::ruma::api::client::presence::set_presence;
+                    use matrix_sdk::ruma::presence::PresenceState;
+                    let state = if is_away { PresenceState::Unavailable } else { PresenceState::Online };
+                    let user_id = match client.user_id() { Some(u) => u.to_owned(), None => return };
+                    let mut request = set_presence::v3::Request::new(user_id, state);
+                    request.status_msg = status_msg;
+                    let _ = client.send(request).await;
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/quit",
+            usage: "",
+            description: "Logout and quit",
+            scope: CommandScope::Global,
+            execute: |_, _, core, mut ui| {
+                spawn(async move {
+                    if let Ok(client) = core.get_client().await {
+                        let _ = client.matrix_auth().logout().await;
+                    }
+                    core.db.delete_session();
+                    ui.logged_in.set(false);
+                    ui.settings_open.set(false);
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/part",
+            usage: "",
+            description: "Leave the current room",
+            scope: CommandScope::Room,
+            execute: |_, room_id, core, _| {
+                let rid = room_id.unwrap_or_default().to_string();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    let _ = fluxchat_core::rooms::leave_room(&client, &rid).await;
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
             name: "/join",
             usage: "<room>",
             description: "Join a room by alias or ID",
@@ -203,6 +332,51 @@ pub fn all_commands() -> Vec<SlashCommand> {
                 spawn(async move {
                     let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
                     let _ = fluxchat_core::rooms::send_dm(&client, &user, &body).await;
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/attach",
+            usage: "",
+            description: "Attach a file",
+            scope: CommandScope::Room,
+            execute: |_, _, _, _| {
+                spawn(async move {
+                    let mut eval = document::eval(r#"
+                        let input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'image/*,video/*,audio/*,application/*';
+                        input.onchange = async () => {
+                            if (input.files.length > 0) {
+                                let file = input.files[0];
+                                let reader = new FileReader();
+                                reader.onload = () => {
+                                    let base64 = reader.result.split(',')[1];
+                                    dioxus.send(JSON.stringify({
+                                        name: file.name,
+                                        type: file.type || 'application/octet-stream',
+                                        data: base64
+                                    }));
+                                };
+                                reader.readAsDataURL(file);
+                            }
+                        };
+                        input.click();
+                    "#);
+                    if let Ok(json) = eval.recv::<String>().await {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                            let name = parsed["name"].as_str().unwrap_or("file").to_string();
+                            let mime = parsed["type"].as_str().unwrap_or("application/octet-stream").to_string();
+                            if let Some(b64) = parsed["data"].as_str() {
+                                use base64::Engine;
+                                if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                    let mut ui = consume_context::<UiState>();
+                                    ui.upload_pending.set(Some((name, mime, data)));
+                                }
+                            }
+                        }
+                    }
                 });
                 CommandAction::Handled
             },

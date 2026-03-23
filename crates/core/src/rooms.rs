@@ -75,6 +75,61 @@ pub async fn get_spaces(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, Ap
     Ok(spaces)
 }
 
+/// Get rooms the user has been invited to.
+pub async fn get_invited_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, AppError> {
+    let mut rooms = Vec::new();
+    for room in client.invited_rooms() {
+        let name = room.cached_display_name()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| room.room_id().to_string());
+        let avatar_url = room.avatar_url().map(|u| u.to_string());
+        let topic = room.topic();
+        rooms.push(RoomInfo {
+            room_id: room.room_id().to_string(),
+            name,
+            is_encrypted: false,
+            is_space: room.is_space(),
+            is_direct: false,
+            unread_count: 0,
+            avatar_url,
+            topic,
+            space_name: None,
+        });
+    }
+    Ok(rooms)
+}
+
+/// Accept a room invitation.
+pub async fn accept_invite(client: &matrix_sdk::Client, room_id: &str) -> Result<(), AppError> {
+    let rid = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&rid)
+        .ok_or(AppError::Other("Room not found".into()))?;
+    room.join().await.map_err(|e| AppError::Other(format!("Failed to join: {e}")))?;
+    Ok(())
+}
+
+/// Reject a room invitation.
+pub async fn reject_invite(client: &matrix_sdk::Client, room_id: &str) -> Result<(), AppError> {
+    let rid = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&rid)
+        .ok_or(AppError::Other("Room not found".into()))?;
+    room.leave().await.map_err(|e| AppError::Other(format!("Failed to reject: {e}")))?;
+    Ok(())
+}
+
+/// Check if a room has been upgraded (tombstoned). Returns (body, replacement_room_id) if so.
+pub async fn check_tombstone(client: &matrix_sdk::Client, room_id: &str) -> Option<(String, String)> {
+    use matrix_sdk::ruma::events::room::tombstone::RoomTombstoneEventContent;
+    let rid = matrix_sdk::ruma::RoomId::parse(room_id).ok()?;
+    let room = client.get_room(&rid)?;
+    let tombstone = room.get_state_event_static::<RoomTombstoneEventContent>().await.ok()??;
+    let content = tombstone.deserialize().ok()?;
+    let original = content.as_sync().and_then(|s| s.as_original())?;
+    Some((original.content.body.clone(), original.content.replacement_room.to_string()))
+}
+
 pub async fn get_space_rooms(client: &matrix_sdk::Client, space_id: &str) -> Result<Vec<RoomInfo>, AppError> {
     let space_room_id = matrix_sdk::ruma::RoomId::parse(space_id)
         .map_err(|_| AppError::Other("Invalid space ID".into()))?;
@@ -203,6 +258,29 @@ pub async fn create_room(
         use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
         let _ = room.send_state_event(RoomEncryptionEventContent::with_recommended_defaults()).await;
     }
+
+    Ok(room.room_id().to_string())
+}
+
+/// Open or create a DM room with a user without sending a message.
+pub async fn open_dm(client: &matrix_sdk::Client, user_id: &str) -> Result<String, AppError> {
+    let target = matrix_sdk::ruma::UserId::parse(user_id)
+        .map_err(|_| AppError::Other(format!("Invalid user ID: {user_id}")))?;
+
+    for room in client.joined_rooms() {
+        if room.is_direct().await.unwrap_or(false) && room.active_members_count() <= 2 {
+            if let Ok(Some(_)) = room.get_member_no_sync(&target).await {
+                return Ok(room.room_id().to_string());
+            }
+        }
+    }
+
+    let mut request = CreateRoomRequest::new();
+    request.is_direct = true;
+    request.invite = vec![target];
+    request.preset = Some(RoomPreset::PrivateChat);
+    let room = client.create_room(request).await
+        .map_err(|e| AppError::Other(format!("Failed to create DM: {e}")))?;
 
     Ok(room.room_id().to_string())
 }

@@ -264,11 +264,41 @@ fn RoomMessages(room_id: String) -> Element {
     let app_state = use_context::<Arc<AppState>>();
     let mut react_menu_event = use_signal(|| Option::<String>::None);
 
+    // Check for room tombstone (upgrade)
+    let tombstone = use_resource({
+        let app_state = app_state.clone();
+        let rid = room_id.clone();
+        move || {
+            let app_state = app_state.clone();
+            let rid = rid.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                fluxchat_core::rooms::check_tombstone(&client, &rid).await
+            }
+        }
+    });
+
     let my_user_id = ui.user_id.peek().clone();
     // Use peek() to avoid subscribing to the entire HashMap signal.
     // The diff stream watcher (spawned in select_room) directly writes to this
     // signal, which is the only trigger for re-render.
-    let messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
+    let all_messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
+    let ignored = ui.ignored_users.peek().clone();
+    let messages: Vec<_> = all_messages.into_iter()
+        .filter(|m| !ignored.contains(&m.sender))
+        .collect();
+
+    // Find the last-read event to show the "new messages" divider
+    let last_read_eid = ui.last_read_event.peek().get(&room_id).cloned();
+    // Find the index of the last-read message — divider goes after it
+    let unread_divider_idx = last_read_eid.as_ref().and_then(|eid| {
+        messages.iter().position(|m| m.event_id == *eid)
+    }).filter(|idx| *idx < messages.len().saturating_sub(1)); // Only show if there are messages after it
+
+    // Count new messages after the divider for the floating pill
+    let new_msg_count = unread_divider_idx
+        .map(|idx| messages.len() - idx - 1)
+        .unwrap_or(0);
 
     // Build avatar maps with one cache lock
     let (avatar_map, mention_avatars, uncached) = {
@@ -344,6 +374,60 @@ fn RoomMessages(room_id: String) -> Element {
     }
 
     rsx! {
+        div { style: "flex: 1; position: relative; display: flex; flex-direction: column; min-height: 0;",
+        // Room tombstone banner
+        { let ts = tombstone.read().clone().flatten();
+          if let Some((body, replacement_id)) = ts {
+            let rid = replacement_id.clone();
+            rsx! {
+                div { style: "padding: 8px 12px; background: rgba(234,179,8,0.1); border-bottom: 1px solid rgba(234,179,8,0.2); font-family: var(--font-mono); font-size: 12px; color: var(--yellow); display: flex; align-items: center; gap: 8px; flex-shrink: 0;",
+                    span { style: "flex: 1;",
+                        if body.is_empty() { "This room has been upgraded." } else { "{body}" }
+                    }
+                    span {
+                        style: "cursor: pointer; padding: 2px 10px; border-radius: 4px; border: 1px solid var(--yellow); font-size: 11px; flex-shrink: 0;",
+                        onclick: {
+                            let app_state = app_state.clone();
+                            move |_| {
+                                let rid = rid.clone();
+                                let app_state = app_state.clone();
+                                spawn(async move {
+                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                    let _ = fluxchat_core::rooms::join_room(&client, &rid).await;
+                                });
+                            }
+                        },
+                        "follow upgrade"
+                    }
+                }
+            }
+          } else { rsx! {} }
+        }
+        // Floating "new messages" pill
+        if new_msg_count > 0 {
+            div { style: "position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5;",
+                div {
+                    style: "background: var(--accent-muted); color: var(--bg-deep); font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 3px 12px; border-radius: 12px; cursor: pointer; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.3);",
+                    onclick: {
+                        let scroll_id = scroll_id.clone();
+                        let rid = room_id.clone();
+                        move |_| {
+                            // Scroll to bottom (which is scroll top in column-reverse)
+                            let sid = scroll_id.clone();
+                            document::eval(&format!(r#"
+                                let el = document.getElementById('{sid}');
+                                if (el) el.scrollTop = 0;
+                            "#));
+                            // Clear the divider
+                            ui.last_read_event.write().remove(&rid);
+                        }
+                    },
+                    { let s = if new_msg_count == 1 { "message" } else { "messages" };
+                      format!("{new_msg_count} new {s}")
+                    }
+                }
+            }
+        }
         div {
             id: "{scroll_id}",
             // column-reverse: browser naturally shows newest messages (bottom) first.
@@ -366,6 +450,16 @@ fn RoomMessages(room_id: String) -> Element {
                 } }
             }
             for (_idx, msg) in messages.iter().enumerate() {
+                // Unread divider — "new messages" line
+                if unread_divider_idx == Some(_idx) {
+                    div { style: "display: flex; align-items: center; gap: 8px; padding: 6px 0; margin: 4px 0;",
+                        div { style: "flex: 1; height: 1px; background: var(--accent-muted);" }
+                        span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent-muted); flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.5px;",
+                            "new messages"
+                        }
+                        div { style: "flex: 1; height: 1px; background: var(--accent-muted);" }
+                    }
+                }
                 { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
                   let eid = msg.event_id.clone();
                   if is_system {
@@ -512,6 +606,7 @@ fn RoomMessages(room_id: String) -> Element {
             }
             } // inner div
         } // scroll container
+        } // position wrapper
     }
 }
 

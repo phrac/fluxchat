@@ -6,6 +6,7 @@ use fluxchat_core::{AppState, RoomInfo};
 use crate::state::UiState;
 use crate::components::chat::message_area::nick_color_class;
 
+const ICO_INVITE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>"#;
 const ICO_HASH: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>"#;
 const ICO_DM: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>"#;
 const ICO_SPACE: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>"#;
@@ -100,6 +101,20 @@ pub fn RoomList() -> Element {
 
             // Room list
             div { style: "flex: 1; overflow-y: auto; padding: 8px 6px;",
+                // Invitations
+                { let invites = ui.invited_rooms.read().clone();
+                  if !invites.is_empty() {
+                    rsx! {
+                        SectionHeader { label: "Invites".to_string(), collapsed: collapsed, section_key: "invites".to_string(), icon: Some(ICO_INVITE.to_string()), avatar_mxc: None }
+                        if !collapsed_set.contains("invites") {
+                            for inv in invites.iter() {
+                                InviteEntry { room: inv.clone() }
+                            }
+                        }
+                    }
+                  } else { rsx! {} }
+                }
+
                 // Ungrouped channels
                 if !ungrouped.is_empty() {
                     SectionHeader { label: "Channels".to_string(), collapsed: collapsed, section_key: "channels".to_string(), icon: Some(ICO_HASH.to_string()), avatar_mxc: None }
@@ -245,9 +260,7 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
                 "{name}"
             }
             if room.unread_count > 0 {
-                span { style: "background: var(--red); color: white; font-size: 9px; padding: 0 4px; border-radius: 6px; font-weight: 700; flex-shrink: 0;",
-                    "{room.unread_count}"
-                }
+                span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;" }
             }
         }
     }
@@ -257,13 +270,15 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
 fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
     let core = use_context::<Arc<AppState>>();
     let ui = use_context::<UiState>();
+    let has_unread = room.unread_count > 0;
     let room_id = room.room_id.clone();
     let room_name = room.name.clone();
     let nick_class = nick_color_class(&room.name);
 
     let bg = if is_selected { "var(--bg-light)" } else { "transparent" };
-    let color = if is_selected { "var(--text-bright)" } else { "var(--text-muted)" };
-    let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px; background: {bg}; color: {color};");
+    let color = if is_selected || has_unread { "var(--text-bright)" } else { "var(--text-muted)" };
+    let weight = if has_unread { "600" } else { "400" };
+    let style = format!("padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px; background: {bg}; color: {color}; font-weight: {weight};");
 
     // Resolve DM avatar
     let avatar_src = use_resource({
@@ -299,7 +314,66 @@ fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
                     "{initial}"
                 }
             }
-            "{room.name}"
+            span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;",
+                "{room.name}"
+            }
+            if has_unread {
+                span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;" }
+            }
+        }
+    }
+}
+
+#[component]
+fn InviteEntry(room: RoomInfo) -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+    let room_id = room.room_id.clone();
+    let name = if room.name.is_empty() || room.name == room.room_id { "Unnamed room".to_string() } else { room.name.clone() };
+
+    rsx! {
+        div { style: "padding: 4px 8px; border-radius: 4px; font-size: 12px; margin-bottom: 2px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.15);",
+            div { style: "color: var(--text-bright); font-size: 13px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                "{name}"
+            }
+            if let Some(ref topic) = room.topic {
+                div { style: "color: var(--text-dim); font-size: 11px; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                    "{topic}"
+                }
+            }
+            div { style: "display: flex; gap: 6px;",
+                span {
+                    style: "font-family: var(--font-mono); font-size: 11px; color: var(--green); cursor: pointer; padding: 2px 8px; border-radius: 3px; border: 1px solid var(--green);",
+                    onclick: {
+                        let app_state = app_state.clone();
+                        let rid = room_id.clone();
+                        move |_| {
+                            let app_state = app_state.clone();
+                            let rid = rid.clone();
+                            spawn(async move {
+                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                let _ = fluxchat_core::rooms::accept_invite(&client, &rid).await;
+                            });
+                        }
+                    },
+                    "accept"
+                }
+                span {
+                    style: "font-family: var(--font-mono); font-size: 11px; color: var(--red); cursor: pointer; padding: 2px 8px; border-radius: 3px; border: 1px solid var(--border);",
+                    onclick: {
+                        let app_state = app_state.clone();
+                        let rid = room_id.clone();
+                        move |_| {
+                            let app_state = app_state.clone();
+                            let rid = rid.clone();
+                            spawn(async move {
+                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                let _ = fluxchat_core::rooms::reject_invite(&client, &rid).await;
+                            });
+                        }
+                    },
+                    "reject"
+                }
+            }
         }
     }
 }
@@ -311,6 +385,14 @@ pub fn select_room_public(core: Arc<AppState>, ui: UiState, room_id: String, roo
 
 fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name: String) {
     ui.selected_room_id.set(Some(room_id.clone()));
+
+    // Record the last event_id so we can show the "new messages" divider
+    if let Some(last_eid) = ui.messages_by_room.peek().get(&room_id)
+        .and_then(|msgs| msgs.last())
+        .map(|m| m.event_id.clone())
+    {
+        ui.last_read_event.write().insert(room_id.clone(), last_eid);
+    }
 
     // Mark this room as read and persist
     ui.read_rooms.write().insert(room_id.clone());

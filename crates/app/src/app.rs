@@ -128,6 +128,20 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
         }
     }
 
+    // Load ignored users from Matrix account data
+    {
+        use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
+        if let Ok(Some(raw)) = client.account().account_data::<IgnoredUserListEventContent>().await {
+            if let Ok(content) = raw.deserialize() {
+                let ignored: std::collections::HashSet<String> = content.ignored_users.keys()
+                    .map(|uid| uid.to_string())
+                    .collect();
+                tracing::info!("Loaded {} ignored users", ignored.len());
+                *ui.ignored_users.write() = ignored;
+            }
+        }
+    }
+
     // Try SyncService (Sliding Sync) first — gives us live room list, typing, etc.
     match fluxchat_core::sync_service::create_sync_service(client).await {
         Ok(sync_service) => {
@@ -142,6 +156,7 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
                 ui.rooms.set(rooms);
             }
             if let Ok(spaces) = fluxchat_core::rooms::get_spaces(client).await { ui.spaces.set(spaces); }
+            if let Ok(invited) = fluxchat_core::rooms::get_invited_rooms(client).await { ui.invited_rooms.set(invited); }
 
             // Spawn a task to periodically refresh room list (SyncService keeps SDK state updated)
             {
@@ -162,6 +177,9 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
                             }
                             if let Ok(spaces) = fluxchat_core::rooms::get_spaces(&client).await {
                                 ui.spaces.set(spaces);
+                            }
+                            if let Ok(invited) = fluxchat_core::rooms::get_invited_rooms(&client).await {
+                                ui.invited_rooms.set(invited);
                             }
                         }
                     }
@@ -189,6 +207,7 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
                 ui.rooms.set(rooms);
             }
             if let Ok(spaces) = fluxchat_core::rooms::get_spaces(client).await { ui.spaces.set(spaces); }
+            if let Ok(invited) = fluxchat_core::rooms::get_invited_rooms(client).await { ui.invited_rooms.set(invited); }
 
             if let Some(tx) = SYNC_TX.get() {
                 let bridge = ChannelSyncBridge { tx: tx.clone() };
