@@ -65,19 +65,18 @@ body {
   overflow: hidden;
 }
 
-/* Terminal-style caret + force font inheritance */
+/* Force font inheritance on inputs + steady caret */
 input, textarea {
-  caret-color: var(--accent);
-  caret-shape: block;
-  animation: none;
   font-family: inherit;
   font-size: inherit;
+  caret-color: var(--accent);
 }
 
-@supports not (caret-shape: block) {
-  input, textarea {
-    caret-color: var(--accent);
-  }
+/* Override WebKit blink animation on the caret */
+input:focus, textarea:focus {
+  -webkit-animation: none !important;
+  animation: none !important;
+}
 }
 
 /* Scrollbar */

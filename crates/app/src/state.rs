@@ -70,6 +70,63 @@ pub struct UiState {
     pub open_tabs: Signal<Vec<(String, String, Option<String>, Option<String>)>>,
 }
 
+/// Nick color index from a string hash.
+pub fn nick_color_index(name: &str) -> u32 {
+    let mut hash: u32 = 0;
+    for b in name.bytes() { hash = b as u32 + ((hash << 5).wrapping_sub(hash)); }
+    hash % 15
+}
+
+/// Transform Matrix mention links into styled mention pills.
+/// `avatar_cache` maps user_id -> resolved data URI for avatars.
+pub fn transform_mentions(html: &str, avatar_cache: &HashMap<String, String>) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut remaining = html;
+    let prefix = r#"<a href="https://matrix.to/#/"#;
+
+    while let Some(start) = remaining.find(prefix) {
+        result.push_str(&remaining[..start]);
+        let after_prefix = &remaining[start + prefix.len()..];
+
+        if let Some(quote_end) = after_prefix.find("\">") {
+            let user_id_raw = &after_prefix[..quote_end];
+            let user_id = user_id_raw.replace("%40", "@");
+            let after_quote = &after_prefix[quote_end + 2..];
+
+            if user_id.starts_with('@') {
+                if let Some(end_tag) = after_quote.find("</a>") {
+                    let display_name = &after_quote[..end_tag];
+                    remaining = &after_quote[end_tag + 4..];
+
+                    let color_idx = nick_color_index(display_name);
+
+                    // Build avatar HTML — real image or colored initial
+                    let avatar_html = if let Some(data_uri) = avatar_cache.get(&user_id) {
+                        format!(r#"<img src="{data_uri}" style="width:14px;height:14px;border-radius:50%;object-fit:cover;vertical-align:middle;">"#)
+                    } else {
+                        let initial = display_name.chars().next()
+                            .unwrap_or('?').to_uppercase().to_string();
+                        format!(r#"<span class="mention-avatar nick-{color_idx}">{initial}</span>"#)
+                    };
+
+                    result.push_str(&format!(
+                        r#"<span class="mention-pill" data-userid="{user_id}" onclick="if(window.__fluxchat_dioxus)window.__fluxchat_dioxus.send(this.dataset.userid);">{avatar_html}{display_name}</span>"#
+                    ));
+                    continue;
+                }
+            }
+            // Not a user mention — keep original link
+            result.push_str(prefix);
+            remaining = after_prefix;
+        } else {
+            result.push_str(prefix);
+            remaining = after_prefix;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
 impl UiState {
     pub fn new() -> Self {
         Self {

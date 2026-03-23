@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use fluxchat_core::AppState;
 
-use crate::state::{UiState, RightPanel};
+use crate::state::{UiState, RightPanel, nick_color_index, transform_mentions};
 
 // Inline SVG icons — render identically on all platforms
 const ICO_PIN: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 11V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v7"/><path d="M5 15h14l-1.5-4H6.5z"/></svg>"#;
@@ -17,67 +17,9 @@ const ICO_DELETE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill
 const ICO_SETTINGS: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
 use crate::components::chat::message_input::MessageInput;
 
-
-/// Nick color index from a string hash.
-fn nick_color_index(name: &str) -> u32 {
-    let mut hash: u32 = 0;
-    for b in name.bytes() { hash = b as u32 + ((hash << 5).wrapping_sub(hash)); }
-    hash % 15
-}
-
 /// Nick color from a string hash.
 pub fn nick_color_class(name: &str) -> String {
     format!("nick-{}", nick_color_index(name))
-}
-
-/// Transform Matrix mention links into styled mention pills.
-/// `avatar_cache` maps user_id -> resolved data URI for avatars.
-fn transform_mentions(html: &str, avatar_cache: &HashMap<String, String>) -> String {
-    let mut result = String::with_capacity(html.len());
-    let mut remaining = html;
-    let prefix = r#"<a href="https://matrix.to/#/"#;
-
-    while let Some(start) = remaining.find(prefix) {
-        result.push_str(&remaining[..start]);
-        let after_prefix = &remaining[start + prefix.len()..];
-
-        if let Some(quote_end) = after_prefix.find("\">") {
-            let user_id_raw = &after_prefix[..quote_end];
-            let user_id = user_id_raw.replace("%40", "@");
-            let after_quote = &after_prefix[quote_end + 2..];
-
-            if user_id.starts_with('@') {
-                if let Some(end_tag) = after_quote.find("</a>") {
-                    let display_name = &after_quote[..end_tag];
-                    remaining = &after_quote[end_tag + 4..];
-
-                    let color_idx = nick_color_index(display_name);
-
-                    // Build avatar HTML — real image or colored initial
-                    let avatar_html = if let Some(data_uri) = avatar_cache.get(&user_id) {
-                        format!(r#"<img src="{data_uri}" style="width:14px;height:14px;border-radius:50%;object-fit:cover;vertical-align:middle;">"#)
-                    } else {
-                        let initial = display_name.chars().next()
-                            .unwrap_or('?').to_uppercase().to_string();
-                        format!(r#"<span class="mention-avatar nick-{color_idx}">{initial}</span>"#)
-                    };
-
-                    result.push_str(&format!(
-                        r#"<span class="mention-pill" data-userid="{user_id}" onclick="if(window.__fluxchat_dioxus)window.__fluxchat_dioxus.send(this.dataset.userid);">{avatar_html}{display_name}</span>"#
-                    ));
-                    continue;
-                }
-            }
-            // Not a user mention — keep original link
-            result.push_str(prefix);
-            remaining = after_prefix;
-        } else {
-            result.push_str(prefix);
-            remaining = after_prefix;
-        }
-    }
-    result.push_str(remaining);
-    result
 }
 
 #[component]
@@ -87,22 +29,6 @@ pub fn MessageArea() -> Element {
     let selected = ui.selected_room_id.read().clone();
     let tabs = ui.open_tabs.read().clone();
 
-    // Scroll active room to bottom on room switch
-    use_effect(move || {
-        let sel = ui.selected_room_id.read().clone();
-        if let Some(id) = sel {
-            let scroll_id = format!("msg-scroll-{}", id);
-            document::eval(&format!(r#"
-                function sb() {{
-                    let el = document.getElementById('{scroll_id}');
-                    if (el) el.scrollTop = el.scrollHeight;
-                }}
-                requestAnimationFrame(() => requestAnimationFrame(sb));
-                setTimeout(sb, 100);
-                setTimeout(sb, 300);
-            "#));
-        }
-    });
 
     // Set up JS→Rust channel for mention pill clicks and drag-drop
     use_future(move || async move {
@@ -169,6 +95,53 @@ pub fn MessageArea() -> Element {
                                 }
                             }
                         }
+                    } else if msg.starts_with("paginate:") {
+                        // Pagination request from scroll listener
+                        let room_id = msg[9..].to_string();
+                        let app_state = consume_context::<Arc<AppState>>();
+                        let mut ui = consume_context::<UiState>();
+                        let token = ui.pagination_tokens.read().get(&room_id).cloned();
+                        if let Some(token) = token {
+                            if let Ok(client) = app_state.get_client().await {
+                                if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, Some(&token)).await {
+                                    let mut older: Vec<_> = paginated.messages.into_iter().rev().collect();
+                                    // Pre-calculate transformed_body
+                                    {
+                                        let media_cache = app_state.media_cache.lock().unwrap();
+                                        let mention_map: std::collections::HashMap<String, String> = ui.members_by_room.read()
+                                            .get(&room_id)
+                                            .map(|members| members.iter().filter_map(|m| {
+                                                let mxc = m.avatar_url.as_ref()?;
+                                                Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
+                                            }).collect())
+                                            .unwrap_or_default();
+                                        for m in older.iter_mut() {
+                                            if let Some(ref html) = m.formatted_body {
+                                                m.transformed_body = Some(transform_mentions(html, &mention_map));
+                                            }
+                                        }
+                                    }
+                                    if let Some(new_token) = paginated.end_token {
+                                        ui.pagination_tokens.write().insert(room_id.clone(), new_token);
+                                    } else {
+                                        ui.pagination_tokens.write().remove(&room_id);
+                                    }
+                                    let mut msgs = ui.messages_by_room.write();
+                                    if let Some(existing) = msgs.get_mut(&room_id) {
+                                        let mut combined = older;
+                                        combined.append(existing);
+                                        *existing = combined;
+                                    }
+                                }
+                            }
+                        }
+                        // Release the JS loading lock after a delay
+                        let sid = format!("msg-scroll-{}", room_id);
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        document::eval(&format!(r#"
+                            let el = document.getElementById('{sid}');
+                            if (el) el.__fluxLoading = false;
+                        "#));
                     } else if !msg.is_empty() {
                         // Mention pill click
                         let mut ui = consume_context::<UiState>();
@@ -214,11 +187,13 @@ pub fn MessageArea() -> Element {
             }
 
             // Render ALL open tabs' messages — show/hide via CSS for instant switching
+            // but wrapped in a component that only updates when its room is active.
             for (tab_room_id, _tab_name, _tab_space, _tab_mxc) in tabs.iter() {
                 { let is_active = selected.as_ref() == Some(tab_room_id);
-                  let display = if is_active { "flex: 1; display: flex; flex-direction: column; min-height: 0;" } else { "display: none;" };
                   rsx! {
-                    div { style: "{display}",
+                    div {
+                        key: "{tab_room_id}",
+                        style: if is_active { "flex: 1; display: flex; flex-direction: column; min-height: 0;" } else { "display: none;" },
                         RoomMessages { room_id: tab_room_id.clone(), is_active: is_active }
                     }
                   }
@@ -270,26 +245,17 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
     let app_state = use_context::<Arc<AppState>>();
     let my_user_id = ui.user_id.read().clone();
     let mut react_menu_event = use_signal(|| Option::<String>::None);
-    let mut loading_older = use_signal(|| false);
-    let mut has_scrolled_initial = use_signal(|| false);
 
-    // Reset scroll flag when room changes (component reuse)
-    let room_id_for_reset = room_id.clone();
-    use_effect(move || {
-        let _ = &room_id_for_reset;
-        has_scrolled_initial.set(false);
-    });
-
-    // Only read signals for the active tab to avoid subscribing inactive tabs to message changes
+    // Only read messages signal if we are the active tab, or if we have no messages yet.
+    // This prevents background tabs from re-rendering the whole message list on every sync event.
     let messages = if is_active {
         ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default()
     } else {
-        // For inactive tabs, still need to render but use a lighter read
         ui.messages_by_room.peek().get(&room_id).cloned().unwrap_or_default()
     };
-    let has_more = ui.pagination_tokens.read().contains_key(&room_id);
+    let _has_more = ui.pagination_tokens.read().contains_key(&room_id);
 
-    // Build avatar maps with one cache lock + background resolve uncached
+    // Build avatar maps with one cache lock — only when active or first render
     let (avatar_map, mention_avatars, uncached) = {
         let cache = app_state.media_cache.lock().unwrap();
         let mut amap = HashMap::new();
@@ -298,7 +264,7 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
             if let Some(mxc) = &m.avatar_url {
                 if let Some(data_uri) = cache.get(mxc) {
                     amap.insert(mxc.clone(), data_uri.clone());
-                } else {
+                } else if is_active {
                     uncached.push(mxc.clone());
                 }
             }
@@ -311,10 +277,7 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                     Some((m.user_id.clone(), cache.get(mxc)?.clone()))
                 }).collect())
                 .unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        // Dedup uncached
+        } else { HashMap::new() };
         uncached.sort();
         uncached.dedup();
         (amap, mmap, uncached)
@@ -333,102 +296,63 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
 
     let scroll_id = format!("msg-scroll-{}", room_id);
 
-    // Scroll to bottom when active and messages are loaded (initial load)
-    if is_active && !messages.is_empty() && !*has_scrolled_initial.read() {
-        has_scrolled_initial.set(true);
-        let id = scroll_id.clone();
-        document::eval(&format!(r#"
-            function sb() {{
-                let el = document.getElementById('{id}');
-                if (el) el.scrollTop = el.scrollHeight;
-            }}
-            requestAnimationFrame(() => requestAnimationFrame(sb));
-            setTimeout(sb, 100);
-            setTimeout(sb, 300);
-            setTimeout(sb, 600);
-        "#));
+    // Pagination: detect scroll near top via JS on the column-reverse container.
+    // In column-reverse, scrollTop is 0 at the bottom (newest). Scrolling up makes
+    // scrollTop go negative (WebKit) or the scroll range inverts. We detect "near top"
+    // by checking if the user has scrolled far enough from the start.
+    {
+        let sid = scroll_id.clone();
+        let room_id_pg = room_id.clone();
+        let _app_state_pg = app_state.clone();
+        use_effect(move || {
+            let _ = is_active;
+            if !is_active { return; }
+            // Set up a scroll listener for pagination via JS
+            let sid = sid.clone();
+            let room_id = room_id_pg.clone();
+            document::eval(&format!(r#"
+                setTimeout(() => {{
+                    let el = document.getElementById('{sid}');
+                    if (!el || el.__fluxPgSetup) return;
+                    el.__fluxPgSetup = true;
+                    el.addEventListener('scroll', () => {{
+                        // In column-reverse, scrollTop=0 is bottom. Scrolling up goes negative.
+                        // "Near top" = scrollTop is at the far negative end.
+                        // scrollTop + scrollHeight - clientHeight ≈ 0 means at the visual top.
+                        let atTop = (el.scrollTop + el.clientHeight - el.scrollHeight) > -100;
+                        // Alternative: some browsers use abs(scrollTop) near scrollHeight
+                        let atTop2 = (Math.abs(el.scrollTop) + el.clientHeight + 100) >= el.scrollHeight;
+                        if ((atTop || atTop2) && !el.__fluxLoading) {{
+                            el.__fluxLoading = true;
+                            if (window.__fluxchat_dioxus) window.__fluxchat_dioxus.send('paginate:{room_id}');
+                        }}
+                    }});
+                }}, 50);
+            "#));
+        });
     }
 
     rsx! {
         div {
             id: "{scroll_id}",
-            style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px;",
-            onscroll: {
-                let scroll_id = scroll_id.clone();
-                let room_id = room_id.clone();
-                let app_state = app_state.clone();
-                move |_| {
-                    if *loading_older.read() || !has_more { return; }
-                    let id = scroll_id.clone();
-                    let room_id = room_id.clone();
-                    let app_state = app_state.clone();
-                    spawn(async move {
-                        // Check scroll position and save current scrollHeight
-                        let mut eval = document::eval(&format!(r#"
-                            let el = document.getElementById('{id}');
-                            if (el) {{ dioxus.send(JSON.stringify({{top: el.scrollTop, height: el.scrollHeight}})); }}
-                            else {{ dioxus.send("null"); }}
-                        "#));
-                        if let Ok(json) = eval.recv::<String>().await {
-                            if json == "null" { return; }
-                            let parsed: serde_json::Value = match serde_json::from_str(&json) { Ok(v) => v, Err(_) => return };
-                            let top = parsed["top"].as_f64().unwrap_or(9999.0);
-                            let old_height = parsed["height"].as_f64().unwrap_or(0.0);
+            // column-reverse: browser naturally shows newest messages (bottom) first.
+            // No JS scroll-to-bottom needed. Scroll position preserved across re-renders.
+            style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px; display: flex; flex-direction: column-reverse;",
 
-                            if top < 100.0 {
-                                loading_older.set(true);
-                                let mut ui = consume_context::<UiState>();
-                                let token = ui.pagination_tokens.read().get(&room_id).cloned();
-                                if let Some(token) = token {
-                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { loading_older.set(false); return; } };
-                                    if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, Some(&token)).await {
-                                        let older: Vec<_> = paginated.messages.into_iter().rev().collect();
-                                        if let Some(new_token) = paginated.end_token {
-                                            ui.pagination_tokens.write().insert(room_id.clone(), new_token);
-                                        } else {
-                                            ui.pagination_tokens.write().remove(&room_id);
-                                        }
-                                        let mut msgs = ui.messages_by_room.write();
-                                        if let Some(existing) = msgs.get_mut(&room_id) {
-                                            let mut combined = older;
-                                            combined.append(existing);
-                                            *existing = combined;
-                                        }
-                                        drop(msgs);
-
-                                        // Restore scroll: keep user at same visual position
-                                        let id2 = id.clone();
-                                        document::eval(&format!(r#"
-                                            requestAnimationFrame(() => requestAnimationFrame(() => {{
-                                                let el = document.getElementById('{id2}');
-                                                if (el) {{
-                                                    el.scrollTop = el.scrollHeight - {old_height};
-                                                }}
-                                            }}));
-                                        "#));
-                                    }
-                                }
-                                loading_older.set(false);
-                            }
-                        }
-                    });
-                }
-            },
-            if *loading_older.read() {
-                div { style: "display: flex; justify-content: center; padding: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);",
-                    "loading..."
-                }
-            }
+            // Single inner div holds messages in chronological order.
+            // column-reverse on parent makes this appear at the bottom of the scroll area.
+            div {
             if messages.is_empty() {
                 div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim);",
                     "No messages yet"
                 }
             }
-            for msg in messages.iter() {
+            for (_idx, msg) in messages.iter().enumerate() {
                 { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
+                  let eid = msg.event_id.clone();
                   if is_system {
                     rsx! {
-                        div { style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: center;",
+                        div { key: "{eid}", style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: center;",
                             span { class: "msg-time", "" }
                             span { style: "width: 120px; flex-shrink: 0;" }
                             div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
@@ -449,7 +373,6 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                     let initial = msg.sender_name.chars().next().unwrap_or('?').to_uppercase().to_string();
                     let is_own = msg.sender == my_user_id;
                     let is_local = msg.event_id.starts_with("~local-");
-                    let eid = msg.event_id.clone();
                     let eid_react = msg.event_id.clone();
                     let eid_reply = msg.event_id.clone();
                     let eid_edit = msg.event_id.clone();
@@ -462,197 +385,93 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                     let rid_react = room_id.clone();
                     let rid_pin = room_id.clone();
                     let showing_react = react_menu_event.read().as_ref() == Some(&eid);
-                    // Look up reply context from loaded messages
+
+                    // Optimization: Check if we have pre-computed transformed_body
+                    let content_rsx = if msg.image_mxc.is_some() {
+                        rsx! { InlineImage { room_id: room_id.clone(), event_id: msg.event_id.clone(), body: msg.body.clone() } }
+                    } else if let Some(ref transformed) = msg.transformed_body {
+                        rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } }
+                    } else if let Some(ref html) = msg.formatted_body {
+                        // Compute and save back to the message object if possible (requires write lock, so maybe just compute once)
+                        let transformed = transform_mentions(html, &mention_avatars);
+                        rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } }
+                    } else {
+                        rsx! { span { class: "msg-body", "{msg.body}" } }
+                    };
+
+                    // Look up reply context
                     let reply_context = msg.reply_to_id.as_ref().and_then(|rid| {
                         messages.iter().find(|m| m.event_id == *rid)
                             .map(|m| (m.sender_name.clone(), m.body.clone()))
                     });
-                    { rsx! {
-                        // Reply indicator line
-                        if let Some((ref reply_sender, ref reply_preview)) = reply_context {
-                            div { style: "display: flex; padding: 0 0 0 72px; font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); align-items: center; gap: 4px;",
-                                span { style: "color: var(--green);", "╭─" }
-                                span { style: "color: var(--text-muted);", "{reply_sender}:" }
-                                span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 400px;",
-                                    { reply_preview.chars().take(80).collect::<String>() }
-                                }
-                            }
-                        }
-                        div { class: "msg-row", style: "display: flex; padding: 1px 0; align-items: flex-start;",
-                            span { class: "msg-time", style: "align-self: baseline;", "{time}" }
-                            if let Some(src) = avatar_src {
-                                img {
-                                    src: "{src}",
-                                    style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px;",
-                                }
-                            } else {
-                                div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; background: var(--bg-light);",
-                                    "{initial}"
-                                }
-                            }
-                            span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: baseline;",
-                                span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px;",
-                                    "{msg.sender_name}"
-                                }
-                            }
-                            div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
-                            // Message content + reactions + url previews in a column
-                            { let urls: Vec<String> = extract_urls(&msg.body);
-                            rsx! {
-                            div { style: "min-width: 0; flex: 1;",
-                                if msg.image_mxc.is_some() {
-                                    InlineImage {
-                                        room_id: room_id.clone(),
-                                        event_id: msg.event_id.clone(),
-                                        body: msg.body.clone(),
+
+                    rsx! {
+                        div { key: "{eid}",
+                            if let Some((ref reply_sender, ref reply_preview)) = reply_context {
+                                div { style: "display: flex; padding: 0 0 0 72px; font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); align-items: center; gap: 4px;",
+                                    span { style: "color: var(--green);", "╭─" }
+                                    span { style: "color: var(--text-muted);", "{reply_sender}:" }
+                                    span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 400px;",
+                                        { reply_preview.chars().take(80).collect::<String>() }
                                     }
-                                } else if let Some(ref html) = msg.formatted_body {
-                                    { let transformed = transform_mentions(html, &mention_avatars);
-                                    rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } } }
+                                }
+                            }
+                            div { class: "msg-row", style: "display: flex; padding: 1px 0; align-items: flex-start;",
+                                span { class: "msg-time", style: "align-self: baseline;", "{time}" }
+                                if let Some(src) = avatar_src {
+                                    img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px;" }
                                 } else {
-                                    span { class: "msg-body", "{msg.body}" }
+                                    div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; background: var(--bg-light);", "{initial}" }
                                 }
-                                // URL previews
-                                for url in urls.iter() {
-                                    UrlPreviewCard { url: url.clone() }
+                                span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: baseline;",
+                                    span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px;", "{msg.sender_name}" }
                                 }
-                                // Reactions below message
-                                if !msg.reactions.is_empty() {
-                                    div { style: "display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0;",
-                                        for r in msg.reactions.iter() {
-                                            { let tooltip = r.users.iter()
-                                                .map(|u| u.split(':').next().unwrap_or(u).trim_start_matches('@').to_string())
-                                                .collect::<Vec<_>>().join(", ");
-                                            rsx! {
+                                div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
+                                { let urls = extract_urls(&msg.body);
+                                rsx! {
+                                div { style: "min-width: 0; flex: 1;",
+                                    {content_rsx}
+                                    for url in urls.iter() {
+                                        UrlPreviewCard { url: url.clone() }
+                                    }
+                                    if !msg.reactions.is_empty() {
+                                        div { style: "display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0;",
+                                            for r in msg.reactions.iter() {
                                                 span { style: "font-size: 12px; background: rgba(59,130,246,0.15); border-radius: 10px; padding: 1px 6px; color: var(--text-muted); cursor: default; font-family: var(--font-mono);",
-                                                    title: "{tooltip}",
+                                                    title: "{r.users.join(\", \")}",
                                                     "{r.emoji} {r.count}"
                                                 }
-                                            } }
+                                            }
+                                        }
+                                    }
+                                } } }
+                                // Hover actions
+                                if !is_local && is_active {
+                                    div { class: if showing_react { "msg-actions has-picker" } else { "msg-actions" },
+                                        span { class: "msg-action", onclick: move |_| { react_menu_event.set(if react_menu_event.read().as_ref() == Some(&eid_react) { None } else { Some(eid_react.clone()) }); }, dangerous_inner_html: ICO_REACT }
+                                        span { class: "msg-action", onclick: { let name = reply_name.clone(); let body = reply_body.clone(); let eid = eid_reply.clone(); move |_| { ui.reply_to.set(Some((eid.clone(), name.clone(), body.clone()))); ui.edit_event.set(None); } }, dangerous_inner_html: ICO_REPLY }
+                                        span { class: "msg-action", onclick: { let eid = eid_pin.clone(); let rid = rid_pin.clone(); let app_state = app_state.clone(); move |_| { let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::pin_message(&client, &rid, &eid).await; }); } }, dangerous_inner_html: ICO_PIN }
+                                        if is_own {
+                                            span { class: "msg-action", onclick: { let body = edit_body.clone(); let eid = eid_edit.clone(); move |_| { ui.edit_event.set(Some((eid.clone(), body.clone()))); ui.reply_to.set(None); } }, dangerous_inner_html: ICO_EDIT }
+                                            span { class: "msg-action", onclick: { let eid = eid_del.clone(); let rid = rid_del.clone(); let app_state = app_state.clone(); move |_| { if let Some(msgs) = ui.messages_by_room.write().get_mut(&rid) { msgs.retain(|m| m.event_id != eid); } let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::delete_message(&client, &rid, &eid).await; }); } }, dangerous_inner_html: ICO_DELETE }
+                                        }
+                                        if showing_react {
+                                            div { class: "react-picker",
+                                                for emoji in ["👍", "❤️", "😂", "🎉", "😮", "😢"].iter() {
+                                                    span { onclick: { let emoji = emoji.to_string(); let eid = eid.clone(); let rid = rid_react.clone(); let app_state = app_state.clone(); move |_| { react_menu_event.set(None); let emoji = emoji.clone(); let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::send_reaction(&client, &rid, &eid, &emoji).await; }); } }, "{emoji}" }
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                            } } }
-                            // Hover actions — IRC style
-                            if !is_local {
-                                { let actions_class = if showing_react { "msg-actions has-picker" } else { "msg-actions" };
-                                rsx! { div { class: "{actions_class}",
-                                    // React
-                                    span { class: "msg-action", title: "React",
-                                        onclick: move |_| {
-                                            let current = react_menu_event.read().clone();
-                                            if current.as_ref() == Some(&eid_react) {
-                                                react_menu_event.set(None);
-                                            } else {
-                                                react_menu_event.set(Some(eid_react.clone()));
-                                            }
-                                        },
-                                        dangerous_inner_html: ICO_REACT,
-                                    }
-                                    // Reply
-                                    span { class: "msg-action", title: "Reply",
-                                        onclick: {
-                                            let name = reply_name.clone();
-                                            let body = reply_body.clone();
-                                            let eid = eid_reply.clone();
-                                            move |_| {
-                                                ui.reply_to.set(Some((eid.clone(), name.clone(), body.clone())));
-                                                ui.edit_event.set(None);
-                                            }
-                                        },
-                                        dangerous_inner_html: ICO_REPLY,
-                                    }
-                                    // Pin
-                                    span { class: "msg-action", title: "Pin",
-                                        onclick: {
-                                            let eid = eid_pin.clone();
-                                            let rid = rid_pin.clone();
-                                            let app_state = app_state.clone();
-                                            move |_| {
-                                                let eid = eid.clone();
-                                                let rid = rid.clone();
-                                                let app_state = app_state.clone();
-                                                spawn(async move {
-                                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                                    let _ = fluxchat_core::messages::pin_message(&client, &rid, &eid).await;
-                                                });
-                                            }
-                                        },
-                                        dangerous_inner_html: ICO_PIN,
-                                    }
-                                    // Edit (own only)
-                                    if is_own {
-                                        span { class: "msg-action", title: "Edit",
-                                            onclick: {
-                                                let body = edit_body.clone();
-                                                let eid = eid_edit.clone();
-                                                move |_| {
-                                                    ui.edit_event.set(Some((eid.clone(), body.clone())));
-                                                    ui.reply_to.set(None);
-                                                }
-                                            },
-                                            dangerous_inner_html: ICO_EDIT,
-                                        }
-                                    }
-                                    // Delete (own only)
-                                    if is_own {
-                                        span { class: "msg-action", title: "Delete",
-                                            onclick: {
-                                                let eid = eid_del.clone();
-                                                let rid = rid_del.clone();
-                                                let app_state = app_state.clone();
-                                                move |_| {
-                                                    if let Some(msgs) = ui.messages_by_room.write().get_mut(&rid) {
-                                                        msgs.retain(|m| m.event_id != eid);
-                                                    }
-                                                    let eid = eid.clone();
-                                                    let rid = rid.clone();
-                                                    let app_state = app_state.clone();
-                                                    spawn(async move {
-                                                        let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                                        let _ = fluxchat_core::messages::delete_message(&client, &rid, &eid).await;
-                                                    });
-                                                }
-                                            },
-                                            dangerous_inner_html: ICO_DELETE,
-                                        }
-                                    }
-                                    // Reaction picker popup
-                                    if showing_react {
-                                        div { class: "react-picker",
-                                            for emoji in ["👍", "❤️", "😂", "🎉", "😮", "😢"].iter() {
-                                                span {
-                                                    onclick: {
-                                                        let emoji = emoji.to_string();
-                                                        let eid = eid.clone();
-                                                        let rid = rid_react.clone();
-                                                        let app_state = app_state.clone();
-                                                        move |_| {
-                                                            react_menu_event.set(None);
-                                                            let emoji = emoji.clone();
-                                                            let eid = eid.clone();
-                                                            let rid = rid.clone();
-                                                            let app_state = app_state.clone();
-                                                            spawn(async move {
-                                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                                                let _ = fluxchat_core::messages::send_reaction(&client, &rid, &eid, &emoji).await;
-                                                            });
-                                                        }
-                                                    },
-                                                    "{emoji}"
-                                                }
-                                            }
-                                        }
-                                    }
-                                } }
-                            } }
+                            }
                         }
-                    }
                     }
                   }
                 }
             }
-        }
+            } // inner div
+        } // scroll container
     }
 }
 

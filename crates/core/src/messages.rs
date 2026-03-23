@@ -67,7 +67,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                 } else { format!("{} {}", name, action) };
                 messages.push(MessageInfo {
                     event_id: format!("~state-{}", member_ev.event_id), sender: String::new(), sender_name: String::new(),
-                    body, formatted_body: None, image_mxc: None, reactions: Vec::new(),
+                    body, formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                     reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                     timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None,
                 });
@@ -113,7 +113,9 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
             } else { Vec::new() };
 
             messages.push(MessageInfo {
-                event_id: event_id_str, sender: msg.sender.to_string(), sender_name, body, formatted_body, image_mxc,
+                event_id: event_id_str, sender: msg.sender.to_string(), sender_name, body, formatted_body,
+                transformed_body: None, // Will be populated by UI if needed
+                image_mxc,
                 reactions, reply_to_id, reply_to_sender: None, reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(), avatar_url,
             });
@@ -210,7 +212,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
             messages.push(MessageInfo {
                 event_id: msg.event_id.to_string(), sender: msg.sender.to_string(),
                 sender_name: member.as_ref().and_then(|m| m.display_name().map(|s| s.to_string())).unwrap_or_else(|| msg.sender.to_string()),
-                body, formatted_body, image_mxc, reactions: Vec::new(),
+                body, formatted_body, transformed_body: None, image_mxc, reactions: Vec::new(),
                 reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),

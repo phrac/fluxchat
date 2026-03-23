@@ -51,7 +51,7 @@ async fn extract_msg(room: &matrix_sdk::Room, event: matrix_sdk::ruma::events::A
         Some(MessageInfo {
             event_id: msg.event_id.to_string(), sender: msg.sender.to_string(),
             sender_name: member.as_ref().and_then(|m| m.display_name().map(|s| s.to_string())).unwrap_or_else(|| msg.sender.to_string()),
-            body, formatted_body, image_mxc, reactions: Vec::new(),
+            body, formatted_body, transformed_body: None, image_mxc, reactions: Vec::new(),
             reply_to_id: None, reply_to_sender: None, reply_to_body: None,
             timestamp: msg.origin_server_ts.as_secs().into(),
             avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),

@@ -20,6 +20,7 @@ pub struct MessageInfo {
     pub sender_name: String,
     pub body: String,
     pub formatted_body: Option<String>,
+    pub transformed_body: Option<String>, // Pre-computed HTML (e.g. mention pills)
     pub image_mxc: Option<String>,
     pub reactions: Vec<ReactionInfo>,
     pub reply_to_id: Option<String>,

@@ -94,7 +94,22 @@ pub fn App() -> Element {
 
 fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
     match event {
-        SyncEvent::Message(room_id, msg) => {
+        SyncEvent::Message(room_id, mut msg) => {
+            // Pre-calculate transformed_body with user_id → avatar map
+            if let Some(ref html) = msg.formatted_body {
+                if let Some(core) = CORE.get() {
+                    let media_cache = core.media_cache.lock().unwrap();
+                    let mention_map: std::collections::HashMap<String, String> = ui.members_by_room.read()
+                        .get(&room_id)
+                        .map(|members| members.iter().filter_map(|m| {
+                            let mxc = m.avatar_url.as_ref()?;
+                            Some((m.user_id.clone(), media_cache.get(mxc)?.clone()))
+                        }).collect())
+                        .unwrap_or_default();
+                    msg.transformed_body = Some(crate::state::transform_mentions(html, &mention_map));
+                }
+            }
+
             let mut messages = ui.messages_by_room.write();
             let room_msgs = messages.entry(room_id.clone()).or_insert_with(Vec::new);
             room_msgs.retain(|m| !(m.event_id.starts_with("~local-") && m.sender == msg.sender && m.body == msg.body));
@@ -106,15 +121,9 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
                 }
             }
             drop(messages);
-            // Auto-scroll and mark as read if this is the active room
+            // Mark as read if this is the active room
+            // (scroll handled by CSS column-reverse — browser auto-shows new content at bottom)
             if ui.selected_room_id.read().as_ref() == Some(&room_id) {
-                let scroll_id = format!("msg-scroll-{}", room_id);
-                document::eval(&format!(r#"
-                    requestAnimationFrame(() => {{
-                        let el = document.getElementById('{scroll_id}');
-                        if (el) el.scrollTop = el.scrollHeight;
-                    }});
-                "#));
                 // Send read receipt for the new message
                 let last_eid = ui.messages_by_room.read().get(&room_id)
                     .and_then(|msgs| msgs.last())

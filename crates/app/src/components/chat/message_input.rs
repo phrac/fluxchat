@@ -109,7 +109,7 @@ pub fn MessageInput() -> Element {
             let optimistic = fluxchat_core::MessageInfo {
                 event_id: temp_id, sender: user_id.clone(),
                 sender_name: user_id.split(':').next().unwrap_or("").trim_start_matches('@').to_string(),
-                body: body.clone(), formatted_body: None, image_mxc: None, reactions: Vec::new(),
+                body: body.clone(), formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                 reply_to_id: Some(event_id.clone()), reply_to_sender: None, reply_to_body: None,
                 timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
                 avatar_url: None,
@@ -128,7 +128,7 @@ pub fn MessageInput() -> Element {
             let optimistic = fluxchat_core::MessageInfo {
                 event_id: temp_id, sender: user_id.clone(),
                 sender_name: user_id.split(':').next().unwrap_or("").trim_start_matches('@').to_string(),
-                body: body.clone(), formatted_body: None, image_mxc: None, reactions: Vec::new(),
+                body: body.clone(), formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                 reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                 timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
                 avatar_url: None,
@@ -262,7 +262,7 @@ pub fn MessageInput() -> Element {
                     },
                     dangerous_inner_html: ICO_PLUS,
                 }
-                span { style: "color: {prefix_color}; font-family: var(--font-mono); font-size: 15px; font-weight: 700; flex-shrink: 0; opacity: 0.6;", "{prefix}" }
+                span { style: "color: {prefix_color}; font-family: var(--font-mono); font-size: 15px; font-weight: 700; flex-shrink: 0; opacity: 0.6; padding-right: 8px;", "{prefix}" }
                 input {
                     style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-mono); padding-right: 8px;",
                     r#type: "text",

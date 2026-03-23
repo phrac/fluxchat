@@ -274,12 +274,17 @@ fn PinnedMessagesPanel() -> Element {
 #[component]
 fn DeviceStatus() -> Element {
     let app_state = use_context::<Arc<AppState>>();
+    let ui = use_context::<UiState>();
 
     let status = use_resource({
         let app_state = app_state.clone();
         move || {
+            // Re-check when verification modal closes
+            let _ = ui.verification_request.read();
             let app_state = app_state.clone();
             async move {
+                // Small delay to let crypto state settle after verification
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let client = app_state.get_client().await.ok()?;
                 let device_id = client.device_id()?.to_string();
                 let user_id = client.user_id()?;
