@@ -5,3 +5,5 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 .DS_Store
+FluxChat.app/Contents/MacOS/
+FluxChat.app/Contents/Resources/
