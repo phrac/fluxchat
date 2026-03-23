@@ -37,7 +37,7 @@ pub fn App() -> Element {
         let _ = CORE.set(c.clone());
         c
     });
-    let mut ui = use_context_provider(|| {
+    let ui = use_context_provider(|| {
         init_sync_channel();
         UiState::new()
     });
@@ -121,6 +121,12 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
                     .map(|m| m.event_id.clone())
                     .filter(|eid| !eid.starts_with("~"));
                 if let Some(eid) = last_eid {
+                    // Zero unread locally
+                    let mut rooms = ui.rooms.write();
+                    if let Some(r) = rooms.iter_mut().find(|r| r.room_id == room_id) {
+                        r.unread_count = 0;
+                    }
+                    drop(rooms);
                     if let Some(core) = CORE.get() {
                         let core = core.clone();
                         let room_id = room_id.clone();
@@ -156,13 +162,21 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
             ui.verification_request.set(Some(info));
         }
         SyncEvent::RoomListUpdate => {
-            // Reload rooms from the core — needs to be async so we spawn
             if let Some(core) = CORE.get() {
                 let core = core.clone();
                 spawn(async move {
                     let mut ui = consume_context::<UiState>();
                     if let Ok(client) = core.get_client().await {
-                        if let Ok(rooms) = fluxchat_core::rooms::get_rooms(&client).await { ui.rooms.set(rooms); }
+                        if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(&client).await {
+                            // Zero unread for all rooms we've marked as read this session
+                            let read = ui.read_rooms.read().clone();
+                            for r in rooms.iter_mut() {
+                                if read.contains(&r.room_id) {
+                                    r.unread_count = 0;
+                                }
+                            }
+                            ui.rooms.set(rooms);
+                        }
                         if let Ok(spaces) = fluxchat_core::rooms::get_spaces(&client).await { ui.spaces.set(spaces); }
                     }
                 });
@@ -172,7 +186,23 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
 }
 
 pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client: &fluxchat_core::Client) {
-    if let Ok(rooms) = fluxchat_core::rooms::get_rooms(client).await { ui.rooms.set(rooms); }
+    // Load persisted read rooms
+    if let Some(json) = core.db.get_setting("read_rooms") {
+        if let Ok(ids) = serde_json::from_str::<Vec<String>>(&json) {
+            *ui.read_rooms.write() = ids.into_iter().collect();
+        }
+    }
+
+    // Load rooms before sync for immediate UI, but they'll be refreshed after initial sync
+    if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(client).await {
+        let read = ui.read_rooms.read().clone();
+        for r in rooms.iter_mut() {
+            if read.contains(&r.room_id) {
+                r.unread_count = 0;
+            }
+        }
+        ui.rooms.set(rooms);
+    } else if let Ok(rooms) = fluxchat_core::rooms::get_rooms(client).await { ui.rooms.set(rooms); }
     if let Ok(spaces) = fluxchat_core::rooms::get_spaces(client).await { ui.spaces.set(spaces); }
 
     if let Some(tx) = SYNC_TX.get() {

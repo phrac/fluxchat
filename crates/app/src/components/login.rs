@@ -7,7 +7,7 @@ use crate::state::UiState;
 #[component]
 pub fn Login() -> Element {
     let core = use_context::<Arc<AppState>>();
-    let mut ui = use_context::<UiState>();
+    let ui = use_context::<UiState>();
 
     let mut homeserver = use_signal(|| "matrix.org".to_string());
     let mut username = use_signal(|| String::new());

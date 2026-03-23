@@ -8,7 +8,7 @@ const BATCH_SIZE: usize = 30;
 
 #[component]
 pub fn MemberList() -> Element {
-    let mut ui = use_context::<UiState>();
+    let ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
     let selected = ui.selected_room_id.read().clone();
     let mut visible_count = use_signal(|| BATCH_SIZE);

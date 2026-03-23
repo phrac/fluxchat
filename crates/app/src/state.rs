@@ -17,6 +17,7 @@ pub fn init_core() -> Arc<AppState> {
     Arc::new(AppState::new(db))
 }
 
+#[allow(dead_code)]
 #[derive(Clone, PartialEq)]
 pub enum RightPanel {
     Pins,
@@ -52,12 +53,15 @@ pub struct UiState {
     pub search_open: Signal<bool>,
     pub pins_open: Signal<bool>,
     pub verification_request: Signal<Option<fluxchat_core::VerificationInfo>>,
+    pub read_rooms: Signal<std::collections::HashSet<String>>,  // rooms we've marked as read this session
+    pub upload_pending: Signal<Option<(String, String, Vec<u8>)>>,  // (filename, mime_type, data)
+    pub lightbox_url: Signal<Option<String>>,  // data URI for full-size image viewer
 
     pub loading: Signal<bool>,
 
     // Resolved avatar data URIs — shared between render and background tasks
-    pub avatar_cache: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
-    pub avatar_version: Signal<u32>, // bump to trigger re-render
+    pub _avatar_cache: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
+    pub _avatar_version: Signal<u32>, // bump to trigger re-render
 
     // Channel tabs — recently visited rooms
     // (room_id, room_name, space_name, space_avatar_mxc)
@@ -87,9 +91,12 @@ impl UiState {
             search_open: Signal::new(false),
             pins_open: Signal::new(false),
             verification_request: Signal::new(None),
+            read_rooms: Signal::new(std::collections::HashSet::new()),
+            upload_pending: Signal::new(None),
+            lightbox_url: Signal::new(None),
             loading: Signal::new(true),
-            avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-            avatar_version: Signal::new(0),
+            _avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            _avatar_version: Signal::new(0),
             open_tabs: Signal::new(Vec::new()),
         }
     }

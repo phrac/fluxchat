@@ -7,8 +7,8 @@ use crate::components::chat::message_area::nick_color_class;
 
 #[component]
 pub fn RoomList() -> Element {
-    let core = use_context::<Arc<AppState>>();
-    let mut ui = use_context::<UiState>();
+    let _core = use_context::<Arc<AppState>>();
+    let ui = use_context::<UiState>();
     let rooms = ui.rooms.read().clone();
     let selected = ui.selected_room_id.read().clone();
     let selected_space = ui.selected_space_id.read().clone();
@@ -98,7 +98,7 @@ fn SectionHeader(label: String) -> Element {
 #[component]
 fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
     let core = use_context::<Arc<AppState>>();
-    let mut ui = use_context::<UiState>();
+    let ui = use_context::<UiState>();
     let has_unread = room.unread_count > 0;
     let name = room.name.to_lowercase().replace(' ', "-");
     let room_id = room.room_id.clone();
@@ -158,7 +158,7 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
 #[component]
 fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
     let core = use_context::<Arc<AppState>>();
-    let mut ui = use_context::<UiState>();
+    let ui = use_context::<UiState>();
     let room_id = room.room_id.clone();
     let room_name = room.name.clone();
     let nick_class = nick_color_class(&room.name);
@@ -209,6 +209,18 @@ fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
 fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name: String) {
     ui.selected_room_id.set(Some(room_id.clone()));
 
+    // Mark this room as read and persist
+    ui.read_rooms.write().insert(room_id.clone());
+    if let Some(r) = ui.rooms.write().iter_mut().find(|r| r.room_id == room_id) {
+        r.unread_count = 0;
+    }
+    // Persist read rooms to disk
+    {
+        let read = ui.read_rooms.read().clone();
+        let json = serde_json::to_string(&read.into_iter().collect::<Vec<_>>()).unwrap_or_default();
+        let _ = core.db.set_setting("read_rooms", &json);
+    }
+
     // Find space info
     let space_name = ui.rooms.read().iter()
         .find(|r| r.room_id == room_id)
@@ -252,21 +264,39 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
     if !loaded {
         spawn(async move {
             let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-            if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, None).await {
-                let msgs: Vec<_> = paginated.messages.into_iter().rev().collect();
-                if let Some(token) = paginated.end_token {
-                    ui.pagination_tokens.write().insert(room_id.clone(), token);
-                }
-                ui.messages_by_room.write().insert(room_id.clone(), msgs);
-                // Scroll after messages loaded into DOM
-                let scroll_id = format!("msg-scroll-{}", room_id);
-                document::eval(&format!(r#"
-                    requestAnimationFrame(() => requestAnimationFrame(() => {{
-                        let el = document.getElementById('{scroll_id}');
-                        if (el) el.scrollTop = el.scrollHeight;
-                    }}));
-                "#));
+            // Fetch batches until we have at least 5 real messages or run out of history
+            let mut all_msgs = Vec::new();
+            let mut token: Option<String> = None;
+            for _ in 0..5 {
+                let from = token.as_deref();
+                if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, from).await {
+                    let batch: Vec<_> = paginated.messages.into_iter().rev().collect();
+                    let has_more = paginated.end_token.is_some();
+                    token = paginated.end_token;
+
+                    let mut combined = batch;
+                    combined.append(&mut all_msgs);
+                    all_msgs = combined;
+
+                    let real_count = all_msgs.iter().filter(|m| !m.event_id.starts_with("~state-") && !m.event_id.starts_with("~system-")).count();
+                    if real_count >= 5 || !has_more { break; }
+                } else { break; }
             }
+            if let Some(t) = token {
+                ui.pagination_tokens.write().insert(room_id.clone(), t);
+            }
+            ui.messages_by_room.write().insert(room_id.clone(), all_msgs);
+            // Scroll to bottom — multiple attempts to handle heavy DOM renders
+            let scroll_id = format!("msg-scroll-{}", room_id);
+            document::eval(&format!(r#"
+                function sb() {{
+                    let el = document.getElementById('{scroll_id}');
+                    if (el) el.scrollTop = el.scrollHeight;
+                }}
+                requestAnimationFrame(() => requestAnimationFrame(sb));
+                setTimeout(sb, 100);
+                setTimeout(sb, 300);
+            "#));
             // Send read receipt and clear unread count
             if let Some(last_eid) = ui.messages_by_room.read().get(&room_id)
                 .and_then(|msgs| msgs.last())

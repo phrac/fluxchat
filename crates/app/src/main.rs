@@ -2,13 +2,12 @@ mod app;
 mod state;
 mod components;
 
-use dioxus::prelude::*;
 use dioxus::desktop::{Config, WindowBuilder};
 
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::new("warn,fluxchat=info")
+            tracing_subscriber::EnvFilter::new("warn,fluxchat=info,matrix_sdk_crypto=error")
         )
         .init();
 

@@ -81,8 +81,8 @@ fn transform_mentions(html: &str, avatar_cache: &HashMap<String, String>) -> Str
 
 #[component]
 pub fn MessageArea() -> Element {
-    let app_state = use_context::<Arc<AppState>>();
-    let mut ui = use_context::<UiState>();
+    let _app_state = use_context::<Arc<AppState>>();
+    let ui = use_context::<UiState>();
     let selected = ui.selected_room_id.read().clone();
     let tabs = ui.open_tabs.read().clone();
 
@@ -92,25 +92,86 @@ pub fn MessageArea() -> Element {
         if let Some(id) = sel {
             let scroll_id = format!("msg-scroll-{}", id);
             document::eval(&format!(r#"
-                requestAnimationFrame(() => requestAnimationFrame(() => {{
+                function sb() {{
                     let el = document.getElementById('{scroll_id}');
                     if (el) el.scrollTop = el.scrollHeight;
-                }}));
+                }}
+                requestAnimationFrame(() => requestAnimationFrame(sb));
+                setTimeout(sb, 100);
+                setTimeout(sb, 300);
             "#));
         }
     });
 
-    // Set up JS→Rust channel for mention pill clicks
+    // Set up JS→Rust channel for mention pill clicks and drag-drop
     use_future(move || async move {
         let mut eval = document::eval(r#"
             window.__fluxchat_dioxus = dioxus;
+
+            // Drag-drop file handler
+            document.addEventListener('dragover', (e) => { e.preventDefault(); });
+            document.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+                    let file = e.dataTransfer.files[0];
+                    let reader = new FileReader();
+                    reader.onload = () => {
+                        let base64 = reader.result.split(',')[1];
+                        dioxus.send('file:' + JSON.stringify({
+                            name: file.name,
+                            type: file.type || 'application/octet-stream',
+                            data: base64
+                        }));
+                    };
+                    reader.readAsDataURL(file);
+                }
+            });
+
+            // Paste image handler
+            document.addEventListener('paste', async (e) => {
+                let items = e.clipboardData && e.clipboardData.items;
+                if (!items) return;
+                for (let item of items) {
+                    if (item.type.startsWith('image/')) {
+                        e.preventDefault();
+                        let file = item.getAsFile();
+                        if (!file) continue;
+                        let reader = new FileReader();
+                        reader.onload = () => {
+                            let base64 = reader.result.split(',')[1];
+                            dioxus.send('file:' + JSON.stringify({
+                                name: file.name || 'pasted-image.png',
+                                type: file.type,
+                                data: base64
+                            }));
+                        };
+                        reader.readAsDataURL(file);
+                        break;
+                    }
+                }
+            });
         "#);
         loop {
             match eval.recv::<String>().await {
-                Ok(user_id) => {
-                    if !user_id.is_empty() {
+                Ok(msg) => {
+                    if msg.starts_with("file:") {
+                        // File drop or paste
+                        let json = &msg[5..];
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json) {
+                            let name = parsed["name"].as_str().unwrap_or("file").to_string();
+                            let mime = parsed["type"].as_str().unwrap_or("application/octet-stream").to_string();
+                            if let Some(b64) = parsed["data"].as_str() {
+                                use base64::Engine;
+                                if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                    let mut ui = consume_context::<UiState>();
+                                    ui.upload_pending.set(Some((name, mime, data)));
+                                }
+                            }
+                        }
+                    } else if !msg.is_empty() {
+                        // Mention pill click
                         let mut ui = consume_context::<UiState>();
-                        ui.profile_user_id.set(Some(user_id));
+                        ui.profile_user_id.set(Some(msg));
                     }
                 }
                 Err(_) => break,
@@ -201,6 +262,14 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
     let my_user_id = ui.user_id.read().clone();
     let mut react_menu_event = use_signal(|| Option::<String>::None);
     let mut loading_older = use_signal(|| false);
+    let mut has_scrolled_initial = use_signal(|| false);
+
+    // Reset scroll flag when room changes (component reuse)
+    let room_id_for_reset = room_id.clone();
+    use_effect(move || {
+        let _ = &room_id_for_reset;
+        has_scrolled_initial.set(false);
+    });
 
     // Only read signals for the active tab to avoid subscribing inactive tabs to message changes
     let messages = if is_active {
@@ -255,6 +324,22 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
 
     let scroll_id = format!("msg-scroll-{}", room_id);
 
+    // Scroll to bottom when active and messages are loaded (initial load)
+    if is_active && !messages.is_empty() && !*has_scrolled_initial.read() {
+        has_scrolled_initial.set(true);
+        let id = scroll_id.clone();
+        document::eval(&format!(r#"
+            function sb() {{
+                let el = document.getElementById('{id}');
+                if (el) el.scrollTop = el.scrollHeight;
+            }}
+            requestAnimationFrame(() => requestAnimationFrame(sb));
+            setTimeout(sb, 100);
+            setTimeout(sb, 300);
+            setTimeout(sb, 600);
+        "#));
+    }
+
     rsx! {
         div {
             id: "{scroll_id}",
@@ -269,22 +354,26 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                     let room_id = room_id.clone();
                     let app_state = app_state.clone();
                     spawn(async move {
+                        // Check scroll position and save current scrollHeight
                         let mut eval = document::eval(&format!(r#"
                             let el = document.getElementById('{id}');
-                            dioxus.send(el ? el.scrollTop : 9999);
+                            if (el) {{ dioxus.send(JSON.stringify({{top: el.scrollTop, height: el.scrollHeight}})); }}
+                            else {{ dioxus.send("null"); }}
                         "#));
-                        if let Ok(top) = eval.recv::<f64>().await {
+                        if let Ok(json) = eval.recv::<String>().await {
+                            if json == "null" { return; }
+                            let parsed: serde_json::Value = match serde_json::from_str(&json) { Ok(v) => v, Err(_) => return };
+                            let top = parsed["top"].as_f64().unwrap_or(9999.0);
+                            let old_height = parsed["height"].as_f64().unwrap_or(0.0);
+
                             if top < 100.0 {
                                 loading_older.set(true);
                                 let mut ui = consume_context::<UiState>();
                                 let token = ui.pagination_tokens.read().get(&room_id).cloned();
                                 if let Some(token) = token {
-                                    // Save scroll height before prepending
-                                    let id2 = id.clone();
                                     let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { loading_older.set(false); return; } };
                                     if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, Some(&token)).await {
                                         let older: Vec<_> = paginated.messages.into_iter().rev().collect();
-                                        let older_count = older.len();
                                         if let Some(new_token) = paginated.end_token {
                                             ui.pagination_tokens.write().insert(room_id.clone(), new_token);
                                         } else {
@@ -298,18 +387,16 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                         }
                                         drop(msgs);
 
-                                        // After DOM updates, restore scroll so new content is above viewport
-                                        if older_count > 0 {
-                                            document::eval(&format!(r#"
-                                                requestAnimationFrame(() => requestAnimationFrame(() => {{
-                                                    let el = document.getElementById('{id2}');
-                                                    if (el) {{
-                                                        // Set scroll to middle of container
-                                                        el.scrollTop = el.scrollHeight / 2;
-                                                    }}
-                                                }}));
-                                            "#));
-                                        }
+                                        // Restore scroll: keep user at same visual position
+                                        let id2 = id.clone();
+                                        document::eval(&format!(r#"
+                                            requestAnimationFrame(() => requestAnimationFrame(() => {{
+                                                let el = document.getElementById('{id2}');
+                                                if (el) {{
+                                                    el.scrollTop = el.scrollHeight - {old_height};
+                                                }}
+                                            }}));
+                                        "#));
                                     }
                                 }
                                 loading_older.set(false);
@@ -629,6 +716,7 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
 #[component]
 fn InlineImage(room_id: String, event_id: String, body: String) -> Element {
     let app_state = use_context::<Arc<AppState>>();
+    let mut ui = use_context::<UiState>();
 
     let image_data = use_resource(move || {
         let app_state = app_state.clone();
@@ -644,12 +732,16 @@ fn InlineImage(room_id: String, event_id: String, body: String) -> Element {
 
     let resolved = image_data.read().clone();
     match resolved {
-        Some(Some(data_uri)) => rsx! {
-            div { style: "display: flex; flex-direction: column;",
-                img {
-                    src: "{data_uri}",
-                    alt: "{body}",
-                    style: "max-width: 400px; max-height: 300px; border-radius: 4px; margin: 2px 0; object-fit: contain;",
+        Some(Some(data_uri)) => {
+            let uri_for_click = data_uri.clone();
+            rsx! {
+                div { style: "display: flex; flex-direction: column;",
+                    img {
+                        src: "{data_uri}",
+                        alt: "{body}",
+                        style: "max-width: 400px; max-height: 300px; border-radius: 4px; margin: 2px 0; object-fit: contain; cursor: pointer;",
+                        onclick: move |_| { ui.lightbox_url.set(Some(uri_for_click.clone())); },
+                    }
                 }
             }
         },

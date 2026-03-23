@@ -12,7 +12,7 @@ use crate::components::members::member_list::MemberList;
 pub fn MainLayout() -> Element {
     let mut ui = use_context::<UiState>();
 
-    let app_state = use_context::<Arc<AppState>>();
+    let _app_state = use_context::<Arc<AppState>>();
     let user_id = ui.user_id.read().clone();
     let selected_room = ui.selected_room_id.read().clone();
     let room_name = selected_room.as_ref()
@@ -60,6 +60,72 @@ pub fn MainLayout() -> Element {
             SettingsModal {}
         }
 
+        // Image lightbox
+        { let lb = ui.lightbox_url.read().clone();
+          if let Some(ref url) = lb {
+            let url_for_save = url.clone();
+            rsx! {
+                div {
+                    style: "position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 2000; display: flex; align-items: center; justify-content: center; cursor: pointer;",
+                    tabindex: "0",
+                    autofocus: true,
+                    onclick: move |_| { ui.lightbox_url.set(None); },
+                    onkeydown: move |e: Event<KeyboardData>| {
+                        if e.key() == Key::Escape { ui.lightbox_url.set(None); }
+                    },
+                    // Close button
+                    div { style: "position: absolute; top: 16px; right: 16px; display: flex; gap: 8px; z-index: 2001;",
+                        // Save button (disk icon)
+                        span {
+                            style: "color: var(--text-muted); cursor: pointer; background: rgba(0,0,0,0.6); padding: 6px 8px; border-radius: 4px; display: inline-flex; align-items: center;",
+                            title: "Save image",
+                            onclick: {
+                                let url = url_for_save.clone();
+                                move |e: Event<MouseData>| {
+                                    e.stop_propagation();
+                                    let url = url.clone();
+                                    std::thread::spawn(move || {
+                                        if let Some(comma) = url.find(',') {
+                                            let header = &url[..comma];
+                                            let b64 = &url[comma + 1..];
+                                            use base64::Engine;
+                                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                                let ext = if header.contains("image/png") { "png" }
+                                                    else if header.contains("image/jpeg") { "jpg" }
+                                                    else if header.contains("image/gif") { "gif" }
+                                                    else if header.contains("image/webp") { "webp" }
+                                                    else { "png" };
+
+                                                let dialog = rfd::FileDialog::new()
+                                                    .set_file_name(&format!("image.{ext}"))
+                                                    .add_filter("Image", &[ext]);
+                                                if let Some(path) = dialog.save_file() {
+                                                    let _ = std::fs::write(&path, &bytes);
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            },
+                            dangerous_inner_html: r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>"#,
+                        }
+                        // Close button
+                        span {
+                            style: "color: var(--text-muted); cursor: pointer; font-size: 20px; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 4px; line-height: 1;",
+                            onclick: move |_| { ui.lightbox_url.set(None); },
+                            "×"
+                        }
+                    }
+                    img {
+                        src: "{url}",
+                        style: "max-width: 90vw; max-height: 90vh; object-fit: contain; border-radius: 4px;",
+                        onclick: move |e| { e.stop_propagation(); },
+                    }
+                }
+            }
+          } else { rsx! {} }
+        }
+
         // Verification modal
         { let vr = ui.verification_request.read().clone();
           if let Some(info) = vr {
@@ -102,8 +168,8 @@ pub fn MainLayout() -> Element {
 #[component]
 fn RightPanelView(panel: RightPanel) -> Element {
     let mut ui = use_context::<UiState>();
-    let app_state = use_context::<Arc<AppState>>();
-    let selected = ui.selected_room_id.read().clone();
+    let _app_state = use_context::<Arc<AppState>>();
+    let _selected = ui.selected_room_id.read().clone();
 
     let title = match panel {
         RightPanel::Pins => "Pinned Messages",
@@ -261,7 +327,7 @@ fn DeviceStatus() -> Element {
 /// Tiny avatar for the current user in the status bar.
 #[component]
 fn UserAvatar() -> Element {
-    let ui = use_context::<UiState>();
+    let _ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
 
     // Resolve own avatar

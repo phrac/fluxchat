@@ -6,7 +6,7 @@ use crate::state::UiState;
 #[component]
 pub fn SpaceSidebar() -> Element {
     let mut ui = use_context::<UiState>();
-    let core = use_context::<Arc<AppState>>();
+    let _core = use_context::<Arc<AppState>>();
     let spaces = ui.spaces.read().clone();
     let selected = ui.selected_space_id.read().clone();
 
