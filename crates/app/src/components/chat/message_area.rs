@@ -27,8 +27,8 @@ pub fn nick_color_class(name: &str) -> String {
 pub fn MessageArea() -> Element {
     let _app_state = use_context::<Arc<AppState>>();
     let ui = use_context::<UiState>();
-    let selected = ui.selected_room_id.read().clone();
-    let tabs = ui.open_tabs.read().clone();
+    // NOTE: Do NOT read open_tabs or selected_room_id here — those are read
+    // by child components (TabBar, ActiveRoomContent) to avoid cascading re-renders.
 
 
     // Set up JS→Rust channel for mention pill clicks and drag-drop
@@ -127,69 +127,92 @@ pub fn MessageArea() -> Element {
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-mid);",
+            // Tab bar — separate component, only re-renders on tab changes
+            TabBar {}
 
-            // Channel tabs + room actions
-            div { style: "display: flex; align-items: center; height: 36px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--bg-dark);",
-                // Tabs
-                div { style: "display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 8px; gap: 0; overflow-x: auto;",
-                    for (id, name, space, space_mxc) in tabs.iter() {
-                        ChannelTab {
-                            room_id: id.clone(),
-                            name: name.clone(),
-                            space_name: space.clone(),
-                            space_avatar_mxc: space_mxc.clone(),
-                            is_active: selected.as_ref() == Some(id),
-                        }
+            // HUDs
+            if *ui.search_open.read() { SearchHud {} }
+            if *ui.pins_open.read() { PinsHud {} }
+
+            // Message content — separate component, only re-renders on selected room changes
+            ActiveRoomContent {}
+        }
+    }
+}
+
+/// Tab bar — isolated from message rendering.
+#[component]
+fn TabBar() -> Element {
+    let ui = use_context::<UiState>();
+    let tabs = ui.open_tabs.read().clone();
+    let selected = ui.selected_room_id.read().clone();
+
+    rsx! {
+        div { style: "display: flex; align-items: center; height: 36px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--bg-dark);",
+            div { style: "display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 8px; gap: 0; overflow-x: auto;",
+                for (id, name, space, space_mxc) in tabs.iter() {
+                    ChannelTab {
+                        room_id: id.clone(),
+                        name: name.clone(),
+                        space_name: space.clone(),
+                        space_avatar_mxc: space_mxc.clone(),
+                        is_active: selected.as_ref() == Some(id),
                     }
                 }
-                // Room action icons — right-aligned
-                if selected.is_some() {
-                    RoomActions {}
+            }
+            if selected.is_some() {
+                RoomActions {}
+            }
+        }
+    }
+}
+
+/// Room content area — renders all open rooms, shows/hides via CSS.
+/// RoomMessages components stay alive and their DOM is preserved across tab switches.
+#[component]
+fn ActiveRoomContent() -> Element {
+    let ui = use_context::<UiState>();
+    // Read both signals — this component re-renders on tab/room changes,
+    // but it only updates CSS classes, NOT child component props.
+    let selected = ui.selected_room_id.read().clone();
+    let tabs = ui.open_tabs.read().clone();
+
+    rsx! {
+        // Keep ALL room message components alive — CSS toggles visibility.
+        // RoomMessages only receives room_id which never changes, so Dioxus
+        // memoization prevents re-rendering on tab switch.
+        for (tab_room_id, _, _, _) in tabs.iter() {
+            { let is_active = selected.as_ref() == Some(tab_room_id);
+              let style = if is_active {
+                  "flex: 1; display: flex; flex-direction: column; min-height: 0;"
+              } else {
+                  "display: none;"
+              };
+              rsx! {
+                div { key: "{tab_room_id}", style: "{style}",
+                    RoomMessages { room_id: tab_room_id.clone() }
                 }
+              }
             }
+        }
 
-            // Search HUD — drops down from top
-            if *ui.search_open.read() {
-                SearchHud {}
-            }
-
-            // Pins HUD — drops down from top
-            if *ui.pins_open.read() {
-                PinsHud {}
-            }
-
-            // Render ALL open tabs' messages — show/hide via CSS for instant switching
-            // but wrapped in a component that only updates when its room is active.
-            for (tab_room_id, _tab_name, _tab_space, _tab_mxc) in tabs.iter() {
-                { let is_active = selected.as_ref() == Some(tab_room_id);
-                  rsx! {
-                    div {
-                        key: "{tab_room_id}",
-                        style: if is_active { "flex: 1; display: flex; flex-direction: column; min-height: 0;" } else { "display: none;" },
-                        RoomMessages { room_id: tab_room_id.clone(), is_active: is_active }
+        if selected.is_none() {
+            { let space_id = ui.selected_space_id.read().clone();
+              if let Some(sid) = space_id {
+                rsx! { SpaceOverview { space_id: sid } }
+              } else {
+                rsx! {
+                    div { style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim);",
+                        "Select a channel to start chatting"
                     }
-                  }
                 }
+              }
             }
+        }
 
-            if selected.is_none() {
-                { let space_id = ui.selected_space_id.read().clone();
-                  if let Some(sid) = space_id {
-                    rsx! { SpaceOverview { space_id: sid } }
-                  } else {
-                    rsx! {
-                        div { style: "flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim);",
-                            "Select a channel to start chatting"
-                        }
-                    }
-                  }
-                }
-            }
-
-            // Typing indicator
-            { let typing = selected.as_ref()
-                .and_then(|id| ui.typing_by_room.read().get(id).cloned())
-                .unwrap_or_default();
+        // Typing indicator + input for active room
+        if let Some(ref active_id) = selected {
+            { let typing = ui.typing_by_room.read().get(active_id).cloned().unwrap_or_default();
               if !typing.is_empty() {
                 let names: Vec<_> = typing.iter().map(|u| u.split(':').next().unwrap_or(u).trim_start_matches('@').to_string()).collect();
                 let text = if names.len() == 1 { format!("{} is typing...", names[0]) }
@@ -201,32 +224,25 @@ pub fn MessageArea() -> Element {
                 }
               } else { rsx! {} }
             }
-
-            // Message input
-            if selected.is_some() {
-                MessageInput {}
-            }
+            MessageInput {}
         }
     }
 }
 
 /// Per-room message list — stays in DOM, shown/hidden via CSS.
 #[component]
-fn RoomMessages(room_id: String, is_active: bool) -> Element {
+fn RoomMessages(room_id: String) -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
-    let my_user_id = ui.user_id.read().clone();
     let mut react_menu_event = use_signal(|| Option::<String>::None);
 
-    // Only read messages signal if we are the active tab, or if we have no messages yet.
-    // This prevents background tabs from re-rendering the whole message list on every sync event.
-    let messages = if is_active {
-        ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default()
-    } else {
-        ui.messages_by_room.peek().get(&room_id).cloned().unwrap_or_default()
-    };
+    let my_user_id = ui.user_id.peek().clone();
+    // Use peek() to avoid subscribing to the entire HashMap signal.
+    // The diff stream watcher (spawned in select_room) directly writes to this
+    // signal, which is the only trigger for re-render.
+    let messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
 
-    // Build avatar maps with one cache lock — only when active or first render
+    // Build avatar maps with one cache lock
     let (avatar_map, mention_avatars, uncached) = {
         let cache = app_state.media_cache.lock().unwrap();
         let mut amap = HashMap::new();
@@ -235,27 +251,25 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
             if let Some(mxc) = &m.avatar_url {
                 if let Some(data_uri) = cache.get(mxc) {
                     amap.insert(mxc.clone(), data_uri.clone());
-                } else if is_active {
+                } else {
                     uncached.push(mxc.clone());
                 }
             }
         }
-        let mmap: HashMap<String, String> = if is_active {
-            ui.members_by_room.read()
-                .get(&room_id)
-                .map(|members| members.iter().filter_map(|m| {
-                    let mxc = m.avatar_url.as_ref()?;
-                    Some((m.user_id.clone(), cache.get(mxc)?.clone()))
-                }).collect())
-                .unwrap_or_default()
-        } else { HashMap::new() };
+        let mmap: HashMap<String, String> = ui.members_by_room.read()
+            .get(&room_id)
+            .map(|members| members.iter().filter_map(|m| {
+                let mxc = m.avatar_url.as_ref()?;
+                Some((m.user_id.clone(), cache.get(mxc)?.clone()))
+            }).collect())
+            .unwrap_or_default();
         uncached.sort();
         uncached.dedup();
         (amap, mmap, uncached)
     };
 
     // Background-resolve uncached message avatars
-    if is_active && !uncached.is_empty() {
+    if !uncached.is_empty() {
         let app_state = app_state.clone();
         spawn(async move {
             let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
@@ -276,8 +290,6 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
         let room_id_pg = room_id.clone();
         let _app_state_pg = app_state.clone();
         use_effect(move || {
-            let _ = is_active;
-            if !is_active { return; }
             // Set up a scroll listener for pagination via JS
             let sid = sid.clone();
             let room_id = room_id_pg.clone();
@@ -424,7 +436,7 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                     }
                                 } } }
                                 // Hover actions
-                                if !is_local && is_active {
+                                if !is_local {
                                     div { class: if showing_react { "msg-actions has-picker" } else { "msg-actions" },
                                         span { class: "msg-action", onclick: move |_| { react_menu_event.set(if react_menu_event.read().as_ref() == Some(&eid_react) { None } else { Some(eid_react.clone()) }); }, dangerous_inner_html: ICO_REACT }
                                         span { class: "msg-action", onclick: { let name = reply_name.clone(); let body = reply_body.clone(); let eid = eid_reply.clone(); move |_| { ui.reply_to.set(Some((eid.clone(), name.clone(), body.clone()))); ui.edit_event.set(None); } }, dangerous_inner_html: ICO_REPLY }
@@ -526,18 +538,35 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
                 class: "tab-close",
                 onclick: {
                     let cid = close_id.clone();
+                    let core2 = core.clone();
                     move |e: Event<MouseData>| {
                         e.stop_propagation();
-                        let mut tabs = ui.open_tabs.write();
-                        tabs.retain(|(id, _, _, _)| id != &cid);
-                        if ui.selected_room_id.read().as_ref() == Some(&cid) {
-                            let next = tabs.last().map(|(id, _, _, _)| id.clone());
-                            drop(tabs);
+                        // Compute new state before any signal writes
+                        let is_selected = ui.selected_room_id.read().as_ref() == Some(&cid);
+                        let next = if is_selected {
+                            ui.open_tabs.read().iter()
+                                .filter(|(id, _, _, _)| id != &cid)
+                                .last()
+                                .map(|(id, _, _, _)| id.clone())
+                        } else { None };
+
+                        // Single batch of signal updates
+                        ui.open_tabs.write().retain(|(id, _, _, _)| id != &cid);
+                        if is_selected {
                             ui.selected_room_id.set(next);
                         }
-                        // Free memory for closed tab
-                        ui.messages_by_room.write().remove(&cid);
-                        ui.members_by_room.write().remove(&cid);
+
+                        // All cleanup in background
+                        let cid = cid.clone();
+                        let core2 = core2.clone();
+                        spawn(async move {
+                            let mut ui = consume_context::<UiState>();
+                            ui.messages_by_room.write().remove(&cid);
+                            ui.members_by_room.write().remove(&cid);
+                            if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&cid) {
+                                fluxchat_core::timeline::remove_timeline(&core2.timelines, &rid).await;
+                            }
+                        });
                     }
                 },
                 "×"
