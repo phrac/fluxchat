@@ -60,6 +60,13 @@ pub fn MainLayout() -> Element {
             SettingsModal {}
         }
 
+        // Verification modal
+        { let vr = ui.verification_request.read().clone();
+          if let Some(info) = vr {
+            rsx! { VerificationModal { info: info } }
+          } else { rsx! {} }
+        }
+
         // Status bar — IRC style
         div { class: "status-bar",
             // Gear + avatar + name — all clickable to open settings
@@ -231,12 +238,17 @@ fn DeviceStatus() -> Element {
             ("✗", "var(--yellow)")
         };
         let label = if is_verified { "verified" } else { "unverified" };
+        let short_id = if device_id.len() > 10 { &device_id[..10] } else { &device_id };
         let tooltip = format!("{} ({}/{} devices verified)", device_id, verified, total);
         rsx! {
             span {
                 style: "color: {color}; font-family: var(--font-mono);",
                 title: "{tooltip}",
                 "{icon} {label}"
+            }
+            span { style: "color: var(--text-dim); font-family: var(--font-mono); margin-left: 4px; font-size: 10px;",
+                title: "{device_id}",
+                "[{short_id}]"
             }
         }
     } else {
@@ -461,6 +473,129 @@ fn ProfileModal(user_id: String) -> Element {
                         div { style: "display: flex; justify-content: space-between;",
                             span { style: "color: var(--text-muted);", "Server" }
                             span { style: "color: var(--text-normal); font-family: var(--font-mono);", "{server}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Verification modal — shown when a verification request comes in.
+#[component]
+fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+
+    let label = if info.is_self_verification {
+        "Self-verification request"
+    } else {
+        "Verification request"
+    };
+
+    rsx! {
+        div {
+            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;",
+            onclick: move |_| { ui.verification_request.set(None); },
+
+            div {
+                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 360px; max-width: 440px;",
+                onclick: move |e| { e.stop_propagation(); },
+
+                // Header
+                div { style: "display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);",
+                    span { style: "font-size: 14px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);", "{label}" }
+                    span {
+                        style: "cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 4px;",
+                        onclick: move |_| { ui.verification_request.set(None); },
+                        "×"
+                    }
+                }
+
+                div { style: "padding: 20px; display: flex; flex-direction: column; gap: 12px;",
+                    div { style: "font-size: 13px; color: var(--text-muted); font-family: var(--font-mono);",
+                        "From: {info.other_user_id}"
+                    }
+                    div { style: "font-size: 12px; color: var(--text-dim); font-family: var(--font-mono);",
+                        "Flow: {info.flow_id}"
+                    }
+
+                    // Show emojis if available
+                    if let Some(ref emojis) = info.emojis {
+                        div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 4px;",
+                            "Verify these emojis match on both devices:"
+                        }
+                        div { style: "display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 12px 0;",
+                            for e in emojis.iter() {
+                                div { style: "display: flex; flex-direction: column; align-items: center; gap: 2px; width: 60px;",
+                                    span { style: "font-size: 24px;", "{e.symbol}" }
+                                    span { style: "font-size: 9px; color: var(--text-dim); text-align: center; font-family: var(--font-mono);", "{e.description}" }
+                                }
+                            }
+                        }
+                    }
+
+                    // Action buttons
+                    div { style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;",
+                        // Cancel
+                        span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border);",
+                            onclick: {
+                                let flow_id = info.flow_id.clone();
+                                let user_id = info.other_user_id.clone();
+                                let app_state = app_state.clone();
+                                move |_| {
+                                    ui.verification_request.set(None);
+                                    let flow_id = flow_id.clone();
+                                    let user_id = user_id.clone();
+                                    let app_state = app_state.clone();
+                                    spawn(async move {
+                                        let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::verification::cancel_verification(&client, &user_id, &flow_id).await;
+                                    });
+                                }
+                            },
+                            "cancel"
+                        }
+                        // Accept / Confirm
+                        { let has_emojis = info.emojis.is_some();
+                          let btn_label = if has_emojis { "confirm match" } else { "accept" };
+                          let flow_id = info.flow_id.clone();
+                          let user_id = info.other_user_id.clone();
+                          rsx! {
+                            span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--green); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--green);",
+                                onclick: {
+                                    let flow_id = flow_id.clone();
+                                    let user_id = user_id.clone();
+                                    let app_state = app_state.clone();
+                                    move |_| {
+                                        let flow_id = flow_id.clone();
+                                        let user_id = user_id.clone();
+                                        let app_state = app_state.clone();
+                                        spawn(async move {
+                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            if has_emojis {
+                                                let _ = fluxchat_core::verification::confirm_verification(&client, &user_id, &flow_id).await;
+                                            } else {
+                                                let _ = fluxchat_core::verification::accept_verification(
+                                                    &client, &user_id, &flow_id,
+                                                    |info| {
+                                                        if let Some(tx) = crate::app::SYNC_TX.get() {
+                                                            let _ = tx.send(crate::app::SyncEvent::Verification(info));
+                                                        }
+                                                    },
+                                                    || {},
+                                                ).await;
+                                            }
+                                            let mut ui = consume_context::<UiState>();
+                                            if has_emojis {
+                                                ui.verification_request.set(None);
+                                            }
+                                        });
+                                    }
+                                },
+                                "{btn_label}"
+                            }
+                          }
                         }
                     }
                 }

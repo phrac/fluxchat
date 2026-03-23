@@ -16,10 +16,11 @@ pub enum SyncEvent {
     Typing(String, Vec<String>),
     Membership(String, fluxchat_core::MessageInfo),
     RoomListUpdate,
+    Verification(fluxchat_core::VerificationInfo),
 }
 
 // Global channel for sync events
-static SYNC_TX: std::sync::OnceLock<std::sync::mpsc::Sender<SyncEvent>> = std::sync::OnceLock::new();
+pub static SYNC_TX: std::sync::OnceLock<std::sync::mpsc::Sender<SyncEvent>> = std::sync::OnceLock::new();
 static SYNC_RX: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Receiver<SyncEvent>>> = std::sync::OnceLock::new();
 static CORE: std::sync::OnceLock<Arc<AppState>> = std::sync::OnceLock::new();
 
@@ -151,6 +152,9 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
         }
         SyncEvent::Typing(room_id, user_ids) => { ui.typing_by_room.write().insert(room_id, user_ids); }
         SyncEvent::Membership(room_id, msg) => { ui.messages_by_room.write().entry(room_id).or_insert_with(Vec::new).push(msg); }
+        SyncEvent::Verification(info) => {
+            ui.verification_request.set(Some(info));
+        }
         SyncEvent::RoomListUpdate => {
             // Reload rooms from the core — needs to be async so we spawn
             if let Some(core) = CORE.get() {
@@ -186,5 +190,5 @@ impl fluxchat_core::sync::SyncCallbacks for ChannelSyncBridge {
     fn on_typing(&self, room_id: String, user_ids: Vec<String>) { let _ = self.tx.send(SyncEvent::Typing(room_id, user_ids)); }
     fn on_membership_change(&self, room_id: String, msg: fluxchat_core::MessageInfo) { let _ = self.tx.send(SyncEvent::Membership(room_id, msg)); }
     fn on_room_list_update(&self) { let _ = self.tx.send(SyncEvent::RoomListUpdate); }
-    fn on_verification_request(&self, _info: fluxchat_core::VerificationInfo) {}
+    fn on_verification_request(&self, info: fluxchat_core::VerificationInfo) { let _ = self.tx.send(SyncEvent::Verification(info)); }
 }

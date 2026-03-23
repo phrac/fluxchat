@@ -51,6 +51,7 @@ pub struct UiState {
     pub show_member_list: Signal<bool>,
     pub search_open: Signal<bool>,
     pub pins_open: Signal<bool>,
+    pub verification_request: Signal<Option<fluxchat_core::VerificationInfo>>,
 
     pub loading: Signal<bool>,
 
@@ -85,6 +86,7 @@ impl UiState {
             show_member_list: Signal::new(true),
             search_open: Signal::new(false),
             pins_open: Signal::new(false),
+            verification_request: Signal::new(None),
             loading: Signal::new(true),
             avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             avatar_version: Signal::new(0),

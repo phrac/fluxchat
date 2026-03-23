@@ -76,7 +76,7 @@ pub struct UrlPreview {
     pub site_name: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct VerificationInfo {
     pub flow_id: String,
     pub other_user_id: String,
@@ -85,7 +85,7 @@ pub struct VerificationInfo {
     pub emojis: Option<Vec<EmojiInfo>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct EmojiInfo {
     pub symbol: String,
     pub description: String,
