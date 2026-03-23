@@ -237,27 +237,17 @@ pub fn MessageInput() -> Element {
             return;
         }
 
+        // Use Timeline API for send/reply/edit — handles local echo automatically
         if let Some((event_id, _)) = edit {
             let body = body.clone();
             spawn(async move {
                 sending.set(true);
+                // Fall back to direct API for edit (Timeline.edit needs EventId not String)
                 let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
                 let _ = fluxchat_core::messages::edit_message(&client, &room_id, &event_id, &body).await;
                 sending.set(false);
             });
         } else if let Some((event_id, _, _)) = reply {
-            let mut ui = ui.clone();
-            let user_id = ui.user_id.read().clone();
-            let temp_id = format!("~local-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
-            let optimistic = fluxchat_core::MessageInfo {
-                event_id: temp_id, sender: user_id.clone(),
-                sender_name: user_id.split(':').next().unwrap_or("").trim_start_matches('@').to_string(),
-                body: body.clone(), formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
-                reply_to_id: Some(event_id.clone()), reply_to_sender: None, reply_to_body: None,
-                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                avatar_url: None,
-            };
-            ui.messages_by_room.write().entry(room_id.clone()).or_insert_with(Vec::new).push(optimistic);
             spawn(async move {
                 sending.set(true);
                 let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
@@ -265,18 +255,7 @@ pub fn MessageInput() -> Element {
                 sending.set(false);
             });
         } else {
-            let mut ui = ui.clone();
-            let user_id = ui.user_id.read().clone();
-            let temp_id = format!("~local-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
-            let optimistic = fluxchat_core::MessageInfo {
-                event_id: temp_id, sender: user_id.clone(),
-                sender_name: user_id.split(':').next().unwrap_or("").trim_start_matches('@').to_string(),
-                body: body.clone(), formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
-                reply_to_id: None, reply_to_sender: None, reply_to_body: None,
-                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                avatar_url: None,
-            };
-            ui.messages_by_room.write().entry(room_id.clone()).or_insert_with(Vec::new).push(optimistic);
+            // Normal send — Timeline handles local echo via diff stream
             spawn(async move {
                 sending.set(true);
                 let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
