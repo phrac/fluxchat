@@ -12,8 +12,8 @@ use crate::components::members::member_list::MemberList;
 pub fn MainLayout() -> Element {
     let mut ui = use_context::<UiState>();
 
+    let app_state = use_context::<Arc<AppState>>();
     let user_id = ui.user_id.read().clone();
-    let server = user_id.split(':').nth(1).unwrap_or("matrix.org");
     let selected_room = ui.selected_room_id.read().clone();
     let room_name = selected_room.as_ref()
         .and_then(|id| ui.rooms.read().iter().find(|r| r.room_id == *id).map(|r| r.name.clone()))
@@ -50,9 +50,20 @@ pub fn MainLayout() -> Element {
           } else { rsx! {} }
         }
 
+        // Settings modal
+        if *ui.settings_open.read() {
+            SettingsModal {}
+        }
+
         // Status bar — IRC style
         div { class: "status-bar",
-            span { style: "font-family: var(--font-mono); color: var(--green);", "{user_id}" }
+            // Gear + avatar + name — all clickable to open settings
+            div { style: "display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 0 2px; border-radius: 3px;",
+                onclick: move |_| { let v = *ui.settings_open.read(); ui.settings_open.set(!v); },
+                span { style: "font-size: 15px; opacity: 0.6;", "⚙" }
+                UserAvatar {}
+                span { style: "font-family: var(--font-mono); color: var(--green);", "{user_id}" }
+            }
             span { class: "sep", "│" }
             if let Some(_) = &selected_room {
                 span { "#{room_name}" }
@@ -69,6 +80,187 @@ pub fn MainLayout() -> Element {
             }
             span { class: "sep", "│" }
             span { style: "color: var(--green);", "synced" }
+            span { class: "sep", "│" }
+            DeviceStatus {}
+        }
+    }
+}
+
+/// Device/session verification status in the status bar.
+#[component]
+fn DeviceStatus() -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+
+    let status = use_resource({
+        let app_state = app_state.clone();
+        move || {
+            let app_state = app_state.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                let device_id = client.device_id()?.to_string();
+                let user_id = client.user_id()?;
+
+                // Check if our own device is cross-signing verified
+                let own_device = client.encryption()
+                    .get_device(user_id, client.device_id()?)
+                    .await.ok()??;
+
+                let is_verified = own_device.is_verified_with_cross_signing();
+
+                // Count total own devices
+                let devices = client.encryption()
+                    .get_user_devices(user_id)
+                    .await.ok()?;
+                let total = devices.devices().count();
+                let verified_count = devices.devices()
+                    .filter(|d| d.is_verified_with_cross_signing())
+                    .count();
+
+                Some((device_id, is_verified, verified_count, total))
+            }
+        }
+    });
+
+    let resolved = status.read().clone().flatten();
+
+    if let Some((device_id, is_verified, verified, total)) = resolved {
+        let (icon, color) = if is_verified {
+            ("✓", "var(--green)")
+        } else {
+            ("✗", "var(--yellow)")
+        };
+        let label = if is_verified { "verified" } else { "unverified" };
+        let tooltip = format!("{} ({}/{} devices verified)", device_id, verified, total);
+        rsx! {
+            span {
+                style: "color: {color}; font-family: var(--font-mono);",
+                title: "{tooltip}",
+                "{icon} {label}"
+            }
+        }
+    } else {
+        rsx! {
+            span { style: "color: var(--text-dim); font-family: var(--font-mono);", "..." }
+        }
+    }
+}
+
+/// Tiny avatar for the current user in the status bar.
+#[component]
+fn UserAvatar() -> Element {
+    let ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+
+    // Resolve own avatar
+    let avatar_data = use_resource({
+        let app_state = app_state.clone();
+        move || {
+            let app_state = app_state.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                let avatar_mxc = client.account().get_avatar_url().await.ok()??.to_string();
+                fluxchat_core::media::get_media_url(&client, &app_state.db, &app_state.media_cache, &avatar_mxc).await.ok()
+            }
+        }
+    });
+    let resolved = avatar_data.read().clone().flatten();
+
+    if let Some(src) = resolved {
+        rsx! {
+            img {
+                src: "{src}",
+                style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; margin-right: 4px;",
+            }
+        }
+    } else {
+        rsx! {}
+    }
+}
+
+/// Settings modal.
+#[component]
+fn SettingsModal() -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+    let user_id = ui.user_id.read().clone();
+    let display_name = ui.display_name.read().clone().unwrap_or_else(|| user_id.clone());
+
+    rsx! {
+        div {
+            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;",
+            onclick: move |_| { ui.settings_open.set(false); },
+
+            div {
+                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 400px; max-width: 500px; max-height: 80vh; overflow-y: auto;",
+                onclick: move |e| { e.stop_propagation(); },
+
+                // Header
+                div { style: "display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);",
+                    span { style: "font-size: 16px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);", "settings" }
+                    span {
+                        style: "cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 4px;",
+                        onclick: move |_| { ui.settings_open.set(false); },
+                        "×"
+                    }
+                }
+
+                // Content
+                div { style: "padding: 20px; display: flex; flex-direction: column; gap: 16px;",
+
+                    // Account section
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                            "account"
+                        }
+                        div { style: "display: flex; flex-direction: column; gap: 6px; font-size: 13px;",
+                            div { style: "display: flex; justify-content: space-between;",
+                                span { style: "color: var(--text-muted);", "User ID" }
+                                span { style: "color: var(--text-normal); font-family: var(--font-mono);", "{user_id}" }
+                            }
+                            div { style: "display: flex; justify-content: space-between;",
+                                span { style: "color: var(--text-muted);", "Display Name" }
+                                span { style: "color: var(--text-normal);", "{display_name}" }
+                            }
+                        }
+                    }
+
+                    // Appearance section
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                            "appearance"
+                        }
+                        div { style: "font-size: 13px; color: var(--text-muted);",
+                            "Theme and font settings coming soon."
+                        }
+                    }
+
+                    // Session section
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                            "session"
+                        }
+                        span {
+                            style: "font-size: 13px; color: var(--red); cursor: pointer; font-family: var(--font-mono);",
+                            onclick: {
+                                let app_state = app_state.clone();
+                                move |_| {
+                                    let app_state = app_state.clone();
+                                    spawn(async move {
+                                        let mut ui = consume_context::<UiState>();
+                                        if let Ok(client) = app_state.get_client().await {
+                                            let _ = client.matrix_auth().logout().await;
+                                        }
+                                        app_state.db.delete_session();
+                                        ui.logged_in.set(false);
+                                        ui.settings_open.set(false);
+                                    });
+                                }
+                            },
+                            "logout"
+                        }
+                    }
+                }
+            }
         }
     }
 }

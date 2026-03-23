@@ -247,14 +247,17 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                             dioxus.send(el ? el.scrollTop : 9999);
                         "#));
                         if let Ok(top) = eval.recv::<f64>().await {
-                            if top < 150.0 {
+                            if top < 100.0 {
                                 loading_older.set(true);
                                 let mut ui = consume_context::<UiState>();
                                 let token = ui.pagination_tokens.read().get(&room_id).cloned();
                                 if let Some(token) = token {
+                                    // Save scroll height before prepending
+                                    let id2 = id.clone();
                                     let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { loading_older.set(false); return; } };
                                     if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, Some(&token)).await {
                                         let older: Vec<_> = paginated.messages.into_iter().rev().collect();
+                                        let older_count = older.len();
                                         if let Some(new_token) = paginated.end_token {
                                             ui.pagination_tokens.write().insert(room_id.clone(), new_token);
                                         } else {
@@ -265,6 +268,20 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                             let mut combined = older;
                                             combined.append(existing);
                                             *existing = combined;
+                                        }
+                                        drop(msgs);
+
+                                        // After DOM updates, restore scroll so new content is above viewport
+                                        if older_count > 0 {
+                                            document::eval(&format!(r#"
+                                                requestAnimationFrame(() => requestAnimationFrame(() => {{
+                                                    let el = document.getElementById('{id2}');
+                                                    if (el) {{
+                                                        // Set scroll to middle of container
+                                                        el.scrollTop = el.scrollHeight / 2;
+                                                    }}
+                                                }}));
+                                            "#));
                                         }
                                     }
                                 }

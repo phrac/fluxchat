@@ -31,7 +31,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
 
     let mut options = MessagesOptions::backward();
-    options.limit = 50u32.into();
+    options.limit = 20u32.into();
     if let Some(token) = from_token { options.from = Some(token.to_string()); }
 
     let response = room.messages(options).await?;

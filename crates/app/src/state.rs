@@ -38,6 +38,7 @@ pub struct UiState {
     // Message action state
     pub reply_to: Signal<Option<(String, String, String)>>, // (event_id, sender_name, body)
     pub edit_event: Signal<Option<(String, String)>>,       // (event_id, original_body)
+    pub settings_open: Signal<bool>,
 
     pub loading: Signal<bool>,
 
@@ -67,6 +68,7 @@ impl UiState {
             profile_user_id: Signal::new(None),
             reply_to: Signal::new(None),
             edit_event: Signal::new(None),
+            settings_open: Signal::new(false),
             loading: Signal::new(true),
             avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             avatar_version: Signal::new(0),
