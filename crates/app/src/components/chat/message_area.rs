@@ -225,7 +225,6 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
     } else {
         ui.messages_by_room.peek().get(&room_id).cloned().unwrap_or_default()
     };
-    let _has_more = ui.pagination_tokens.read().contains_key(&room_id);
 
     // Build avatar maps with one cache lock — only when active or first render
     let (avatar_map, mention_avatars, uncached) = {
@@ -532,7 +531,6 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
                         // Free memory for closed tab
                         ui.messages_by_room.write().remove(&cid);
                         ui.members_by_room.write().remove(&cid);
-                        ui.pagination_tokens.write().remove(&cid);
                     }
                 },
                 "×"
