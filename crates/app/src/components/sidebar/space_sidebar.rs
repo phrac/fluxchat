@@ -10,21 +10,22 @@ pub fn SpaceSidebar() -> Element {
     let spaces = ui.spaces.read().clone();
     let selected = ui.selected_space_id.read().clone();
 
-    let home_style = format!(
-        "width: 40px; height: 40px; border-radius: {}; background: var(--bg-mid); display: flex; align-items: center; justify-content: center; cursor: pointer; margin-bottom: 8px; color: {}; font-size: 20px; transition: border-radius 0.15s;",
-        if selected.is_none() { "12px" } else { "20px" },
-        if selected.is_none() { "var(--text-bright)" } else { "var(--text-muted)" },
-    );
+    let home_active = selected.is_none();
+    let home_radius = if home_active { "12px" } else { "20px" };
+    let home_color = if home_active { "var(--text-bright)" } else { "var(--text-muted)" };
+    let home_bg = if home_active { "var(--accent)" } else { "var(--bg-mid)" };
 
     rsx! {
         div { style: "width: 56px; flex-shrink: 0; background: var(--bg-deep); display: flex; flex-direction: column; align-items: center; padding: 8px 0; overflow-y: auto; border-right: 1px solid var(--border);",
-            div {
-                style: "{home_style}",
-                onclick: move |_| {
-                    ui.selected_space_id.set(None);
-                    ui.selected_room_id.set(None);
-                },
-                "⌂"
+            div { style: "margin-bottom: 8px;",
+                div {
+                    style: "width: 40px; height: 40px; border-radius: {home_radius}; background: {home_bg}; display: flex; align-items: center; justify-content: center; cursor: pointer; color: {home_color}; font-size: 20px; transition: border-radius 0.15s;",
+                    onclick: move |_| {
+                        ui.selected_space_id.set(None);
+                        ui.selected_room_id.set(None);
+                    },
+                    "⌂"
+                }
             }
 
             div { style: "width: 24px; height: 2px; background: var(--border); margin-bottom: 8px; border-radius: 1px;" }
@@ -71,21 +72,26 @@ fn SpaceIcon(space_id: String, name: String, avatar_mxc: Option<String>, is_acti
 
     let sid = space_id.clone();
 
+    let border = if is_active { "2px solid var(--accent)" } else { "2px solid transparent" };
+    let opacity = if is_active { "1" } else { "0.6" };
+
     rsx! {
-        div {
-            style: "width: 40px; height: 40px; border-radius: {radius}; background: var(--bg-mid); display: flex; align-items: center; justify-content: center; cursor: pointer; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text-muted); overflow: hidden;",
-            title: "{name}",
-            onclick: move |_| {
-                ui.selected_space_id.set(Some(sid.clone()));
-                ui.selected_room_id.set(None);
-            },
-            if has_avatar {
-                img {
-                    src: "{avatar_src.read().as_ref().and_then(|v| v.as_ref()).unwrap()}",
-                    style: "width: 100%; height: 100%; object-fit: cover;",
+        div { style: "margin-bottom: 4px;",
+            div {
+                style: "width: 40px; height: 40px; border-radius: {radius}; background: var(--bg-mid); display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-muted); overflow: hidden; transition: border-radius 0.15s, border-color 0.15s, opacity 0.15s; border: {border}; opacity: {opacity};",
+                title: "{name}",
+                onclick: move |_| {
+                    ui.selected_space_id.set(Some(sid.clone()));
+                    ui.selected_room_id.set(None);
+                },
+                if has_avatar {
+                    img {
+                        src: "{avatar_src.read().as_ref().and_then(|v| v.as_ref()).unwrap()}",
+                        style: "width: 100%; height: 100%; object-fit: cover;",
+                    }
+                } else {
+                    "{initials}"
                 }
-            } else {
-                "{initials}"
             }
         }
     }

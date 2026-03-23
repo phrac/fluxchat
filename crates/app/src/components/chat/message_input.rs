@@ -4,24 +4,16 @@ use fluxchat_core::AppState;
 
 use crate::state::UiState;
 use crate::components::chat::emoji_picker::EmojiPicker;
+use crate::components::chat::commands::{self, CommandAction};
 
 const ICO_PLUS: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>"#;
-
-const SLASH_COMMANDS: &[(&str, &str, &str)] = &[
-    ("/join", "<room>", "Join a room by alias or ID"),
-    ("/leave", "", "Leave the current room"),
-    ("/invite", "<user>", "Invite a user to this room"),
-    ("/kick", "<user> [reason]", "Kick a user from this room"),
-    ("/ban", "<user> [reason]", "Ban a user from this room"),
-    ("/topic", "<text>", "Set the room topic"),
-    ("/nick", "<name>", "Set the room display name"),
-    ("/me", "<action>", "Send an action message"),
-    ("/shrug", "[message]", "Append ¯\\_(ツ)_/¯"),
-    ("/tableflip", "[message]", "Append (╯°□°)╯︵ ┻━┻"),
-    ("/unflip", "[message]", "Append ┬─┬ノ( º _ ºノ)"),
-    ("/lenny", "[message]", "Append ( ͡° ͜ʖ ͡°)"),
-    ("/spoiler", "<text>", "Send a spoiler message"),
-];
+const ICO_BOLD: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/></svg>"#;
+const ICO_ITALIC: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="4" x2="10" y2="4"/><line x1="14" y1="20" x2="5" y2="20"/><line x1="15" y1="4" x2="9" y2="20"/></svg>"#;
+const ICO_STRIKE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4H9a3 3 0 0 0-3 3c0 2 1.5 3 3 3h6"/><path d="M4 12h16"/><path d="M15 12a3 3 0 0 1-3 3H8"/></svg>"#;
+const ICO_CODE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
+const ICO_CODEBLOCK: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="10 8 6 12 10 16"/><polyline points="14 8 18 12 14 16"/></svg>"#;
+const ICO_LINK: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
+const ICO_EMOJI: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>"#;
 
 #[component]
 pub fn MessageInput() -> Element {
@@ -32,6 +24,7 @@ pub fn MessageInput() -> Element {
     let mut uploading = use_signal(|| false);
     let mut typing_sent = use_signal(|| false);
     let mut emoji_open = use_signal(|| false);
+    let mut help_text = use_signal(|| Option::<String>::None);
 
     let reply_to = ui.reply_to.read().clone();
     let edit_event = ui.edit_event.read().clone();
@@ -70,125 +63,27 @@ pub fn MessageInput() -> Element {
     let mut handle_send = move |_: ()| {
         let mut body = text().trim().to_string();
 
-        // Handle slash commands
+        // Handle slash commands via modular registry
         if body.starts_with('/') {
-            let room_id = match ui.selected_room_id.read().clone() { Some(id) => id, None => return };
-            let core = core.clone();
-            let parts: Vec<&str> = body.splitn(2, ' ').collect();
-            let cmd = parts[0];
-            let args = parts.get(1).unwrap_or(&"").trim().to_string();
-
-            match cmd {
-                "/join" => {
-                    if !args.is_empty() {
-                        text.set(String::new());
-                        let core = core.clone();
-                        spawn(async move {
-                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::rooms::join_room(&client, &args).await;
-                        });
-                        return;
-                    }
-                }
-                "/leave" => {
+            let room_id = ui.selected_room_id.read().clone();
+            match commands::dispatch(&body, room_id.as_deref(), core.clone(), ui.clone()) {
+                CommandAction::Handled => {
                     text.set(String::new());
-                    let core = core.clone();
-                    let rid = room_id.clone();
-                    spawn(async move {
-                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                        let _ = fluxchat_core::rooms::leave_room(&client, &rid).await;
-                    });
+                    help_text.set(None);
                     return;
                 }
-                "/invite" => {
-                    if !args.is_empty() {
-                        text.set(String::new());
-                        let core = core.clone();
-                        let rid = room_id.clone();
-                        spawn(async move {
-                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::rooms::invite_user(&client, &rid, &args).await;
-                        });
-                        return;
-                    }
+                CommandAction::Rewrite(new_body) => {
+                    body = new_body;
+                    help_text.set(None);
+                    // Fall through to normal send
                 }
-                "/kick" => {
-                    if !args.is_empty() {
-                        text.set(String::new());
-                        let core = core.clone();
-                        let rid = room_id.clone();
-                        let kparts: Vec<&str> = args.splitn(2, ' ').collect();
-                        let user = kparts[0].to_string();
-                        let reason = kparts.get(1).map(|s| s.to_string());
-                        spawn(async move {
-                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::rooms::kick_user(&client, &rid, &user, reason.as_deref()).await;
-                        });
-                        return;
-                    }
+                CommandAction::ShowHelp(msg) => {
+                    text.set(String::new());
+                    help_text.set(Some(msg));
+                    return;
                 }
-                "/ban" => {
-                    if !args.is_empty() {
-                        text.set(String::new());
-                        let core = core.clone();
-                        let rid = room_id.clone();
-                        let bparts: Vec<&str> = args.splitn(2, ' ').collect();
-                        let user = bparts[0].to_string();
-                        let reason = bparts.get(1).map(|s| s.to_string());
-                        spawn(async move {
-                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::rooms::ban_user(&client, &rid, &user, reason.as_deref()).await;
-                        });
-                        return;
-                    }
-                }
-                "/topic" => {
-                    if !args.is_empty() {
-                        text.set(String::new());
-                        let core = core.clone();
-                        let rid = room_id.clone();
-                        spawn(async move {
-                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::rooms::set_room_topic(&client, &rid, &args).await;
-                        });
-                        return;
-                    }
-                }
-                "/nick" => {
-                    if !args.is_empty() {
-                        text.set(String::new());
-                        let core = core.clone();
-                        spawn(async move {
-                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::profile::set_display_name(&client, &args).await;
-                        });
-                        return;
-                    }
-                }
-                "/me" => {
-                    body = format!("* {args}");
-                    // Fall through to send as normal message
-                }
-                "/shrug" => {
-                    body = if args.is_empty() { "¯\\_(ツ)_/¯".into() } else { format!("{args} ¯\\_(ツ)_/¯") };
-                }
-                "/tableflip" => {
-                    body = if args.is_empty() { "(╯°□°)╯︵ ┻━┻".into() } else { format!("{args} (╯°□°)╯︵ ┻━┻") };
-                }
-                "/unflip" => {
-                    body = if args.is_empty() { "┬─┬ノ( º _ ºノ)".into() } else { format!("{args} ┬─┬ノ( º _ ºノ)") };
-                }
-                "/lenny" => {
-                    body = if args.is_empty() { "( ͡° ͜ʖ ͡°)".into() } else { format!("{args} ( ͡° ͜ʖ ͡°)") };
-                }
-                "/spoiler" => {
-                    if !args.is_empty() {
-                        body = args;
-                        // TODO: wrap in spoiler tags when formatted_body is supported for sending
-                    }
-                }
-                _ => {
-                    // Unknown command — send as plain text
+                CommandAction::Noop => {
+                    // Unknown or incomplete command — send as plain text
                 }
             }
         }
@@ -299,18 +194,49 @@ pub fn MessageInput() -> Element {
 
     // Prompt prefix changes based on mode
     let (prefix, prefix_color) = if edit_event.is_some() {
-        ("ed>", "var(--yellow)")
+        ("ed\u{276f}", "var(--yellow)")
     } else if reply_to.is_some() {
-        ("re>", "var(--green)")
+        ("re\u{276f}", "var(--green)")
     } else {
-        (">", "var(--accent)")
+        ("\u{276f}", "var(--accent-muted)")
+    };
+
+    // Format button helper — wraps selection or appends markup
+    let make_fmt_handler = |pfx: &'static str, sfx: &'static str| {
+        move |_| {
+            let pfx = pfx.to_string();
+            let sfx = sfx.to_string();
+            spawn(async move {
+                let mut eval = document::eval(r#"
+                    let ta = document.getElementById('flux-input');
+                    if (ta) { dioxus.send(ta.selectionStart + ',' + ta.selectionEnd); }
+                    else { dioxus.send('-1,-1'); }
+                "#);
+                if let Ok(data) = eval.recv::<String>().await {
+                    let parts: Vec<&str> = data.split(',').collect();
+                    if parts.len() == 2 {
+                        let start: usize = parts[0].parse().unwrap_or(0);
+                        let end: usize = parts[1].parse().unwrap_or(0);
+                        let current = text();
+                        if start != end && start < current.len() && end <= current.len() {
+                            let before = &current[..start];
+                            let selected = &current[start..end];
+                            let after = &current[end..];
+                            text.set(format!("{before}{pfx}{selected}{sfx}{after}"));
+                        } else {
+                            text.set(format!("{current}{pfx}{sfx}"));
+                        }
+                    }
+                }
+            });
+        }
     };
 
     rsx! {
         div { style: "flex-shrink: 0;",
             // Reply/edit context bar
             if let Some((_, ref name, ref body)) = reply_to {
-                div { style: "display: flex; align-items: center; padding: 2px 12px; font-size: 12px; font-family: var(--font-mono); color: var(--text-dim); background: var(--bg-deep); border-left: 2px solid var(--green); margin: 0 12px;",
+                div { style: "display: flex; align-items: center; padding: 4px 16px; font-size: 12px; font-family: var(--font-mono); color: var(--text-dim); background: var(--bg-deep); border-left: 2px solid var(--green); margin: 0 12px;",
                     span { style: "color: var(--green); margin-right: 6px;", "replying to {name}:" }
                     span { style: "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                         { body.chars().take(80).collect::<String>() }
@@ -322,7 +248,7 @@ pub fn MessageInput() -> Element {
                 }
             }
             if let Some((_, ref body)) = edit_event {
-                div { style: "display: flex; align-items: center; padding: 2px 12px; font-size: 12px; font-family: var(--font-mono); color: var(--text-dim); background: var(--bg-deep); border-left: 2px solid var(--yellow); margin: 0 12px;",
+                div { style: "display: flex; align-items: center; padding: 4px 16px; font-size: 12px; font-family: var(--font-mono); color: var(--text-dim); background: var(--bg-deep); border-left: 2px solid var(--yellow); margin: 0 12px;",
                     span { style: "color: var(--yellow); margin-right: 6px;", "editing:" }
                     span { style: "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                         { body.chars().take(80).collect::<String>() }
@@ -335,7 +261,7 @@ pub fn MessageInput() -> Element {
             }
             // Upload preview bar
             if let Some((ref filename, _, _)) = upload_pending {
-                div { style: "display: flex; align-items: center; padding: 2px 12px; font-size: 12px; font-family: var(--font-mono); color: var(--text-dim); background: var(--bg-deep); border-left: 2px solid var(--accent); margin: 0 12px;",
+                div { style: "display: flex; align-items: center; padding: 4px 16px; font-size: 12px; font-family: var(--font-mono); color: var(--text-dim); background: var(--bg-deep); border-left: 2px solid var(--accent); margin: 0 12px;",
                     span { style: "color: var(--accent); margin-right: 6px;",
                         if *uploading.read() { "uploading:" } else { "attach:" }
                     }
@@ -343,7 +269,6 @@ pub fn MessageInput() -> Element {
                         "{filename}"
                     }
                     if !*uploading.read() {
-                        // Send the upload
                         span { style: "cursor: pointer; padding: 0 6px; color: var(--green); font-weight: 600;",
                             onclick: {
                                 let handle_upload = handle_upload.clone();
@@ -373,18 +298,18 @@ pub fn MessageInput() -> Element {
             // Slash command autocomplete popup
             { let current_text = text();
               let show_cmds = current_text.starts_with('/') && !current_text.contains(' ');
-              let cmd_filter = if show_cmds { &current_text[..] } else { "" };
-              let filtered: Vec<_> = if show_cmds {
-                  SLASH_COMMANDS.iter()
-                      .filter(|(name, _, _)| name.starts_with(cmd_filter) || cmd_filter == "/")
+              let filtered: Vec<(String, String, String)> = if show_cmds {
+                  commands::autocomplete_entries().into_iter()
+                      .filter(|(name, _, _)| name.starts_with(&current_text[..]) || current_text == "/")
                       .collect()
               } else { Vec::new() };
               if !filtered.is_empty() {
                 rsx! {
                     div { style: "margin: 0 12px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px 6px 0 0; border-bottom: none; max-height: 200px; overflow-y: auto; padding: 4px 0;",
-                        for (_i, (name, usage, desc)) in filtered.iter().enumerate() {
+                        for (name, usage, desc) in filtered.iter() {
                             {
                               let cmd_text = format!("{name} {usage}");
+                              let name = name.clone();
                               rsx! {
                                 div {
                                     class: "cmd-item",
@@ -392,7 +317,7 @@ pub fn MessageInput() -> Element {
                                     onclick: move |_| {
                                         text.set(format!("{name} "));
                                     },
-                                    span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--accent); font-weight: 600; flex-shrink: 0;",
+                                    span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--accent-muted); font-weight: 600; flex-shrink: 0;",
                                         "{cmd_text}"
                                     }
                                     span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);",
@@ -405,204 +330,212 @@ pub fn MessageInput() -> Element {
                 }
               } else { rsx! {} }
             }
-            // Formatting toolbar
-            div { style: "display: flex; align-items: center; gap: 2px; padding: 0 12px; flex-shrink: 0;",
-                { let fmt_buttons: &[(&str, &str, &str, &str)] = &[
-                    ("B", "Bold", "**", "**"),
-                    ("I", "Italic", "*", "*"),
-                    ("S", "Strikethrough", "~~", "~~"),
-                    ("C", "Code", "`", "`"),
-                    ("⟨⟩", "Code block", "```\n", "\n```"),
-                    ("🔗", "Link", "[", "](url)"),
-                ];
-                rsx! {
-                    for (label, title, prefix, suffix) in fmt_buttons.iter() {
-                        { let prefix = prefix.to_string();
-                          let suffix = suffix.to_string();
-                          let fw = if *label == "B" { "700" } else { "400" };
-                          let fs = if *label == "I" { "italic" } else { "normal" };
-                          rsx! {
-                            span {
-                                style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); cursor: pointer; padding: 2px 5px; border-radius: 2px; font-weight: {fw}; font-style: {fs};",
-                                class: "cmd-item",
-                                title: "{title}",
-                                onclick: {
-                                    let prefix = prefix.clone();
-                                    let suffix = suffix.clone();
-                                    move |_| {
-                                        let prefix = prefix.clone();
-                                        let suffix = suffix.clone();
-                                        // Use JS to get selection range from the input
-                                        spawn(async move {
-                                            let mut eval = document::eval(r#"
-                                                let inputs = document.querySelectorAll('input[type="text"]');
-                                                let input = inputs[inputs.length - 1];
-                                                if (input) {
-                                                    dioxus.send(input.selectionStart + ',' + input.selectionEnd);
-                                                } else {
-                                                    dioxus.send('-1,-1');
-                                                }
-                                            "#);
-                                            if let Ok(data) = eval.recv::<String>().await {
-                                                let parts: Vec<&str> = data.split(',').collect();
-                                                if parts.len() == 2 {
-                                                    let start: usize = parts[0].parse().unwrap_or(0);
-                                                    let end: usize = parts[1].parse().unwrap_or(0);
-                                                    let current = text();
-                                                    if start != end && start < current.len() && end <= current.len() {
-                                                        // Wrap selected text
-                                                        let before = &current[..start];
-                                                        let selected = &current[start..end];
-                                                        let after = &current[end..];
-                                                        text.set(format!("{before}{prefix}{selected}{suffix}{after}"));
-                                                    } else {
-                                                        // No selection — append at cursor or end
-                                                        text.set(format!("{current}{prefix}{suffix}"));
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
-                                },
-                                "{label}"
-                            }
-                        } }
+            // Help text display
+            if let Some(ref msg) = *help_text.read() {
+                div { style: "margin: 0 12px 4px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); white-space: pre-wrap; line-height: 1.6; position: relative;",
+                    span {
+                        style: "position: absolute; top: 4px; right: 8px; cursor: pointer; color: var(--text-dim); font-size: 14px;",
+                        onclick: move |_| { help_text.set(None); },
+                        "×"
                     }
-                } }
+                    "{msg}"
+                }
             }
-            // Input row
-            div { style: "display: flex; align-items: center; height: 40px; margin: 4px 12px 8px; border-radius: 6px; background: var(--bg-deep); border: 1px solid var(--border);",
-                // Attach button
-                span {
-                    style: "color: var(--text-dim); cursor: pointer; padding: 0 8px; display: inline-flex; align-items: center; flex-shrink: 0;",
-                    title: "Attach file",
-                    onclick: move |_| {
-                        spawn(async move {
-                            let mut eval = document::eval(r#"
-                                let input = document.createElement('input');
-                                input.type = 'file';
-                                input.accept = 'image/*,video/*,audio/*,application/*';
-                                input.onchange = async () => {
-                                    if (input.files.length > 0) {
-                                        let file = input.files[0];
-                                        let reader = new FileReader();
-                                        reader.onload = () => {
-                                            let base64 = reader.result.split(',')[1];
-                                            dioxus.send(JSON.stringify({
-                                                name: file.name,
-                                                type: file.type || 'application/octet-stream',
-                                                data: base64
-                                            }));
-                                        };
-                                        reader.readAsDataURL(file);
-                                    }
-                                };
-                                input.click();
-                            "#);
-                            if let Ok(json) = eval.recv::<String>().await {
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
-                                    let name = parsed["name"].as_str().unwrap_or("file").to_string();
-                                    let mime = parsed["type"].as_str().unwrap_or("application/octet-stream").to_string();
-                                    if let Some(b64) = parsed["data"].as_str() {
-                                        use base64::Engine;
-                                        if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                                            let mut ui = consume_context::<UiState>();
-                                            ui.upload_pending.set(Some((name, mime, data)));
+
+            // ── The command bar ──────────────────────────────────────
+            div { style: "margin: 0 12px 8px; border-radius: 8px; background: var(--bg-deep); border: 1px solid var(--border); transition: border-color 0.15s, box-shadow 0.15s;",
+                class: "command-bar",
+
+                // Input row
+                div { style: "display: flex; align-items: center; min-height: 44px; padding: 0 4px;",
+                    // Attach button
+                    span {
+                        class: "cmd-btn",
+                        style: "color: var(--text-dim); cursor: pointer; padding: 6px 8px; display: inline-flex; align-items: center; flex-shrink: 0; border-radius: 4px; transition: color 0.1s, background 0.1s;",
+                        title: "Attach file",
+                        onclick: move |_| {
+                            spawn(async move {
+                                let mut eval = document::eval(r#"
+                                    let input = document.createElement('input');
+                                    input.type = 'file';
+                                    input.accept = 'image/*,video/*,audio/*,application/*';
+                                    input.onchange = async () => {
+                                        if (input.files.length > 0) {
+                                            let file = input.files[0];
+                                            let reader = new FileReader();
+                                            reader.onload = () => {
+                                                let base64 = reader.result.split(',')[1];
+                                                dioxus.send(JSON.stringify({
+                                                    name: file.name,
+                                                    type: file.type || 'application/octet-stream',
+                                                    data: base64
+                                                }));
+                                            };
+                                            reader.readAsDataURL(file);
+                                        }
+                                    };
+                                    input.click();
+                                "#);
+                                if let Ok(json) = eval.recv::<String>().await {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                                        let name = parsed["name"].as_str().unwrap_or("file").to_string();
+                                        let mime = parsed["type"].as_str().unwrap_or("application/octet-stream").to_string();
+                                        if let Some(b64) = parsed["data"].as_str() {
+                                            use base64::Engine;
+                                            if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                                let mut ui = consume_context::<UiState>();
+                                                ui.upload_pending.set(Some((name, mime, data)));
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        });
-                    },
-                    dangerous_inner_html: ICO_PLUS,
-                }
-                span { style: "color: {prefix_color}; font-family: var(--font-mono); font-size: 15px; font-weight: 700; flex-shrink: 0; opacity: 0.6; padding-right: 8px;", "{prefix}" }
-                input {
-                    style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-mono); padding-right: 8px;",
-                    r#type: "text",
-                    value: "{text}",
-                    oninput: {
-                        let core = core_typing.clone();
-                        let ui = ui_typing.clone();
-                        move |e: Event<FormData>| {
-                            let val = e.value();
-                            text.set(val.clone());
-                            if !val.is_empty() && !*typing_sent.read() {
-                                typing_sent.set(true);
-                                let core = core.clone();
-                                if let Some(room_id) = ui.selected_room_id.peek().clone() {
-                                    spawn(async move {
-                                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, true).await;
-                                    });
-                                }
-                            } else if val.is_empty() && *typing_sent.read() {
-                                typing_sent.set(false);
-                                let core = core.clone();
-                                if let Some(room_id) = ui.selected_room_id.peek().clone() {
-                                    spawn(async move {
-                                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, false).await;
-                                    });
-                                }
-                            }
-                        }
-                    },
-                    onkeydown: {
-                        let mut ui = ui_cancel3.clone();
-                        move |e: Event<KeyboardData>| {
-                            let val = text();
-                            let in_autocomplete = val.starts_with('/') && !val.contains(' ');
+                            });
+                        },
+                        dangerous_inner_html: ICO_PLUS,
+                    }
 
-                            if e.key() == Key::Tab && in_autocomplete {
-                                // Accept first matching command on Tab
-                                let filtered: Vec<_> = SLASH_COMMANDS.iter()
-                                    .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
-                                    .collect();
-                                if !filtered.is_empty() {
-                                    text.set(format!("{} ", filtered[0].0));
-                                }
-                                return;
-                            }
+                    // Prompt
+                    span { style: "color: {prefix_color}; font-family: var(--font-mono); font-size: 18px; font-weight: 700; flex-shrink: 0; padding: 0 6px; line-height: 1;", "{prefix}" }
 
-                            if e.key() == Key::Enter && !e.modifiers().shift() {
-                                // If in autocomplete, accept highlighted command
-                                if in_autocomplete {
-                                    let filtered: Vec<_> = SLASH_COMMANDS.iter()
-                                        .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
-                                        .collect();
-                                    if filtered.len() == 1 {
-                                        // Exact single match — accept it
-                                        text.set(format!("{} ", filtered[0].0));
-                                        return;
+                    // Text input
+                    input {
+                        id: "flux-input",
+                        style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-mono); padding: 8px 0; min-width: 0;",
+                        r#type: "text",
+                        placeholder: "Type a message or /command...",
+                        value: "{text}",
+                        oninput: {
+                            let core = core_typing.clone();
+                            let ui = ui_typing.clone();
+                            move |e: Event<FormData>| {
+                                let val = e.value();
+                                text.set(val.clone());
+                                if !val.is_empty() && !*typing_sent.read() {
+                                    typing_sent.set(true);
+                                    let core = core.clone();
+                                    if let Some(room_id) = ui.selected_room_id.peek().clone() {
+                                        spawn(async move {
+                                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                                            let _ = fluxchat_core::messages::send_typing(&client, &room_id, true).await;
+                                        });
+                                    }
+                                } else if val.is_empty() && *typing_sent.read() {
+                                    typing_sent.set(false);
+                                    let core = core.clone();
+                                    if let Some(room_id) = ui.selected_room_id.peek().clone() {
+                                        spawn(async move {
+                                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                                            let _ = fluxchat_core::messages::send_typing(&client, &room_id, false).await;
+                                        });
                                     }
                                 }
-                                handle_send(());
-                            } else if e.key() == Key::Escape {
-                                ui.reply_to.set(None);
-                                ui.edit_event.set(None);
-                                text.set(String::new());
                             }
-                        }
-                    },
-                }
-                // Emoji button
-                div { style: "position: relative; flex-shrink: 0;",
-                    span {
-                        style: "color: var(--text-dim); cursor: pointer; padding: 0 8px; display: inline-flex; align-items: center; font-size: 16px;",
-                        onclick: move |_| { let v = *emoji_open.read(); emoji_open.set(!v); },
-                        "☺"
+                        },
+                        onkeydown: {
+                            let mut ui = ui_cancel3.clone();
+                            move |e: Event<KeyboardData>| {
+                                let val = text();
+                                let in_autocomplete = val.starts_with('/') && !val.contains(' ');
+
+                                if e.key() == Key::Tab && in_autocomplete {
+                                    let all = commands::autocomplete_entries();
+                                    let filtered: Vec<_> = all.iter()
+                                        .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
+                                        .collect();
+                                    if !filtered.is_empty() {
+                                        text.set(format!("{} ", filtered[0].0));
+                                    }
+                                    return;
+                                }
+
+                                if e.key() == Key::Enter && !e.modifiers().shift() {
+                                    if in_autocomplete {
+                                        let all = commands::autocomplete_entries();
+                                        let filtered: Vec<_> = all.iter()
+                                            .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
+                                            .collect();
+                                        if filtered.len() == 1 {
+                                            text.set(format!("{} ", filtered[0].0));
+                                            return;
+                                        }
+                                    }
+                                    handle_send(());
+                                } else if e.key() == Key::Escape {
+                                    ui.reply_to.set(None);
+                                    ui.edit_event.set(None);
+                                    text.set(String::new());
+                                    help_text.set(None);
+                                }
+                            }
+                        },
                     }
-                    if *emoji_open.read() {
-                        div { style: "position: absolute; bottom: 100%; right: 0; margin-bottom: 8px; z-index: 100;",
-                            EmojiPicker {
-                                on_select: move |emoji: String| {
-                                    let current = text();
-                                    text.set(format!("{current}{emoji}"));
-                                    emoji_open.set(false);
-                                },
+
+                    // Emoji button
+                    div { style: "position: relative; flex-shrink: 0;",
+                        span {
+                            class: "cmd-btn",
+                            style: "color: var(--text-dim); cursor: pointer; padding: 6px 8px; display: inline-flex; align-items: center; border-radius: 4px; transition: color 0.1s, background 0.1s;",
+                            title: "Emoji",
+                            onclick: move |_| { let v = *emoji_open.read(); emoji_open.set(!v); },
+                            dangerous_inner_html: ICO_EMOJI,
+                        }
+                        if *emoji_open.read() {
+                            div { style: "position: absolute; bottom: 100%; right: 0; margin-bottom: 8px; z-index: 100;",
+                                EmojiPicker {
+                                    on_select: move |emoji: String| {
+                                        let current = text();
+                                        text.set(format!("{current}{emoji}"));
+                                        emoji_open.set(false);
+                                    },
+                                }
                             }
                         }
+                    }
+                }
+
+                // Formatting toolbar — inside the bar, subtle divider
+                div { style: "display: flex; align-items: center; gap: 1px; padding: 0 8px 4px; border-top: 1px solid rgba(255,255,255,0.03);",
+                    span {
+                        class: "cmd-btn",
+                        style: "color: var(--text-dim); cursor: pointer; padding: 3px 6px; display: inline-flex; align-items: center; border-radius: 3px; transition: color 0.1s, background 0.1s;",
+                        title: "Bold",
+                        onclick: make_fmt_handler("**", "**"),
+                        dangerous_inner_html: ICO_BOLD,
+                    }
+                    span {
+                        class: "cmd-btn",
+                        style: "color: var(--text-dim); cursor: pointer; padding: 3px 6px; display: inline-flex; align-items: center; border-radius: 3px; transition: color 0.1s, background 0.1s;",
+                        title: "Italic",
+                        onclick: make_fmt_handler("*", "*"),
+                        dangerous_inner_html: ICO_ITALIC,
+                    }
+                    span {
+                        class: "cmd-btn",
+                        style: "color: var(--text-dim); cursor: pointer; padding: 3px 6px; display: inline-flex; align-items: center; border-radius: 3px; transition: color 0.1s, background 0.1s;",
+                        title: "Strikethrough",
+                        onclick: make_fmt_handler("~~", "~~"),
+                        dangerous_inner_html: ICO_STRIKE,
+                    }
+                    span {
+                        class: "cmd-btn",
+                        style: "color: var(--text-dim); cursor: pointer; padding: 3px 6px; display: inline-flex; align-items: center; border-radius: 3px; transition: color 0.1s, background 0.1s;",
+                        title: "Inline code",
+                        onclick: make_fmt_handler("`", "`"),
+                        dangerous_inner_html: ICO_CODE,
+                    }
+                    span {
+                        class: "cmd-btn",
+                        style: "color: var(--text-dim); cursor: pointer; padding: 3px 6px; display: inline-flex; align-items: center; border-radius: 3px; transition: color 0.1s, background 0.1s;",
+                        title: "Code block",
+                        onclick: make_fmt_handler("```\n", "\n```"),
+                        dangerous_inner_html: ICO_CODEBLOCK,
+                    }
+                    span {
+                        class: "cmd-btn",
+                        style: "color: var(--text-dim); cursor: pointer; padding: 3px 6px; display: inline-flex; align-items: center; border-radius: 3px; transition: color 0.1s, background 0.1s;",
+                        title: "Link",
+                        onclick: make_fmt_handler("[", "](url)"),
+                        dangerous_inner_html: ICO_LINK,
                     }
                 }
             }

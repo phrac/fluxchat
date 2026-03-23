@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod db;
+pub mod devices;
 pub mod error;
 pub mod media;
 pub mod messages;

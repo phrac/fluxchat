@@ -371,10 +371,99 @@ fn UserAvatar() -> Element {
     }
 }
 
-/// Settings modal.
+/// Settings modal — sidebar nav with /account, /sessions sections.
 #[component]
 fn SettingsModal() -> Element {
     let mut ui = use_context::<UiState>();
+    let tab = ui.settings_tab.read().clone();
+
+    rsx! {
+        div {
+            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;",
+            tabindex: "0",
+            autofocus: true,
+            onclick: move |_| { ui.settings_open.set(false); },
+            onkeydown: move |e: Event<KeyboardData>| {
+                if e.key() == Key::Escape { ui.settings_open.set(false); }
+            },
+
+            div {
+                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; width: 700px; max-width: 90vw; height: 520px; max-height: 80vh; display: flex; overflow: hidden;",
+                onclick: move |e| { e.stop_propagation(); },
+
+                // Sidebar nav
+                div { style: "width: 160px; flex-shrink: 0; background: var(--bg-deep); border-right: 1px solid var(--border); padding: 16px 0; display: flex; flex-direction: column;",
+                    div { style: "padding: 0 12px 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; font-family: var(--font-mono);",
+                        "settings"
+                    }
+
+                    SettingsNavItem { label: "/account", tab_id: "account", active_tab: tab.clone() }
+                    SettingsNavItem { label: "/sessions", tab_id: "sessions", active_tab: tab.clone() }
+
+                    // Spacer
+                    div { style: "flex: 1;" }
+
+                    // Close
+                    div { style: "padding: 8px 12px;",
+                        span {
+                            style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); cursor: pointer; display: block; padding: 6px 8px; border-radius: 4px;",
+                            onclick: move |_| { ui.settings_open.set(false); },
+                            "esc close"
+                        }
+                    }
+                }
+
+                // Content area
+                div { style: "flex: 1; overflow-y: auto; display: flex; flex-direction: column;",
+                    // Header
+                    div { style: "display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                        span { style: "font-size: 14px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);",
+                            match tab.as_str() {
+                                "sessions" => "sessions",
+                                _ => "account",
+                            }
+                        }
+                        span {
+                            style: "cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 4px;",
+                            onclick: move |_| { ui.settings_open.set(false); },
+                            "×"
+                        }
+                    }
+
+                    // Page content
+                    div { style: "flex: 1; padding: 20px; overflow-y: auto;",
+                        match tab.as_str() {
+                            "sessions" => rsx! { SettingsSessionsPage {} },
+                            _ => rsx! { SettingsAccountPage {} },
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn SettingsNavItem(label: String, tab_id: String, active_tab: String) -> Element {
+    let mut ui = use_context::<UiState>();
+    let is_active = active_tab == tab_id;
+    let bg = if is_active { "var(--bg-mid)" } else { "transparent" };
+    let color = if is_active { "var(--text-bright)" } else { "var(--text-muted)" };
+    let tid = tab_id.clone();
+
+    rsx! {
+        div {
+            style: "padding: 6px 12px; cursor: pointer; font-family: var(--font-mono); font-size: 13px; color: {color}; background: {bg}; transition: background 0.1s, color 0.1s;",
+            onclick: move |_| { ui.settings_tab.set(tid.clone()); },
+            "{label}"
+        }
+    }
+}
+
+/// Account settings page — profile, banner, logout.
+#[component]
+fn SettingsAccountPage() -> Element {
+    let ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
     let user_id = ui.user_id.read().clone();
     let display_name = ui.display_name.read().clone().unwrap_or_else(|| user_id.clone());
@@ -404,245 +493,419 @@ fn SettingsModal() -> Element {
     let banner_resolved = profile_data.as_ref().and_then(|(_, _, b)| b.clone());
 
     rsx! {
-        div {
-            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;",
-            onclick: move |_| { ui.settings_open.set(false); },
+        div { style: "display: flex; flex-direction: column; gap: 16px;",
 
+            // Profile section
             div {
-                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 400px; max-width: 500px; max-height: 80vh; overflow-y: auto;",
-                onclick: move |e| { e.stop_propagation(); },
-
-                // Header
-                div { style: "display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border);",
-                    span { style: "font-size: 16px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);", "settings" }
-                    span {
-                        style: "cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 4px;",
-                        onclick: move |_| { ui.settings_open.set(false); },
-                        "×"
-                    }
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                    "profile"
                 }
-
-                // Content
-                div { style: "padding: 20px; display: flex; flex-direction: column; gap: 16px;",
-
-                    // Profile section
-                    div {
-                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
-                            "profile"
-                        }
-                        // Avatar
-                        div { style: "display: flex; align-items: center; gap: 12px; margin-bottom: 12px;",
-                            if let Some(ref src) = avatar_resolved {
-                                img { src: "{src}", style: "width: 64px; height: 64px; border-radius: 50%; object-fit: cover;" }
-                            } else {
-                                div { style: "width: 64px; height: 64px; border-radius: 50%; background: var(--bg-light); display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: var(--text-muted);",
-                                    { display_name.chars().next().unwrap_or('?').to_uppercase().to_string() }
-                                }
-                            }
-                            div { style: "display: flex; flex-direction: column; gap: 4px;",
-                                // Upload avatar
-                                span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer;",
-                                    onclick: {
-                                        let app_state = app_state.clone();
-                                        move |_| {
-                                            let app_state = app_state.clone();
-                                            spawn(async move {
-                                                let mut eval = document::eval(r#"
-                                                    let input = document.createElement('input');
-                                                    input.type = 'file';
-                                                    input.accept = 'image/*';
-                                                    input.onchange = async () => {
-                                                        if (input.files.length > 0) {
-                                                            let file = input.files[0];
-                                                            let reader = new FileReader();
-                                                            reader.onload = () => {
-                                                                let base64 = reader.result.split(',')[1];
-                                                                dioxus.send(JSON.stringify({ type: file.type, data: base64 }));
-                                                            };
-                                                            reader.readAsDataURL(file);
-                                                        }
-                                                    };
-                                                    input.click();
-                                                "#);
-                                                if let Ok(json) = eval.recv::<String>().await {
-                                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
-                                                        let mime = parsed["type"].as_str().unwrap_or("image/png").to_string();
-                                                        if let Some(b64) = parsed["data"].as_str() {
-                                                            use base64::Engine;
-                                                            if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                                                match fluxchat_core::profile::upload_avatar(&client, &mime, data).await {
-                                                                    Ok(_) => { status_msg.set(Some("avatar updated".into())); }
-                                                                    Err(e) => { status_msg.set(Some(format!("{e}"))); }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    },
-                                    "change avatar"
-                                }
-                                // Remove avatar
-                                span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); cursor: pointer;",
-                                    onclick: {
-                                        let app_state = app_state.clone();
-                                        move |_| {
-                                            let app_state = app_state.clone();
-                                            spawn(async move {
-                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                                match fluxchat_core::profile::remove_avatar(&client).await {
-                                                    Ok(_) => { status_msg.set(Some("avatar removed".into())); }
-                                                    Err(e) => { status_msg.set(Some(format!("{e}"))); }
-                                                }
-                                            });
-                                        }
-                                    },
-                                    "remove avatar"
-                                }
-                            }
-                        }
-                        // User ID
-                        div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 8px;", "{user_id}" }
-                        // Display name
-                        div { style: "display: flex; gap: 6px;",
-                            input {
-                                style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
-                                value: "{edit_name}",
-                                oninput: move |e| edit_name.set(e.value()),
-                            }
-                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
-                                onclick: {
-                                    let app_state = app_state.clone();
-                                    move |_| {
-                                        let new_name = edit_name().trim().to_string();
-                                        if new_name.is_empty() { return; }
-                                        let app_state = app_state.clone();
-                                        spawn(async move {
-                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                            match fluxchat_core::profile::set_display_name(&client, &new_name).await {
-                                                Ok(_) => {
-                                                    let mut ui = consume_context::<UiState>();
-                                                    ui.display_name.set(Some(new_name));
-                                                    status_msg.set(Some("name updated".into()));
-                                                }
-                                                Err(e) => { status_msg.set(Some(format!("{e}"))); }
-                                            }
-                                        });
-                                    }
-                                },
-                                "save"
-                            }
+                // Avatar
+                div { style: "display: flex; align-items: center; gap: 12px; margin-bottom: 12px;",
+                    if let Some(ref src) = avatar_resolved {
+                        img { src: "{src}", style: "width: 64px; height: 64px; border-radius: 50%; object-fit: cover;" }
+                    } else {
+                        div { style: "width: 64px; height: 64px; border-radius: 50%; background: var(--bg-light); display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: var(--text-muted);",
+                            { display_name.chars().next().unwrap_or('?').to_uppercase().to_string() }
                         }
                     }
-
-                    // Banner section
-                    div {
-                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
-                            "banner"
-                        }
-                        if let Some(ref src) = banner_resolved {
-                            img { src: "{src}", style: "width: 100%; height: 80px; object-fit: cover; border-radius: 4px; margin-bottom: 8px;" }
-                        } else {
-                            div { style: "width: 100%; height: 80px; background: var(--bg-light); border-radius: 4px; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px; font-family: var(--font-mono);",
-                                "no banner"
-                            }
-                        }
-                        div { style: "display: flex; gap: 8px;",
-                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer;",
-                                onclick: {
-                                    let app_state = app_state.clone();
-                                    move |_| {
-                                        let app_state = app_state.clone();
-                                        spawn(async move {
-                                            let mut eval = document::eval(r#"
-                                                let input = document.createElement('input');
-                                                input.type = 'file';
-                                                input.accept = 'image/*';
-                                                input.onchange = async () => {
-                                                    if (input.files.length > 0) {
-                                                        let file = input.files[0];
-                                                        let reader = new FileReader();
-                                                        reader.onload = () => {
-                                                            let base64 = reader.result.split(',')[1];
-                                                            dioxus.send(JSON.stringify({ type: file.type, data: base64 }));
-                                                        };
-                                                        reader.readAsDataURL(file);
-                                                    }
-                                                };
-                                                input.click();
-                                            "#);
-                                            if let Ok(json) = eval.recv::<String>().await {
-                                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
-                                                    let mime = parsed["type"].as_str().unwrap_or("image/png").to_string();
-                                                    if let Some(b64) = parsed["data"].as_str() {
-                                                        use base64::Engine;
-                                                        if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                                            match fluxchat_core::profile::upload_banner(&client, &mime, data).await {
-                                                                Ok(_) => { status_msg.set(Some("banner updated".into())); }
-                                                                Err(e) => { status_msg.set(Some(format!("{e}"))); }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
-                                },
-                                "change banner"
-                            }
-                            span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); cursor: pointer;",
-                                onclick: {
-                                    let app_state = app_state.clone();
-                                    move |_| {
-                                        let app_state = app_state.clone();
-                                        spawn(async move {
-                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
-                                            match fluxchat_core::profile::remove_banner(&client).await {
-                                                Ok(_) => { status_msg.set(Some("banner removed".into())); }
-                                                Err(e) => { status_msg.set(Some(format!("{e}"))); }
-                                            }
-                                        });
-                                    }
-                                },
-                                "remove banner"
-                            }
-                        }
-                    }
-
-                    // Status
-                    if let Some(ref msg) = *status_msg.read() {
-                        div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);", "{msg}" }
-                    }
-
-                    // Session section
-                    div {
-                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
-                            "session"
-                        }
-                        span {
-                            style: "font-size: 13px; color: var(--red); cursor: pointer; font-family: var(--font-mono);",
+                    div { style: "display: flex; flex-direction: column; gap: 4px;",
+                        // Upload avatar
+                        span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer;",
                             onclick: {
                                 let app_state = app_state.clone();
                                 move |_| {
                                     let app_state = app_state.clone();
                                     spawn(async move {
-                                        let mut ui = consume_context::<UiState>();
-                                        if let Ok(client) = app_state.get_client().await {
-                                            let _ = client.matrix_auth().logout().await;
+                                        let mut eval = document::eval(r#"
+                                            let input = document.createElement('input');
+                                            input.type = 'file';
+                                            input.accept = 'image/*';
+                                            input.onchange = async () => {
+                                                if (input.files.length > 0) {
+                                                    let file = input.files[0];
+                                                    let reader = new FileReader();
+                                                    reader.onload = () => {
+                                                        let base64 = reader.result.split(',')[1];
+                                                        dioxus.send(JSON.stringify({ type: file.type, data: base64 }));
+                                                    };
+                                                    reader.readAsDataURL(file);
+                                                }
+                                            };
+                                            input.click();
+                                        "#);
+                                        if let Ok(json) = eval.recv::<String>().await {
+                                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                                                let mime = parsed["type"].as_str().unwrap_or("image/png").to_string();
+                                                if let Some(b64) = parsed["data"].as_str() {
+                                                    use base64::Engine;
+                                                    if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                                        let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                        match fluxchat_core::profile::upload_avatar(&client, &mime, data).await {
+                                                            Ok(_) => { status_msg.set(Some("avatar updated".into())); }
+                                                            Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
-                                        app_state.db.delete_session();
-                                        ui.logged_in.set(false);
-                                        ui.settings_open.set(false);
                                     });
                                 }
                             },
-                            "logout"
+                            "change avatar"
+                        }
+                        // Remove avatar
+                        span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); cursor: pointer;",
+                            onclick: {
+                                let app_state = app_state.clone();
+                                move |_| {
+                                    let app_state = app_state.clone();
+                                    spawn(async move {
+                                        let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                        match fluxchat_core::profile::remove_avatar(&client).await {
+                                            Ok(_) => { status_msg.set(Some("avatar removed".into())); }
+                                            Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                        }
+                                    });
+                                }
+                            },
+                            "remove avatar"
                         }
                     }
                 }
+                // User ID
+                div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 8px;", "{user_id}" }
+                // Display name
+                div { style: "display: flex; gap: 6px;",
+                    input {
+                        style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                        value: "{edit_name}",
+                        oninput: move |e| edit_name.set(e.value()),
+                    }
+                    span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                        onclick: {
+                            let app_state = app_state.clone();
+                            move |_| {
+                                let new_name = edit_name().trim().to_string();
+                                if new_name.is_empty() { return; }
+                                let app_state = app_state.clone();
+                                spawn(async move {
+                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                    match fluxchat_core::profile::set_display_name(&client, &new_name).await {
+                                        Ok(_) => {
+                                            let mut ui = consume_context::<UiState>();
+                                            ui.display_name.set(Some(new_name));
+                                            status_msg.set(Some("name updated".into()));
+                                        }
+                                        Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                    }
+                                });
+                            }
+                        },
+                        "save"
+                    }
+                }
+            }
+
+            // Banner section
+            div {
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                    "banner"
+                }
+                if let Some(ref src) = banner_resolved {
+                    img { src: "{src}", style: "width: 100%; height: 80px; object-fit: cover; border-radius: 4px; margin-bottom: 8px;" }
+                } else {
+                    div { style: "width: 100%; height: 80px; background: var(--bg-light); border-radius: 4px; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px; font-family: var(--font-mono);",
+                        "no banner"
+                    }
+                }
+                div { style: "display: flex; gap: 8px;",
+                    span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer;",
+                        onclick: {
+                            let app_state = app_state.clone();
+                            move |_| {
+                                let app_state = app_state.clone();
+                                spawn(async move {
+                                    let mut eval = document::eval(r#"
+                                        let input = document.createElement('input');
+                                        input.type = 'file';
+                                        input.accept = 'image/*';
+                                        input.onchange = async () => {
+                                            if (input.files.length > 0) {
+                                                let file = input.files[0];
+                                                let reader = new FileReader();
+                                                reader.onload = () => {
+                                                    let base64 = reader.result.split(',')[1];
+                                                    dioxus.send(JSON.stringify({ type: file.type, data: base64 }));
+                                                };
+                                                reader.readAsDataURL(file);
+                                            }
+                                        };
+                                        input.click();
+                                    "#);
+                                    if let Ok(json) = eval.recv::<String>().await {
+                                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                                            let mime = parsed["type"].as_str().unwrap_or("image/png").to_string();
+                                            if let Some(b64) = parsed["data"].as_str() {
+                                                use base64::Engine;
+                                                if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    match fluxchat_core::profile::upload_banner(&client, &mime, data).await {
+                                                        Ok(_) => { status_msg.set(Some("banner updated".into())); }
+                                                        Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        },
+                        "change banner"
+                    }
+                    span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); cursor: pointer;",
+                        onclick: {
+                            let app_state = app_state.clone();
+                            move |_| {
+                                let app_state = app_state.clone();
+                                spawn(async move {
+                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                    match fluxchat_core::profile::remove_banner(&client).await {
+                                        Ok(_) => { status_msg.set(Some("banner removed".into())); }
+                                        Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                    }
+                                });
+                            }
+                        },
+                        "remove banner"
+                    }
+                }
+            }
+
+            // Status
+            if let Some(ref msg) = *status_msg.read() {
+                div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);", "{msg}" }
+            }
+
+            // Logout
+            div { style: "border-top: 1px solid var(--border); padding-top: 16px; margin-top: 4px;",
+                span {
+                    style: "font-size: 13px; color: var(--red); cursor: pointer; font-family: var(--font-mono);",
+                    onclick: {
+                        let app_state = app_state.clone();
+                        move |_| {
+                            let app_state = app_state.clone();
+                            spawn(async move {
+                                let mut ui = consume_context::<UiState>();
+                                if let Ok(client) = app_state.get_client().await {
+                                    let _ = client.matrix_auth().logout().await;
+                                }
+                                app_state.db.delete_session();
+                                ui.logged_in.set(false);
+                                ui.settings_open.set(false);
+                            });
+                        }
+                    },
+                    "logout"
+                }
+            }
+        }
+    }
+}
+
+/// Sessions settings page — list all devices/sessions.
+#[component]
+fn SettingsSessionsPage() -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+    let mut status_msg = use_signal(|| Option::<String>::None);
+    let mut pw_input = use_signal(|| String::new());
+    let mut signing_out = use_signal(|| Option::<String>::None); // device_id being signed out
+    let mut confirm_signout = use_signal(|| Option::<String>::None); // device_id awaiting password
+
+    // Fetch device list
+    let mut devices = use_resource({
+        let app_state = app_state.clone();
+        move || {
+            let app_state = app_state.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                fluxchat_core::devices::list_devices(&client).await.ok()
+            }
+        }
+    });
+
+    let device_list = devices.read().clone().flatten().unwrap_or_default();
+    let current_device = device_list.iter().find(|d| d.is_current).cloned();
+    let other_devices: Vec<_> = device_list.iter().filter(|d| !d.is_current).cloned().collect();
+
+    rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 16px;",
+
+            // Current session
+            div {
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                    "current session"
+                }
+                if let Some(ref dev) = current_device {
+                    SessionRow { device: dev.clone(), is_current: true }
+                } else {
+                    div { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); animation: pulse 1.5s ease-in-out infinite;",
+                        "loading..."
+                    }
+                }
+            }
+
+            // Other sessions
+            div {
+                div { style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;",
+                    div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; font-family: var(--font-mono);",
+                        "other sessions ({other_devices.len()})"
+                    }
+                }
+
+                if other_devices.is_empty() && !device_list.is_empty() {
+                    div { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); padding: 8px 0;",
+                        "no other sessions"
+                    }
+                }
+
+                div { style: "display: flex; flex-direction: column; gap: 2px;",
+                    for dev in other_devices.iter() {
+                        div { style: "display: flex; align-items: center; gap: 8px;",
+                            div { style: "flex: 1;",
+                                SessionRow { device: dev.clone(), is_current: false }
+                            }
+
+                            // Sign out button or password prompt
+                            if confirm_signout.read().as_ref() == Some(&dev.device_id) {
+                                // Password input for UIAA
+                                div { style: "display: flex; gap: 4px; align-items: center; flex-shrink: 0;",
+                                    input {
+                                        style: "width: 120px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 3px; padding: 3px 6px; color: var(--text-bright); font-family: var(--font-mono); font-size: 11px; outline: none;",
+                                        r#type: "password",
+                                        placeholder: "password",
+                                        value: "{pw_input}",
+                                        oninput: move |e| pw_input.set(e.value()),
+                                        onkeydown: {
+                                            let app_state = app_state.clone();
+                                            let dev_id = dev.device_id.clone();
+                                            move |e: Event<KeyboardData>| {
+                                                if e.key() == Key::Enter {
+                                                    let pw = pw_input().clone();
+                                                    let dev_id = dev_id.clone();
+                                                    let app_state = app_state.clone();
+                                                    signing_out.set(Some(dev_id.clone()));
+                                                    spawn(async move {
+                                                        let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { signing_out.set(None); return; } };
+                                                        match fluxchat_core::devices::delete_devices(&client, &[dev_id.clone()], &pw).await {
+                                                            Ok(_) => {
+                                                                status_msg.set(Some(format!("signed out {}", &dev_id[..dev_id.len().min(10)])));
+                                                                confirm_signout.set(None);
+                                                                pw_input.set(String::new());
+                                                                devices.restart();
+                                                            }
+                                                            Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                                        }
+                                                        signing_out.set(None);
+                                                    });
+                                                } else if e.key() == Key::Escape {
+                                                    confirm_signout.set(None);
+                                                    pw_input.set(String::new());
+                                                }
+                                            }
+                                        },
+                                    }
+                                    span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); cursor: pointer;",
+                                        onclick: move |_| { confirm_signout.set(None); pw_input.set(String::new()); },
+                                        "×"
+                                    }
+                                }
+                            } else if signing_out.read().as_ref() == Some(&dev.device_id) {
+                                span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); flex-shrink: 0;",
+                                    "..."
+                                }
+                            } else {
+                                span {
+                                    style: "font-family: var(--font-mono); font-size: 11px; color: var(--red); cursor: pointer; padding: 3px 6px; border-radius: 3px; flex-shrink: 0; opacity: 0.7; transition: opacity 0.1s;",
+                                    onclick: {
+                                        let dev_id = dev.device_id.clone();
+                                        move |_| { confirm_signout.set(Some(dev_id.clone())); }
+                                    },
+                                    "sign out"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Status message
+            if let Some(ref msg) = *status_msg.read() {
+                div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);", "{msg}" }
+            }
+        }
+    }
+}
+
+/// Single session/device row.
+#[component]
+fn SessionRow(device: fluxchat_core::devices::DeviceInfo, is_current: bool) -> Element {
+    let name = device.display_name.clone().unwrap_or_else(|| "Unknown device".into());
+    let short_id = if device.device_id.len() > 10 {
+        &device.device_id[..10]
+    } else {
+        &device.device_id
+    };
+
+    let (verified_icon, verified_color, verified_label) = if device.is_verified {
+        ("✓", "var(--green)", "verified")
+    } else {
+        ("✗", "var(--yellow)", "unverified")
+    };
+
+    // Format last seen time
+    let last_seen = if let Some(ts) = device.last_seen_ts {
+        let secs = ts;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let diff = now.saturating_sub(secs);
+        if diff < 60 { "just now".to_string() }
+        else if diff < 3600 { format!("{}m ago", diff / 60) }
+        else if diff < 86400 { format!("{}h ago", diff / 3600) }
+        else { format!("{}d ago", diff / 86400) }
+    } else {
+        "unknown".to_string()
+    };
+
+    let ip = device.last_seen_ip.clone().unwrap_or_default();
+    let border_color = if is_current { "var(--accent)" } else { "var(--border)" };
+
+    rsx! {
+        div {
+            style: "background: var(--bg-mid); border: 1px solid {border_color}; border-radius: 4px; padding: 10px 12px; font-family: var(--font-mono);",
+            // Top row: name + verified badge
+            div { style: "display: flex; align-items: center; gap: 8px; margin-bottom: 4px;",
+                span { style: "font-size: 13px; font-weight: 600; color: var(--text-bright);",
+                    "{name}"
+                }
+                if is_current {
+                    span { style: "font-size: 10px; color: var(--accent); background: rgba(59,130,246,0.1); padding: 1px 6px; border-radius: 3px;",
+                        "this device"
+                    }
+                }
+                span { style: "font-size: 11px; color: {verified_color};",
+                    "{verified_icon} {verified_label}"
+                }
+            }
+            // Bottom row: details
+            div { style: "display: flex; gap: 12px; font-size: 11px; color: var(--text-dim);",
+                span { "{short_id}" }
+                if !ip.is_empty() {
+                    span { "{ip}" }
+                }
+                span { "last seen {last_seen}" }
             }
         }
     }

@@ -58,6 +58,7 @@ pub struct UiState {
     pub create_room_open: Signal<bool>,
     pub room_settings_open: Signal<bool>,
 
+    pub settings_tab: Signal<String>,  // "account", "sessions"
     pub loading: Signal<bool>,
 
     // Resolved avatar data URIs — shared between render and background tasks
@@ -153,6 +154,7 @@ impl UiState {
             lightbox_url: Signal::new(None),
             create_room_open: Signal::new(false),
             room_settings_open: Signal::new(false),
+            settings_tab: Signal::new("account".into()),
             loading: Signal::new(true),
             _avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             _avatar_version: Signal::new(0),

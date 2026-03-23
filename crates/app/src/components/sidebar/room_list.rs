@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use std::collections::HashSet;
 use std::sync::Arc;
 use fluxchat_core::{AppState, RoomInfo};
 
@@ -12,6 +13,7 @@ pub fn RoomList() -> Element {
     let rooms = ui.rooms.read().clone();
     let selected = ui.selected_room_id.read().clone();
     let selected_space = ui.selected_space_id.read().clone();
+    let collapsed = use_signal(|| HashSet::<String>::new());
 
     // Filter rooms by space if one is selected
     let filtered: Vec<_> = if let Some(ref sid) = selected_space {
@@ -42,6 +44,8 @@ pub fn RoomList() -> Element {
         .and_then(|sid| ui.spaces.read().iter().find(|s| s.room_id == *sid).map(|s| s.name.clone()))
         .unwrap_or_else(|| "fluxchat".to_string());
 
+    let collapsed_set = collapsed.read().clone();
+
     rsx! {
         div { style: "width: 200px; flex-shrink: 0; background: var(--bg-dark); display: flex; flex-direction: column; border-right: 1px solid var(--border);",
             // Header
@@ -59,25 +63,31 @@ pub fn RoomList() -> Element {
             div { style: "flex: 1; overflow-y: auto; padding: 8px 6px;",
                 // Ungrouped channels
                 if !ungrouped.is_empty() {
-                    SectionHeader { label: "Channels".to_string() }
-                    for room in ungrouped.iter() {
-                        RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                    SectionHeader { label: "Channels".to_string(), collapsed: collapsed, section_key: "channels".to_string() }
+                    if !collapsed_set.contains("channels") {
+                        for room in ungrouped.iter() {
+                            RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                        }
                     }
                 }
 
                 // Space-grouped channels
                 for (space_name, space_rooms) in by_space.iter() {
-                    SectionHeader { label: space_name.clone() }
-                    for room in space_rooms.iter() {
-                        RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                    SectionHeader { label: space_name.clone(), collapsed: collapsed, section_key: space_name.clone() }
+                    if !collapsed_set.contains(space_name) {
+                        for room in space_rooms.iter() {
+                            RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                        }
                     }
                 }
 
                 // DMs
                 if !dms.is_empty() {
-                    SectionHeader { label: "Direct Messages".to_string() }
-                    for room in dms.iter() {
-                        DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                    SectionHeader { label: "Direct Messages".to_string(), collapsed: collapsed, section_key: "dms".to_string() }
+                    if !collapsed_set.contains("dms") {
+                        for room in dms.iter() {
+                            DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                        }
                     }
                 }
 
@@ -93,9 +103,23 @@ pub fn RoomList() -> Element {
 }
 
 #[component]
-fn SectionHeader(label: String) -> Element {
+fn SectionHeader(label: String, mut collapsed: Signal<HashSet<String>>, section_key: String) -> Element {
+    let is_collapsed = collapsed.read().contains(&section_key);
+    let caret = if is_collapsed { "▸" } else { "▾" };
+    let key = section_key.clone();
+
     rsx! {
-        div { style: "color: var(--text-dim); font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 10px 8px 4px; letter-spacing: 0.5px;",
+        div {
+            style: "color: var(--text-dim); font-size: 12px; font-weight: 700; text-transform: uppercase; padding: 6px 8px; margin: 4px -6px 2px; letter-spacing: 0.5px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; background: rgba(255,255,255,0.03);",
+            onclick: move |_| {
+                let mut set = collapsed.write();
+                if set.contains(&key) {
+                    set.remove(&key);
+                } else {
+                    set.insert(key.clone());
+                }
+            },
+            span { style: "font-size: 18px; width: 14px; flex-shrink: 0; line-height: 1;", "{caret}" }
             "{label}"
         }
     }

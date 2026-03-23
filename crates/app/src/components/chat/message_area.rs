@@ -236,7 +236,7 @@ fn ActiveRoomContent() -> Element {
             }
         }
 
-        // Typing indicator + input for active room
+        // Typing indicator for active room
         if let Some(ref active_id) = selected {
             { let typing = ui.typing_by_room.read().get(active_id).cloned().unwrap_or_default();
               if !typing.is_empty() {
@@ -250,8 +250,10 @@ fn ActiveRoomContent() -> Element {
                 }
               } else { rsx! {} }
             }
-            MessageInput {}
         }
+
+        // Input always visible — supports /settings, /sessions etc. without a room
+        MessageInput {}
     }
 }
 

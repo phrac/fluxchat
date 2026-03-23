@@ -206,3 +206,39 @@ pub async fn create_room(
 
     Ok(room.room_id().to_string())
 }
+
+/// Send a direct message to a user. Creates a DM room if one doesn't exist.
+pub async fn send_dm(client: &matrix_sdk::Client, user_id: &str, body: &str) -> Result<(), AppError> {
+    let target = matrix_sdk::ruma::UserId::parse(user_id)
+        .map_err(|_| AppError::Other(format!("Invalid user ID: {user_id}")))?;
+
+    // Look for an existing DM room with this user
+    let mut existing = None;
+    for room in client.joined_rooms() {
+        if room.is_direct().await.unwrap_or(false) && room.active_members_count() <= 2 {
+            if let Ok(Some(_)) = room.get_member_no_sync(&target).await {
+                existing = Some(room);
+                break;
+            }
+        }
+    }
+
+    let room = if let Some(r) = existing {
+        r
+    } else {
+        // Create a new DM room
+        let mut request = CreateRoomRequest::new();
+        request.is_direct = true;
+        request.invite = vec![target.clone()];
+        request.preset = Some(RoomPreset::PrivateChat);
+        client.create_room(request).await
+            .map_err(|e| AppError::Other(format!("Failed to create DM: {e}")))?
+    };
+
+    // Send the message
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+    room.send(RoomMessageEventContent::text_plain(body)).await
+        .map_err(|e| AppError::Other(format!("Failed to send DM: {e}")))?;
+
+    Ok(())
+}

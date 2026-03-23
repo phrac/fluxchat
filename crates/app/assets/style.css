@@ -17,6 +17,7 @@ audio, video { display: none !important; muted: true; }
 
   --accent: #3b82f6;
   --accent-hover: #2563eb;
+  --accent-muted: #7b9fc4;
   --green: #22c55e;
   --yellow: #eab308;
   --red: #ef4444;
@@ -415,4 +416,14 @@ input:focus, textarea:focus {
 .room-action.active {
   color: var(--accent);
   background: rgba(59, 130, 246, 0.1);
+}
+
+/* Command bar — the star of the show */
+.command-bar:focus-within {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.cmd-btn:hover {
+  color: var(--text-normal);
+  background: var(--bg-hover);
 }
