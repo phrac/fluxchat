@@ -16,7 +16,8 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 - **Channel tabs** — Chrome-style tabs across the top for quick room switching with space context
 - **Status bar** — bottom bar showing `user@server │ #channel │ nicks │ encrypted │ synced`
 - **Nick colors** — deterministic vibrant colors, the signature IRC visual
-- **Monospace accents** — timestamps, nicks, status bar in JetBrains Mono; body text in Inter
+- **Monospace throughout** — messages, timestamps, nicks, status bar in JetBrains Mono / system monospace
+- **SVG icons** — cross-platform inline SVGs for all actions (Lucide-style)
 - **Deep charcoal theme** — dark, warm, easy on the eyes
 
 ## Status
@@ -26,32 +27,41 @@ This is an **MVP** with active development. Core chat functionality works, with 
 ### Current Features
 
 - **Login & session persistence** — Any Matrix homeserver. Sessions saved in SQLite, restored on relaunch.
-- **Room list** — Grouped by space with section headers, room avatars, DMs separated.
+- **Room list** — Grouped by space with section headers, room avatars, unread badges, DMs separated.
 - **Spaces** — Space sidebar with resolved avatars. Clicking filters rooms.
 - **Messaging** — Send/receive in real-time via Matrix sync with optimistic local insertion.
-- **Message history** — Backward pagination on scroll.
+- **Message history** — Lazy loading with automatic back-pagination on scroll-up.
 - **Formatted messages** — Renders HTML `formatted_body` from Matrix events.
-- **Channel tabs** — Recently visited rooms as Chrome-style tabs with space context and close buttons.
-- **Nick colors** — Consistent, vibrant colors per user.
-- **Member list** — Grouped by role (Admin/Mod/Member) with presence dots and avatars.
-- **Status bar** — IRC-style connection info at the bottom.
+- **Inline images** — Image attachments render inline with async resolution and 3-tier cache.
+- **Image lightbox** — Click images to view full-size with save-to-disk via native dialog.
+- **Reactions** — Emoji picker on hover, reaction tooltips showing who reacted, reactions below messages.
+- **Reply & edit** — Reply to messages with context preview, edit own messages with inline compose.
+- **Message deletion** — Delete own messages with optimistic local removal.
+- **Pinned messages** — Pin/unpin messages, view pins in a dropdown HUD panel.
+- **Mention pills** — Matrix user mentions rendered as styled pills with avatars, click to view profile.
+- **File upload** — Attach files via `+` button, drag-and-drop, or clipboard paste (images).
+- **Search** — In-room message search via dropdown HUD with result navigation.
+- **Channel tabs** — Chrome-style tabs that flex to fill, instant switching via CSS show/hide.
+- **Nick colors** — Deterministic vibrant colors per user.
+- **Member list** — Lazy-loaded, grouped by role with presence dots and avatars.
+- **Profile modal** — Click any user mention or member to view profile with avatar, role, presence.
+- **Settings modal** — Gear icon opens settings with account info and logout.
+- **Device verification** — Incoming verification requests show SAS emoji grid for cross-signing.
+- **Read receipts** — Sent on room enter and incoming messages, persisted across restarts.
+- **Status bar** — User avatar, gear icon, room info, encryption status, sync status, device verification state with session ID.
+- **Cross-platform** — Native window decorations on macOS, borderless on Linux.
 - **End-to-end encryption** — E2EE via matrix-sdk with SQLite crypto store.
-- **Media caching** — 3-tier cache: memory → SQLite → network.
+- **Media caching** — 3-tier cache: memory → SQLite → network, capped at 500 entries.
+- **Memory management** — 200 message cap per room, lazy member list, tab close frees data.
 
-### Not Yet Implemented (porting from v1)
+### Not Yet Implemented
 
-- Reactions and emoji picker
-- Reply and thread support
-- Message editing and deletion
-- File uploads and image display
-- Pinned messages
-- Typing indicators (backend ready, UI pending)
+- Thread view UI
 - Room creation and settings
 - User profile editing
-- Device verification UI
 - URL previews
-- Search
 - Desktop notifications
+- Typing indicator display (backend ready)
 
 ## Architecture
 
@@ -91,6 +101,7 @@ fluxchat/
 
 - Rust 1.77+
 - System dependencies for Dioxus desktop:
+  - **macOS:** No additional dependencies (uses WKWebView)
   - **Arch:** `sudo pacman -S webkit2gtk-4.1 gtk3 libsoup3 xdotool`
   - **Ubuntu/Debian:** `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libxdo-dev`
 
