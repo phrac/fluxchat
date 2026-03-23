@@ -10,6 +10,7 @@ pub struct AppState {
     pub db: AppDb,
     pub media_cache: std::sync::Mutex<HashMap<String, String>>,
     pub timelines: crate::timeline::RoomTimelines,
+    pub sync_service: Mutex<Option<matrix_sdk_ui::sync_service::SyncService>>,
 }
 
 impl AppState {
@@ -19,6 +20,7 @@ impl AppState {
             db,
             media_cache: std::sync::Mutex::new(HashMap::new()),
             timelines: tokio::sync::Mutex::new(HashMap::new()),
+            sync_service: Mutex::new(None),
         }
     }
 

@@ -128,21 +128,73 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
         }
     }
 
-    // Load rooms before sync for immediate UI, but they'll be refreshed after initial sync
-    if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(client).await {
-        let read = ui.read_rooms.read().clone();
-        for r in rooms.iter_mut() {
-            if read.contains(&r.room_id) {
-                r.unread_count = 0;
+    // Try SyncService (Sliding Sync) first — gives us live room list, typing, etc.
+    match fluxchat_core::sync_service::create_sync_service(client).await {
+        Ok(sync_service) => {
+            tracing::info!("Using SyncService (Sliding Sync)");
+
+            // Load initial room list
+            if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(client).await {
+                let read = ui.read_rooms.read().clone();
+                for r in rooms.iter_mut() {
+                    if read.contains(&r.room_id) { r.unread_count = 0; }
+                }
+                ui.rooms.set(rooms);
+            }
+            if let Ok(spaces) = fluxchat_core::rooms::get_spaces(client).await { ui.spaces.set(spaces); }
+
+            // Spawn a task to periodically refresh room list (SyncService keeps SDK state updated)
+            {
+                let _rls = sync_service.room_list_service();
+                let core = core.clone();
+                spawn(async move {
+                    // Periodically refresh room list from the SDK (the sliding sync keeps it updated)
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        let mut ui = consume_context::<UiState>();
+                        if let Ok(client) = core.get_client().await {
+                            if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(&client).await {
+                                let read = ui.read_rooms.read().clone();
+                                for r in rooms.iter_mut() {
+                                    if read.contains(&r.room_id) { r.unread_count = 0; }
+                                }
+                                ui.rooms.set(rooms);
+                            }
+                            if let Ok(spaces) = fluxchat_core::rooms::get_spaces(&client).await {
+                                ui.spaces.set(spaces);
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Store the sync service
+            *core.sync_service.lock().await = Some(sync_service);
+
+            // Still use old sync for typing + verification callbacks
+            if let Some(tx) = SYNC_TX.get() {
+                let bridge = ChannelSyncBridge { tx: tx.clone() };
+                fluxchat_core::sync::spawn_sync(client.clone(), bridge);
             }
         }
-        ui.rooms.set(rooms);
-    } else if let Ok(rooms) = fluxchat_core::rooms::get_rooms(client).await { ui.rooms.set(rooms); }
-    if let Ok(spaces) = fluxchat_core::rooms::get_spaces(client).await { ui.spaces.set(spaces); }
+        Err(e) => {
+            tracing::warn!("SyncService failed ({e}), falling back to regular sync");
 
-    if let Some(tx) = SYNC_TX.get() {
-        let bridge = ChannelSyncBridge { tx: tx.clone() };
-        fluxchat_core::sync::spawn_sync(client.clone(), bridge);
+            // Fall back to regular sync
+            if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(client).await {
+                let read = ui.read_rooms.read().clone();
+                for r in rooms.iter_mut() {
+                    if read.contains(&r.room_id) { r.unread_count = 0; }
+                }
+                ui.rooms.set(rooms);
+            }
+            if let Ok(spaces) = fluxchat_core::rooms::get_spaces(client).await { ui.spaces.set(spaces); }
+
+            if let Some(tx) = SYNC_TX.get() {
+                let bridge = ChannelSyncBridge { tx: tx.clone() };
+                fluxchat_core::sync::spawn_sync(client.clone(), bridge);
+            }
+        }
     }
 }
 

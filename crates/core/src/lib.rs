@@ -9,6 +9,7 @@ pub mod profile;
 pub mod rooms;
 pub mod state;
 pub mod sync;
+pub mod sync_service;
 pub mod threads;
 pub mod timeline;
 pub mod verification;
