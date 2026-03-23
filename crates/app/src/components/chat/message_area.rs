@@ -487,7 +487,9 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                 }
                             }
                             div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
-                            // Message content + reactions in a column
+                            // Message content + reactions + url previews in a column
+                            { let urls: Vec<String> = extract_urls(&msg.body);
+                            rsx! {
                             div { style: "min-width: 0; flex: 1;",
                                 if msg.image_mxc.is_some() {
                                     InlineImage {
@@ -500,6 +502,10 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                     rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } } }
                                 } else {
                                     span { class: "msg-body", "{msg.body}" }
+                                }
+                                // URL previews
+                                for url in urls.iter() {
+                                    UrlPreviewCard { url: url.clone() }
                                 }
                                 // Reactions below message
                                 if !msg.reactions.is_empty() {
@@ -517,7 +523,7 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                         }
                                     }
                                 }
-                            }
+                            } } }
                             // Hover actions — IRC style
                             if !is_local {
                                 { let actions_class = if showing_react { "msg-actions has-picker" } else { "msg-actions" };
@@ -944,3 +950,58 @@ fn RoomActions() -> Element {
     }
 }
 
+/// Extract URLs from message text.
+fn extract_urls(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
+        .take(2)
+        .map(|w| w.trim_end_matches(|c: char| c == '.' || c == ',' || c == ')' || c == ']').to_string())
+        .collect()
+}
+
+/// Compact URL preview card.
+#[component]
+fn UrlPreviewCard(url: String) -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+
+    let preview = use_resource({
+        let app_state = app_state.clone();
+        let url = url.clone();
+        move || {
+            let app_state = app_state.clone();
+            let url = url.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                fluxchat_core::preview::get_url_preview(&client, &app_state.media_cache, &url).await.ok()?
+            }
+        }
+    });
+
+    let resolved = preview.read().clone().flatten();
+
+    if let Some(p) = resolved {
+        rsx! {
+            div { style: "display: flex; gap: 8px; padding: 4px 8px; margin: 4px 0; border-left: 2px solid var(--border); max-width: 400px;",
+                div { style: "min-width: 0; flex: 1;",
+                    if let Some(ref site) = p.site_name {
+                        div { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); text-transform: uppercase;",
+                            "{site}"
+                        }
+                    }
+                    if let Some(ref title) = p.title {
+                        div { style: "font-size: 12px; color: var(--accent); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                            "{title}"
+                        }
+                    }
+                    if let Some(ref desc) = p.description {
+                        div { style: "font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;",
+                            { desc.chars().take(150).collect::<String>() }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        rsx! {}
+    }
+}

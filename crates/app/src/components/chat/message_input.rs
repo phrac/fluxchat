@@ -13,6 +13,7 @@ pub fn MessageInput() -> Element {
     let mut text = use_signal(|| String::new());
     let mut sending = use_signal(|| false);
     let mut uploading = use_signal(|| false);
+    let mut typing_sent = use_signal(|| false);
 
     let reply_to = ui.reply_to.read().clone();
     let edit_event = ui.edit_event.read().clone();
@@ -30,6 +31,8 @@ pub fn MessageInput() -> Element {
     let mut ui_cancel2 = ui.clone();
     let ui_cancel3 = ui.clone();
     let ui_upload = ui.clone();
+    let ui_typing = ui.clone();
+    let core_typing = core.clone();
 
     // Upload handler
     let handle_upload = {
@@ -62,6 +65,16 @@ pub fn MessageInput() -> Element {
         ui.reply_to.set(None);
         ui.edit_event.set(None);
         ui.upload_pending.set(None);
+        typing_sent.set(false);
+        // Stop typing indicator
+        {
+            let core = core.clone();
+            let room_id = room_id.clone();
+            spawn(async move {
+                let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                let _ = fluxchat_core::messages::send_typing(&client, &room_id, false).await;
+            });
+        }
 
         // If there's a file pending, upload it (and send text after if any)
         if let Some((filename, mime, data)) = pending_upload {
@@ -254,7 +267,33 @@ pub fn MessageInput() -> Element {
                     style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-mono); padding-right: 8px;",
                     r#type: "text",
                     value: "{text}",
-                    oninput: move |e| text.set(e.value()),
+                    oninput: {
+                        let core = core_typing.clone();
+                        let ui = ui_typing.clone();
+                        move |e: Event<FormData>| {
+                            let val = e.value();
+                            text.set(val.clone());
+                            if !val.is_empty() && !*typing_sent.read() {
+                                typing_sent.set(true);
+                                let core = core.clone();
+                                if let Some(room_id) = ui.selected_room_id.peek().clone() {
+                                    spawn(async move {
+                                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, true).await;
+                                    });
+                                }
+                            } else if val.is_empty() && *typing_sent.read() {
+                                typing_sent.set(false);
+                                let core = core.clone();
+                                if let Some(room_id) = ui.selected_room_id.peek().clone() {
+                                    spawn(async move {
+                                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, false).await;
+                                    });
+                                }
+                            }
+                        }
+                    },
                     onkeydown: {
                         let mut ui = ui_cancel3.clone();
                         move |e: Event<KeyboardData>| {

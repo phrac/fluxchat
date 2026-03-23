@@ -41,6 +41,8 @@ This is an **MVP** with active development. Core chat functionality works, with 
 - **Mention pills** — Matrix user mentions rendered as styled pills with avatars, click to view profile.
 - **File upload** — Attach files via `+` button, drag-and-drop, or clipboard paste (images).
 - **Search** — In-room message search via dropdown HUD with result navigation.
+- **URL previews** — Automatic link previews fetched from the Matrix server's preview API.
+- **Typing indicators** — Sends typing notifications while composing, displays who's typing in each room.
 - **Channel tabs** — Chrome-style tabs that flex to fill, instant switching via CSS show/hide.
 - **Nick colors** — Deterministic vibrant colors per user.
 - **Member list** — Lazy-loaded, grouped by role with presence dots and avatars.
@@ -59,9 +61,7 @@ This is an **MVP** with active development. Core chat functionality works, with 
 - Thread view UI
 - Room creation and settings
 - User profile editing
-- URL previews
 - Desktop notifications
-- Typing indicator display (backend ready)
 
 ## Architecture
 
