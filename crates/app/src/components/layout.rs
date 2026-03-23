@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use std::sync::Arc;
 use fluxchat_core::AppState;
 
-use crate::state::UiState;
+use crate::state::{UiState, RightPanel};
 use crate::components::sidebar::space_sidebar::SpaceSidebar;
 use crate::components::sidebar::room_list::RoomList;
 use crate::components::chat::message_area::{MessageArea, nick_color_class};
@@ -37,9 +37,14 @@ pub fn MainLayout() -> Element {
             // Message area (with channel tabs)
             MessageArea {}
 
-            // Member list
-            if selected_room.is_some() {
-                MemberList {}
+            // Right panel (pins/search/threads) or member list
+            { let panel = ui.right_panel.read().clone();
+              let show_members = *ui.show_member_list.read();
+              if let Some(ref p) = panel {
+                rsx! { RightPanelView { panel: p.clone() } }
+              } else if selected_room.is_some() && show_members {
+                rsx! { MemberList {} }
+              } else { rsx! {} }
             }
         }
 
@@ -83,6 +88,102 @@ pub fn MainLayout() -> Element {
             span { class: "sep", "│" }
             DeviceStatus {}
         }
+    }
+}
+
+/// Right panel for pins, search, threads.
+#[component]
+fn RightPanelView(panel: RightPanel) -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+    let selected = ui.selected_room_id.read().clone();
+
+    let title = match panel {
+        RightPanel::Pins => "Pinned Messages",
+        RightPanel::Search => "Search",
+        RightPanel::Threads => "Threads",
+        RightPanel::Invites => "Invites",
+    };
+
+    rsx! {
+        div { style: "width: 280px; flex-shrink: 0; background: var(--bg-dark); border-left: 1px solid var(--border); display: flex; flex-direction: column;",
+            // Header
+            div { style: "height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                span { style: "font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; font-family: var(--font-mono);",
+                    "{title}"
+                }
+                span { style: "cursor: pointer; color: var(--text-dim); font-size: 14px;",
+                    onclick: move |_| { ui.right_panel.set(None); },
+                    "×"
+                }
+            }
+            // Content
+            div { style: "flex: 1; overflow-y: auto; padding: 8px 12px;",
+                match panel {
+                    RightPanel::Pins => rsx! {},
+                    RightPanel::Search => rsx! {},
+                    RightPanel::Threads => rsx! {
+                        div { style: "color: var(--text-dim); font-size: 13px; font-family: var(--font-mono); text-align: center; padding: 20px;",
+                            "Threads coming soon"
+                        }
+                    },
+                    RightPanel::Invites => rsx! {
+                        div { style: "color: var(--text-dim); font-size: 13px; font-family: var(--font-mono); text-align: center; padding: 20px;",
+                            "Invites coming soon"
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Pinned messages panel.
+#[component]
+fn PinnedMessagesPanel() -> Element {
+    let ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+    let selected = ui.selected_room_id.read().clone();
+
+    let pinned = use_resource({
+        let app_state = app_state.clone();
+        let room_id = selected.clone();
+        move || {
+            let app_state = app_state.clone();
+            let room_id = room_id.clone();
+            async move {
+                let room_id = room_id?;
+                let client = app_state.get_client().await.ok()?;
+                fluxchat_core::messages::get_pinned_messages(&client, &room_id).await.ok()
+            }
+        }
+    });
+
+    let resolved = pinned.read().clone().flatten();
+
+    match resolved {
+        Some(msgs) if msgs.is_empty() => rsx! {
+            div { style: "color: var(--text-dim); font-size: 13px; font-family: var(--font-mono); text-align: center; padding: 20px;",
+                "No pinned messages"
+            }
+        },
+        Some(msgs) => rsx! {
+            for msg in msgs.iter() {
+                div { style: "padding: 6px 0; border-bottom: 1px solid var(--border);",
+                    div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 2px;",
+                        "{msg.sender_name}"
+                    }
+                    div { style: "font-size: 13px; color: var(--text-normal); font-family: var(--font-mono);",
+                        "{msg.body}"
+                    }
+                }
+            }
+        },
+        None => rsx! {
+            div { style: "color: var(--text-dim); font-size: 13px; font-family: var(--font-mono); text-align: center; padding: 20px;",
+                "Loading..."
+            }
+        },
     }
 }
 

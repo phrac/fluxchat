@@ -3,7 +3,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use fluxchat_core::AppState;
 
-use crate::state::UiState;
+use crate::state::{UiState, RightPanel};
+
+// Inline SVG icons — render identically on all platforms
+const ICO_PIN: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 11V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v7"/><path d="M5 15h14l-1.5-4H6.5z"/></svg>"#;
+const ICO_SEARCH: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>"#;
+const ICO_THREAD: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg>"#;
+const ICO_MEMBERS: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>"#;
+const ICO_REACT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>"#;
+const ICO_REPLY: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>"#;
+const ICO_EDIT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>"#;
+const ICO_DELETE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>"#;
 use crate::components::chat::message_input::MessageInput;
 
 
@@ -111,17 +121,34 @@ pub fn MessageArea() -> Element {
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-mid);",
 
-            // Channel tabs
-            div { style: "display: flex; align-items: center; height: 36px; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 8px; gap: 0; overflow-x: auto; background: var(--bg-dark);",
-                for (id, name, space, space_mxc) in tabs.iter() {
-                    ChannelTab {
-                        room_id: id.clone(),
-                        name: name.clone(),
-                        space_name: space.clone(),
-                        space_avatar_mxc: space_mxc.clone(),
-                        is_active: selected.as_ref() == Some(id),
+            // Channel tabs + room actions
+            div { style: "display: flex; align-items: center; height: 36px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--bg-dark);",
+                // Tabs
+                div { style: "display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 8px; gap: 0; overflow-x: auto;",
+                    for (id, name, space, space_mxc) in tabs.iter() {
+                        ChannelTab {
+                            room_id: id.clone(),
+                            name: name.clone(),
+                            space_name: space.clone(),
+                            space_avatar_mxc: space_mxc.clone(),
+                            is_active: selected.as_ref() == Some(id),
+                        }
                     }
                 }
+                // Room action icons — right-aligned
+                if selected.is_some() {
+                    RoomActions {}
+                }
+            }
+
+            // Search HUD — drops down from top
+            if *ui.search_open.read() {
+                SearchHud {}
+            }
+
+            // Pins HUD — drops down from top
+            if *ui.pins_open.read() {
+                PinsHud {}
             }
 
             // Render ALL open tabs' messages — show/hide via CSS for instant switching
@@ -331,11 +358,13 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                     let eid_reply = msg.event_id.clone();
                     let eid_edit = msg.event_id.clone();
                     let eid_del = msg.event_id.clone();
+                    let eid_pin = msg.event_id.clone();
                     let reply_name = msg.sender_name.clone();
                     let reply_body = msg.body.clone();
                     let edit_body = msg.body.clone();
                     let rid_del = room_id.clone();
                     let rid_react = room_id.clone();
+                    let rid_pin = room_id.clone();
                     let showing_react = react_menu_event.read().as_ref() == Some(&eid);
                     // Look up reply context from loaded messages
                     let reply_context = msg.reply_to_id.as_ref().and_then(|rid| {
@@ -407,7 +436,7 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                 { let actions_class = if showing_react { "msg-actions has-picker" } else { "msg-actions" };
                                 rsx! { div { class: "{actions_class}",
                                     // React
-                                    span { class: "msg-action",
+                                    span { class: "msg-action", title: "React",
                                         onclick: move |_| {
                                             let current = react_menu_event.read().clone();
                                             if current.as_ref() == Some(&eid_react) {
@@ -416,10 +445,10 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                                 react_menu_event.set(Some(eid_react.clone()));
                                             }
                                         },
-                                        "+1"
+                                        dangerous_inner_html: ICO_REACT,
                                     }
                                     // Reply
-                                    span { class: "msg-action",
+                                    span { class: "msg-action", title: "Reply",
                                         onclick: {
                                             let name = reply_name.clone();
                                             let body = reply_body.clone();
@@ -429,11 +458,29 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                                 ui.edit_event.set(None);
                                             }
                                         },
-                                        "re"
+                                        dangerous_inner_html: ICO_REPLY,
+                                    }
+                                    // Pin
+                                    span { class: "msg-action", title: "Pin",
+                                        onclick: {
+                                            let eid = eid_pin.clone();
+                                            let rid = rid_pin.clone();
+                                            let app_state = app_state.clone();
+                                            move |_| {
+                                                let eid = eid.clone();
+                                                let rid = rid.clone();
+                                                let app_state = app_state.clone();
+                                                spawn(async move {
+                                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    let _ = fluxchat_core::messages::pin_message(&client, &rid, &eid).await;
+                                                });
+                                            }
+                                        },
+                                        dangerous_inner_html: ICO_PIN,
                                     }
                                     // Edit (own only)
                                     if is_own {
-                                        span { class: "msg-action",
+                                        span { class: "msg-action", title: "Edit",
                                             onclick: {
                                                 let body = edit_body.clone();
                                                 let eid = eid_edit.clone();
@@ -442,18 +489,17 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                                     ui.reply_to.set(None);
                                                 }
                                             },
-                                            "ed"
+                                            dangerous_inner_html: ICO_EDIT,
                                         }
                                     }
                                     // Delete (own only)
                                     if is_own {
-                                        span { class: "msg-action",
+                                        span { class: "msg-action", title: "Delete",
                                             onclick: {
                                                 let eid = eid_del.clone();
                                                 let rid = rid_del.clone();
                                                 let app_state = app_state.clone();
                                                 move |_| {
-                                                    // Remove locally immediately
                                                     if let Some(msgs) = ui.messages_by_room.write().get_mut(&rid) {
                                                         msgs.retain(|m| m.event_id != eid);
                                                     }
@@ -466,7 +512,7 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                                     });
                                                 }
                                             },
-                                            "rm"
+                                            dangerous_inner_html: ICO_DELETE,
                                         }
                                     }
                                     // Reaction picker popup
@@ -613,6 +659,196 @@ fn InlineImage(room_id: String, event_id: String, body: String) -> Element {
         None => rsx! {
             span { class: "msg-body", style: "color: var(--text-dim);", "[loading {body}...]" }
         },
+    }
+}
+
+/// Pinned messages HUD — drops down from the tab bar.
+#[component]
+fn PinsHud() -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+    let selected = ui.selected_room_id.read().clone();
+
+    let pinned = use_resource({
+        let app_state = app_state.clone();
+        let room_id = selected.clone();
+        move || {
+            let app_state = app_state.clone();
+            let room_id = room_id.clone();
+            async move {
+                let room_id = room_id?;
+                let client = app_state.get_client().await.ok()?;
+                fluxchat_core::messages::get_pinned_messages(&client, &room_id).await.ok()
+            }
+        }
+    });
+
+    let resolved = pinned.read().clone().flatten();
+
+    rsx! {
+        div { class: "search-hud", style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
+            // Header row
+            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
+                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
+                    { match &resolved {
+                        Some(msgs) => format!("pinned — {}", msgs.len()),
+                        None => "pinned — ...".to_string(),
+                    }}
+                }
+                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
+                    onclick: move |_| { ui.pins_open.set(false); },
+                    "×"
+                }
+            }
+            // Pinned messages
+            match resolved {
+                Some(msgs) if msgs.is_empty() => rsx! {
+                    div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
+                        "no pinned messages"
+                    }
+                },
+                Some(msgs) => rsx! {
+                    for msg in msgs.iter() {
+                        div { style: "display: flex; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px;",
+                            span { style: "color: var(--text-muted); flex-shrink: 0; width: 80px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                "{msg.sender_name}"
+                            }
+                            span { style: "color: var(--text-normal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                "{msg.body}"
+                            }
+                        }
+                    }
+                },
+                None => rsx! {
+                    div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
+                        "loading..."
+                    }
+                },
+            }
+        }
+    }
+}
+
+/// Search HUD — drops down from the tab bar.
+#[component]
+fn SearchHud() -> Element {
+    let mut ui = use_context::<UiState>();
+    let mut query = use_signal(|| String::new());
+    let mut results = use_signal(|| Vec::<(String, String, String)>::new()); // (event_id, sender, body)
+    let mut current_idx = use_signal(|| 0usize);
+
+    let selected = ui.selected_room_id.read().clone();
+
+    let mut do_search = move |_: ()| {
+        let q = query().trim().to_lowercase();
+        if q.is_empty() {
+            results.set(Vec::new());
+            return;
+        }
+        if let Some(ref room_id) = selected {
+            let matches: Vec<_> = ui.messages_by_room.read()
+                .get(room_id)
+                .map(|msgs| msgs.iter()
+                    .filter(|m| m.body.to_lowercase().contains(&q))
+                    .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone()))
+                    .collect())
+                .unwrap_or_default();
+            current_idx.set(if matches.is_empty() { 0 } else { matches.len() - 1 });
+            results.set(matches);
+        }
+    };
+
+    let result_count = results.read().len();
+    let idx = *current_idx.read();
+
+    rsx! {
+        div { class: "search-hud",
+            span { style: "color: var(--text-dim); font-size: 14px;", "⌕" }
+            input {
+                r#type: "text",
+                placeholder: "search messages...",
+                value: "{query}",
+                oninput: move |e| {
+                    query.set(e.value());
+                    do_search(());
+                },
+                onkeydown: {
+                    let mut ui = ui.clone();
+                    move |e: Event<KeyboardData>| {
+                        if e.key() == Key::Escape {
+                            ui.search_open.set(false);
+                        } else if e.key() == Key::Enter {
+                            if result_count > 0 {
+                                let new_idx = if idx > 0 { idx - 1 } else { result_count - 1 };
+                                current_idx.set(new_idx);
+                            }
+                        }
+                    }
+                },
+            }
+            if result_count > 0 {
+                span { class: "search-count", "{idx + 1}/{result_count}" }
+                span { class: "search-nav",
+                    onclick: move |_| { if idx > 0 { current_idx.set(idx - 1); } },
+                    "▲"
+                }
+                span { class: "search-nav",
+                    onclick: move |_| { if idx < result_count - 1 { current_idx.set(idx + 1); } },
+                    "▼"
+                }
+            } else if !query().is_empty() {
+                span { class: "search-count", "no results" }
+            }
+            span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
+                onclick: move |_| { ui.search_open.set(false); },
+                "×"
+            }
+        }
+    }
+}
+
+/// Room action icons in the tab bar header.
+#[component]
+fn RoomActions() -> Element {
+    let mut ui = use_context::<UiState>();
+    let panel = ui.right_panel.read().clone();
+    let members_visible = *ui.show_member_list.read();
+
+    rsx! {
+        div { style: "display: flex; align-items: center; gap: 1px; padding: 0 8px; flex-shrink: 0;",
+            // Pinned messages
+            span {
+                class: if *ui.pins_open.read() { "room-action active" } else { "room-action" },
+                title: "Pinned messages",
+                onclick: move |_| { let open = *ui.pins_open.read(); ui.pins_open.set(!open); },
+                dangerous_inner_html: ICO_PIN,
+            }
+            // Search
+            span {
+                class: if *ui.search_open.read() { "room-action active" } else { "room-action" },
+                title: "Search",
+                onclick: move |_| { let open = *ui.search_open.read(); ui.search_open.set(!open); },
+                dangerous_inner_html: ICO_SEARCH,
+            }
+            // Threads
+            span {
+                class: if panel == Some(RightPanel::Threads) { "room-action active" } else { "room-action" },
+                title: "Threads",
+                onclick: move |_| {
+                    let current = ui.right_panel.read().clone();
+                    if current == Some(RightPanel::Threads) { ui.right_panel.set(None); }
+                    else { ui.right_panel.set(Some(RightPanel::Threads)); }
+                },
+                dangerous_inner_html: ICO_THREAD,
+            }
+            // Toggle member list
+            span {
+                class: if members_visible { "room-action active" } else { "room-action" },
+                title: "Toggle member list",
+                onclick: move |_| { ui.show_member_list.set(!members_visible); },
+                dangerous_inner_html: ICO_MEMBERS,
+            }
+        }
     }
 }
 

@@ -296,12 +296,15 @@ input, textarea {
 .msg-action {
   color: var(--text-dim);
   cursor: pointer;
-  padding: 1px 4px;
+  padding: 3px 5px;
   border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
   transition: color 0.1s, background 0.1s;
   -webkit-user-select: none;
   user-select: none;
 }
+.msg-action svg { display: block; }
 .msg-action:hover {
   color: var(--text-normal);
   background: var(--bg-hover);
@@ -329,4 +332,74 @@ input, textarea {
 }
 .react-picker span:hover {
   background: var(--bg-hover);
+}
+
+/* Room action icons in tab bar */
+.room-action {
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 3px;
+  transition: color 0.1s, background 0.1s;
+  -webkit-user-select: none;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+}
+.room-action svg { display: block; }
+.room-action:hover {
+  color: var(--text-normal);
+  background: var(--bg-hover);
+}
+/* Search HUD — drops down from tab bar */
+.search-hud {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-deep);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  animation: slideDown 0.15s ease-out;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.search-hud input {
+  flex: 1;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+}
+.search-hud input:focus {
+  border-color: var(--accent);
+}
+.search-hud .search-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.search-hud .search-nav {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+.search-hud .search-nav:hover {
+  color: var(--text-normal);
+  background: var(--bg-hover);
+}
+
+.room-action.active {
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.1);
 }

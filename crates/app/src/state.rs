@@ -17,6 +17,14 @@ pub fn init_core() -> Arc<AppState> {
     Arc::new(AppState::new(db))
 }
 
+#[derive(Clone, PartialEq)]
+pub enum RightPanel {
+    Pins,
+    Search,
+    Threads,
+    Invites,
+}
+
 /// Global app signals — the reactive UI state.
 #[derive(Clone)]
 pub struct UiState {
@@ -39,6 +47,10 @@ pub struct UiState {
     pub reply_to: Signal<Option<(String, String, String)>>, // (event_id, sender_name, body)
     pub edit_event: Signal<Option<(String, String)>>,       // (event_id, original_body)
     pub settings_open: Signal<bool>,
+    pub right_panel: Signal<Option<RightPanel>>,  // which panel is open on the right
+    pub show_member_list: Signal<bool>,
+    pub search_open: Signal<bool>,
+    pub pins_open: Signal<bool>,
 
     pub loading: Signal<bool>,
 
@@ -69,6 +81,10 @@ impl UiState {
             reply_to: Signal::new(None),
             edit_event: Signal::new(None),
             settings_open: Signal::new(false),
+            right_panel: Signal::new(None),
+            show_member_list: Signal::new(true),
+            search_open: Signal::new(false),
+            pins_open: Signal::new(false),
             loading: Signal::new(true),
             avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             avatar_version: Signal::new(0),
