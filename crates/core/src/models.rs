@@ -36,7 +36,7 @@ pub struct ReactionInfo {
     pub users: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct MemberInfo {
     pub user_id: String,
     pub display_name: String,

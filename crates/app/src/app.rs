@@ -105,7 +105,7 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
                 }
             }
             drop(messages);
-            // Auto-scroll if this is the active room
+            // Auto-scroll and mark as read if this is the active room
             if ui.selected_room_id.read().as_ref() == Some(&room_id) {
                 let scroll_id = format!("msg-scroll-{}", room_id);
                 document::eval(&format!(r#"
@@ -114,6 +114,21 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
                         if (el) el.scrollTop = el.scrollHeight;
                     }});
                 "#));
+                // Send read receipt for the new message
+                let last_eid = ui.messages_by_room.read().get(&room_id)
+                    .and_then(|msgs| msgs.last())
+                    .map(|m| m.event_id.clone())
+                    .filter(|eid| !eid.starts_with("~"));
+                if let Some(eid) = last_eid {
+                    if let Some(core) = CORE.get() {
+                        let core = core.clone();
+                        let room_id = room_id.clone();
+                        spawn(async move {
+                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::messages::send_read_receipt(&client, &room_id, &eid).await;
+                        });
+                    }
+                }
             }
         }
         SyncEvent::Edit(room_id, event_id, body, formatted) => {

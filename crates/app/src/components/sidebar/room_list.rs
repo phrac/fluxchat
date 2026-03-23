@@ -225,8 +225,30 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
     }
     drop(tabs);
 
-    // Load messages if needed
+    // Send read receipt for already-loaded rooms and clear unread count
     let loaded = ui.messages_by_room.read().contains_key(&room_id);
+    if loaded {
+        let last_eid = ui.messages_by_room.read().get(&room_id)
+            .and_then(|msgs| msgs.last())
+            .map(|m| m.event_id.clone())
+            .filter(|eid| !eid.starts_with("~"));
+        if let Some(eid) = last_eid {
+            let core = core.clone();
+            let room_id = room_id.clone();
+            // Clear unread count locally immediately
+            let mut rooms = ui.rooms.write();
+            if let Some(r) = rooms.iter_mut().find(|r| r.room_id == room_id) {
+                r.unread_count = 0;
+            }
+            drop(rooms);
+            spawn(async move {
+                let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                let _ = fluxchat_core::messages::send_read_receipt(&client, &room_id, &eid).await;
+            });
+        }
+    }
+
+    // Load messages if needed
     if !loaded {
         spawn(async move {
             let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
@@ -244,6 +266,19 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
                         if (el) el.scrollTop = el.scrollHeight;
                     }}));
                 "#));
+            }
+            // Send read receipt and clear unread count
+            if let Some(last_eid) = ui.messages_by_room.read().get(&room_id)
+                .and_then(|msgs| msgs.last())
+                .map(|m| m.event_id.clone())
+                .filter(|eid| !eid.starts_with("~"))
+            {
+                let mut rooms = ui.rooms.write();
+                if let Some(r) = rooms.iter_mut().find(|r| r.room_id == room_id) {
+                    r.unread_count = 0;
+                }
+                drop(rooms);
+                let _ = fluxchat_core::messages::send_read_receipt(&client, &room_id, &last_eid).await;
             }
             if let Ok(members) = fluxchat_core::messages::get_room_members(&client, &room_id).await {
                 ui.members_by_room.write().insert(room_id, members);

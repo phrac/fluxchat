@@ -35,6 +35,10 @@ pub struct UiState {
     pub typing_by_room: Signal<HashMap<String, Vec<String>>>,
     pub profile_user_id: Signal<Option<String>>,
 
+    // Message action state
+    pub reply_to: Signal<Option<(String, String, String)>>, // (event_id, sender_name, body)
+    pub edit_event: Signal<Option<(String, String)>>,       // (event_id, original_body)
+
     pub loading: Signal<bool>,
 
     // Resolved avatar data URIs — shared between render and background tasks
@@ -61,6 +65,8 @@ impl UiState {
             members_by_room: Signal::new(HashMap::new()),
             typing_by_room: Signal::new(HashMap::new()),
             profile_user_id: Signal::new(None),
+            reply_to: Signal::new(None),
+            edit_event: Signal::new(None),
             loading: Signal::new(true),
             avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             avatar_version: Signal::new(0),

@@ -169,34 +169,116 @@ pub fn MessageArea() -> Element {
 /// Per-room message list — stays in DOM, shown/hidden via CSS.
 #[component]
 fn RoomMessages(room_id: String, is_active: bool) -> Element {
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
+    let my_user_id = ui.user_id.read().clone();
+    let mut react_menu_event = use_signal(|| Option::<String>::None);
+    let mut loading_older = use_signal(|| false);
 
-    let messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
-
-    // Build avatar maps with one cache lock
-    let (avatar_map, mention_avatars) = {
-        let cache = app_state.media_cache.lock().unwrap();
-        let amap: HashMap<String, String> = messages.iter()
-            .filter_map(|m| {
-                let mxc = m.avatar_url.as_ref()?;
-                Some((mxc.clone(), cache.get(mxc)?.clone()))
-            })
-            .collect();
-        let mmap: HashMap<String, String> = ui.members_by_room.read()
-            .get(&room_id)
-            .map(|members| members.iter().filter_map(|m| {
-                let mxc = m.avatar_url.as_ref()?;
-                Some((m.user_id.clone(), cache.get(mxc)?.clone()))
-            }).collect())
-            .unwrap_or_default();
-        (amap, mmap)
+    // Only read signals for the active tab to avoid subscribing inactive tabs to message changes
+    let messages = if is_active {
+        ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default()
+    } else {
+        // For inactive tabs, still need to render but use a lighter read
+        ui.messages_by_room.peek().get(&room_id).cloned().unwrap_or_default()
     };
+    let has_more = ui.pagination_tokens.read().contains_key(&room_id);
+
+    // Build avatar maps with one cache lock + background resolve uncached
+    let (avatar_map, mention_avatars, uncached) = {
+        let cache = app_state.media_cache.lock().unwrap();
+        let mut amap = HashMap::new();
+        let mut uncached = Vec::new();
+        for m in &messages {
+            if let Some(mxc) = &m.avatar_url {
+                if let Some(data_uri) = cache.get(mxc) {
+                    amap.insert(mxc.clone(), data_uri.clone());
+                } else {
+                    uncached.push(mxc.clone());
+                }
+            }
+        }
+        let mmap: HashMap<String, String> = if is_active {
+            ui.members_by_room.read()
+                .get(&room_id)
+                .map(|members| members.iter().filter_map(|m| {
+                    let mxc = m.avatar_url.as_ref()?;
+                    Some((m.user_id.clone(), cache.get(mxc)?.clone()))
+                }).collect())
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        // Dedup uncached
+        uncached.sort();
+        uncached.dedup();
+        (amap, mmap, uncached)
+    };
+
+    // Background-resolve uncached message avatars
+    if is_active && !uncached.is_empty() {
+        let app_state = app_state.clone();
+        spawn(async move {
+            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+            for mxc in uncached {
+                let _ = fluxchat_core::media::get_media_url(&client, &app_state.db, &app_state.media_cache, &mxc).await;
+            }
+        });
+    }
 
     let scroll_id = format!("msg-scroll-{}", room_id);
 
     rsx! {
-        div { id: "{scroll_id}", style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px;",
+        div {
+            id: "{scroll_id}",
+            style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px;",
+            onscroll: {
+                let scroll_id = scroll_id.clone();
+                let room_id = room_id.clone();
+                let app_state = app_state.clone();
+                move |_| {
+                    if *loading_older.read() || !has_more { return; }
+                    let id = scroll_id.clone();
+                    let room_id = room_id.clone();
+                    let app_state = app_state.clone();
+                    spawn(async move {
+                        let mut eval = document::eval(&format!(r#"
+                            let el = document.getElementById('{id}');
+                            dioxus.send(el ? el.scrollTop : 9999);
+                        "#));
+                        if let Ok(top) = eval.recv::<f64>().await {
+                            if top < 150.0 {
+                                loading_older.set(true);
+                                let mut ui = consume_context::<UiState>();
+                                let token = ui.pagination_tokens.read().get(&room_id).cloned();
+                                if let Some(token) = token {
+                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { loading_older.set(false); return; } };
+                                    if let Ok(paginated) = fluxchat_core::messages::get_room_messages(&client, &room_id, Some(&token)).await {
+                                        let older: Vec<_> = paginated.messages.into_iter().rev().collect();
+                                        if let Some(new_token) = paginated.end_token {
+                                            ui.pagination_tokens.write().insert(room_id.clone(), new_token);
+                                        } else {
+                                            ui.pagination_tokens.write().remove(&room_id);
+                                        }
+                                        let mut msgs = ui.messages_by_room.write();
+                                        if let Some(existing) = msgs.get_mut(&room_id) {
+                                            let mut combined = older;
+                                            combined.append(existing);
+                                            *existing = combined;
+                                        }
+                                    }
+                                }
+                                loading_older.set(false);
+                            }
+                        }
+                    });
+                }
+            },
+            if *loading_older.read() {
+                div { style: "display: flex; justify-content: center; padding: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);",
+                    "loading..."
+                }
+            }
             if messages.is_empty() {
                 div { style: "display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim);",
                     "No messages yet"
@@ -225,8 +307,36 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                     };
                     let avatar_src = msg.avatar_url.as_ref().and_then(|mxc| avatar_map.get(mxc));
                     let initial = msg.sender_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                    let is_own = msg.sender == my_user_id;
+                    let is_local = msg.event_id.starts_with("~local-");
+                    let eid = msg.event_id.clone();
+                    let eid_react = msg.event_id.clone();
+                    let eid_reply = msg.event_id.clone();
+                    let eid_edit = msg.event_id.clone();
+                    let eid_del = msg.event_id.clone();
+                    let reply_name = msg.sender_name.clone();
+                    let reply_body = msg.body.clone();
+                    let edit_body = msg.body.clone();
+                    let rid_del = room_id.clone();
+                    let rid_react = room_id.clone();
+                    let showing_react = react_menu_event.read().as_ref() == Some(&eid);
+                    // Look up reply context from loaded messages
+                    let reply_context = msg.reply_to_id.as_ref().and_then(|rid| {
+                        messages.iter().find(|m| m.event_id == *rid)
+                            .map(|m| (m.sender_name.clone(), m.body.clone()))
+                    });
                     { rsx! {
-                        div { style: "display: flex; padding: 1px 0; align-items: center; overflow: hidden;",
+                        // Reply indicator line
+                        if let Some((ref reply_sender, ref reply_preview)) = reply_context {
+                            div { style: "display: flex; padding: 0 0 0 72px; font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); align-items: center; gap: 4px;",
+                                span { style: "color: var(--green);", "╭─" }
+                                span { style: "color: var(--text-muted);", "{reply_sender}:" }
+                                span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 400px;",
+                                    { reply_preview.chars().take(80).collect::<String>() }
+                                }
+                            }
+                        }
+                        div { class: "msg-row", style: "display: flex; padding: 1px 0; align-items: flex-start;",
                             span { class: "msg-time", style: "align-self: baseline;", "{time}" }
                             if let Some(src) = avatar_src {
                                 img {
@@ -244,23 +354,133 @@ fn RoomMessages(room_id: String, is_active: bool) -> Element {
                                 }
                             }
                             div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
-                            if msg.image_mxc.is_some() {
-                                InlineImage {
-                                    room_id: room_id.clone(),
-                                    event_id: msg.event_id.clone(),
-                                    body: msg.body.clone(),
+                            // Message content + reactions in a column
+                            div { style: "min-width: 0; flex: 1;",
+                                if msg.image_mxc.is_some() {
+                                    InlineImage {
+                                        room_id: room_id.clone(),
+                                        event_id: msg.event_id.clone(),
+                                        body: msg.body.clone(),
+                                    }
+                                } else if let Some(ref html) = msg.formatted_body {
+                                    { let transformed = transform_mentions(html, &mention_avatars);
+                                    rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } } }
+                                } else {
+                                    span { class: "msg-body", "{msg.body}" }
                                 }
-                            } else if let Some(ref html) = msg.formatted_body {
-                                { let transformed = transform_mentions(html, &mention_avatars);
-                                rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } } }
-                            } else {
-                                span { class: "msg-body", "{msg.body}" }
-                            }
-                            for r in msg.reactions.iter() {
-                                span { style: "font-size: 11px; background: rgba(59,130,246,0.15); border-radius: 8px; padding: 0 4px; color: var(--text-muted); flex-shrink: 0;",
-                                    "{r.emoji} {r.count}"
+                                // Reactions below message
+                                if !msg.reactions.is_empty() {
+                                    div { style: "display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0;",
+                                        for r in msg.reactions.iter() {
+                                            { let tooltip = r.users.iter()
+                                                .map(|u| u.split(':').next().unwrap_or(u).trim_start_matches('@').to_string())
+                                                .collect::<Vec<_>>().join(", ");
+                                            rsx! {
+                                                span { style: "font-size: 12px; background: rgba(59,130,246,0.15); border-radius: 10px; padding: 1px 6px; color: var(--text-muted); cursor: default; font-family: var(--font-mono);",
+                                                    title: "{tooltip}",
+                                                    "{r.emoji} {r.count}"
+                                                }
+                                            } }
+                                        }
+                                    }
                                 }
                             }
+                            // Hover actions — IRC style
+                            if !is_local {
+                                { let actions_class = if showing_react { "msg-actions has-picker" } else { "msg-actions" };
+                                rsx! { div { class: "{actions_class}",
+                                    // React
+                                    span { class: "msg-action",
+                                        onclick: move |_| {
+                                            let current = react_menu_event.read().clone();
+                                            if current.as_ref() == Some(&eid_react) {
+                                                react_menu_event.set(None);
+                                            } else {
+                                                react_menu_event.set(Some(eid_react.clone()));
+                                            }
+                                        },
+                                        "+1"
+                                    }
+                                    // Reply
+                                    span { class: "msg-action",
+                                        onclick: {
+                                            let name = reply_name.clone();
+                                            let body = reply_body.clone();
+                                            let eid = eid_reply.clone();
+                                            move |_| {
+                                                ui.reply_to.set(Some((eid.clone(), name.clone(), body.clone())));
+                                                ui.edit_event.set(None);
+                                            }
+                                        },
+                                        "re"
+                                    }
+                                    // Edit (own only)
+                                    if is_own {
+                                        span { class: "msg-action",
+                                            onclick: {
+                                                let body = edit_body.clone();
+                                                let eid = eid_edit.clone();
+                                                move |_| {
+                                                    ui.edit_event.set(Some((eid.clone(), body.clone())));
+                                                    ui.reply_to.set(None);
+                                                }
+                                            },
+                                            "ed"
+                                        }
+                                    }
+                                    // Delete (own only)
+                                    if is_own {
+                                        span { class: "msg-action",
+                                            onclick: {
+                                                let eid = eid_del.clone();
+                                                let rid = rid_del.clone();
+                                                let app_state = app_state.clone();
+                                                move |_| {
+                                                    // Remove locally immediately
+                                                    if let Some(msgs) = ui.messages_by_room.write().get_mut(&rid) {
+                                                        msgs.retain(|m| m.event_id != eid);
+                                                    }
+                                                    let eid = eid.clone();
+                                                    let rid = rid.clone();
+                                                    let app_state = app_state.clone();
+                                                    spawn(async move {
+                                                        let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                        let _ = fluxchat_core::messages::delete_message(&client, &rid, &eid).await;
+                                                    });
+                                                }
+                                            },
+                                            "rm"
+                                        }
+                                    }
+                                    // Reaction picker popup
+                                    if showing_react {
+                                        div { class: "react-picker",
+                                            for emoji in ["👍", "❤️", "😂", "🎉", "😮", "😢"].iter() {
+                                                span {
+                                                    onclick: {
+                                                        let emoji = emoji.to_string();
+                                                        let eid = eid.clone();
+                                                        let rid = rid_react.clone();
+                                                        let app_state = app_state.clone();
+                                                        move |_| {
+                                                            react_menu_event.set(None);
+                                                            let emoji = emoji.clone();
+                                                            let eid = eid.clone();
+                                                            let rid = rid.clone();
+                                                            let app_state = app_state.clone();
+                                                            spawn(async move {
+                                                                let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                                                let _ = fluxchat_core::messages::send_reaction(&client, &rid, &eid, &emoji).await;
+                                                            });
+                                                        }
+                                                    },
+                                                    "{emoji}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                } }
+                            } }
                         }
                     }
                     }
