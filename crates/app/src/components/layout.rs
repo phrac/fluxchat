@@ -205,16 +205,71 @@ fn RightPanelView(panel: RightPanel) -> Element {
                 match panel {
                     RightPanel::Pins => rsx! {},
                     RightPanel::Search => rsx! {},
-                    RightPanel::Threads => rsx! {
-                        div { style: "color: var(--text-dim); font-size: 13px; font-family: var(--font-mono); text-align: center; padding: 20px;",
-                            "Threads coming soon"
-                        }
-                    },
+                    RightPanel::Threads => rsx! { ThreadsPanel {} },
                     RightPanel::Invites => rsx! {
                         div { style: "color: var(--text-dim); font-size: 13px; font-family: var(--font-mono); text-align: center; padding: 20px;",
                             "Invites coming soon"
                         }
                     },
+                }
+            }
+        }
+    }
+}
+
+/// Threads panel — shows thread roots from the current room.
+#[component]
+fn ThreadsPanel() -> Element {
+    let ui = use_context::<UiState>();
+    let selected = ui.selected_room_id.read().clone();
+
+    // Get thread roots from loaded messages
+    let threads: Vec<_> = if let Some(ref room_id) = selected {
+        ui.messages_by_room.read()
+            .get(room_id)
+            .map(|msgs| msgs.iter()
+                .filter(|m| m.thread_count.is_some() && m.thread_count.unwrap() > 0)
+                .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone(), m.thread_count.unwrap(), m.timestamp))
+                .collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    if threads.is_empty() {
+        return rsx! {
+            div { style: "color: var(--text-dim); font-size: 13px; font-family: var(--font-mono); text-align: center; padding: 20px;",
+                "No threads in this room"
+            }
+        };
+    }
+
+    rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 4px;",
+            for (eid, sender, body, count, ts) in threads.iter() {
+                { let label = if *count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
+                  let time = {
+                      let secs = ts % 86400;
+                      let h = secs / 3600;
+                      let m = (secs % 3600) / 60;
+                      format!("{:02}:{:02}", h, m)
+                  };
+                  let preview = if body.len() > 60 { format!("{}...", &body[..60]) } else { body.clone() };
+                  rsx! {
+                    div { style: "background: var(--bg-mid); border-radius: 4px; padding: 8px; cursor: pointer; transition: background 0.1s;",
+                        class: "cmd-item",
+                        div { style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;",
+                            span { style: "font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-bright);", "{sender}" }
+                            span { style: "font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);", "{time}" }
+                        }
+                        div { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px;",
+                            "{preview}"
+                        }
+                        div { style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent-muted);",
+                            "{label}"
+                        }
+                    }
+                  }
                 }
             }
         }
@@ -399,6 +454,7 @@ fn SettingsModal() -> Element {
 
                     SettingsNavItem { label: "/account", tab_id: "account", active_tab: tab.clone() }
                     SettingsNavItem { label: "/sessions", tab_id: "sessions", active_tab: tab.clone() }
+                    SettingsNavItem { label: "/security", tab_id: "security", active_tab: tab.clone() }
 
                     // Spacer
                     div { style: "flex: 1;" }
@@ -420,6 +476,7 @@ fn SettingsModal() -> Element {
                         span { style: "font-size: 14px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);",
                             match tab.as_str() {
                                 "sessions" => "sessions",
+                                "security" => "security",
                                 _ => "account",
                             }
                         }
@@ -434,6 +491,7 @@ fn SettingsModal() -> Element {
                     div { style: "flex: 1; padding: 20px; overflow-y: auto;",
                         match tab.as_str() {
                             "sessions" => rsx! { SettingsSessionsPage {} },
+                            "security" => rsx! { SettingsSecurityPage {} },
                             _ => rsx! { SettingsAccountPage {} },
                         }
                     }
@@ -906,6 +964,192 @@ fn SessionRow(device: fluxchat_core::devices::DeviceInfo, is_current: bool) -> E
                     span { "{ip}" }
                 }
                 span { "last seen {last_seen}" }
+            }
+        }
+    }
+}
+
+/// Security settings — key backup, recovery, cross-signing.
+#[component]
+fn SettingsSecurityPage() -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+    let mut status_msg = use_signal(|| Option::<String>::None);
+    let mut recovery_key_input = use_signal(|| String::new());
+    let mut show_recovery_key = use_signal(|| Option::<String>::None);
+
+    // Fetch backup/recovery state
+    let security_state = use_resource({
+        let app_state = app_state.clone();
+        move || {
+            let app_state = app_state.clone();
+            async move {
+                let client = app_state.get_client().await.ok()?;
+                let encryption = client.encryption();
+
+                let backup_exists = encryption.backups().exists_on_server().await.unwrap_or(false);
+                let backup_enabled = encryption.backups().are_enabled().await;
+                let recovery_state = encryption.recovery().state();
+
+                let own_device = {
+                    let user_id = client.user_id()?;
+                    let device_id = client.device_id()?;
+                    encryption.get_device(user_id, device_id).await.ok()??
+                };
+                let is_verified = own_device.is_verified_with_cross_signing();
+
+                Some((backup_exists, backup_enabled, format!("{recovery_state:?}"), is_verified))
+            }
+        }
+    });
+
+    let state = security_state.read().clone().flatten();
+
+    rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 16px;",
+
+            // Cross-signing status
+            div {
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                    "cross-signing"
+                }
+                if let Some((_, _, _, is_verified)) = &state {
+                    if *is_verified {
+                        div { style: "display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 13px;",
+                            span { style: "color: var(--green);", "✓ verified" }
+                            span { style: "color: var(--text-dim);", "This device is cross-signed" }
+                        }
+                    } else {
+                        div { style: "display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 13px;",
+                            span { style: "color: var(--yellow);", "✗ unverified" }
+                            span { style: "color: var(--text-dim);", "Verify this device for secure messaging" }
+                        }
+                    }
+                } else {
+                    div { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); animation: pulse 1.5s ease-in-out infinite;",
+                        "loading..."
+                    }
+                }
+            }
+
+            // Key backup status
+            div {
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                    "key backup"
+                }
+                if let Some((backup_exists, backup_enabled, recovery_state, _)) = &state {
+                    { let server_color = if *backup_exists { "var(--green)" } else { "var(--text-dim)" };
+                      let local_color = if *backup_enabled { "var(--green)" } else { "var(--text-dim)" };
+                    rsx! {
+                    div { style: "display: flex; flex-direction: column; gap: 6px; font-family: var(--font-mono); font-size: 13px;",
+                        div { style: "display: flex; gap: 12px;",
+                            span { style: "color: var(--text-muted);", "Server backup:" }
+                            span { style: "color: {server_color};",
+                                if *backup_exists { "exists" } else { "none" }
+                            }
+                        }
+                        div { style: "display: flex; gap: 12px;",
+                            span { style: "color: var(--text-muted);", "Local backup:" }
+                            span { style: "color: {local_color};",
+                                if *backup_enabled { "enabled" } else { "disabled" }
+                            }
+                        }
+                        div { style: "display: flex; gap: 12px;",
+                            span { style: "color: var(--text-muted);", "Recovery:" }
+                            span { style: "color: var(--text-normal);", "{recovery_state}" }
+                        }
+                    }
+
+                    // Actions
+                    div { style: "display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;",
+                        if !*backup_enabled {
+                            span {
+                                style: "font-family: var(--font-mono); font-size: 12px; color: var(--green); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--green);",
+                                onclick: {
+                                    let app_state = app_state.clone();
+                                    move |_| {
+                                        let app_state = app_state.clone();
+                                        status_msg.set(Some("enabling backup...".into()));
+                                        spawn(async move {
+                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            match client.encryption().recovery().enable().await {
+                                                Ok(key) => {
+                                                    show_recovery_key.set(Some(key));
+                                                    status_msg.set(Some("backup enabled! save your recovery key".into()));
+                                                }
+                                                Err(e) => {
+                                                    // Try just enabling backup without full recovery
+                                                    match client.encryption().recovery().enable_backup().await {
+                                                        Ok(_) => status_msg.set(Some("backup enabled".into())),
+                                                        Err(_) => status_msg.set(Some(format!("failed: {e}"))),
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                },
+                                "enable backup"
+                            }
+                        }
+                    }
+                } } }
+            }
+
+            // Recovery key display (shown after enabling)
+            if let Some(ref key) = *show_recovery_key.read() {
+                div {
+                    div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--yellow); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                        "recovery key — save this!"
+                    }
+                    div { style: "background: var(--bg-deep); border: 1px solid var(--yellow); border-radius: 4px; padding: 12px; font-family: var(--font-mono); font-size: 13px; color: var(--text-bright); word-break: break-all; -webkit-user-select: text; user-select: text;",
+                        "{key}"
+                    }
+                    div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-top: 4px;",
+                        "Store this key safely. You'll need it to restore encrypted messages on new devices."
+                    }
+                }
+            }
+
+            // Recover from backup
+            div {
+                div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 8px; font-family: var(--font-mono);",
+                    "recover from backup"
+                }
+                div { style: "display: flex; gap: 6px;",
+                    input {
+                        style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                        placeholder: "Recovery key or passphrase",
+                        value: "{recovery_key_input}",
+                        oninput: move |e| recovery_key_input.set(e.value()),
+                    }
+                    span {
+                        style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent-muted); cursor: pointer; padding: 6px 12px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                        onclick: {
+                            let app_state = app_state.clone();
+                            move |_| {
+                                let key = recovery_key_input().trim().to_string();
+                                if key.is_empty() { return; }
+                                let app_state = app_state.clone();
+                                status_msg.set(Some("recovering...".into()));
+                                spawn(async move {
+                                    let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                    match client.encryption().recovery().recover(&key).await {
+                                        Ok(_) => {
+                                            status_msg.set(Some("recovery successful! keys restored.".into()));
+                                            recovery_key_input.set(String::new());
+                                        }
+                                        Err(e) => status_msg.set(Some(format!("recovery failed: {e}"))),
+                                    }
+                                });
+                            }
+                        },
+                        "recover"
+                    }
+                }
+            }
+
+            // Status
+            if let Some(ref msg) = *status_msg.read() {
+                div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);", "{msg}" }
             }
         }
     }

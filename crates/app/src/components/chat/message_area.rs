@@ -286,6 +286,7 @@ fn RoomMessages(room_id: String) -> Element {
     let ignored = ui.ignored_users.peek().clone();
     let messages: Vec<_> = all_messages.into_iter()
         .filter(|m| !ignored.contains(&m.sender))
+        .filter(|m| m.thread_root.is_none()) // Hide threaded replies from main timeline
         .collect();
 
     // Find the last-read event to show the "new messages" divider
@@ -555,6 +556,27 @@ fn RoomMessages(room_id: String) -> Element {
                                                 }
                                             }
                                         }
+                                    }
+                                    // Thread indicator
+                                    if let Some(count) = msg.thread_count {
+                                        { let thread_eid = eid.clone();
+                                          let label = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
+                                          rsx! {
+                                            div {
+                                                style: "display: flex; align-items: center; gap: 4px; padding: 2px 0; cursor: pointer;",
+                                                onclick: move |_| {
+                                                    ui.right_panel.set(Some(RightPanel::Threads));
+                                                    // Store thread root in a way the panel can read
+                                                    // We'll use the reply_to signal temporarily
+                                                },
+                                                span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent-muted);",
+                                                    dangerous_inner_html: ICO_THREAD,
+                                                }
+                                                span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent-muted);",
+                                                    "{label}"
+                                                }
+                                            }
+                                        } }
                                     }
                                 } } }
                                 // Hover actions

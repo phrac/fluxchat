@@ -78,6 +78,17 @@ pub fn all_commands() -> Vec<SlashCommand> {
         },
         // ── Room commands ────────────────────────────────────────
         SlashCommand {
+            name: "/security",
+            usage: "",
+            description: "Open security settings",
+            scope: CommandScope::Global,
+            execute: |_, _, _, mut ui| {
+                ui.settings_tab.set("security".into());
+                ui.settings_open.set(true);
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
             name: "/ignore",
             usage: "<user>",
             description: "Ignore a user (hide their messages)",

@@ -28,6 +28,8 @@ pub struct MessageInfo {
     pub reply_to_body: Option<String>,
     pub timestamp: u64,
     pub avatar_url: Option<String>,
+    pub thread_root: Option<String>,      // event is in a thread (root event_id)
+    pub thread_count: Option<u32>,        // event is a thread root (reply count)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

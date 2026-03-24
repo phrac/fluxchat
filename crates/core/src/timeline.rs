@@ -91,10 +91,14 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     let reply_to_id = content.in_reply_to().map(|r| r.event_id.to_string());
 
     match content {
-        TimelineItemContent::MsgLike(_) => {
+        TimelineItemContent::MsgLike(msg_like) => {
             if content.is_redacted() {
                 return None;
             }
+
+            // Extract thread info
+            let thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
+            let thread_count = msg_like.thread_summary.as_ref().map(|s| s.num_replies);
 
             if let Some(message) = content.as_message() {
                 let body = message.body().to_string();
@@ -122,6 +126,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     event_id, sender, sender_name, body, formatted_body,
                     transformed_body: None, image_mxc, reactions, reply_to_id,
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    thread_root, thread_count,
                 })
             } else {
                 Some(MessageInfo {
@@ -129,6 +134,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     body: "[unsupported]".into(), formatted_body: None,
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    thread_root, thread_count,
                 })
             }
         }
@@ -141,11 +147,29 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 formatted_body: None, transformed_body: None, image_mxc: None,
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
+                thread_root: None, thread_count: None,
             })
         }
 
         _ => None,
     }
+}
+
+/// Create a thread-focused timeline for a specific thread root.
+pub async fn create_thread_timeline(
+    client: &matrix_sdk::Client,
+    room_id: &matrix_sdk::ruma::RoomId,
+    thread_root_id: &matrix_sdk::ruma::EventId,
+) -> Result<Arc<Timeline>, crate::error::AppError> {
+    use matrix_sdk_ui::timeline::TimelineFocus;
+    let room = client.get_room(room_id)
+        .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
+    let timeline = TimelineBuilder::new(&room)
+        .with_focus(TimelineFocus::Thread { root_event_id: thread_root_id.to_owned() })
+        .build()
+        .await
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to build thread timeline: {e}")))?;
+    Ok(Arc::new(timeline))
 }
 
 /// Batch convert timeline items to MessageInfo vec.
