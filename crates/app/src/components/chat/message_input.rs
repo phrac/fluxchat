@@ -6,6 +6,36 @@ use crate::state::UiState;
 use crate::components::chat::emoji_picker::EmojiPicker;
 use crate::components::chat::commands::{self, CommandAction};
 
+/// Build a RoomMessageEventContent, resolving display names to Matrix mention links.
+fn build_message_content(body: &str, member_map: &std::collections::HashMap<String, String>) -> matrix_sdk::ruma::events::room::message::RoomMessageEventContent {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+
+    // Check if any member names appear in the body
+    let mut has_mentions = false;
+    let mut html = body.to_string();
+    let mut plain = body.to_string();
+
+    // Sort by name length descending to replace longer names first (avoid partial matches)
+    let mut names: Vec<_> = member_map.iter().collect();
+    names.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+    for (display_name, user_id) in &names {
+        if display_name.len() > 1 && body.contains(display_name.as_str()) {
+            has_mentions = true;
+            let mention_html = format!(
+                r#"<a href="https://matrix.to/#/{user_id}">{display_name}</a>"#
+            );
+            html = html.replace(display_name.as_str(), &mention_html);
+        }
+    }
+
+    if has_mentions {
+        RoomMessageEventContent::text_html(&plain, &html)
+    } else {
+        RoomMessageEventContent::text_plain(body)
+    }
+}
+
 const ICO_PLUS: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>"#;
 const ICO_BOLD: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/></svg>"#;
 const ICO_ITALIC: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="4" x2="10" y2="4"/><line x1="14" y1="20" x2="5" y2="20"/><line x1="15" y1="4" x2="9" y2="20"/></svg>"#;
@@ -107,6 +137,19 @@ pub fn MessageInput() -> Element {
             (raw_room_id.clone(), None)
         };
 
+        // Build display_name → user_id map for mention resolution
+        let member_map: std::collections::HashMap<String, String> = {
+            let real_rid = if room_id.starts_with("thread::") {
+                room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+            } else { room_id.clone() };
+            ui.members_by_room.peek()
+                .get(&real_rid)
+                .map(|members| members.iter()
+                    .map(|m| (m.display_name.clone(), m.user_id.clone()))
+                    .collect())
+                .unwrap_or_default()
+        };
+
         let core = core.clone();
         let reply = ui.reply_to.read().clone();
         let edit = ui.edit_event.read().clone();
@@ -195,9 +238,9 @@ pub fn MessageInput() -> Element {
                     let room = client.get_room(&rid);
                     if let Some(room) = room {
                         if let Ok(root_eid) = fluxchat_core::ruma::EventId::parse(&thread_root) {
-                            use matrix_sdk::ruma::events::room::message::{RoomMessageEventContent, Relation};
+                            use matrix_sdk::ruma::events::room::message::Relation;
                             use matrix_sdk::ruma::events::relation::Thread;
-                            let mut content = RoomMessageEventContent::text_plain(&body);
+                            let mut content = build_message_content(&body, &member_map);
                             content.relates_to = Some(Relation::Thread(
                                 Thread::plain(root_eid.clone(), root_eid)
                             ));
@@ -227,8 +270,7 @@ pub fn MessageInput() -> Element {
                 if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&room_id) {
                     let timelines = core.timelines.lock().await;
                     if let Some(timeline) = timelines.get(&*rid) {
-                        use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
-                        let content = RoomMessageEventContent::text_plain(&body);
+                        let content = build_message_content(&body, &member_map);
                         let _ = timeline.send(content.into()).await;
                     } else {
                         let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
@@ -595,15 +637,42 @@ pub fn MessageInput() -> Element {
                                 let val = text();
                                 let in_autocomplete = val.starts_with('/') && !val.contains(' ');
 
-                                if e.key() == Key::Tab && in_autocomplete {
-                                    let all = commands::autocomplete_entries();
-                                    let filtered: Vec<_> = all.iter()
-                                        .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
-                                        .collect();
-                                    if !filtered.is_empty() {
-                                        text.set(format!("{} ", filtered[0].0));
+                                if e.key() == Key::Tab {
+                                    // Slash command tab completion
+                                    if in_autocomplete {
+                                        let all = commands::autocomplete_entries();
+                                        let filtered: Vec<_> = all.iter()
+                                            .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
+                                            .collect();
+                                        if !filtered.is_empty() {
+                                            text.set(format!("{} ", filtered[0].0));
+                                        }
+                                        return;
                                     }
-                                    return;
+                                    // @mention tab completion
+                                    let last_word = val.rsplit_once(' ').map(|(_, w)| w).unwrap_or(&val);
+                                    if last_word.starts_with('@') && last_word.len() > 1 {
+                                        let needle = last_word[1..].to_lowercase();
+                                        let mention_ui = consume_context::<UiState>();
+                                        let sel = mention_ui.selected_room_id.peek().clone();
+                                        if let Some(ref rid) = sel {
+                                            let real_rid = if rid.starts_with("thread::") {
+                                                rid.splitn(3, "::").nth(1).unwrap_or(rid).to_string()
+                                            } else { rid.clone() };
+                                            if let Some(members) = mention_ui.members_by_room.peek().get(&real_rid) {
+                                                if let Some(m) = members.iter().find(|m|
+                                                    m.display_name.to_lowercase().starts_with(&needle)
+                                                    || m.user_id.to_lowercase().contains(&needle)
+                                                ) {
+                                                    let before = if let Some(idx) = val.rfind(last_word) {
+                                                        &val[..idx]
+                                                    } else { "" };
+                                                    text.set(format!("{before}{} ", m.display_name));
+                                                }
+                                            }
+                                        }
+                                        return;
+                                    }
                                 }
 
                                 if e.key() == Key::Enter && !e.modifiers().shift() {
