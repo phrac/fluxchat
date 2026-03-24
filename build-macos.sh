@@ -9,7 +9,7 @@ cd ../..
 APP_PATH="target/dx/fluxchat-app/release/macos/FluxchatApp.app"
 
 # Copy our custom icon into the bundle
-cp assets/fluxchat.icns "$APP_PATH/Contents/Resources/fluxchat.icns"
+cp assets/icon.icns "$APP_PATH/Contents/Resources/icon.icns"
 
 echo ""
 echo "Done! App bundle at: $APP_PATH"

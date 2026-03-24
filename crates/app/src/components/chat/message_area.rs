@@ -946,6 +946,33 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
 
 /// Pinned messages HUD — drops down from the tab bar.
 #[component]
+/// Reusable HUD panel wrapper — consistent chrome for all dropdown panels.
+#[component]
+fn HudPanel(title: String, count: String, on_close: EventHandler<()>, children: Element) -> Element {
+    rsx! {
+        div {
+            class: "search-hud",
+            style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
+            tabindex: "0",
+            onmounted: move |e| { let _ = e.data().set_focus(true); },
+            onkeydown: move |e: Event<KeyboardData>| {
+                if e.key() == Key::Escape { on_close.call(()); }
+            },
+            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
+                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
+                    "{title} — {count}"
+                }
+                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
+                    onclick: move |_| { on_close.call(()); },
+                    "×"
+                }
+            }
+            {children}
+        }
+    }
+}
+
+#[component]
 fn PinsHud() -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
@@ -966,23 +993,10 @@ fn PinsHud() -> Element {
     });
 
     let resolved = pinned.read().clone().flatten();
+    let count = match &resolved { Some(msgs) => msgs.len().to_string(), None => "...".to_string() };
 
     rsx! {
-        div { class: "search-hud", style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
-            // Header row
-            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
-                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
-                    { match &resolved {
-                        Some(msgs) => format!("pinned — {}", msgs.len()),
-                        None => "pinned — ...".to_string(),
-                    }}
-                }
-                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
-                    onclick: move |_| { ui.pins_open.set(false); },
-                    "×"
-                }
-            }
-            // Pinned messages
+        HudPanel { title: "pinned".to_string(), count: count, on_close: move |_| { ui.pins_open.set(false); },
             match resolved {
                 Some(msgs) if msgs.is_empty() => rsx! {
                     div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
@@ -1042,25 +1056,18 @@ fn ThreadsHud() -> Element {
         } else { Vec::new() }
     } else { Vec::new() };
 
+    let total = threads.len();
+
     rsx! {
-        div { class: "search-hud", style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
-            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
-                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
-                    { format!("threads — {}", threads.len()) }
-                }
-                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
-                    onclick: move |_| { ui.threads_open.set(false); },
-                    "×"
-                }
-            }
+        HudPanel { title: "threads".to_string(), count: total.to_string(), on_close: move |_| { ui.threads_open.set(false); },
             if threads.is_empty() {
                 div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
                     "no threads in this room"
                 }
             }
-            if threads.len() > 50 {
+            if total > 50 {
                 div { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); padding: 2px 0;",
-                    { format!("showing 50 of {}", threads.len()) }
+                    { format!("showing 50 of {}", total) }
                 }
             }
             for (eid, sender, body, count, lr_sender, lr_body) in threads.iter().take(50) {
@@ -1132,25 +1139,18 @@ fn FilesHud() -> Element {
             .unwrap_or_default()
     }).unwrap_or_default();
 
+    let total = files.len();
+
     rsx! {
-        div { class: "search-hud", style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
-            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
-                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
-                    { format!("files — {}", files.len()) }
-                }
-                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
-                    onclick: move |_| { ui.files_open.set(false); },
-                    "×"
-                }
-            }
+        HudPanel { title: "files".to_string(), count: total.to_string(), on_close: move |_| { ui.files_open.set(false); },
             if files.is_empty() {
                 div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
                     "no files in loaded messages"
                 }
             }
-            if files.len() > 50 {
+            if total > 50 {
                 div { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); padding: 2px 0;",
-                    { format!("showing 50 of {}", files.len()) }
+                    { format!("showing 50 of {}", total) }
                 }
             }
             for (eid, sender, body, mxc, ts) in files.iter().rev().take(50) {

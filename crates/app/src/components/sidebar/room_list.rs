@@ -39,7 +39,9 @@ pub fn RoomList() -> Element {
     for room in filtered.iter() {
         if room.is_favourite {
             favourites.push(room.clone());
-        } else if room.is_direct {
+        }
+        // Also place in original section
+        if room.is_direct {
             dms.push(room.clone());
         } else if let Some(ref sn) = room.space_name {
             by_space.entry(sn.clone()).or_default().push(room.clone());
@@ -284,7 +286,9 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
                 }
             }
             if room.is_favourite {
-                span { style: "color: var(--yellow); font-size: 10px; flex-shrink: 0;", "\u{2605}" }
+                span { style: "color: var(--yellow); display: inline-flex; flex-shrink: 0; opacity: 0.7;",
+                    dangerous_inner_html: r#"<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#,
+                }
             }
             span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;",
                 "{name}"
