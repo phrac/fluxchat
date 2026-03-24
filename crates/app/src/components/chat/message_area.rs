@@ -609,7 +609,10 @@ fn RoomMessages(room_id: String) -> Element {
                     let showing_react = react_menu_event.read().as_ref() == Some(&eid);
 
                     // Optimization: Check if we have pre-computed transformed_body
-                    let content_rsx = if msg.image_mxc.is_some() {
+                    let content_rsx = if msg.poll.is_some() {
+                        let poll = msg.poll.clone().unwrap();
+                        rsx! { PollDisplay { poll: poll, event_id: msg.event_id.clone(), room_id: room_id.clone(), my_user_id: my_user_id.clone() } }
+                    } else if msg.image_mxc.is_some() {
                         rsx! { InlineImage { room_id: room_id.clone(), event_id: msg.event_id.clone(), body: msg.body.clone(), image_mxc: msg.image_mxc.clone(), image_width: msg.image_width, image_height: msg.image_height } }
                     } else if let Some(ref transformed) = msg.transformed_body {
                         let highlighted = highlight_code_blocks(transformed);
@@ -861,6 +864,91 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
                     }
                 },
                 "×"
+            }
+        }
+    }
+}
+
+#[component]
+fn PollDisplay(poll: fluxchat_core::PollInfo, event_id: String, room_id: String, my_user_id: String) -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+
+    // Determine which answer the current user voted for
+    let my_vote = poll.answers.iter().find(|(aid, _)| {
+        poll.votes.get(aid).map(|voters| voters.contains(&my_user_id)).unwrap_or(false)
+    }).map(|(aid, _)| aid.clone());
+
+    rsx! {
+        div { style: "background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; max-width: 400px; margin: 2px 0;",
+            // Question
+            div { style: "font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-bright); margin-bottom: 8px;",
+                "\u{1f4ca} {poll.question}"
+            }
+            // Answers
+            for (aid, atext) in poll.answers.iter() {
+                { let aid = aid.clone();
+                  let atext = atext.clone();
+                  let vote_count = poll.votes.get(&aid).map(|v| v.len()).unwrap_or(0);
+                  let pct = if poll.total_votes > 0 { (vote_count as f64 / poll.total_votes as f64 * 100.0) as u32 } else { 0 };
+                  let is_my_vote = my_vote.as_ref() == Some(&aid);
+                  let is_ended = poll.is_ended;
+                  let border_color = if is_my_vote { "var(--accent)" } else { "var(--border)" };
+                  let cursor = if is_ended { "default" } else { "pointer" };
+                  let poll_eid = event_id.clone();
+                  let poll_rid = room_id.clone();
+                  let app = app_state.clone();
+                rsx! {
+                    div {
+                        style: "position: relative; padding: 6px 10px; margin-bottom: 4px; border-radius: 4px; border: 1px solid {border_color}; cursor: {cursor}; overflow: hidden;",
+                        onclick: move |_| {
+                            if !is_ended {
+                                let aid = aid.clone();
+                                let eid = poll_eid.clone();
+                                let rid = poll_rid.clone();
+                                let app = app.clone();
+                                spawn(async move {
+                                    use matrix_sdk::ruma::events::poll::unstable_response::UnstablePollResponseEventContent;
+                                    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+                                    let _client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                    if let Ok(rid_parsed) = matrix_sdk::ruma::RoomId::parse(&rid) {
+                                        let timelines = app.timelines.lock().await;
+                                        if let Some(timeline) = timelines.get(&*rid_parsed) {
+                                            if let Ok(eid_parsed) = matrix_sdk::ruma::EventId::parse(&eid) {
+                                                let content = UnstablePollResponseEventContent::new(
+                                                    vec![aid],
+                                                    eid_parsed.into(),
+                                                );
+                                                let _ = timeline.send(AnyMessageLikeEventContent::UnstablePollResponse(content)).await;
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        },
+                        // Progress bar background
+                        div { style: "position: absolute; top: 0; left: 0; bottom: 0; width: {pct}%; background: rgba(59, 130, 246, 0.1); transition: width 0.3s;" }
+                        // Content
+                        div { style: "position: relative; display: flex; justify-content: space-between; align-items: center;",
+                            div { style: "display: flex; align-items: center; gap: 6px;",
+                                if is_my_vote {
+                                    span { style: "color: var(--accent); font-size: 12px;", "\u{25cf}" }
+                                }
+                                span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-normal);", "{atext}" }
+                            }
+                            span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);",
+                                { if poll.total_votes > 0 { format!("{vote_count} ({pct}%)") } else { format!("{vote_count}") } }
+                            }
+                        }
+                    }
+                } }
+            }
+            // Footer: total votes + ended status
+            div { style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-top: 4px;",
+                if poll.is_ended {
+                    "Poll ended \u{00b7} {poll.total_votes} votes"
+                } else {
+                    "{poll.total_votes} votes"
+                }
             }
         }
     }

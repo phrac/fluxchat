@@ -42,6 +42,17 @@ pub struct MessageInfo {
     pub thread_count: Option<u32>,        // event is a thread root (reply count)
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
+    pub poll: Option<PollInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct PollInfo {
+    pub question: String,
+    pub answers: Vec<(String, String)>,  // (answer_id, answer_text)
+    pub votes: std::collections::HashMap<String, Vec<String>>,  // answer_id -> list of user_ids who voted
+    pub is_ended: bool,
+    pub total_votes: u32,
+    pub my_vote: Option<String>,  // answer_id the current user voted for
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

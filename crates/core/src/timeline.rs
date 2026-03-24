@@ -6,7 +6,7 @@ use matrix_sdk_ui::timeline::{
     EventTimelineItem,
 };
 
-use crate::models::{MessageInfo, ReactionInfo};
+use crate::models::{MessageInfo, PollInfo, ReactionInfo};
 
 /// Store of Timeline instances per room.
 pub type RoomTimelines = tokio::sync::Mutex<HashMap<OwnedRoomId, Arc<Timeline>>>;
@@ -129,7 +129,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     event_id, sender, sender_name, body, formatted_body,
                     transformed_body: None, image_mxc, reactions, reply_to_id,
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
-                    thread_root, thread_count, image_width, image_height,
+                    thread_root, thread_count, image_width, image_height, poll: None,
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -144,7 +144,33 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     event_id, sender, sender_name, body, formatted_body: None,
                     transformed_body: None, image_mxc: mxc, reactions, reply_to_id,
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
-                    thread_root, thread_count, image_width: w, image_height: h,
+                    thread_root, thread_count, image_width: w, image_height: h, poll: None,
+                })
+            } else if let Some(poll_state) = content.as_poll() {
+                let result = poll_state.results();
+                let question = result.question.clone();
+                let answers: Vec<(String, String)> = result.answers.iter()
+                    .map(|a| (a.id.clone(), a.text.clone()))
+                    .collect();
+                let votes: std::collections::HashMap<String, Vec<String>> = result.votes;
+                let total_votes = votes.values().map(|v| v.len() as u32).sum();
+                let is_ended = result.end_time.is_some();
+
+                let body = format!("Poll: {}", question);
+
+                Some(MessageInfo {
+                    event_id, sender, sender_name, body, formatted_body: None,
+                    transformed_body: None, image_mxc: None, reactions, reply_to_id,
+                    reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    thread_root, thread_count, image_width: None, image_height: None,
+                    poll: Some(PollInfo {
+                        question,
+                        answers,
+                        votes,
+                        is_ended,
+                        total_votes,
+                        my_vote: None,
+                    }),
                 })
             } else {
                 Some(MessageInfo {
@@ -152,7 +178,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     body: "[unsupported]".into(), formatted_body: None,
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
-                    thread_root, thread_count, image_width: None, image_height: None,
+                    thread_root, thread_count, image_width: None, image_height: None, poll: None,
                 })
             }
         }
@@ -178,7 +204,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 formatted_body: None, transformed_body: None, image_mxc: None,
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
-                thread_root: None, thread_count: None, image_width: None, image_height: None,
+                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
             })
         }
 

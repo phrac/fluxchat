@@ -775,6 +775,109 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/poll",
+            usage: r#""Question" "Option1" "Option2" ..."#,
+            description: "Create a poll",
+            scope: CommandScope::Room,
+            execute: |args, room_id, core, _| {
+                // Parse quoted strings
+                let parts: Vec<String> = {
+                    let mut result = Vec::new();
+                    let mut current = String::new();
+                    let mut in_quote = false;
+                    for ch in args.chars() {
+                        if ch == '"' {
+                            if in_quote {
+                                result.push(current.clone());
+                                current.clear();
+                            }
+                            in_quote = !in_quote;
+                        } else if in_quote {
+                            current.push(ch);
+                        }
+                    }
+                    result
+                };
+                if parts.len() < 3 {
+                    return CommandAction::ShowHelp(r#"Usage: /poll "Question" "Option1" "Option2" ..."#.into());
+                }
+                let question = parts[0].clone();
+                let options: Vec<String> = parts[1..].to_vec();
+                let rid = room_id.unwrap_or_default().to_string();
+
+                spawn(async move {
+                    use matrix_sdk::ruma::events::poll::unstable_start::{
+                        NewUnstablePollStartEventContent,
+                        UnstablePollStartContentBlock, UnstablePollAnswer, UnstablePollAnswers,
+                    };
+                    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+
+                    let answers: Vec<UnstablePollAnswer> = options.iter().enumerate()
+                        .map(|(i, text)| UnstablePollAnswer::new(format!("{i}"), text))
+                        .collect();
+
+                    let poll_answers = match UnstablePollAnswers::try_from(answers) {
+                        Ok(a) => a,
+                        Err(_) => return,
+                    };
+
+                    let poll_content = UnstablePollStartContentBlock::new(question.clone(), poll_answers);
+                    let content = NewUnstablePollStartEventContent::plain_text(
+                        format!("Poll: {question}"),
+                        poll_content,
+                    );
+
+                    let _client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    if let Ok(rid_parsed) = matrix_sdk::ruma::RoomId::parse(&rid) {
+                        let timelines = core.timelines.lock().await;
+                        if let Some(timeline) = timelines.get(&*rid_parsed) {
+                            let _ = timeline.send(AnyMessageLikeEventContent::UnstablePollStart(content.into())).await;
+                        }
+                    }
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/pollend",
+            usage: "",
+            description: "End the most recent poll in this room",
+            scope: CommandScope::Room,
+            execute: |_, room_id, core, ui| {
+                let rid = room_id.unwrap_or_default().to_string();
+                // Find the most recent active poll event_id
+                let poll_eid = ui.messages_by_room.peek()
+                    .get(&rid)
+                    .and_then(|msgs| msgs.iter().rev()
+                        .find(|m| m.poll.as_ref().map(|p| !p.is_ended).unwrap_or(false))
+                        .map(|m| m.event_id.clone()));
+
+                if let Some(eid) = poll_eid {
+                    spawn(async move {
+                        use matrix_sdk::ruma::events::poll::unstable_end::UnstablePollEndEventContent;
+                        use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+
+                        let _client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                        if let Ok(rid_parsed) = matrix_sdk::ruma::RoomId::parse(&rid) {
+                            let timelines = core.timelines.lock().await;
+                            if let Some(timeline) = timelines.get(&*rid_parsed) {
+                                if let Ok(eid_parsed) = matrix_sdk::ruma::EventId::parse(&eid) {
+                                    let content = UnstablePollEndEventContent::new(
+                                        "Poll ended".to_string(),
+                                        eid_parsed.into(),
+                                    );
+                                    let _ = timeline.send(AnyMessageLikeEventContent::UnstablePollEnd(content)).await;
+                                }
+                            }
+                        }
+                    });
+                    CommandAction::Handled
+                } else {
+                    CommandAction::ShowHelp("No active poll found in this room".into())
+                }
+            },
+        },
+        SlashCommand {
             name: "/forward",
             usage: "<room> <message>",
             description: "Forward a message to another room",

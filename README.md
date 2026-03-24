@@ -24,7 +24,9 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 **Rooms & Spaces** — Room list grouped by space with collapsible sections and avatars, space sidebar, room creation with encryption toggles, room settings (name, topic, aliases, notifications, invite, leave), space overview. Room invitations with accept/reject. Room upgrade/tombstone detection with follow button. Favourite rooms with dedicated sidebar section. IRC-style topic bar below tabs. Copy room link to clipboard.
 
-**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`, `/mute`, `/unmute`), messaging (`/me`, `/msg`, `/attach`, `/forward`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`, `/status`, `/highlight`, `/unhighlight`), discovery (`/users`, `/directory`, `/threads`, `/notices`), display (`/timestamp`, `/compact`, `/joinpart`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
+**Polls** — Create polls with `/poll "Question" "Option1" "Option2"`, vote by clicking options, end with `/pollend`. Interactive UI with progress bars, vote counts, percentages, and ended state. Uses MSC3381 unstable poll events for Element compatibility.
+
+**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`, `/mute`, `/unmute`), messaging (`/me`, `/msg`, `/attach`, `/forward`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`, `/status`, `/highlight`, `/unhighlight`), discovery (`/users`, `/directory`, `/threads`, `/notices`), polls (`/poll`, `/pollend`), display (`/timestamp`, `/compact`, `/joinpart`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
 
 **Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews with og:image thumbnails. Files HUD with image previews. Sticker display (`m.sticker` events).
 
@@ -63,7 +65,7 @@ fluxchat/
 │           └── components/
 │               ├── layout.rs          # MainLayout, modals, status bar, threads
 │               ├── chat/
-│               │   ├── commands.rs    # Modular slash command registry (43+ commands)
+│               │   ├── commands.rs    # Modular slash command registry (45+ commands)
 │               │   ├── message_area.rs # Tabs, messages, HUDs (pins/search/threads/files)
 │               │   ├── message_input.rs # Contenteditable input, mention pills, formatting
 │               │   └── emoji_picker.rs  # Categorized emoji with search
