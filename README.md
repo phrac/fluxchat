@@ -38,7 +38,7 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 **Settings** — Sidebar-navigated settings: `/account` (profile, avatar, banner), `/sessions` (device management, remote sign-out), `/security` (key backup, recovery, cross-signing status). Room settings with notification modes (all/mentions/mute), alias management, and room info panel. All accessible via slash commands.
 
-**Code Display** — Syntax highlighting for code blocks with language detection (```rust, ```python, etc.). One Dark-inspired color palette with keyword, string, comment, number, type, and attribute highlighting.
+**Code Display** — Syntax highlighting for code blocks via `syntect` with language detection (```rust, ```python, etc.) and 100+ supported languages. Base16 Ocean Dark theme. Plain text messages preserve newlines.
 
 ## Architecture
 
