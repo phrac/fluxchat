@@ -179,6 +179,8 @@ pub fn MessageInput() -> Element {
     let mut uploading = use_signal(|| false);
     let mut typing_sent = use_signal(|| false);
     let mut emoji_open = use_signal(|| false);
+    let mut tab_prefix = use_signal(|| String::new());
+    let mut tab_index = use_signal(|| 0usize);
     // Use shared help_text signal so async commands can update it too
 
     let reply_to = ui.reply_to.read().clone();
@@ -537,6 +539,7 @@ pub fn MessageInput() -> Element {
                         if let Some(txt) = msg.strip_prefix("input:") {
                             let val = txt.to_string();
                             text.set(val.clone());
+                            tab_prefix.set(String::new());
 
                             // Typing indicator logic
                             if !val.is_empty() && !*typing_sent.read() {
@@ -585,7 +588,15 @@ pub fn MessageInput() -> Element {
                                     .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
                                     .collect();
                                 if !filtered.is_empty() {
-                                    let c = format!("{} ", filtered[0].0);
+                                    // Cycle through matches on repeated Tab
+                                    let idx = if *tab_prefix.peek() == val {
+                                        (*tab_index.peek() + 1) % filtered.len()
+                                    } else {
+                                        tab_prefix.set(val.clone());
+                                        0
+                                    };
+                                    tab_index.set(idx);
+                                    let c = format!("{} ", filtered[idx].0);
                                     text.set(c.clone());
                                     let c_js = serde_json::to_string(&c).unwrap_or_default();
                                     let _ = document::eval(&format!(

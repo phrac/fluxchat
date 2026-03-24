@@ -194,6 +194,7 @@ pub fn MessageArea() -> Element {
             if *ui.pins_open.read() { PinsHud {} }
             if *ui.threads_open.read() { ThreadsHud {} }
             if *ui.files_open.read() { FilesHud {} }
+            if *ui.notices_open.read() { NoticesHud {} }
 
             // Message content — separate component, only re-renders on selected room changes
             ActiveRoomContent {}
@@ -1220,6 +1221,54 @@ fn FilesHud() -> Element {
     }
 }
 
+/// Notices HUD — system/state messages aggregated in one panel.
+#[component]
+fn NoticesHud() -> Element {
+    let mut ui = use_context::<UiState>();
+    let selected = ui.selected_room_id.read().clone();
+
+    let notices: Vec<(String, String)> = selected.as_ref().map(|room_id| {
+        ui.messages_by_room.read()
+            .get(room_id)
+            .map(|msgs| msgs.iter()
+                .filter(|m| m.event_id.starts_with("~state-") || m.event_id.starts_with("~system-"))
+                .map(|m| {
+                    let time = {
+                        let secs = m.timestamp % 86400;
+                        let h = secs / 3600;
+                        let min = (secs % 3600) / 60;
+                        format!("{:02}:{:02}", h, min)
+                    };
+                    (time, m.body.clone())
+                })
+                .collect())
+            .unwrap_or_default()
+    }).unwrap_or_default();
+
+    let total = notices.len();
+
+    rsx! {
+        HudPanel { title: "notices".to_string(), count: total.to_string(), on_close: move |_| { ui.notices_open.set(false); },
+            if notices.is_empty() {
+                div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
+                    "no system messages"
+                }
+            }
+            if total > 50 {
+                div { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); padding: 2px 0;",
+                    { format!("showing 50 of {}", total) }
+                }
+            }
+            for (time, body) in notices.iter().rev().take(50) {
+                div { style: "display: flex; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 11px;",
+                    span { style: "color: var(--text-dim); flex-shrink: 0;", "{time}" }
+                    span { style: "color: var(--text-muted);", "{body}" }
+                }
+            }
+        }
+    }
+}
+
 /// Search HUD — server-side message search.
 #[component]
 fn SearchHud() -> Element {
@@ -1496,6 +1545,14 @@ fn RoomActions() -> Element {
                             onclick: move |_| { menu_open.set(false); let open = *ui.files_open.peek(); ui.files_open.set(!open); },
                             span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_FILE }
                             "Files"
+                        }
+                        // Notices
+                        div {
+                            class: "cmd-item",
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-normal); cursor: pointer;",
+                            onclick: move |_| { menu_open.set(false); let open = *ui.notices_open.peek(); ui.notices_open.set(!open); },
+                            span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>"# }
+                            "Notices"
                         }
                     }
                 }

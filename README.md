@@ -24,13 +24,13 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 **Rooms & Spaces** — Room list grouped by space with collapsible sections and avatars, space sidebar, room creation with encryption toggles, room settings (name, topic, aliases, notifications, invite, leave), space overview. Room invitations with accept/reject. Room upgrade/tombstone detection with follow button. Favourite rooms with dedicated sidebar section. IRC-style topic bar below tabs. Copy room link to clipboard.
 
-**Slash Commands** — Modular command registry with autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`, `/mute`, `/unmute`), messaging (`/me`, `/msg`, `/attach`, `/forward`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`, `/status`, `/highlight`, `/unhighlight`), discovery (`/users`, `/directory`, `/threads`), display (`/timestamp`, `/compact`, `/joinpart`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
+**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`, `/mute`, `/unmute`), messaging (`/me`, `/msg`, `/attach`, `/forward`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`, `/status`, `/highlight`, `/unhighlight`), discovery (`/users`, `/directory`, `/threads`, `/notices`), display (`/timestamp`, `/compact`, `/joinpart`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
 
 **Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews with og:image thumbnails. Files HUD with image previews. Sticker display (`m.sticker` events).
 
 **Security** — End-to-end encryption via matrix-sdk. SAS emoji verification. Key backup and recovery (enable, recover with key/passphrase). Session management with device listing, verification status, and remote sign-out. Cross-signing status display.
 
-**Search** — Server-side message search via Matrix search API with fallback to client-side filtering. Search HUD with clickable result list, scroll-to-message highlighting, and arrow key navigation. User directory search (`/users`). Public room directory (`/directory`).
+**Search** — Server-side message search via Matrix search API with fallback to client-side filtering. Search HUD with clickable result list, scroll-to-message highlighting, and arrow key navigation. User directory search (`/users`). Public room directory (`/directory`). Server notices panel (`/notices`) for aggregated system messages.
 
 **Authentication** — Username/password login. SSO/OIDC support with auto-detection, provider-specific buttons, and browser-based auth flow. Session persistence and restore.
 

@@ -157,6 +157,17 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/notices",
+            usage: "",
+            description: "Toggle server/system notices panel",
+            scope: CommandScope::Room,
+            execute: |_, _, _, mut ui| {
+                let open = *ui.notices_open.peek();
+                ui.notices_open.set(!open);
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
             name: "/security",
             usage: "",
             description: "Open security settings",
