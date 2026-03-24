@@ -549,6 +549,40 @@ pub fn all_commands() -> Vec<SlashCommand> {
                 CommandAction::Handled
             },
         },
+        SlashCommand {
+            name: "/mute",
+            usage: "",
+            description: "Mute notifications for this room",
+            scope: CommandScope::Room,
+            execute: |_, room_id, core, mut ui| {
+                let rid = room_id.unwrap_or_default().to_string();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    match fluxchat_core::rooms::set_notification_mode(&client, &rid, "mute").await {
+                        Ok(_) => { ui.help_text.set(Some("Room muted".into())); }
+                        Err(e) => { ui.help_text.set(Some(format!("Failed to mute: {e}"))); }
+                    }
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/unmute",
+            usage: "",
+            description: "Unmute notifications for this room",
+            scope: CommandScope::Room,
+            execute: |_, room_id, core, mut ui| {
+                let rid = room_id.unwrap_or_default().to_string();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    match fluxchat_core::rooms::set_notification_mode(&client, &rid, "all").await {
+                        Ok(_) => { ui.help_text.set(Some("Room unmuted".into())); }
+                        Err(e) => { ui.help_text.set(Some(format!("Failed to unmute: {e}"))); }
+                    }
+                });
+                CommandAction::Handled
+            },
+        },
         // ── Text rewrite commands ────────────────────────────────
         SlashCommand {
             name: "/me",
@@ -627,6 +661,23 @@ pub fn all_commands() -> Vec<SlashCommand> {
             execute: |args, _, _, _| {
                 if args.is_empty() { return CommandAction::Noop; }
                 CommandAction::Rewrite(args.to_string())
+            },
+        },
+        SlashCommand {
+            name: "/forward",
+            usage: "<room> <message>",
+            description: "Forward a message to another room",
+            scope: CommandScope::Room,
+            execute: |args, _, core, _| {
+                let parts: Vec<&str> = args.splitn(2, ' ').collect();
+                if parts.len() < 2 { return CommandAction::ShowHelp("/forward <room_id_or_alias> <message>".into()); }
+                let target = parts[0].to_string();
+                let body = parts[1].to_string();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    let _ = fluxchat_core::messages::forward_message(&client, &target, &body, None).await;
+                });
+                CommandAction::Handled
             },
         },
     ]

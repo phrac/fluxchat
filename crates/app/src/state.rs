@@ -61,6 +61,7 @@ pub struct UiState {
     pub help_text: Signal<Option<String>>,  // shared help text for command results
     pub upload_pending: Signal<Option<(String, String, Vec<u8>)>>,  // (filename, mime_type, data)
     pub lightbox_url: Signal<Option<String>>,  // data URI for full-size image viewer
+    pub forward_event: Signal<Option<(String, String, Option<String>)>>,  // (body, formatted_body, sender_name)
     pub create_room_open: Signal<bool>,
     pub room_settings_open: Signal<bool>,
 
@@ -164,6 +165,7 @@ impl UiState {
             help_text: Signal::new(None),
             upload_pending: Signal::new(None),
             lightbox_url: Signal::new(None),
+            forward_event: Signal::new(None),
             create_room_open: Signal::new(false),
             room_settings_open: Signal::new(false),
             settings_tab: Signal::new("account".into()),

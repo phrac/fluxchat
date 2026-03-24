@@ -385,3 +385,74 @@ pub async fn list_public_rooms(
 
     Ok((rooms, response.next_batch))
 }
+
+/// Get room aliases (canonical + alt)
+pub async fn get_room_aliases(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<String>, AppError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let mut aliases = Vec::new();
+    if let Some(canonical) = room.canonical_alias() {
+        aliases.push(canonical.to_string());
+    }
+    for alt in room.alt_aliases() {
+        aliases.push(alt.to_string());
+    }
+    Ok(aliases)
+}
+
+/// Add a room alias
+pub async fn add_room_alias(client: &matrix_sdk::Client, room_id: &str, alias: &str) -> Result<(), AppError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let alias_id = matrix_sdk::ruma::RoomAliasId::parse(alias).map_err(|_| AppError::Other("Invalid alias (use #name:server format)".into()))?;
+    // Create the alias on the server
+    use matrix_sdk::ruma::api::client::alias::create_alias::v3::Request;
+    let request = Request::new(alias_id.to_owned(), room_id.clone());
+    client.send(request).await.map_err(|e| AppError::Other(format!("Failed to create alias: {e}")))?;
+    // Set as canonical alias if none exists
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    if room.canonical_alias().is_none() {
+        use matrix_sdk::ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
+        let mut content = RoomCanonicalAliasEventContent::new();
+        content.alias = Some(alias_id.to_owned());
+        room.send_state_event(content).await.map_err(|e| AppError::Other(format!("Failed to set canonical alias: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Remove a room alias
+pub async fn remove_room_alias(client: &matrix_sdk::Client, alias: &str) -> Result<(), AppError> {
+    let alias_id = matrix_sdk::ruma::RoomAliasId::parse(alias).map_err(|_| AppError::Other("Invalid alias".into()))?;
+    use matrix_sdk::ruma::api::client::alias::delete_alias::v3::Request;
+    let request = Request::new(alias_id.to_owned());
+    client.send(request).await.map_err(|e| AppError::Other(format!("Failed to remove alias: {e}")))?;
+    Ok(())
+}
+
+/// Get room notification mode: "all", "mentions", or "mute"
+pub async fn get_notification_mode(client: &matrix_sdk::Client, room_id: &str) -> Result<String, AppError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let mode = room.notification_mode().await;
+    Ok(match mode {
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::AllMessages) => "all",
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::MentionsAndKeywordsOnly) => "mentions",
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute) => "mute",
+        None => "all",
+    }.to_string())
+}
+
+/// Set room notification mode: "all", "mentions", or "mute"
+pub async fn set_notification_mode(client: &matrix_sdk::Client, room_id: &str, mode: &str) -> Result<(), AppError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let _room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let settings = client.notification_settings().await;
+    use matrix_sdk::notification_settings::RoomNotificationMode;
+    let notification_mode = match mode {
+        "mentions" => RoomNotificationMode::MentionsAndKeywordsOnly,
+        "mute" => RoomNotificationMode::Mute,
+        _ => RoomNotificationMode::AllMessages,
+    };
+    settings.set_room_notification_mode(&room_id, notification_mode).await
+        .map_err(|e| AppError::Other(format!("Failed to set notification mode: {e}")))?;
+    Ok(())
+}

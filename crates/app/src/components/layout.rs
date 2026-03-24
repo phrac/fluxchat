@@ -70,6 +70,13 @@ pub fn MainLayout() -> Element {
             RoomSettingsModal {}
         }
 
+        // Forward message modal
+        { let fwd = ui.forward_event.read().clone();
+          if fwd.is_some() {
+            rsx! { ForwardModal {} }
+          } else { rsx! {} }
+        }
+
         // Image lightbox
         { let lb = ui.lightbox_url.read().clone();
           if let Some(ref url) = lb {
@@ -1717,6 +1724,7 @@ fn RoomSettingsModal() -> Element {
     let mut edit_topic = use_signal(|| room.topic.clone().unwrap_or_default());
     let mut invite_user = use_signal(|| String::new());
     let mut status_msg = use_signal(|| Option::<String>::None);
+    let mut new_alias = use_signal(|| String::new());
     let room_id = room.room_id.clone();
 
     rsx! {
@@ -1770,9 +1778,124 @@ fn RoomSettingsModal() -> Element {
                             }
                         }
                     }
+                    // Aliases
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "aliases" }
+                        { let rid_alias = room_id.clone();
+                          let app_alias = app_state.clone();
+                          let aliases = use_resource({
+                              let app = app_alias.clone();
+                              let rid = rid_alias.clone();
+                              move || {
+                                  let app = app.clone();
+                                  let rid = rid.clone();
+                                  async move {
+                                      let client = app.get_client().await.ok()?;
+                                      fluxchat_core::rooms::get_room_aliases(&client, &rid).await.ok()
+                                  }
+                              }
+                          });
+                          let alias_list = aliases.read().clone().flatten().unwrap_or_default();
+                        rsx! {
+                            if alias_list.is_empty() {
+                                div { style: "font-size: 12px; color: var(--text-dim); font-family: var(--font-mono);", "no aliases" }
+                            }
+                            for alias in alias_list.iter() {
+                                div { style: "display: flex; justify-content: space-between; align-items: center; padding: 2px 0;",
+                                    span { style: "font-size: 12px; color: var(--accent); font-family: var(--font-mono);", "{alias}" }
+                                    span { style: "font-size: 11px; color: var(--red); cursor: pointer; font-family: var(--font-mono);",
+                                        onclick: { let app = app_alias.clone(); let a = alias.clone();
+                                            move |_| { let app = app.clone(); let a = a.clone();
+                                                spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    let _ = fluxchat_core::rooms::remove_room_alias(&client, &a).await;
+                                                    status_msg.set(Some(format!("removed {a}")));
+                                                });
+                                            }
+                                        }, "remove"
+                                    }
+                                }
+                            }
+                            div { style: "display: flex; gap: 6px; margin-top: 4px;",
+                                input { style: "flex: 1; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                                    placeholder: "#alias:server.org", value: "{new_alias}", oninput: move |e| new_alias.set(e.value()),
+                                }
+                                span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0;",
+                                    onclick: { let app = app_alias.clone(); let rid = rid_alias.clone();
+                                        move |_| { let a = new_alias().trim().to_string(); if a.is_empty() { return; }
+                                            let app = app.clone(); let rid = rid.clone();
+                                            spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                match fluxchat_core::rooms::add_room_alias(&client, &rid, &a).await {
+                                                    Ok(_) => { new_alias.set(String::new()); status_msg.set(Some(format!("added {a}"))); }
+                                                    Err(e) => { status_msg.set(Some(format!("{e}"))); }
+                                                }
+                                            });
+                                        }
+                                    }, "add"
+                                }
+                            }
+                        } }
+                    }
                     div { style: "display: flex; gap: 16px; font-size: 12px; font-family: var(--font-mono); color: var(--text-muted);",
                         if room.is_encrypted { span { style: "color: var(--green);", "encrypted" } } else { span { "unencrypted" } }
                         if room.is_direct { span { "direct message" } }
+                    }
+                    // Notifications
+                    div {
+                        div { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px; margin-bottom: 4px; font-family: var(--font-mono);", "notifications" }
+                        {
+                            let rid_notif = room_id.clone();
+                            let app_notif = app_state.clone();
+                            let notif_mode = use_resource({
+                                let app = app_notif.clone();
+                                let rid = rid_notif.clone();
+                                move || {
+                                    let app = app.clone();
+                                    let rid = rid.clone();
+                                    async move {
+                                        let client = app.get_client().await.ok()?;
+                                        Some(fluxchat_core::rooms::get_notification_mode(&client, &rid).await.unwrap_or("all".into()))
+                                    }
+                                }
+                            });
+                            let current = notif_mode.read().clone().flatten().unwrap_or("all".into());
+                            rsx! {
+                                div { style: "display: flex; gap: 8px; align-items: center;",
+                                    span {
+                                        style: if current == "all" { "font-family: var(--font-mono); font-size: 12px; color: var(--green); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--green); background: rgba(34,197,94,0.1);" } else { "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);" },
+                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone(); let notif_mode = notif_mode.clone();
+                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode.clone();
+                                                spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    let _ = fluxchat_core::rooms::set_notification_mode(&client, &rid, "all").await;
+                                                    notif_mode.restart();
+                                                });
+                                            }
+                                        }, "all"
+                                    }
+                                    span {
+                                        style: if current == "mentions" { "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--accent); background: rgba(99,102,241,0.1);" } else { "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);" },
+                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone(); let notif_mode = notif_mode.clone();
+                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode.clone();
+                                                spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    let _ = fluxchat_core::rooms::set_notification_mode(&client, &rid, "mentions").await;
+                                                    notif_mode.restart();
+                                                });
+                                            }
+                                        }, "mentions"
+                                    }
+                                    span {
+                                        style: if current == "mute" { "font-family: var(--font-mono); font-size: 12px; color: var(--red); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--red); background: rgba(239,68,68,0.1);" } else { "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);" },
+                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone(); let notif_mode = notif_mode.clone();
+                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode.clone();
+                                                spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                    let _ = fluxchat_core::rooms::set_notification_mode(&client, &rid, "mute").await;
+                                                    notif_mode.restart();
+                                                });
+                                            }
+                                        }, "mute"
+                                    }
+                                }
+                            }
+                        }
                     }
                     // Invite
                     div {
@@ -1807,6 +1930,88 @@ fn RoomSettingsModal() -> Element {
                                 }
                             }, "leave room"
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Forward message modal — pick a room to forward to.
+#[component]
+fn ForwardModal() -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+    let rooms = ui.rooms.read().clone();
+    let mut search = use_signal(|| String::new());
+
+    let (body, formatted, sender) = match ui.forward_event.read().clone() {
+        Some((b, f, s)) => (b, if f.is_empty() { None } else { Some(f) }, s),
+        None => return rsx! {},
+    };
+
+    let query = search().to_lowercase();
+    let filtered: Vec<_> = rooms.iter()
+        .filter(|r| !r.is_space && (query.is_empty() || r.name.to_lowercase().contains(&query)))
+        .take(20)
+        .collect();
+
+    rsx! {
+        div {
+            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;",
+            onclick: move |_| { ui.forward_event.set(None); },
+            div {
+                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 360px; max-width: 420px; max-height: 500px; display: flex; flex-direction: column;",
+                onclick: move |e| { e.stop_propagation(); },
+                div { style: "padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;",
+                    span { style: "font-size: 14px; font-weight: 600; color: var(--text-bright); font-family: var(--font-mono);", "forward message" }
+                    span { style: "cursor: pointer; color: var(--text-dim); font-size: 18px; padding: 4px;",
+                        onclick: move |_| { ui.forward_event.set(None); }, "\u{00d7}"
+                    }
+                }
+                div { style: "padding: 12px 20px;",
+                    if let Some(ref sn) = sender {
+                        div { style: "font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); margin-bottom: 4px;", "from {sn}:" }
+                    }
+                    div { style: "font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 8px;",
+                        "{body}"
+                    }
+                    input {
+                        style: "width: 100%; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; color: var(--text-bright); font-family: var(--font-mono); font-size: 13px; outline: none;",
+                        placeholder: "search rooms...",
+                        value: "{search}",
+                        oninput: move |e| search.set(e.value()),
+                    }
+                }
+                div { style: "flex: 1; overflow-y: auto; padding: 0 20px 16px;",
+                    for room in filtered.iter() {
+                        { let rid = room.room_id.clone();
+                          let rname = room.name.clone();
+                          let body = body.clone();
+                          let formatted = formatted.clone();
+                          let app = app_state.clone();
+                        rsx! {
+                            div {
+                                style: "padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; font-family: var(--font-mono); color: var(--text-normal); display: flex; align-items: center; gap: 6px;",
+                                class: "cmd-item",
+                                onclick: move |_| {
+                                    let rid = rid.clone();
+                                    let body = body.clone();
+                                    let formatted = formatted.clone();
+                                    let app = app.clone();
+                                    consume_context::<UiState>().forward_event.set(None);
+                                    spawn(async move {
+                                        let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::messages::forward_message(&client, &rid, &body, formatted.as_deref()).await;
+                                    });
+                                },
+                                span { style: "font-family: var(--font-mono); opacity: 0.4; font-size: 12px;", "#" }
+                                "{rname}"
+                            }
+                        } }
+                    }
+                    if filtered.is_empty() {
+                        div { style: "font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); padding: 8px;", "no rooms found" }
                     }
                 }
             }

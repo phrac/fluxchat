@@ -349,6 +349,22 @@ pub async fn get_room_read_receipts(
     Ok(receipts)
 }
 
+/// Forward a message to another room by sending its content there.
+pub async fn forward_message(client: &matrix_sdk::Client, target_room_id: &str, body: &str, formatted_body: Option<&str>) -> Result<(), AppError> {
+    let target_id = matrix_sdk::ruma::RoomId::parse(target_room_id)
+        .map_err(|_| AppError::Other("Invalid target room ID".into()))?;
+    let room = client.get_room(&target_id)
+        .ok_or(AppError::RoomNotFound(target_id.to_string()))?;
+
+    let content = if let Some(html) = formatted_body {
+        RoomMessageEventContent::text_html(body, html)
+    } else {
+        RoomMessageEventContent::text_plain(body)
+    };
+    room.send(content).await.map_err(|e| AppError::Other(format!("Failed to forward: {e}")))?;
+    Ok(())
+}
+
 /// Server-side message search result.
 #[derive(Clone, Debug)]
 pub struct SearchResult {
