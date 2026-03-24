@@ -343,6 +343,10 @@ fn RoomMessages(room_id: String) -> Element {
     // signal, which is the only trigger for re-render.
     let all_messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
     let ignored = ui.ignored_users.peek().clone();
+    let ts_format = ui.timestamp_format.read().clone();
+    let compact = *ui.compact_mode.read();
+    let show_joinpart = *ui.show_joinpart.read();
+    let highlight_words = ui.highlight_words.read().clone();
 
     // Build receipt map: event_id → Vec<ReadReceipt> (excluding self)
     let receipt_map: HashMap<String, Vec<fluxchat_core::ReadReceipt>> = {
@@ -367,11 +371,12 @@ fn RoomMessages(room_id: String) -> Element {
         counts
     };
 
-    // Filter: hide ignored users. For regular rooms, also hide thread replies.
+    // Filter: hide ignored users, join/part if toggled off. For regular rooms, also hide thread replies.
     let is_thread_view = room_id.starts_with("thread::");
     let messages: Vec<_> = all_messages.into_iter()
         .filter(|m| !ignored.contains(&m.sender))
         .filter(|m| is_thread_view || m.thread_root.is_none())
+        .filter(|m| show_joinpart || !(m.event_id.starts_with("~state-") || m.event_id.starts_with("~system-")))
         .collect();
 
     // Find the last-read event to show the "new messages" divider
@@ -516,6 +521,7 @@ fn RoomMessages(room_id: String) -> Element {
         }
         div {
             id: "{scroll_id}",
+            class: if compact { "compact" } else { "" },
             // column-reverse: browser naturally shows newest messages (bottom) first.
             // No JS scroll-to-bottom needed. Scroll position preserved across re-renders.
             style: "flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 12px; display: flex; flex-direction: column-reverse;",
@@ -548,6 +554,7 @@ fn RoomMessages(room_id: String) -> Element {
                 }
                 { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
                   let eid = msg.event_id.clone();
+                  let is_highlighted = !highlight_words.is_empty() && highlight_words.iter().any(|w| msg.body.to_lowercase().contains(w));
                   if is_system {
                     let (arrow, arrow_color) = if msg.body.contains("has joined") {
                         ("-->", "var(--green)")
@@ -576,7 +583,12 @@ fn RoomMessages(room_id: String) -> Element {
                         let secs = ts % 86400;
                         let h = secs / 3600;
                         let m = (secs % 3600) / 60;
-                        format!("{:02}:{:02}", h, m)
+                        let s = secs % 60;
+                        match ts_format.as_str() {
+                            "full" => format!("{:02}:{:02}:{:02}", h, m, s),
+                            "off" => String::new(),
+                            _ => format!("{:02}:{:02}", h, m),
+                        }
                     };
                     let avatar_src = msg.avatar_url.as_ref().and_then(|mxc| avatar_map.get(mxc));
                     let initial = msg.sender_name.chars().next().unwrap_or('?').to_uppercase().to_string();
@@ -630,7 +642,7 @@ fn RoomMessages(room_id: String) -> Element {
                                     }
                                 }
                             }
-                            div { class: "msg-row", style: "display: flex; padding: 1px 0; align-items: flex-start;",
+                            div { class: if is_highlighted { "msg-row msg-highlight" } else { "msg-row" }, style: "display: flex; padding: 1px 0; align-items: flex-start;",
                                 span { class: "msg-time", style: "align-self: baseline;", "{time}" }
                                 if let Some(src) = avatar_src {
                                     img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px;" }

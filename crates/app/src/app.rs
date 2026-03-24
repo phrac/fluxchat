@@ -108,6 +108,7 @@ fn apply_sync_event(ui: &mut UiState, event: SyncEvent) {
                             for r in rooms.iter_mut() {
                                 if read.contains(&r.room_id) {
                                     r.unread_count = 0;
+                                    r.highlight_count = 0;
                                 }
                             }
                             ui.rooms.set(rooms);
@@ -126,6 +127,24 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
         if let Ok(ids) = serde_json::from_str::<Vec<String>>(&json) {
             *ui.read_rooms.write() = ids.into_iter().collect();
         }
+    }
+
+    // Load highlight words
+    if let Some(words_json) = core.db.get_setting("highlight_words") {
+        if let Ok(words) = serde_json::from_str::<Vec<String>>(&words_json) {
+            ui.highlight_words.set(words);
+        }
+    }
+
+    // Load display settings
+    if let Some(fmt) = core.db.get_setting("timestamp_format") {
+        ui.timestamp_format.set(fmt);
+    }
+    if let Some(val) = core.db.get_setting("compact_mode") {
+        ui.compact_mode.set(val == "true");
+    }
+    if let Some(val) = core.db.get_setting("show_joinpart") {
+        ui.show_joinpart.set(val == "true");
     }
 
     // Load ignored users from Matrix account data
@@ -151,7 +170,7 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
             if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(client).await {
                 let read = ui.read_rooms.read().clone();
                 for r in rooms.iter_mut() {
-                    if read.contains(&r.room_id) { r.unread_count = 0; }
+                    if read.contains(&r.room_id) { r.unread_count = 0; r.highlight_count = 0; }
                 }
                 ui.rooms.set(rooms);
             }
@@ -171,7 +190,7 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
                             if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(&client).await {
                                 let read = ui.read_rooms.read().clone();
                                 for r in rooms.iter_mut() {
-                                    if read.contains(&r.room_id) { r.unread_count = 0; }
+                                    if read.contains(&r.room_id) { r.unread_count = 0; r.highlight_count = 0; }
                                 }
                                 ui.rooms.set(rooms);
                             }
@@ -202,7 +221,7 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
             if let Ok(mut rooms) = fluxchat_core::rooms::get_rooms(client).await {
                 let read = ui.read_rooms.read().clone();
                 for r in rooms.iter_mut() {
-                    if read.contains(&r.room_id) { r.unread_count = 0; }
+                    if read.contains(&r.room_id) { r.unread_count = 0; r.highlight_count = 0; }
                 }
                 ui.rooms.set(rooms);
             }

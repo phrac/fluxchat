@@ -16,6 +16,7 @@ pub struct RoomInfo {
     pub is_space: bool,
     pub is_direct: bool,
     pub unread_count: u64,
+    pub highlight_count: u64,
     pub avatar_url: Option<String>,
     pub topic: Option<String>,
     pub space_name: Option<String>,

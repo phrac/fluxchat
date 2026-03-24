@@ -664,6 +664,95 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/timestamp",
+            usage: "[short|full|off]",
+            description: "Toggle timestamp format (short, full, or off)",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                let current = ui.timestamp_format.read().clone();
+                let new_fmt = if args.trim().is_empty() {
+                    match current.as_str() { "short" => "full", "full" => "off", _ => "short" }.to_string()
+                } else {
+                    match args.trim() {
+                        "short" | "full" | "off" => args.trim().to_string(),
+                        _ => return CommandAction::ShowHelp("Usage: /timestamp [short|full|off]".into()),
+                    }
+                };
+                let _ = core.db.set_setting("timestamp_format", &new_fmt);
+                ui.timestamp_format.set(new_fmt.clone());
+                CommandAction::ShowHelp(format!("Timestamp format: {new_fmt}"))
+            },
+        },
+        SlashCommand {
+            name: "/compact",
+            usage: "",
+            description: "Toggle compact message display",
+            scope: CommandScope::Global,
+            execute: |_, _, core, mut ui| {
+                let compact = !*ui.compact_mode.read();
+                ui.compact_mode.set(compact);
+                let _ = core.db.set_setting("compact_mode", if compact { "true" } else { "false" });
+                CommandAction::ShowHelp(format!("Compact mode: {}", if compact { "on" } else { "off" }))
+            },
+        },
+        SlashCommand {
+            name: "/joinpart",
+            usage: "",
+            description: "Toggle join/part messages",
+            scope: CommandScope::Global,
+            execute: |_, _, core, mut ui| {
+                let show = !*ui.show_joinpart.read();
+                ui.show_joinpart.set(show);
+                let _ = core.db.set_setting("show_joinpart", if show { "true" } else { "false" });
+                CommandAction::ShowHelp(format!("Join/part messages: {}", if show { "shown" } else { "hidden" }))
+            },
+        },
+        SlashCommand {
+            name: "/highlight",
+            usage: "<word>",
+            description: "Add a highlight word (triggers mention-style notification)",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                let word = args.trim().to_lowercase();
+                if word.is_empty() {
+                    // Show current highlight words
+                    let words = ui.highlight_words.read().clone();
+                    if words.is_empty() {
+                        return CommandAction::ShowHelp("No highlight words set. Use /highlight <word> to add one.".into());
+                    }
+                    return CommandAction::ShowHelp(format!("Highlight words: {}", words.join(", ")));
+                }
+                let mut words = ui.highlight_words.read().clone();
+                if !words.contains(&word) {
+                    words.push(word.clone());
+                    ui.highlight_words.set(words.clone());
+                    if let Ok(json) = serde_json::to_string(&words) {
+                        let _ = core.db.set_setting("highlight_words", &json);
+                    }
+                }
+                CommandAction::ShowHelp(format!("Added highlight word: {word}"))
+            },
+        },
+        SlashCommand {
+            name: "/unhighlight",
+            usage: "<word>",
+            description: "Remove a highlight word",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                let word = args.trim().to_lowercase();
+                if word.is_empty() {
+                    return CommandAction::ShowHelp("Usage: /unhighlight <word>".into());
+                }
+                let mut words = ui.highlight_words.read().clone();
+                words.retain(|w| w != &word);
+                ui.highlight_words.set(words.clone());
+                if let Ok(json) = serde_json::to_string(&words) {
+                    let _ = core.db.set_setting("highlight_words", &json);
+                }
+                CommandAction::ShowHelp(format!("Removed highlight word: {word}"))
+            },
+        },
+        SlashCommand {
             name: "/forward",
             usage: "<room> <message>",
             description: "Forward a message to another room",

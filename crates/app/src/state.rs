@@ -65,6 +65,11 @@ pub struct UiState {
     pub forward_event: Signal<Option<(String, String, Option<String>)>>,  // (body, formatted_body, sender_name)
     pub create_room_open: Signal<bool>,
     pub room_settings_open: Signal<bool>,
+    pub highlight_words: Signal<Vec<String>>,
+
+    pub timestamp_format: Signal<String>,  // "short" (HH:MM), "full" (HH:MM:SS), "off" (hidden)
+    pub compact_mode: Signal<bool>,
+    pub show_joinpart: Signal<bool>,
 
     pub settings_tab: Signal<String>,  // "account", "sessions"
     pub loading: Signal<bool>,
@@ -282,6 +287,10 @@ impl UiState {
             forward_event: Signal::new(None),
             create_room_open: Signal::new(false),
             room_settings_open: Signal::new(false),
+            highlight_words: Signal::new(Vec::new()),
+            timestamp_format: Signal::new("short".into()),
+            compact_mode: Signal::new(false),
+            show_joinpart: Signal::new(true),
             settings_tab: Signal::new("account".into()),
             loading: Signal::new(true),
             sync_lag_ms: Signal::new(0),

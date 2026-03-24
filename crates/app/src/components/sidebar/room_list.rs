@@ -298,8 +298,9 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
             }
             if room.unread_count > 0 {
                 { let count_label = if room.unread_count > 99 { "99+".to_string() } else { room.unread_count.to_string() };
+                  let badge_bg = if room.highlight_count > 0 { "var(--red)" } else { "var(--accent)" };
                 rsx! {
-                    span { style: "min-width: 16px; height: 16px; border-radius: 8px; background: var(--accent); flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; padding: 0 4px; font-family: var(--font-mono);",
+                    span { style: "min-width: 16px; height: 16px; border-radius: 8px; background: {badge_bg}; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; padding: 0 4px; font-family: var(--font-mono);",
                         "{count_label}"
                     }
                 } }
@@ -361,8 +362,9 @@ fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
             }
             if has_unread {
                 { let count_label = if room.unread_count > 99 { "99+".to_string() } else { room.unread_count.to_string() };
+                  let badge_bg = if room.highlight_count > 0 { "var(--red)" } else { "var(--accent)" };
                 rsx! {
-                    span { style: "min-width: 16px; height: 16px; border-radius: 8px; background: var(--accent); flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; padding: 0 4px; font-family: var(--font-mono);",
+                    span { style: "min-width: 16px; height: 16px; border-radius: 8px; background: {badge_bg}; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; padding: 0 4px; font-family: var(--font-mono);",
                         "{count_label}"
                     }
                 } }
@@ -445,6 +447,7 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
     ui.read_rooms.write().insert(room_id.clone());
     if let Some(r) = ui.rooms.write().iter_mut().find(|r| r.room_id == room_id) {
         r.unread_count = 0;
+        r.highlight_count = 0;
     }
     // Persist read rooms to disk
     {
