@@ -313,13 +313,19 @@ pub fn open_thread_tab(mut ui: UiState, room_id: String, thread_root_eid: String
         .unwrap_or_default();
 
     // Store thread messages under the synthetic key
-    ui.messages_by_room.write().insert(thread_tab_id.clone(), thread_msgs);
+    ui.messages_by_room.write().insert(thread_tab_id.clone(), thread_msgs.clone());
 
-    // Open tab
-    let tab_name = if root_body.len() > 20 {
-        format!("Thread: {}...", &root_body[..20])
+    // Tab name: root body if meaningful, else sender context
+    let sender = thread_msgs.first().map(|m| m.sender_name.clone()).unwrap_or_default();
+    let tab_name = if root_body.len() > 3 {
+        let preview = if root_body.len() > 30 { format!("{}...", &root_body[..30]) } else { root_body };
+        format!("\u{1F5E8} {preview}")
     } else {
-        format!("Thread: {root_body}")
+        let room_name = ui.rooms.read().iter()
+            .find(|r| r.room_id == room_id)
+            .map(|r| r.name.to_lowercase().replace(' ', "-"))
+            .unwrap_or_default();
+        format!("\u{1F5E8} {sender} in #{room_name}")
     };
 
     let mut tabs = ui.open_tabs.write();

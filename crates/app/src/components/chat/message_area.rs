@@ -159,6 +159,7 @@ pub fn MessageArea() -> Element {
             // HUDs
             if *ui.search_open.read() { SearchHud {} }
             if *ui.pins_open.read() { PinsHud {} }
+            if *ui.threads_open.read() { ThreadsHud {} }
 
             // Message content — separate component, only re-renders on selected room changes
             ActiveRoomContent {}
@@ -526,11 +527,13 @@ fn RoomMessages(room_id: String) -> Element {
                         rsx! { span { class: "msg-body", "{msg.body}" } }
                     };
 
-                    // Look up reply context
-                    let reply_context = msg.reply_to_id.as_ref().and_then(|rid| {
-                        messages.iter().find(|m| m.event_id == *rid)
-                            .map(|m| (m.sender_name.clone(), m.body.clone()))
-                    });
+                    // Look up reply context (skip in thread views — thread fallback replies are noise)
+                    let reply_context = if is_thread_view { None } else {
+                        msg.reply_to_id.as_ref().and_then(|rid| {
+                            messages.iter().find(|m| m.event_id == *rid)
+                                .map(|m| (m.sender_name.clone(), m.body.clone()))
+                        })
+                    };
 
                     rsx! {
                         div { key: "{eid}",
@@ -849,6 +852,103 @@ fn PinsHud() -> Element {
     }
 }
 
+/// Threads HUD — dropdown listing threads in the current room.
+#[component]
+fn ThreadsHud() -> Element {
+    let mut ui = use_context::<UiState>();
+    let selected = ui.selected_room_id.read().clone();
+
+    // Derive thread roots: (eid, sender, body, count, last_reply_sender, last_reply_body)
+    let threads: Vec<(String, String, String, u32, String, String)> = if let Some(ref room_id) = selected {
+        let msgs = ui.messages_by_room.read();
+        if let Some(messages) = msgs.get(room_id) {
+            let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+            let mut last_reply: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+            for m in messages.iter() {
+                if let Some(ref root) = m.thread_root {
+                    *counts.entry(root.clone()).or_insert(0) += 1;
+                    last_reply.insert(root.clone(), (m.sender_name.clone(), m.body.clone()));
+                }
+            }
+            counts.iter()
+                .filter_map(|(root_eid, count)| {
+                    messages.iter()
+                        .find(|m| m.event_id == *root_eid)
+                        .map(|m| {
+                            let (lr_sender, lr_body) = last_reply.get(root_eid).cloned().unwrap_or_default();
+                            (m.event_id.clone(), m.sender_name.clone(), m.body.clone(), *count, lr_sender, lr_body)
+                        })
+                })
+                .collect()
+        } else { Vec::new() }
+    } else { Vec::new() };
+
+    rsx! {
+        div { class: "search-hud", style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
+            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
+                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
+                    { format!("threads — {}", threads.len()) }
+                }
+                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
+                    onclick: move |_| { ui.threads_open.set(false); },
+                    "×"
+                }
+            }
+            if threads.is_empty() {
+                div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
+                    "no threads in this room"
+                }
+            }
+            for (eid, sender, body, count, lr_sender, lr_body) in threads.iter() {
+                { let eid = eid.clone();
+                  let body = body.clone();
+                  let room_id = selected.clone();
+                  let root_preview = if body.len() > 60 { format!("{}...", &body[..60]) } else { body.clone() };
+                  let reply_preview = if lr_body.len() > 50 { format!("{}...", &lr_body[..50]) } else { lr_body.clone() };
+                  let replies = if *count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
+                  rsx! {
+                    div {
+                        style: "padding: 8px; border-top: 1px solid var(--border); font-family: var(--font-mono); cursor: pointer;",
+                        class: "cmd-item",
+                        onclick: move |_| {
+                            if let Some(ref rid) = room_id {
+                                let ui = consume_context::<UiState>();
+                                crate::components::layout::open_thread_tab(ui, rid.clone(), eid.clone(), body.clone());
+                                consume_context::<UiState>().threads_open.set(false);
+                            }
+                        },
+                        // Root message
+                        div { style: "display: flex; align-items: center; gap: 6px; margin-bottom: 4px;",
+                            span { style: "color: var(--accent-muted); display: inline-flex; flex-shrink: 0;",
+                                dangerous_inner_html: ICO_THREAD,
+                            }
+                            span { style: "font-size: 12px; font-weight: 600; color: var(--text-bright); flex-shrink: 0;",
+                                "{sender}"
+                            }
+                            span { style: "font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;",
+                                "{root_preview}"
+                            }
+                        }
+                        // Last reply + count
+                        div { style: "display: flex; align-items: center; gap: 6px; padding-left: 20px;",
+                            span { style: "font-size: 11px; color: var(--accent-muted); flex-shrink: 0;",
+                                "{replies}"
+                            }
+                            if !lr_sender.is_empty() {
+                                span { style: "font-size: 11px; color: var(--text-dim);", "·" }
+                                span { style: "font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;",
+                                    "last: {lr_sender}: {reply_preview}"
+                                }
+                            }
+                        }
+                    }
+                  }
+                }
+            }
+        }
+    }
+}
+
 /// Search HUD — server-side message search.
 #[component]
 fn SearchHud() -> Element {
@@ -1007,13 +1107,9 @@ fn RoomActions() -> Element {
             }
             // Threads
             span {
-                class: if panel == Some(RightPanel::Threads) { "room-action active" } else { "room-action" },
+                class: if *ui.threads_open.read() { "room-action active" } else { "room-action" },
                 title: "Threads",
-                onclick: move |_| {
-                    let current = ui.right_panel.read().clone();
-                    if current == Some(RightPanel::Threads) { ui.right_panel.set(None); }
-                    else { ui.right_panel.set(Some(RightPanel::Threads)); }
-                },
+                onclick: move |_| { let open = *ui.threads_open.read(); ui.threads_open.set(!open); },
                 dangerous_inner_html: ICO_THREAD,
             }
             // Toggle member list

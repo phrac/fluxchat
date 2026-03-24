@@ -14,7 +14,7 @@ pub fn Login() -> Element {
     let mut password = use_signal(|| String::new());
     let mut error = use_signal(|| String::new());
     let mut submitting = use_signal(|| false);
-    let mut sso_available = use_signal(|| Option::<bool>::None);
+    let mut login_caps = use_signal(|| Option::<fluxchat_core::auth::LoginCapabilities>::None);
 
     // Detect login types when homeserver changes
     let _login_types = use_resource({
@@ -22,14 +22,9 @@ pub fn Login() -> Element {
             let hs = homeserver().clone();
             async move {
                 if hs.is_empty() { return; }
-                match fluxchat_core::auth::get_login_types(&hs).await {
-                    Ok(types) => {
-                        let has_sso = types.iter().any(|t| t == "sso");
-                        sso_available.set(Some(has_sso));
-                    }
-                    Err(_) => {
-                        sso_available.set(None);
-                    }
+                match fluxchat_core::auth::get_login_capabilities(&hs).await {
+                    Ok(caps) => { login_caps.set(Some(caps)); }
+                    Err(_) => { login_caps.set(None); }
                 }
             }
         }
@@ -79,7 +74,8 @@ pub fn Login() -> Element {
         });
     };
 
-    let has_sso = sso_available.read().unwrap_or(false);
+    let caps = login_caps.read().clone().unwrap_or_default();
+    let has_sso = caps.has_sso;
 
     rsx! {
         div {
@@ -110,18 +106,40 @@ pub fn Login() -> Element {
                     oninput: move |e| homeserver.set(e.value()),
                 }
 
-                // SSO login button
+                // SSO login buttons
                 if has_sso {
-                    button {
-                        style: "width: 100%; background: var(--bg-light); color: var(--text-bright); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; margin-bottom: 16px; display: flex; align-items: center; justify-content: center; gap: 8px;",
-                        disabled: *submitting.read(),
-                        onclick: handle_sso,
-                        if *submitting.read() { "Opening browser..." } else { "Sign in with SSO" }
+                    if caps.sso_providers.is_empty() {
+                        // Generic SSO button (no specific providers listed)
+                        button {
+                            style: "width: 100%; background: var(--bg-light); color: var(--text-bright); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; gap: 8px;",
+                            disabled: *submitting.read(),
+                            onclick: handle_sso.clone(),
+                            if *submitting.read() { "Opening browser..." } else { "Sign in with SSO" }
+                        }
+                    } else {
+                        // Provider-specific buttons
+                        for provider in caps.sso_providers.iter() {
+                            { let provider_name = provider.name.clone();
+                              let handle = handle_sso.clone();
+                              let btn_label = format!("Sign in with {provider_name}");
+                              rsx! {
+                                button {
+                                    style: "width: 100%; background: var(--bg-light); color: var(--text-bright); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; margin-bottom: 6px; display: flex; align-items: center; justify-content: center; gap: 8px;",
+                                    disabled: *submitting.read(),
+                                    onclick: move |e| handle(e),
+                                    if *submitting.read() { "Opening browser..." } else { "{btn_label}" }
+                                }
+                            } }
+                        }
+                    }
+
+                    p { style: "color: var(--text-dim); font-size: 11px; text-align: center; margin-bottom: 12px;",
+                        "Opens your browser to authenticate"
                     }
 
                     div { style: "display: flex; align-items: center; gap: 12px; margin-bottom: 16px;",
                         div { style: "flex: 1; height: 1px; background: var(--border);" }
-                        span { style: "color: var(--text-dim); font-size: 12px;", "or" }
+                        span { style: "color: var(--text-dim); font-size: 12px;", "or sign in with password" }
                         div { style: "flex: 1; height: 1px; background: var(--border);" }
                     }
                 }

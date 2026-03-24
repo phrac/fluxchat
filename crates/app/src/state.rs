@@ -52,6 +52,7 @@ pub struct UiState {
     pub show_member_list: Signal<bool>,
     pub search_open: Signal<bool>,
     pub pins_open: Signal<bool>,
+    pub threads_open: Signal<bool>,
     pub verification_request: Signal<Option<fluxchat_core::VerificationInfo>>,
     pub read_rooms: Signal<std::collections::HashSet<String>>,  // rooms we've marked as read this session
     pub last_read_event: Signal<HashMap<String, String>>,  // room_id -> last event_id when room was read
@@ -153,6 +154,7 @@ impl UiState {
             show_member_list: Signal::new(true),
             search_open: Signal::new(false),
             pins_open: Signal::new(false),
+            threads_open: Signal::new(false),
             verification_request: Signal::new(None),
             read_rooms: Signal::new(std::collections::HashSet::new()),
             last_read_event: Signal::new(HashMap::new()),

@@ -147,6 +147,16 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/threads",
+            usage: "",
+            description: "Show threads in current room",
+            scope: CommandScope::Room,
+            execute: |_, _, _, mut ui| {
+                ui.threads_open.set(true);
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
             name: "/security",
             usage: "",
             description: "Open security settings",

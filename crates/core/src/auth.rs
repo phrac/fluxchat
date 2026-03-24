@@ -81,8 +81,24 @@ pub async fn logout(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
+/// SSO identity provider info.
+#[derive(Clone, Debug)]
+pub struct SsoProvider {
+    pub id: String,
+    pub name: String,
+    pub brand: Option<String>,
+}
+
+/// Login capabilities discovered from the homeserver.
+#[derive(Clone, Debug, Default)]
+pub struct LoginCapabilities {
+    pub has_password: bool,
+    pub has_sso: bool,
+    pub sso_providers: Vec<SsoProvider>,
+}
+
 /// Discover login types supported by a homeserver.
-pub async fn get_login_types(homeserver: &str) -> Result<Vec<String>, AppError> {
+pub async fn get_login_capabilities(homeserver: &str) -> Result<LoginCapabilities, AppError> {
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver)
         .build()
@@ -92,21 +108,24 @@ pub async fn get_login_types(homeserver: &str) -> Result<Vec<String>, AppError> 
         .map_err(|e| AppError::Other(format!("Failed to get login types: {e}")))?;
 
     use matrix_sdk::ruma::api::client::session::get_login_types::v3::LoginType;
-    let mut types = Vec::new();
+    let mut caps = LoginCapabilities::default();
     for flow in &response.flows {
         match flow {
-            LoginType::Password(_) => types.push("password".to_string()),
+            LoginType::Password(_) => caps.has_password = true,
             LoginType::Sso(sso) => {
-                types.push("sso".to_string());
+                caps.has_sso = true;
                 for provider in &sso.identity_providers {
-                    types.push(format!("sso:{}", provider.name));
+                    caps.sso_providers.push(SsoProvider {
+                        id: provider.id.clone(),
+                        name: provider.name.clone(),
+                        brand: provider.brand.as_ref().map(|b| format!("{b:?}").to_lowercase()),
+                    });
                 }
             }
-            LoginType::Token(_) => types.push("token".to_string()),
             _ => {}
         }
     }
-    Ok(types)
+    Ok(caps)
 }
 
 /// SSO login — opens browser, waits for callback, completes login.

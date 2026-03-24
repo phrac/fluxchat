@@ -12,24 +12,31 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 - **IRC-style messages** — compact layout with right-aligned colored nicks, vertical separator, monospace timestamps
 - **Channel tabs** — Chrome-style tabs for instant room switching with memoized DOM preservation
+- **Command bar** — unified input with SVG formatting tools, emoji picker, slash command autocomplete
 - **Status bar** — user avatar, room info, encryption status, sync state, device verification
 - **Deep charcoal theme** — monospace throughout, SVG icons, deterministic nick colors
 
 ## Features
 
-**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker, replies with context, message editing and deletion.
+**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker, replies with context, message editing and deletion. Unread indicators with divider lines and floating "new messages" pill.
 
-**Rooms & Spaces** — Room list grouped by space with collapsible sections, space sidebar with avatars, room creation with encryption toggles, room settings, space overview with channel list.
+**Threads** — Thread indicators on messages with reply counts. Click to open thread as a dedicated tab. Threads HUD dropdown lists all threads in a room. Thread replies sent with proper `m.thread` relation. Live updates via diff stream sync.
 
-**Slash Commands** — Modular command system with autocomplete. `/join`, `/leave`, `/invite`, `/kick`, `/ban`, `/topic`, `/nick`, `/me`, `/msg`, `/help`, text macros (`/shrug`, `/tableflip`, `/lenny`), and settings commands (`/settings`, `/sessions`, `/account`).
+**Rooms & Spaces** — Room list grouped by space with collapsible sections and avatars, space sidebar, room creation with encryption toggles, room settings, space overview. Room invitations with accept/reject. Room upgrade/tombstone detection with follow button.
 
-**Files & Media** — File upload via button, drag-drop, or clipboard paste. 3-tier media cache (memory, SQLite, network). URL previews from the Matrix server's preview API.
+**Slash Commands** — Modular command registry with autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`), messaging (`/me`, `/msg`, `/attach`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`), discovery (`/users`, `/directory`, `/threads`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
 
-**Security** — End-to-end encryption via matrix-sdk with SQLite crypto store. Device verification with SAS emoji grid. Session management with device listing, verification status, and remote sign-out.
+**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach`. 3-tier media cache (memory, SQLite, network). URL previews from the Matrix server's preview API.
 
-**Search & Navigation** — In-room message search HUD, pinned messages HUD, lazy-loaded member list with presence, profile modals, typing indicators.
+**Security** — End-to-end encryption via matrix-sdk. SAS emoji verification. Key backup and recovery (enable, recover with key/passphrase). Session management with device listing, verification status, and remote sign-out. Cross-signing status display.
 
-**Settings** — Sidebar-navigated settings with `/account` (profile, avatar, banner) and `/sessions` (device management, verification status, remote sign-out). Accessible via gear icon or slash commands.
+**Search** — Server-side message search via Matrix search API with fallback to client-side filtering. Search HUD with result navigation. User directory search (`/users`). Public room directory (`/directory`).
+
+**Authentication** — Username/password login. SSO/OIDC support with auto-detection, provider-specific buttons, and browser-based auth flow. Session persistence and restore.
+
+**User Management** — Ignore/block users (`/ignore`, `/unignore`) with message filtering. Profile modals with ignore button. Presence display and `/away` status.
+
+**Settings** — Sidebar-navigated settings: `/account` (profile, avatar, banner), `/sessions` (device management, remote sign-out), `/security` (key backup, recovery, cross-signing status). All accessible via slash commands.
 
 ## Architecture
 
@@ -38,11 +45,11 @@ fluxchat/
 ├── crates/
 │   ├── core/               # Business logic — pure Rust, no UI deps
 │   │   └── src/
-│   │       ├── auth.rs     # Login, logout, session restore
-│   │       ├── timeline.rs # Timeline API: per-room management, item conversion
+│   │       ├── auth.rs     # Login (password + SSO), logout, session restore
+│   │       ├── timeline.rs # Timeline API: per-room + thread timeline management
 │   │       ├── devices.rs  # Device listing, rename, remote sign-out
-│   │       ├── messages.rs # Send, edit, delete, pin, reactions
-│   │       ├── rooms.rs    # Room CRUD, spaces, DMs, kick/ban
+│   │       ├── messages.rs # Send, edit, delete, pin, reactions, server search
+│   │       ├── rooms.rs    # Room CRUD, spaces, DMs, invites, user/room search
 │   │       ├── media.rs    # Media download with 3-tier cache
 │   │       ├── sync.rs     # Sync loop (typing, room list, verification)
 │   │       ├── db.rs       # SQLite storage (sessions, media cache, settings)
@@ -52,15 +59,15 @@ fluxchat/
 │           ├── app.rs      # Root component, sync bridge
 │           ├── state.rs    # UiState signals, mention transforms
 │           └── components/
-│               ├── layout.rs          # MainLayout, modals, status bar
+│               ├── layout.rs          # MainLayout, modals, status bar, threads
 │               ├── chat/
-│               │   ├── commands.rs    # Modular slash command registry
-│               │   ├── message_area.rs # Tabs, messages, HUDs, JS bridge
+│               │   ├── commands.rs    # Modular slash command registry (30+ commands)
+│               │   ├── message_area.rs # Tabs, messages, HUDs (pins/search/threads)
 │               │   ├── message_input.rs # Command bar, formatting, upload
 │               │   └── emoji_picker.rs  # Categorized emoji with search
 │               ├── sidebar/
 │               │   ├── space_sidebar.rs # Space icons with avatars
-│               │   └── room_list.rs     # Collapsible room list with Timeline
+│               │   └── room_list.rs     # Collapsible room list with invitations
 │               └── members/
 │                   └── member_list.rs   # Lazy-loaded with avatars
 └── assets/
