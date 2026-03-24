@@ -427,3 +427,55 @@ input:focus, textarea:focus {
   color: var(--text-normal);
   background: var(--bg-hover);
 }
+
+/* Contenteditable input */
+#flux-input {
+  -webkit-user-select: text;
+  user-select: text;
+}
+#flux-input:empty::before {
+  content: "Type a message or /command...";
+  color: var(--text-dim);
+  pointer-events: none;
+}
+#flux-input.cmd-mode {
+  color: var(--accent-muted);
+}
+
+/* Mention pills in contenteditable input */
+.ce-mention-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin: 0 1px;
+  vertical-align: baseline;
+  cursor: default;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  -webkit-user-select: all;
+  user-select: all;
+}
+.ce-pill-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: middle;
+}
+.ce-pill-initial {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 600;
+  vertical-align: middle;
+}

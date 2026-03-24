@@ -1,27 +1,102 @@
 use dioxus::prelude::*;
 use std::sync::Arc;
+use std::rc::Rc;
+use std::cell::RefCell;
 use fluxchat_core::AppState;
 
 use crate::state::UiState;
 use crate::components::chat::emoji_picker::EmojiPicker;
 use crate::components::chat::commands::{self, CommandAction};
 
-/// Build a RoomMessageEventContent, resolving display names to Matrix mention links.
+/// Replace matched pairs of `delim` with HTML tags. Processes left-to-right, non-greedy.
+fn replace_delimited(input: &str, delim: &str, open_tag: &str, close_tag: &str) -> (String, bool) {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    let mut changed = false;
+    while let Some(start) = rest.find(delim) {
+        let after_open = start + delim.len();
+        if after_open >= rest.len() { break; }
+        if let Some(end) = rest[after_open..].find(delim) {
+            if end == 0 { // empty content like **** — skip
+                out.push_str(&rest[..after_open]);
+                rest = &rest[after_open..];
+                continue;
+            }
+            let inner = &rest[after_open..after_open + end];
+            out.push_str(&rest[..start]);
+            out.push_str(open_tag);
+            out.push_str(inner);
+            out.push_str(close_tag);
+            rest = &rest[after_open + end + delim.len()..];
+            changed = true;
+        } else {
+            break;
+        }
+    }
+    out.push_str(rest);
+    (out, changed)
+}
+
+/// Simple inline markdown → HTML for formatting buttons: **bold**, *italic*, ~~strike~~, `code`, ```codeblock```
+fn simple_markdown_to_html(input: &str) -> Option<String> {
+    let mut out = input.to_string();
+    let mut changed = false;
+
+    // Code blocks first: ```...\n...\n```
+    let (s, c) = replace_delimited(&out, "```\n", "<pre><code>", "</code></pre>");
+    if c { changed = true; out = s; } else {
+        // Try ``` without trailing newline (single-line code blocks)
+        let (s, c) = replace_delimited(&out, "```", "<pre><code>", "</code></pre>");
+        if c { changed = true; out = s; }
+    }
+
+    // Inline code: `...`
+    let (s, c) = replace_delimited(&out, "`", "<code>", "</code>");
+    if c { changed = true; out = s; }
+
+    // Bold before italic: **...**
+    let (s, c) = replace_delimited(&out, "**", "<strong>", "</strong>");
+    if c { changed = true; out = s; }
+
+    // Italic: *...*
+    let (s, c) = replace_delimited(&out, "*", "<em>", "</em>");
+    if c { changed = true; out = s; }
+
+    // Strikethrough: ~~...~~
+    let (s, c) = replace_delimited(&out, "~~", "<del>", "</del>");
+    if c { changed = true; out = s; }
+
+    if changed { Some(out) } else { None }
+}
+
+/// Build a RoomMessageEventContent, resolving display names to Matrix mention links
+/// and converting simple markdown formatting to HTML.
 fn build_message_content(body: &str, member_map: &std::collections::HashMap<String, String>) -> matrix_sdk::ruma::events::room::message::RoomMessageEventContent {
     use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 
-    // Check if any member names appear in the body
-    let mut has_mentions = false;
+    let mut has_rich = false;
     let mut html = body.to_string();
-    let mut plain = body.to_string();
+    let plain = body.to_string();
 
-    // Sort by name length descending to replace longer names first (avoid partial matches)
+    // Newlines → <br> for multiline messages
+    if html.contains('\n') {
+        html = html.replace('\n', "<br>");
+        has_rich = true;
+    }
+
+    // Markdown formatting
+    if let Some(formatted) = simple_markdown_to_html(&html) {
+        html = formatted;
+        has_rich = true;
+    }
+
+    // Mention resolution — sort by name length descending to replace longer names first
     let mut names: Vec<_> = member_map.iter().collect();
     names.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
     for (display_name, user_id) in &names {
         if display_name.len() > 1 && body.contains(display_name.as_str()) {
-            has_mentions = true;
+            has_rich = true;
             let mention_html = format!(
                 r#"<a href="https://matrix.to/#/{user_id}">{display_name}</a>"#
             );
@@ -29,7 +104,7 @@ fn build_message_content(body: &str, member_map: &std::collections::HashMap<Stri
         }
     }
 
-    if has_mentions {
+    if has_rich {
         RoomMessageEventContent::text_html(&plain, &html)
     } else {
         RoomMessageEventContent::text_plain(body)
@@ -61,17 +136,33 @@ pub fn MessageInput() -> Element {
     let edit_event = ui.edit_event.read().clone();
     let upload_pending = ui.upload_pending.read().clone();
 
+    // Auto-focus input on room switch
+    use_effect(move || {
+        let _room = ui.selected_room_id.read().clone();
+        spawn(async move {
+            let _ = document::eval("document.getElementById('flux-input')?.focus();");
+        });
+    });
+
     // When entering edit mode, populate the input with the original text
     use_effect(move || {
         let edit = ui.edit_event.read().clone();
         if let Some((_, ref body)) = edit {
             text.set(body.clone());
+            let body_js = serde_json::to_string(body).unwrap_or_default();
+            spawn(async move {
+                let _ = document::eval(&format!(
+                    r#"let el = document.getElementById('flux-input');
+                    if (el) {{ el.innerText = {body_js}; el.focus();
+                    let r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+                    let s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }}"#
+                ));
+            });
         }
     });
 
     let mut ui_cancel = ui.clone();
     let mut ui_cancel2 = ui.clone();
-    let ui_cancel3 = ui.clone();
     let ui_upload = ui.clone();
     let ui_typing = ui.clone();
     let core_typing = core.clone();
@@ -91,7 +182,7 @@ pub fn MessageInput() -> Element {
         }
     };
 
-    let mut handle_send = move |_: ()| {
+    let handle_send: Rc<RefCell<dyn FnMut(())>> = Rc::new(RefCell::new(move |_: ()| {
         let mut body = text().trim().to_string();
 
         // Handle slash commands via modular registry
@@ -100,26 +191,25 @@ pub fn MessageInput() -> Element {
             match commands::dispatch(&body, room_id.as_deref(), core.clone(), ui.clone()) {
                 CommandAction::Handled => {
                     text.set(String::new());
+                    let _ = document::eval("let el = document.getElementById('flux-input'); if(el) { el.innerHTML = ''; el.classList.remove('cmd-mode'); }");
                     ui.help_text.set(None);
                     return;
                 }
                 CommandAction::Rewrite(new_body) => {
                     body = new_body;
                     ui.help_text.set(None);
-                    // Fall through to normal send
                 }
                 CommandAction::ShowHelp(msg) => {
                     text.set(String::new());
+                    let _ = document::eval("let el = document.getElementById('flux-input'); if(el) { el.innerHTML = ''; el.classList.remove('cmd-mode'); }");
                     ui.help_text.set(Some(msg));
                     return;
                 }
-                CommandAction::Noop => {
-                    // Unknown or incomplete command — send as plain text
-                }
+                CommandAction::Noop => {}
             }
         }
 
-        let body = body; // rebind as immutable
+        let body = body;
         let pending_upload = {
             let val = ui.upload_pending.read().clone();
             val
@@ -127,7 +217,6 @@ pub fn MessageInput() -> Element {
         if body.is_empty() && pending_upload.is_none() || *sending.read() { return; }
         let raw_room_id = match ui.selected_room_id.read().clone() { Some(id) => id, None => return };
 
-        // Resolve thread tab IDs to real room ID + thread root
         let (room_id, thread_root_eid) = if raw_room_id.starts_with("thread::") {
             let parts: Vec<&str> = raw_room_id.splitn(3, "::").collect();
             if parts.len() == 3 {
@@ -137,7 +226,6 @@ pub fn MessageInput() -> Element {
             (raw_room_id.clone(), None)
         };
 
-        // Build display_name → user_id map for mention resolution
         let member_map: std::collections::HashMap<String, String> = {
             let real_rid = if room_id.starts_with("thread::") {
                 room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
@@ -155,11 +243,11 @@ pub fn MessageInput() -> Element {
         let edit = ui.edit_event.read().clone();
 
         text.set(String::new());
+        let _ = document::eval("let el = document.getElementById('flux-input'); if(el) { el.innerHTML = ''; el.classList.remove('cmd-mode'); }");
         ui.reply_to.set(None);
         ui.edit_event.set(None);
         ui.upload_pending.set(None);
         typing_sent.set(false);
-        // Stop typing indicator (skip for thread tabs)
         if !room_id.starts_with("thread::") {
             let core = core.clone();
             let room_id = room_id.clone();
@@ -169,7 +257,6 @@ pub fn MessageInput() -> Element {
             });
         }
 
-        // If there's a file pending, upload it (and send text after if any)
         if let Some((filename, mime, data)) = pending_upload {
             let core2 = core.clone();
             let body2 = body.clone();
@@ -178,7 +265,6 @@ pub fn MessageInput() -> Element {
                 sending.set(true);
                 let client = match core2.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
                 let _ = fluxchat_core::messages::upload_file(&client, &room_id2, &filename, &mime, data).await;
-                // Also send text message if user typed something
                 if !body2.is_empty() {
                     let _ = fluxchat_core::messages::send_message(&client, &room_id2, &body2).await;
                 }
@@ -187,7 +273,6 @@ pub fn MessageInput() -> Element {
             return;
         }
 
-        // Use Timeline API for send/reply/edit — handles local echo automatically
         if let Some((event_id, _)) = edit {
             let body = body.clone();
             spawn(async move {
@@ -228,7 +313,6 @@ pub fn MessageInput() -> Element {
                 sending.set(false);
             });
         } else if let Some(ref thread_root) = thread_root_eid {
-            // Thread reply — send with m.thread relation
             let thread_root = thread_root.clone();
             let raw_room_id = raw_room_id.clone();
             spawn(async move {
@@ -246,7 +330,6 @@ pub fn MessageInput() -> Element {
                             ));
                             let _ = room.send(content).await;
 
-                            // Update thread tab messages from room's latest state
                             let mut ui = consume_context::<UiState>();
                             let thread_msgs = {
                                 let msgs = ui.messages_by_room.read();
@@ -264,7 +347,6 @@ pub fn MessageInput() -> Element {
                 sending.set(false);
             });
         } else {
-            // Normal send via Timeline
             spawn(async move {
                 sending.set(true);
                 if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&room_id) {
@@ -280,7 +362,286 @@ pub fn MessageInput() -> Element {
                 sending.set(false);
             });
         }
-    };
+    }));
+
+    // ── Contenteditable JS interop ──────────────────────────────
+    // Install event listeners and receive messages from JS
+    let handle_send_ce = handle_send.clone();
+    use_future(move || {
+        let core_ce = core_typing.clone();
+        let ui_ce = ui_typing.clone();
+        let handle_send = handle_send_ce.clone();
+        async move {
+            // Wait a tick for DOM to be ready
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let mut eval = document::eval(r#"
+                (function() {
+                    const el = document.getElementById('flux-input');
+                    if (!el || el.__fluxCeInit) return;
+                    el.__fluxCeInit = true;
+
+                    // Extract plain text from contenteditable, reading display names from pills
+                    window.__fluxExtractText = function(node) {
+                        let result = '';
+                        for (let child of (node || el).childNodes) {
+                            if (child.nodeType === Node.TEXT_NODE) {
+                                result += child.textContent;
+                            } else if (child.dataset && child.dataset.displayName) {
+                                result += child.dataset.displayName;
+                            } else if (child.nodeName === 'BR') {
+                                result += '\n';
+                            } else {
+                                result += child.innerText || '';
+                            }
+                        }
+                        if (result === '\n') result = '';
+                        return result;
+                    };
+
+                    // Insert a mention pill at cursor position
+                    window.__fluxInsertPill = function(displayName, userId, avatarSrc, initial, colorIdx) {
+                        el.focus();
+                        let pill = document.createElement('span');
+                        pill.className = 'ce-mention-pill';
+                        pill.contentEditable = 'false';
+                        pill.dataset.userId = userId;
+                        pill.dataset.displayName = displayName;
+                        if (avatarSrc) {
+                            pill.innerHTML = '<img src="' + avatarSrc + '" class="ce-pill-avatar">' +
+                                '<span class="ce-pill-name nick-' + colorIdx + '">' + displayName + '</span>';
+                        } else {
+                            pill.innerHTML = '<span class="ce-pill-initial nick-' + colorIdx + '">' + initial + '</span>' +
+                                '<span class="ce-pill-name nick-' + colorIdx + '">' + displayName + '</span>';
+                        }
+                        let sel = window.getSelection();
+                        let range = sel.getRangeAt(0);
+                        range.deleteContents();
+                        range.insertNode(pill);
+                        // Add space after pill and move cursor there
+                        let space = document.createTextNode('\u00A0');
+                        pill.after(space);
+                        range = document.createRange();
+                        range.setStartAfter(space);
+                        range.collapse(true);
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                        dioxus.send('input:' + window.__fluxExtractText());
+                    };
+
+                    el.addEventListener('input', () => {
+                        // Clean stray <br> in empty contenteditable so :empty placeholder works
+                        if (el.innerHTML === '<br>' || el.innerHTML === '<div><br></div>') {
+                            el.innerHTML = '';
+                        }
+                        dioxus.send('input:' + window.__fluxExtractText());
+                    });
+
+                    el.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            dioxus.send('send:' + window.__fluxExtractText());
+                        } else if (e.key === 'Tab') {
+                            e.preventDefault();
+                            dioxus.send('tab:' + window.__fluxExtractText());
+                        } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            dioxus.send('escape:');
+                        } else if (e.key === 'ArrowUp') {
+                            let t = window.__fluxExtractText();
+                            if (t === '' || t === '\n') {
+                                e.preventDefault();
+                                dioxus.send('arrowup:');
+                            }
+                        }
+                    });
+
+                    el.addEventListener('paste', (e) => {
+                        // Let image pastes propagate to global handler
+                        if (e.clipboardData && e.clipboardData.items) {
+                            for (let item of e.clipboardData.items) {
+                                if (item.type.startsWith('image/')) return;
+                            }
+                        }
+                        e.preventDefault();
+                        let t = e.clipboardData.getData('text/plain');
+                        document.execCommand('insertText', false, t);
+                        dioxus.send('input:' + window.__fluxExtractText());
+                    });
+
+                    dioxus.send('ready:');
+                })();
+            "#);
+
+            loop {
+                match eval.recv::<String>().await {
+                    Ok(msg) => {
+                        if let Some(txt) = msg.strip_prefix("input:") {
+                            let val = txt.to_string();
+                            text.set(val.clone());
+
+                            // Typing indicator logic
+                            if !val.is_empty() && !*typing_sent.read() {
+                                typing_sent.set(true);
+                                let core = core_ce.clone();
+                                if let Some(room_id) = ui_ce.selected_room_id.peek().clone() {
+                                    spawn(async move {
+                                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, true).await;
+                                    });
+                                }
+                            } else if val.is_empty() && *typing_sent.read() {
+                                typing_sent.set(false);
+                                let core = core_ce.clone();
+                                if let Some(room_id) = ui_ce.selected_room_id.peek().clone() {
+                                    spawn(async move {
+                                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, false).await;
+                                    });
+                                }
+                            }
+
+                            // Command mode CSS class toggle
+                            if val.starts_with('/') && !val.contains(' ') {
+                                let _ = document::eval("document.getElementById('flux-input')?.classList.add('cmd-mode');");
+                            } else {
+                                let _ = document::eval("document.getElementById('flux-input')?.classList.remove('cmd-mode');");
+                            }
+                        } else if let Some(txt) = msg.strip_prefix("send:") {
+                            text.set(txt.to_string());
+                            (handle_send.borrow_mut())(());
+                            // Clear contenteditable
+                            text.set(String::new());
+                            let _ = document::eval(
+                                "let el = document.getElementById('flux-input'); if(el) { el.innerHTML = ''; el.classList.remove('cmd-mode'); }"
+                            );
+                        } else if let Some(txt) = msg.strip_prefix("tab:") {
+                            let val = txt.to_string();
+                            text.set(val.clone());
+                            let in_autocomplete = val.starts_with('/') && !val.contains(' ');
+
+                            // Slash command tab completion
+                            if in_autocomplete {
+                                let all = commands::autocomplete_entries();
+                                let filtered: Vec<_> = all.iter()
+                                    .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
+                                    .collect();
+                                if !filtered.is_empty() {
+                                    let c = format!("{} ", filtered[0].0);
+                                    text.set(c.clone());
+                                    let c_js = serde_json::to_string(&c).unwrap_or_default();
+                                    let _ = document::eval(&format!(
+                                        r#"let el = document.getElementById('flux-input');
+                                        if (el) {{ el.innerText = {c_js};
+                                        let r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+                                        let s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+                                        el.classList.remove('cmd-mode'); }}"#
+                                    ));
+                                }
+                            } else {
+                                // @mention tab completion → insert pill
+                                let last_word = val.rsplit_once(' ').map(|(_, w)| w).unwrap_or(&val);
+                                if last_word.starts_with('@') && last_word.len() > 1 {
+                                    let needle = last_word[1..].to_lowercase();
+                                    let mention_ui = consume_context::<UiState>();
+                                    let sel = mention_ui.selected_room_id.peek().clone();
+                                    if let Some(ref rid) = sel {
+                                        let real_rid = if rid.starts_with("thread::") {
+                                            rid.splitn(3, "::").nth(1).unwrap_or(rid).to_string()
+                                        } else { rid.clone() };
+                                        if let Some(members) = mention_ui.members_by_room.peek().get(&real_rid) {
+                                            if let Some(m) = members.iter().find(|m|
+                                                m.display_name.to_lowercase().starts_with(&needle)
+                                                || m.user_id.to_lowercase().contains(&needle)
+                                            ) {
+                                                let display_name = m.display_name.clone();
+                                                let user_id = m.user_id.clone();
+                                                let avatar_src = m.avatar_url.as_ref().and_then(|mxc| {
+                                                    core_ce.media_cache.lock().unwrap().get(mxc).cloned()
+                                                });
+                                                let initial = display_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                                                let color_idx = crate::state::nick_color_index(&display_name);
+
+                                                // Remove the @query text, then insert pill
+                                                let before = if let Some(idx) = val.rfind(last_word) {
+                                                    val[..idx].to_string()
+                                                } else { String::new() };
+
+                                                let dn_js = serde_json::to_string(&display_name).unwrap_or_default();
+                                                let uid_js = serde_json::to_string(&user_id).unwrap_or_default();
+                                                let avatar_js = avatar_src.as_ref()
+                                                    .map(|s| serde_json::to_string(s).unwrap_or_default())
+                                                    .unwrap_or_else(|| "null".to_string());
+                                                let initial_js = serde_json::to_string(&initial).unwrap_or_default();
+                                                let before_js = serde_json::to_string(&before).unwrap_or_default();
+
+                                                let _ = document::eval(&format!(
+                                                    r#"let el = document.getElementById('flux-input');
+                                                    if (el) {{
+                                                        // Set text before the @query
+                                                        el.innerText = {before_js};
+                                                        // Move cursor to end
+                                                        let r = document.createRange();
+                                                        r.selectNodeContents(el);
+                                                        r.collapse(false);
+                                                        let s = window.getSelection();
+                                                        s.removeAllRanges();
+                                                        s.addRange(r);
+                                                        // Insert pill at cursor
+                                                        window.__fluxInsertPill({dn_js}, {uid_js}, {avatar_js}, {initial_js}, {color_idx});
+                                                    }}"#
+                                                ));
+                                                // text signal will be updated by the pill insert's dioxus.send
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if msg.starts_with("escape:") {
+                            let mut ui = consume_context::<UiState>();
+                            ui.reply_to.set(None);
+                            ui.edit_event.set(None);
+                            text.set(String::new());
+                            ui.help_text.set(None);
+                            let _ = document::eval(
+                                "let el = document.getElementById('flux-input'); if(el) { el.innerHTML = ''; el.classList.remove('cmd-mode'); }"
+                            );
+                        } else if msg.starts_with("arrowup:") {
+                            // Edit last own message (IRC-style up-arrow)
+                            let mut ui = consume_context::<UiState>();
+                            let my_id = ui.user_id.peek().clone();
+                            let room_id = ui.selected_room_id.peek().clone();
+                            if let Some(rid) = room_id {
+                                let real_rid = if rid.starts_with("thread::") {
+                                    rid.splitn(3, "::").nth(1).unwrap_or(&rid).to_string()
+                                } else { rid.clone() };
+                                if let Some(msgs) = ui.messages_by_room.peek().get(&real_rid) {
+                                    // Find the last message sent by the current user
+                                    if let Some(own_msg) = msgs.iter().rev().find(|m| m.sender == my_id && !m.body.is_empty()) {
+                                        let eid = own_msg.event_id.clone();
+                                        let body = own_msg.body.clone();
+                                        ui.edit_event.set(Some((eid, body.clone())));
+                                        ui.reply_to.set(None);
+                                        text.set(body.clone());
+                                        let body_js = serde_json::to_string(&body).unwrap_or_default();
+                                        let _ = document::eval(&format!(
+                                            r#"let el = document.getElementById('flux-input');
+                                            if (el) {{ el.innerText = {body_js}; el.focus();
+                                            let r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+                                            let s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }}"#
+                                        ));
+                                    }
+                                }
+                            }
+                        } else if msg.starts_with("ready:") {
+                            // JS listeners installed successfully
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    });
 
     // Prompt prefix changes based on mode
     let (prefix, prefix_color) = if edit_event.is_some() {
@@ -291,32 +652,34 @@ pub fn MessageInput() -> Element {
         ("\u{276f}", "var(--accent-muted)")
     };
 
-    // Format button helper — wraps selection or appends markup
+    // Format button helper — wraps selection or appends markup (contenteditable version)
     let make_fmt_handler = |pfx: &'static str, sfx: &'static str| {
         move |_| {
             let pfx = pfx.to_string();
             let sfx = sfx.to_string();
             spawn(async move {
-                let mut eval = document::eval(r#"
-                    let ta = document.getElementById('flux-input');
-                    if (ta) { dioxus.send(ta.selectionStart + ',' + ta.selectionEnd); }
-                    else { dioxus.send('-1,-1'); }
-                "#);
-                if let Ok(data) = eval.recv::<String>().await {
-                    let parts: Vec<&str> = data.split(',').collect();
-                    if parts.len() == 2 {
-                        let start: usize = parts[0].parse().unwrap_or(0);
-                        let end: usize = parts[1].parse().unwrap_or(0);
-                        let current = text();
-                        if start != end && start < current.len() && end <= current.len() {
-                            let before = &current[..start];
-                            let selected = &current[start..end];
-                            let after = &current[end..];
-                            text.set(format!("{before}{pfx}{selected}{sfx}{after}"));
-                        } else {
-                            text.set(format!("{current}{pfx}{sfx}"));
-                        }
-                    }
+                let pfx_js = serde_json::to_string(&pfx).unwrap_or_default();
+                let sfx_js = serde_json::to_string(&sfx).unwrap_or_default();
+                let mut eval = document::eval(&format!(
+                    r#"
+                    let el = document.getElementById('flux-input');
+                    if (el) {{
+                        el.focus();
+                        let sel = window.getSelection();
+                        let selected = sel.toString();
+                        if (selected) {{
+                            document.execCommand('insertText', false, {pfx_js} + selected + {sfx_js});
+                        }} else {{
+                            document.execCommand('insertText', false, {pfx_js} + {sfx_js});
+                        }}
+                        let t = el.innerText;
+                        if (t === '\n') t = '';
+                        dioxus.send(t);
+                    }} else {{ dioxus.send(''); }}
+                    "#
+                ));
+                if let Ok(val) = eval.recv::<String>().await {
+                    text.set(val);
                 }
             });
         }
@@ -344,7 +707,11 @@ pub fn MessageInput() -> Element {
                         { body.chars().take(80).collect::<String>() }
                     }
                     span { style: "cursor: pointer; padding: 0 4px; color: var(--text-dim);",
-                        onclick: move |_| { ui_cancel2.edit_event.set(None); text.set(String::new()); },
+                        onclick: move |_| {
+                            ui_cancel2.edit_event.set(None);
+                            text.set(String::new());
+                            let _ = document::eval("let el = document.getElementById('flux-input'); if(el) { el.innerHTML = ''; el.classList.remove('cmd-mode'); }");
+                        },
                         "×"
                     }
                 }
@@ -385,40 +752,7 @@ pub fn MessageInput() -> Element {
                     }
                 }
             }
-            // Mention preview — shows who you're referencing
-            { let preview_text = text();
-              let preview_ui = consume_context::<UiState>();
-              let sel_rid = preview_ui.selected_room_id.peek().clone();
-              let real_rid = sel_rid.as_ref().map(|r| {
-                  if r.starts_with("thread::") { r.splitn(3, "::").nth(1).unwrap_or(r).to_string() } else { r.clone() }
-              });
-              let mentioned_member = real_rid.and_then(|rid| {
-                  preview_ui.members_by_room.peek().get(&rid).and_then(|members| {
-                      // Find a member whose display name appears in the input (after a space or command)
-                      members.iter().find(|m| {
-                          let name = &m.display_name;
-                          !name.is_empty() && name.len() > 1 && preview_text.contains(name)
-                      }).map(|m| (m.display_name.clone(), m.user_id.clone(), m.avatar_url.clone()))
-                  })
-              });
-              if let Some((ref name, ref uid, ref mxc)) = mentioned_member {
-                  let avatar = mxc.as_ref().and_then(|m| core_media.media_cache.lock().unwrap().get(m).cloned());
-                  let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
-                  rsx! {
-                      div { style: "display: flex; align-items: center; gap: 6px; padding: 3px 16px; font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin: 0 12px;",
-                          if let Some(ref src) = avatar {
-                              img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover;" }
-                          } else {
-                              div { style: "width: 16px; height: 16px; border-radius: 50%; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 600; color: var(--text-muted);",
-                                  "{initial}"
-                              }
-                          }
-                          span { style: "color: var(--text-muted);", "{name}" }
-                          span { style: "color: var(--text-dim);", "{uid}" }
-                      }
-                  }
-              } else { rsx! {} }
-            }
+            // Mention preview removed — pills with avatars now show inline in the input
             // Slash command autocomplete popup
             { let current_text = text();
               let show_cmds = current_text.starts_with('/') && !current_text.contains(' ');
@@ -466,7 +800,18 @@ pub fn MessageInput() -> Element {
                                     class: "cmd-item",
                                     style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer;",
                                     onclick: move |_| {
-                                        text.set(format!("{name} "));
+                                        let val = format!("{name} ");
+                                        text.set(val.clone());
+                                        let v_js = serde_json::to_string(&val).unwrap_or_default();
+                                        spawn(async move {
+                                            let _ = document::eval(&format!(
+                                                r#"let el = document.getElementById('flux-input');
+                                                if (el) {{ el.innerText = {v_js}; el.focus();
+                                                let r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+                                                let s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+                                                el.classList.remove('cmd-mode'); }}"#
+                                            ));
+                                        });
                                     },
                                     span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--accent-muted); font-weight: 600; flex-shrink: 0;",
                                         "{cmd_text}"
@@ -491,8 +836,11 @@ pub fn MessageInput() -> Element {
                         rsx! {
                         for (display_name, user_id, avatar_src) in resolved.iter() {
                             { let display = display_name.clone();
+                              let uid = user_id.clone();
+                              let av = avatar_src.clone();
                               let at_q = at_query.to_string();
                               let initial = display_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                              let color_idx = crate::state::nick_color_index(display_name);
                               rsx! {
                                 div {
                                     class: "cmd-item",
@@ -500,9 +848,33 @@ pub fn MessageInput() -> Element {
                                     onclick: move |_| {
                                         let current = text();
                                         let before = if let Some(idx) = current.rfind(&at_q) {
-                                            &current[..idx]
-                                        } else { &current };
-                                        text.set(format!("{before}{display} "));
+                                            current[..idx].to_string()
+                                        } else { current.clone() };
+
+                                        let dn_js = serde_json::to_string(&display).unwrap_or_default();
+                                        let uid_js = serde_json::to_string(&uid).unwrap_or_default();
+                                        let avatar_js = av.as_ref()
+                                            .map(|s| serde_json::to_string(s).unwrap_or_default())
+                                            .unwrap_or_else(|| "null".to_string());
+                                        let initial_js = serde_json::to_string(&initial).unwrap_or_default();
+                                        let before_js = serde_json::to_string(&before).unwrap_or_default();
+
+                                        spawn(async move {
+                                            let _ = document::eval(&format!(
+                                                r#"let el = document.getElementById('flux-input');
+                                                if (el) {{
+                                                    el.innerText = {before_js};
+                                                    el.focus();
+                                                    let r = document.createRange();
+                                                    r.selectNodeContents(el);
+                                                    r.collapse(false);
+                                                    let s = window.getSelection();
+                                                    s.removeAllRanges();
+                                                    s.addRange(r);
+                                                    window.__fluxInsertPill({dn_js}, {uid_js}, {avatar_js}, {initial_js}, {color_idx});
+                                                }}"#
+                                            ));
+                                        });
                                     },
                                     if let Some(ref src) = avatar_src {
                                         img { src: "{src}", style: "width: 18px; height: 18px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" }
@@ -597,104 +969,11 @@ pub fn MessageInput() -> Element {
                     // Prompt
                     span { style: "color: {prefix_color}; font-family: var(--font-mono); font-size: 18px; font-weight: 700; flex-shrink: 0; padding: 0 6px; line-height: 1;", "{prefix}" }
 
-                    // Text input
-                    input {
+                    // Text input (contenteditable)
+                    div {
                         id: "flux-input",
-                        style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-mono); padding: 8px 0; min-width: 0;",
-                        r#type: "text",
-                        placeholder: "Type a message or /command...",
-                        value: "{text}",
-                        oninput: {
-                            let core = core_typing.clone();
-                            let ui = ui_typing.clone();
-                            move |e: Event<FormData>| {
-                                let val = e.value();
-                                text.set(val.clone());
-                                if !val.is_empty() && !*typing_sent.read() {
-                                    typing_sent.set(true);
-                                    let core = core.clone();
-                                    if let Some(room_id) = ui.selected_room_id.peek().clone() {
-                                        spawn(async move {
-                                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                                            let _ = fluxchat_core::messages::send_typing(&client, &room_id, true).await;
-                                        });
-                                    }
-                                } else if val.is_empty() && *typing_sent.read() {
-                                    typing_sent.set(false);
-                                    let core = core.clone();
-                                    if let Some(room_id) = ui.selected_room_id.peek().clone() {
-                                        spawn(async move {
-                                            let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                                            let _ = fluxchat_core::messages::send_typing(&client, &room_id, false).await;
-                                        });
-                                    }
-                                }
-                            }
-                        },
-                        onkeydown: {
-                            let mut ui = ui_cancel3.clone();
-                            move |e: Event<KeyboardData>| {
-                                let val = text();
-                                let in_autocomplete = val.starts_with('/') && !val.contains(' ');
-
-                                if e.key() == Key::Tab {
-                                    // Slash command tab completion
-                                    if in_autocomplete {
-                                        let all = commands::autocomplete_entries();
-                                        let filtered: Vec<_> = all.iter()
-                                            .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
-                                            .collect();
-                                        if !filtered.is_empty() {
-                                            text.set(format!("{} ", filtered[0].0));
-                                        }
-                                        return;
-                                    }
-                                    // @mention tab completion
-                                    let last_word = val.rsplit_once(' ').map(|(_, w)| w).unwrap_or(&val);
-                                    if last_word.starts_with('@') && last_word.len() > 1 {
-                                        let needle = last_word[1..].to_lowercase();
-                                        let mention_ui = consume_context::<UiState>();
-                                        let sel = mention_ui.selected_room_id.peek().clone();
-                                        if let Some(ref rid) = sel {
-                                            let real_rid = if rid.starts_with("thread::") {
-                                                rid.splitn(3, "::").nth(1).unwrap_or(rid).to_string()
-                                            } else { rid.clone() };
-                                            if let Some(members) = mention_ui.members_by_room.peek().get(&real_rid) {
-                                                if let Some(m) = members.iter().find(|m|
-                                                    m.display_name.to_lowercase().starts_with(&needle)
-                                                    || m.user_id.to_lowercase().contains(&needle)
-                                                ) {
-                                                    let before = if let Some(idx) = val.rfind(last_word) {
-                                                        &val[..idx]
-                                                    } else { "" };
-                                                    text.set(format!("{before}{} ", m.display_name));
-                                                }
-                                            }
-                                        }
-                                        return;
-                                    }
-                                }
-
-                                if e.key() == Key::Enter && !e.modifiers().shift() {
-                                    if in_autocomplete {
-                                        let all = commands::autocomplete_entries();
-                                        let filtered: Vec<_> = all.iter()
-                                            .filter(|(name, _, _)| name.starts_with(&val[..]) || val == "/")
-                                            .collect();
-                                        if filtered.len() == 1 {
-                                            text.set(format!("{} ", filtered[0].0));
-                                            return;
-                                        }
-                                    }
-                                    handle_send(());
-                                } else if e.key() == Key::Escape {
-                                    ui.reply_to.set(None);
-                                    ui.edit_event.set(None);
-                                    text.set(String::new());
-                                    ui.help_text.set(None);
-                                }
-                            }
-                        },
+                        contenteditable: "true",
+                        style: "flex: 1; background: transparent; border: none; outline: none; color: var(--text-bright); font-size: 14px; font-family: var(--font-mono); padding: 8px 0; min-width: 0; white-space: pre-wrap; word-break: break-word; overflow-y: auto; max-height: 120px; line-height: 1.4; caret-color: var(--accent);",
                     }
 
                     // Emoji button
@@ -713,6 +992,12 @@ pub fn MessageInput() -> Element {
                                         let current = text();
                                         text.set(format!("{current}{emoji}"));
                                         emoji_open.set(false);
+                                        let emoji_js = serde_json::to_string(&emoji).unwrap_or_default();
+                                        spawn(async move {
+                                            let _ = document::eval(&format!(
+                                                "let el = document.getElementById('flux-input'); if(el) {{ el.focus(); document.execCommand('insertText', false, {emoji_js}); }}"
+                                            ));
+                                        });
                                     },
                                 }
                             }

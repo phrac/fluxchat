@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use fluxchat_core::AppState;
 
-use crate::state::{UiState, RightPanel, nick_color_index, transform_mentions};
+use crate::state::{UiState, nick_color_index, transform_mentions};
 
 // Inline SVG icons — render identically on all platforms
 const ICO_PIN: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 11V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v7"/><path d="M5 15h14l-1.5-4H6.5z"/></svg>"#;
@@ -961,7 +961,7 @@ fn SearchHud() -> Element {
 
     let selected = ui.selected_room_id.read().clone();
 
-    let mut do_search = {
+    let _do_search = {
         let app_state = app_state.clone();
         let selected = selected.clone();
         move |_: ()| {
@@ -987,7 +987,7 @@ fn SearchHud() -> Element {
                         }
                         Err(_) => {
                             // Fallback to client-side search
-                            let mut ui = consume_context::<UiState>();
+                            let ui = consume_context::<UiState>();
                             let matches: Vec<_> = ui.messages_by_room.read()
                                 .get(&room_id)
                                 .map(|msgs| msgs.iter()
@@ -1086,7 +1086,6 @@ fn SearchHud() -> Element {
 #[component]
 fn RoomActions() -> Element {
     let mut ui = use_context::<UiState>();
-    let panel = ui.right_panel.read().clone();
     let members_visible = *ui.show_member_list.read();
 
     rsx! {

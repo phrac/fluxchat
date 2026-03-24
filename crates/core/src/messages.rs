@@ -315,8 +315,8 @@ pub async fn search_messages(
         .map_err(|e| AppError::Other(format!("Search failed: {e}")))?;
 
     let mut results = Vec::new();
+    let room_events = &response.search_categories.room_events;
     {
-        let room_events = &response.search_categories.room_events;
         for item in &room_events.results {
             if let Some(ref raw_event) = item.result {
                 // Parse from raw JSON to extract fields
@@ -343,8 +343,7 @@ pub async fn search_messages(
                 }
             }
         }
-        return Ok((results, room_events.next_batch.clone()));
     }
 
-    Ok((results, None))
+    Ok((results, room_events.next_batch.clone()))
 }

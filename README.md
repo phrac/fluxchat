@@ -12,13 +12,13 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 - **IRC-style messages** — compact layout with right-aligned colored nicks, vertical separator, monospace timestamps
 - **Channel tabs** — Chrome-style tabs for instant room switching with memoized DOM preservation
-- **Command bar** — unified input with SVG formatting tools, emoji picker, slash command autocomplete
+- **Command bar** — contenteditable input with multiline support, inline mention pills with avatars, markdown formatting, emoji picker, slash command autocomplete with syntax coloring
 - **Status bar** — user avatar, room info, encryption status, sync state, device verification
 - **Deep charcoal theme** — monospace throughout, SVG icons, deterministic nick colors
 
 ## Features
 
-**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker, replies with context, message editing and deletion. Unread indicators with divider lines and floating "new messages" pill.
+**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker, replies with context, message editing and deletion (up-arrow to edit last message). Multiline input with Shift+Enter. Markdown formatting (**bold**, *italic*, ~~strike~~, `code`, ```codeblocks```). Unread indicators with divider lines and floating "new messages" pill.
 
 **Threads** — Thread indicators on messages with reply counts. Click to open thread as a dedicated tab. Threads HUD dropdown lists all threads in a room. Thread replies sent with proper `m.thread` relation. Live updates via diff stream sync.
 
@@ -63,7 +63,7 @@ fluxchat/
 │               ├── chat/
 │               │   ├── commands.rs    # Modular slash command registry (30+ commands)
 │               │   ├── message_area.rs # Tabs, messages, HUDs (pins/search/threads)
-│               │   ├── message_input.rs # Command bar, formatting, upload
+│               │   ├── message_input.rs # Contenteditable input, mention pills, formatting
 │               │   └── emoji_picker.rs  # Categorized emoji with search
 │               ├── sidebar/
 │               │   ├── space_sidebar.rs # Space icons with avatars
@@ -74,7 +74,7 @@ fluxchat/
     └── style.css           # IRC-inspired dark theme with CSS variables
 ```
 
-**Pure Rust** — no JavaScript, no TypeScript, no Node.js. The core library has zero UI dependencies. Minimal inline JS via `document::eval()` for WebView interop (scroll detection, drag-drop, clipboard paste).
+**Pure Rust** — no JavaScript, no TypeScript, no Node.js. The core library has zero UI dependencies. Minimal inline JS via `document::eval()` for WebView interop (scroll detection, drag-drop, clipboard paste, contenteditable input management).
 
 ## Tech Stack
 
