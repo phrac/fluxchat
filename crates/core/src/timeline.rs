@@ -208,6 +208,46 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
             })
         }
 
+        TimelineItemContent::ProfileChange(pc) => {
+            let display = pc.displayname_change().and_then(|c| c.new.clone())
+                .unwrap_or_else(|| sender_name.clone());
+            Some(MessageInfo {
+                event_id: format!("~state-{event_id}"), sender: String::new(), sender_name: String::new(),
+                body: format!("{display} changed their profile"),
+                formatted_body: None, transformed_body: None, image_mxc: None,
+                reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
+                reply_to_body: None, timestamp, avatar_url: None,
+                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
+            })
+        }
+
+        TimelineItemContent::OtherState(state) => {
+            use matrix_sdk_ui::timeline::AnyOtherFullStateEventContent;
+            let body = match state.content() {
+                AnyOtherFullStateEventContent::RoomPowerLevels(_) => {
+                    format!("{sender_name} changed room power levels")
+                }
+                AnyOtherFullStateEventContent::RoomName(_) => {
+                    format!("{sender_name} changed the room name")
+                }
+                AnyOtherFullStateEventContent::RoomTopic(_) => {
+                    format!("{sender_name} changed the room topic")
+                }
+                AnyOtherFullStateEventContent::RoomAvatar(_) => {
+                    format!("{sender_name} changed the room avatar")
+                }
+                _ => format!("{sender_name} updated room settings"),
+            };
+            Some(MessageInfo {
+                event_id: format!("~state-{event_id}"), sender: String::new(), sender_name: String::new(),
+                body,
+                formatted_body: None, transformed_body: None, image_mxc: None,
+                reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
+                reply_to_body: None, timestamp, avatar_url: None,
+                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
+            })
+        }
+
         _ => None,
     }
 }

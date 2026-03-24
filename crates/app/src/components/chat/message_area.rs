@@ -666,14 +666,24 @@ fn RoomMessages(room_id: String) -> Element {
                             }
                             div { class: if is_highlighted { "msg-row msg-highlight" } else { "msg-row" }, style: "display: flex; padding: 1px 0; align-items: flex-start;",
                                 span { class: "msg-time", style: "line-height: 20px;", "{time}" }
+                                { let sender_id = msg.sender.clone();
+                                  let sender_id2 = msg.sender.clone();
+                                rsx! {
                                 if let Some(src) = avatar_src {
-                                    img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px; margin-top: 2px;" }
+                                    img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px; margin-top: 2px; cursor: pointer;",
+                                        onclick: move |_| { consume_context::<UiState>().profile_user_id.set(Some(sender_id.clone())); },
+                                    }
                                 } else {
-                                    div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; margin-top: 2px; background: var(--bg-light);", "{initial}" }
+                                    div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; margin-top: 2px; background: var(--bg-light); cursor: pointer;",
+                                        onclick: move |_| { consume_context::<UiState>().profile_user_id.set(Some(sender_id.clone())); },
+                                        "{initial}"
+                                    }
                                 }
-                                span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px;",
+                                span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px; cursor: pointer;",
+                                    onclick: move |_| { consume_context::<UiState>().profile_user_id.set(Some(sender_id2.clone())); },
                                     span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px;", "{msg.sender_name}" }
                                 }
+                                } }
                                 div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
                                 { let urls = extract_urls(&msg.body);
                                 rsx! {

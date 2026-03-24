@@ -8,7 +8,7 @@ const BATCH_SIZE: usize = 30;
 
 #[component]
 pub fn MemberList() -> Element {
-    let ui = use_context::<UiState>();
+    let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
     let selected = ui.selected_room_id.read().clone();
     let mut visible_count = use_signal(|| BATCH_SIZE);
@@ -87,8 +87,16 @@ pub fn MemberList() -> Element {
 
     rsx! {
         div { style: "width: 180px; flex-shrink: 0; background: var(--bg-dark); border-left: 1px solid var(--border); display: flex; flex-direction: column;",
-            div { style: "height: 40px; display: flex; align-items: center; padding: 0 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); border-bottom: 1px solid var(--border); flex-shrink: 0; letter-spacing: 0.5px;",
-                "Users — {total}"
+            div { style: "height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;",
+                span { style: "font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
+                    "Users — {total}"
+                }
+                span { style: "cursor: pointer; color: var(--text-dim); display: inline-flex; padding: 4px; border-radius: 3px;",
+                    class: "room-action",
+                    title: "Invite user",
+                    onclick: move |_| { ui.room_settings_open.set(true); },
+                    dangerous_inner_html: r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>"#,
+                }
             }
             div {
                 style: "flex: 1; overflow-y: auto; padding: 8px 6px;",
