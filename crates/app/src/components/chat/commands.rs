@@ -522,6 +522,26 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/slap",
+            usage: "<user>",
+            description: "Slap someone with a large trout",
+            scope: CommandScope::TextRewrite,
+            execute: |args, _, _, _| {
+                if args.is_empty() { return CommandAction::Noop; }
+                CommandAction::Rewrite(format!("* slaps {args} around a bit with a large trout"))
+            },
+        },
+        SlashCommand {
+            name: "/troutslap",
+            usage: "<user>",
+            description: "The classic trout slap",
+            scope: CommandScope::TextRewrite,
+            execute: |args, _, _, _| {
+                if args.is_empty() { return CommandAction::Noop; }
+                CommandAction::Rewrite(format!("* slaps {args} around a bit with a large trout"))
+            },
+        },
+        SlashCommand {
             name: "/spoiler",
             usage: "<text>",
             description: "Send a spoiler message",
