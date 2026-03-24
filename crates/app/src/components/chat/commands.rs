@@ -266,6 +266,25 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/status",
+            usage: "<message>",
+            description: "Set a custom status message (or clear with no args)",
+            scope: CommandScope::Global,
+            execute: |args, _, core, _| {
+                let status_msg = if args.is_empty() { None } else { Some(args.to_string()) };
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    use matrix_sdk::ruma::api::client::presence::set_presence;
+                    use matrix_sdk::ruma::presence::PresenceState;
+                    let user_id = match client.user_id() { Some(u) => u.to_owned(), None => return };
+                    let mut request = set_presence::v3::Request::new(user_id, PresenceState::Online);
+                    request.status_msg = status_msg;
+                    let _ = client.send(request).await;
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
             name: "/quit",
             usage: "",
             description: "Logout and quit",

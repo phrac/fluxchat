@@ -93,6 +93,12 @@ pub async fn get_event_media(
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) => {
             match msg.content.msgtype { MessageType::Image(img) => img.source, _ => return Err(AppError::Other("Not an image".into())) }
         }
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::Sticker(SyncMessageLikeEvent::Original(sticker))) => {
+            match sticker.content.source {
+                matrix_sdk::ruma::events::sticker::StickerMediaSource::Plain(uri) => MediaSource::Plain(uri),
+                _ => return Err(AppError::Other("Encrypted stickers not supported".into())),
+            }
+        }
         _ => return Err(AppError::Other("Not a message event".into())),
     };
 

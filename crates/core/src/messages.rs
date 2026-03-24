@@ -237,19 +237,26 @@ pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Res
             _ => 0,
         };
         let role = if power_level >= 100 { "Admin" } else if power_level >= 50 { "Moderator" } else { "Member" }.to_string();
-        let presence = match store.get_presence_event(m.user_id()).await {
-            Ok(Some(raw)) => raw.deserialize().ok().map(|ev| match ev.content.presence {
-                matrix_sdk::ruma::presence::PresenceState::Online => "online",
-                matrix_sdk::ruma::presence::PresenceState::Unavailable => "idle",
-                _ => "offline",
-            }).unwrap_or("offline").to_string(),
-            _ => "offline".to_string(),
+        let (presence, status_msg) = match store.get_presence_event(m.user_id()).await {
+            Ok(Some(raw)) => {
+                let (p, s) = raw.deserialize().ok().map(|ev| {
+                    let p = match ev.content.presence {
+                        matrix_sdk::ruma::presence::PresenceState::Online => "online",
+                        matrix_sdk::ruma::presence::PresenceState::Unavailable => "idle",
+                        _ => "offline",
+                    }.to_string();
+                    let s = ev.content.status_msg.clone();
+                    (p, s)
+                }).unwrap_or(("offline".to_string(), None));
+                (p, s)
+            }
+            _ => ("offline".to_string(), None),
         };
         result.push(MemberInfo {
             user_id: m.user_id().to_string(),
             display_name: m.display_name().map(|s| s.to_string()).unwrap_or_else(|| m.user_id().to_string()),
             avatar_url: m.avatar_url().map(|mxc| mxc.to_string()),
-            power_level, role, presence,
+            power_level, role, presence, status_msg,
             server_name: m.user_id().server_name().to_string(),
         });
     }

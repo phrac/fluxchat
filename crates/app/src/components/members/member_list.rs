@@ -150,8 +150,15 @@ fn MemberRow(member: fluxchat_core::MemberInfo, avatar_src: Option<String>) -> E
                 }
                 div { style: "position: absolute; bottom: -1px; right: -1px; width: 7px; height: 7px; border-radius: 50%; background: {presence_color}; border: 1.5px solid var(--bg-dark);" }
             }
-            span { class: "{nick_class}", style: "font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
-                "{member.display_name}"
+            div { style: "min-width: 0; flex: 1; overflow: hidden;",
+                span { class: "{nick_class}", style: "font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;",
+                    "{member.display_name}"
+                }
+                if let Some(ref status) = member.status_msg {
+                    span { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;",
+                        "{status}"
+                    }
+                }
             }
             if member.power_level >= 100 {
                 span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--yellow); flex-shrink: 0; opacity: 0.8;", title: "Admin ({member.power_level})" }

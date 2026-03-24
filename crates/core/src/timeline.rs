@@ -131,6 +131,21 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
                     thread_root, thread_count, image_width, image_height,
                 })
+            } else if let Some(sticker) = content.as_sticker() {
+                let sc = sticker.content();
+                let body = sc.body.clone();
+                let mxc = match &sc.source {
+                    matrix_sdk::ruma::events::sticker::StickerMediaSource::Plain(uri) => Some(uri.to_string()),
+                    _ => None,
+                };
+                let w = sc.info.width.and_then(|v| u32::try_from(v).ok());
+                let h = sc.info.height.and_then(|v| u32::try_from(v).ok());
+                Some(MessageInfo {
+                    event_id, sender, sender_name, body, formatted_body: None,
+                    transformed_body: None, image_mxc: mxc, reactions, reply_to_id,
+                    reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    thread_root, thread_count, image_width: w, image_height: h,
+                })
             } else {
                 Some(MessageInfo {
                     event_id, sender, sender_name,

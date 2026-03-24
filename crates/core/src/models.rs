@@ -57,6 +57,7 @@ pub struct MemberInfo {
     pub power_level: i64,
     pub role: String,
     pub presence: String,
+    pub status_msg: Option<String>,
     pub server_name: String,
 }
 

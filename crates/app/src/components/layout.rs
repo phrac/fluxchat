@@ -1319,6 +1319,16 @@ fn ProfileModal(user_id: String) -> Element {
                             span { style: "color: var(--text-muted);", "Status" }
                             span { style: "color: {presence_color};", "{presence}" }
                         }
+                        if let Some(ref m) = member {
+                            if let Some(ref status) = m.status_msg {
+                                div { style: "display: flex; justify-content: space-between;",
+                                    span { style: "color: var(--text-muted);", "Status Message" }
+                                    span { style: "color: var(--text-normal); font-family: var(--font-mono); font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                        "{status}"
+                                    }
+                                }
+                            }
+                        }
                         div { style: "display: flex; justify-content: space-between;",
                             span { style: "color: var(--text-muted);", "Server" }
                             span { style: "color: var(--text-normal); font-family: var(--font-mono);", "{server}" }
