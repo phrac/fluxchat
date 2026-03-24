@@ -522,7 +522,27 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
                                     m.transformed_body = Some(crate::state::transform_mentions(html, &mention_map));
                                 }
                             }
-                            ui.messages_by_room.write().insert(room_id.clone(), msgs);
+                            let mut mbr = ui.messages_by_room.write();
+                            mbr.insert(room_id.clone(), msgs);
+
+                            // Sync open thread tabs for this room
+                            let thread_keys: Vec<String> = mbr.keys()
+                                .filter(|k| k.starts_with(&format!("thread::{room_id}::")))
+                                .cloned()
+                                .collect();
+                            for tk in thread_keys {
+                                // Extract thread root eid from key "thread::{room_id}::{eid}"
+                                if let Some(root_eid) = tk.splitn(3, "::").nth(2) {
+                                    let root_eid = root_eid.to_string();
+                                    if let Some(room_msgs) = mbr.get(&room_id) {
+                                        let thread_msgs: Vec<_> = room_msgs.iter()
+                                            .filter(|m| m.event_id == root_eid || m.thread_root.as_deref() == Some(&root_eid))
+                                            .cloned()
+                                            .collect();
+                                        mbr.insert(tk, thread_msgs);
+                                    }
+                                }
+                            }
                         }
                     }
                 });

@@ -223,15 +223,27 @@ fn ThreadsPanel() -> Element {
     let ui = use_context::<UiState>();
     let selected = ui.selected_room_id.read().clone();
 
-    // Get thread roots from loaded messages
+    // Derive thread roots by scanning thread_root references in replies
     let threads: Vec<_> = if let Some(ref room_id) = selected {
-        ui.messages_by_room.read()
-            .get(room_id)
-            .map(|msgs| msgs.iter()
-                .filter(|m| m.thread_count.is_some() && m.thread_count.unwrap() > 0)
-                .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone(), m.thread_count.unwrap(), m.timestamp))
-                .collect())
-            .unwrap_or_default()
+        let msgs = ui.messages_by_room.read();
+        let messages = msgs.get(room_id);
+        if let Some(messages) = messages {
+            // Count replies per thread root
+            let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+            for m in messages.iter() {
+                if let Some(ref root) = m.thread_root {
+                    *counts.entry(root.clone()).or_insert(0) += 1;
+                }
+            }
+            // Find the root messages and pair with counts
+            counts.iter()
+                .filter_map(|(root_eid, count)| {
+                    messages.iter()
+                        .find(|m| m.event_id == *root_eid)
+                        .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone(), *count, m.timestamp))
+                })
+                .collect()
+        } else { Vec::new() }
     } else {
         Vec::new()
     };
@@ -255,9 +267,20 @@ fn ThreadsPanel() -> Element {
                       format!("{:02}:{:02}", h, m)
                   };
                   let preview = if body.len() > 60 { format!("{}...", &body[..60]) } else { body.clone() };
+                  { let thread_eid = eid.clone();
+                    let thread_body = body.clone();
+                    let room_id = selected.clone();
+                    let ui_thread = ui.clone();
                   rsx! {
                     div { style: "background: var(--bg-mid); border-radius: 4px; padding: 8px; cursor: pointer; transition: background 0.1s;",
                         class: "cmd-item",
+                        onclick: {
+                            move |_| {
+                                if let Some(ref room_id) = room_id {
+                                    open_thread_tab(ui_thread.clone(), room_id.clone(), thread_eid.clone(), thread_body.clone());
+                                }
+                            }
+                        },
                         div { style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;",
                             span { style: "font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-bright);", "{sender}" }
                             span { style: "font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);", "{time}" }
@@ -271,9 +294,43 @@ fn ThreadsPanel() -> Element {
                     }
                   }
                 }
-            }
+            } }
         }
     }
+}
+
+/// Open a thread as a new tab with thread messages loaded.
+pub fn open_thread_tab(mut ui: UiState, room_id: String, thread_root_eid: String, root_body: String) {
+    let thread_tab_id = format!("thread::{room_id}::{thread_root_eid}");
+
+    // Gather thread messages: root + all replies referencing this root
+    let thread_msgs: Vec<_> = ui.messages_by_room.read()
+        .get(&room_id)
+        .map(|msgs| msgs.iter()
+            .filter(|m| m.event_id == thread_root_eid || m.thread_root.as_deref() == Some(&thread_root_eid))
+            .cloned()
+            .collect())
+        .unwrap_or_default();
+
+    // Store thread messages under the synthetic key
+    ui.messages_by_room.write().insert(thread_tab_id.clone(), thread_msgs);
+
+    // Open tab
+    let tab_name = if root_body.len() > 20 {
+        format!("Thread: {}...", &root_body[..20])
+    } else {
+        format!("Thread: {root_body}")
+    };
+
+    let mut tabs = ui.open_tabs.write();
+    if !tabs.iter().any(|(id, _, _, _)| id == &thread_tab_id) {
+        if tabs.len() >= 8 { tabs.remove(0); }
+        tabs.push((thread_tab_id.clone(), tab_name, None, None));
+    }
+    drop(tabs);
+
+    ui.selected_room_id.set(Some(thread_tab_id));
+    ui.right_panel.set(None);
 }
 
 /// Pinned messages panel.

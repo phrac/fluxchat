@@ -100,6 +100,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
             let thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
             let thread_count = msg_like.thread_summary.as_ref().map(|s| s.num_replies);
 
+
             if let Some(message) = content.as_message() {
                 let body = message.body().to_string();
                 let (formatted_body, image_mxc) = match message.msgtype() {

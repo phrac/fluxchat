@@ -94,7 +94,18 @@ pub fn MessageInput() -> Element {
             val
         };
         if body.is_empty() && pending_upload.is_none() || *sending.read() { return; }
-        let room_id = match ui.selected_room_id.read().clone() { Some(id) => id, None => return };
+        let raw_room_id = match ui.selected_room_id.read().clone() { Some(id) => id, None => return };
+
+        // Resolve thread tab IDs to real room ID + thread root
+        let (room_id, thread_root_eid) = if raw_room_id.starts_with("thread::") {
+            let parts: Vec<&str> = raw_room_id.splitn(3, "::").collect();
+            if parts.len() == 3 {
+                (parts[1].to_string(), Some(parts[2].to_string()))
+            } else { return; }
+        } else {
+            (raw_room_id.clone(), None)
+        };
+
         let core = core.clone();
         let reply = ui.reply_to.read().clone();
         let edit = ui.edit_event.read().clone();
@@ -104,8 +115,8 @@ pub fn MessageInput() -> Element {
         ui.edit_event.set(None);
         ui.upload_pending.set(None);
         typing_sent.set(false);
-        // Stop typing indicator
-        {
+        // Stop typing indicator (skip for thread tabs)
+        if !room_id.starts_with("thread::") {
             let core = core.clone();
             let room_id = room_id.clone();
             spawn(async move {
@@ -168,6 +179,42 @@ pub fn MessageInput() -> Element {
                     } else {
                         let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
                         let _ = fluxchat_core::messages::send_reply(&client, &room_id, &body, &event_id).await;
+                    }
+                }
+                sending.set(false);
+            });
+        } else if let Some(ref thread_root) = thread_root_eid {
+            // Thread reply — send with m.thread relation
+            let thread_root = thread_root.clone();
+            let raw_room_id = raw_room_id.clone();
+            spawn(async move {
+                sending.set(true);
+                if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => { sending.set(false); return; } };
+                    let room = client.get_room(&rid);
+                    if let Some(room) = room {
+                        if let Ok(root_eid) = fluxchat_core::ruma::EventId::parse(&thread_root) {
+                            use matrix_sdk::ruma::events::room::message::{RoomMessageEventContent, Relation};
+                            use matrix_sdk::ruma::events::relation::Thread;
+                            let mut content = RoomMessageEventContent::text_plain(&body);
+                            content.relates_to = Some(Relation::Thread(
+                                Thread::plain(root_eid.clone(), root_eid)
+                            ));
+                            let _ = room.send(content).await;
+
+                            // Update thread tab messages from room's latest state
+                            let mut ui = consume_context::<UiState>();
+                            let thread_msgs = {
+                                let msgs = ui.messages_by_room.read();
+                                msgs.get(&room_id).map(|m| m.iter()
+                                    .filter(|m| m.event_id == thread_root || m.thread_root.as_deref() == Some(&thread_root))
+                                    .cloned()
+                                    .collect::<Vec<_>>())
+                            };
+                            if let Some(thread_msgs) = thread_msgs {
+                                ui.messages_by_room.write().insert(raw_room_id, thread_msgs);
+                            }
+                        }
                     }
                 }
                 sending.set(false);

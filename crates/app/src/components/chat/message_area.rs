@@ -8,7 +8,7 @@ use crate::state::{UiState, RightPanel, nick_color_index, transform_mentions};
 // Inline SVG icons — render identically on all platforms
 const ICO_PIN: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 11V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v7"/><path d="M5 15h14l-1.5-4H6.5z"/></svg>"#;
 const ICO_SEARCH: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>"#;
-const ICO_THREAD: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg>"#;
+const ICO_THREAD: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h8"/><path d="M8 14h4"/></svg>"#;
 const ICO_MEMBERS: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>"#;
 const ICO_REACT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>"#;
 const ICO_REPLY: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>"#;
@@ -284,9 +284,23 @@ fn RoomMessages(room_id: String) -> Element {
     // signal, which is the only trigger for re-render.
     let all_messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
     let ignored = ui.ignored_users.peek().clone();
+
+    // Build thread reply counts BEFORE filtering (need all messages to count)
+    let thread_counts: HashMap<String, u32> = {
+        let mut counts = HashMap::new();
+        for m in &all_messages {
+            if let Some(ref root) = m.thread_root {
+                *counts.entry(root.clone()).or_insert(0) += 1;
+            }
+        }
+        counts
+    };
+
+    // Filter: hide ignored users. For regular rooms, also hide thread replies.
+    let is_thread_view = room_id.starts_with("thread::");
     let messages: Vec<_> = all_messages.into_iter()
         .filter(|m| !ignored.contains(&m.sender))
-        .filter(|m| m.thread_root.is_none()) // Hide threaded replies from main timeline
+        .filter(|m| is_thread_view || m.thread_root.is_none())
         .collect();
 
     // Find the last-read event to show the "new messages" divider
@@ -557,26 +571,33 @@ fn RoomMessages(room_id: String) -> Element {
                                             }
                                         }
                                     }
-                                    // Thread indicator
-                                    if let Some(count) = msg.thread_count {
-                                        { let thread_eid = eid.clone();
-                                          let label = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
-                                          rsx! {
+                                    // Thread indicator — show on messages that are thread roots (not in thread views)
+                                    { let tc = if is_thread_view { 0 } else { thread_counts.get(&eid).copied().unwrap_or(0) };
+                                      if tc > 0 {
+                                        let label = if tc == 1 { "1 reply".to_string() } else { format!("{tc} replies") };
+                                        let thread_eid = eid.clone();
+                                        let thread_body = msg.body.clone();
+                                        let thread_room_id = room_id.clone();
+                                        rsx! {
                                             div {
-                                                style: "display: flex; align-items: center; gap: 4px; padding: 2px 0; cursor: pointer;",
+                                                style: "display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; margin-top: 4px; cursor: pointer; background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.15); border-radius: 4px; transition: background 0.1s, border-color 0.1s;",
+                                                class: "cmd-item",
                                                 onclick: move |_| {
-                                                    ui.right_panel.set(Some(RightPanel::Threads));
-                                                    // Store thread root in a way the panel can read
-                                                    // We'll use the reply_to signal temporarily
+                                                    let ui = consume_context::<UiState>();
+                                                    crate::components::layout::open_thread_tab(ui, thread_room_id.clone(), thread_eid.clone(), thread_body.clone());
                                                 },
-                                                span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent-muted);",
+                                                span { style: "display: inline-flex; color: var(--accent-muted);",
                                                     dangerous_inner_html: ICO_THREAD,
                                                 }
-                                                span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent-muted);",
+                                                span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--accent-muted); font-weight: 600;",
                                                     "{label}"
                                                 }
+                                                span { style: "font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);",
+                                                    "→"
+                                                }
                                             }
-                                        } }
+                                        }
+                                      } else { rsx! {} }
                                     }
                                 } } }
                                 // Hover actions
