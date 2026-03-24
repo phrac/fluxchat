@@ -1290,11 +1290,16 @@ fn ProfileModal(user_id: String) -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
 
-    // Look up member info from any loaded room
-    let member = ui.members_by_room.read().values()
-        .flat_map(|members| members.iter())
-        .find(|m| m.user_id == user_id)
-        .cloned();
+    // Look up member info — prefer current room, fall back to any room
+    let member = {
+        let members = ui.members_by_room.read();
+        let current_room = ui.selected_room_id.peek().clone();
+        current_room.as_ref()
+            .and_then(|rid| members.get(rid))
+            .and_then(|m| m.iter().find(|m| m.user_id == user_id))
+            .cloned()
+            .or_else(|| members.values().flat_map(|m| m.iter()).find(|m| m.user_id == user_id).cloned())
+    };
 
     let display = member.as_ref().map(|m| m.display_name.clone())
         .unwrap_or_else(|| user_id.split(':').next().unwrap_or(&user_id).trim_start_matches('@').to_string());

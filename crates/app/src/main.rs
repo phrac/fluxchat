@@ -31,7 +31,6 @@ fn main() {
         .with_cfg(
             Config::new()
                 .with_window(window_builder)
-                .with_menu(None)
                 .with_disable_context_menu(true)
         )
         .launch(app::App);

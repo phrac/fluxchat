@@ -97,10 +97,28 @@ pub fn MessageArea() -> Element {
                 }
             });
 
-            // Paste image handler
+            // Paste handler — images go to file upload, text goes to input
             document.addEventListener('paste', async (e) => {
                 let items = e.clipboardData && e.clipboardData.items;
                 if (!items) return;
+                let hasImage = false;
+                for (let item of items) {
+                    if (item.type.startsWith('image/')) { hasImage = true; break; }
+                }
+                if (!hasImage) {
+                    // Text paste — ensure contenteditable input is focused
+                    let el = document.getElementById('flux-input');
+                    if (el && document.activeElement !== el) {
+                        e.preventDefault();
+                        el.focus();
+                        let t = e.clipboardData.getData('text/plain');
+                        document.execCommand('insertText', false, t);
+                        if (window.__fluxExtractText) {
+                            dioxus.send('input:' + window.__fluxExtractText());
+                        }
+                    }
+                    return;
+                }
                 for (let item of items) {
                     if (item.type.startsWith('image/')) {
                         e.preventDefault();
