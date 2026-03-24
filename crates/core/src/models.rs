@@ -19,6 +19,7 @@ pub struct RoomInfo {
     pub avatar_url: Option<String>,
     pub topic: Option<String>,
     pub space_name: Option<String>,
+    pub is_favourite: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -46,6 +46,7 @@ pub async fn room_to_info(room: &matrix_sdk::Room, space_name: Option<String>) -
         avatar_url: room.avatar_url().map(|mxc| mxc.to_string()),
         topic: room.topic(),
         space_name,
+        is_favourite: room.is_favourite(),
     }
 }
 
@@ -59,6 +60,7 @@ pub async fn get_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, App
         }
     }
     rooms.sort_by(|a, b| a.is_direct.cmp(&b.is_direct)
+        .then_with(|| b.is_favourite.cmp(&a.is_favourite))
         .then_with(|| a.space_name.cmp(&b.space_name))
         .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
     Ok(rooms)
@@ -94,6 +96,7 @@ pub async fn get_invited_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
             avatar_url,
             topic,
             space_name: None,
+            is_favourite: false,
         });
     }
     Ok(rooms)
@@ -454,5 +457,20 @@ pub async fn set_notification_mode(client: &matrix_sdk::Client, room_id: &str, m
     };
     settings.set_room_notification_mode(&room_id, notification_mode).await
         .map_err(|e| AppError::Other(format!("Failed to set notification mode: {e}")))?;
+    Ok(())
+}
+
+/// Check if a room is favourited.
+pub async fn is_room_favourite(client: &matrix_sdk::Client, room_id: &str) -> Result<bool, AppError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    Ok(room.is_favourite())
+}
+
+/// Toggle favourite status on a room.
+pub async fn set_room_favourite(client: &matrix_sdk::Client, room_id: &str, favourite: bool) -> Result<(), AppError> {
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    room.set_is_favourite(favourite, None).await.map_err(|e| AppError::Other(format!("Failed to set favourite: {e}")))?;
     Ok(())
 }

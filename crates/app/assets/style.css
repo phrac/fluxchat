@@ -421,6 +421,13 @@ input:focus, textarea:focus {
   background: var(--bg-hover);
 }
 
+/* Search result highlight */
+.search-highlight {
+  background: rgba(59, 130, 246, 0.12);
+  border-radius: 4px;
+  transition: background 0.3s;
+}
+
 .room-action.active {
   color: var(--accent);
   background: rgba(59, 130, 246, 0.1);

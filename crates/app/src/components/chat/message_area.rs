@@ -15,7 +15,12 @@ const ICO_REPLY: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill=
 const ICO_EDIT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>"#;
 const ICO_DELETE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>"#;
 const ICO_FORWARD: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>"#;
+const ICO_FILE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>"#;
+#[allow(dead_code)]
 const ICO_SETTINGS: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
+const ICO_STAR: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#;
+const ICO_LINK: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
+const ICO_INFO: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>"#;
 use crate::components::chat::message_input::MessageInput;
 use crate::components::chat::emoji_picker::EmojiPicker;
 
@@ -200,11 +205,13 @@ pub fn MessageArea() -> Element {
         div { style: "flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-mid);",
             // Tab bar — separate component, only re-renders on tab changes
             TabBar {}
+            TopicBar {}
 
             // HUDs
             if *ui.search_open.read() { SearchHud {} }
             if *ui.pins_open.read() { PinsHud {} }
             if *ui.threads_open.read() { ThreadsHud {} }
+            if *ui.files_open.read() { FilesHud {} }
 
             // Message content — separate component, only re-renders on selected room changes
             ActiveRoomContent {}
@@ -236,6 +243,30 @@ fn TabBar() -> Element {
                 RoomActions {}
             }
         }
+    }
+}
+
+/// Topic bar — slim IRC-style topic display below tabs.
+#[component]
+fn TopicBar() -> Element {
+    let ui = use_context::<UiState>();
+    let selected = ui.selected_room_id.read().clone();
+    let topic = selected.as_ref().and_then(|id| {
+        ui.rooms.peek().iter().find(|r| r.room_id == *id).and_then(|r| r.topic.clone())
+    });
+
+    if let Some(topic) = topic {
+        if !topic.is_empty() {
+            rsx! {
+                div { style: "padding: 3px 12px; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); background: var(--bg-dark); border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                    "{topic}"
+                }
+            }
+        } else {
+            rsx! {}
+        }
+    } else {
+        rsx! {}
     }
 }
 
@@ -593,7 +624,7 @@ fn RoomMessages(room_id: String) -> Element {
                     };
 
                     rsx! {
-                        div { key: "{eid}",
+                        div { key: "{eid}", "data-event-id": "{eid}",
                             if let Some((ref reply_sender, ref reply_preview)) = reply_context {
                                 div { style: "display: flex; padding: 0 0 0 72px; font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); align-items: center; gap: 4px;",
                                     span { style: "color: var(--green);", "╭─" }
@@ -1027,7 +1058,12 @@ fn ThreadsHud() -> Element {
                     "no threads in this room"
                 }
             }
-            for (eid, sender, body, count, lr_sender, lr_body) in threads.iter() {
+            if threads.len() > 50 {
+                div { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); padding: 2px 0;",
+                    { format!("showing 50 of {}", threads.len()) }
+                }
+            }
+            for (eid, sender, body, count, lr_sender, lr_body) in threads.iter().take(50) {
                 { let eid = eid.clone();
                   let body = body.clone();
                   let room_id = selected.clone();
@@ -1077,6 +1113,105 @@ fn ThreadsHud() -> Element {
     }
 }
 
+/// Files HUD — dropdown listing files/media shared in the current room.
+#[component]
+fn FilesHud() -> Element {
+    let mut ui = use_context::<UiState>();
+    let selected = ui.selected_room_id.read().clone();
+
+    let app_state = use_context::<Arc<AppState>>();
+
+    // Collect files from loaded messages (messages with image_mxc set)
+    let files: Vec<(String, String, String, String, u64)> = selected.as_ref().map(|room_id| {
+        ui.messages_by_room.read()
+            .get(room_id)
+            .map(|msgs| msgs.iter()
+                .filter(|m| m.image_mxc.is_some())
+                .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone(), m.image_mxc.clone().unwrap_or_default(), m.timestamp))
+                .collect())
+            .unwrap_or_default()
+    }).unwrap_or_default();
+
+    rsx! {
+        div { class: "search-hud", style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
+            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
+                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
+                    { format!("files — {}", files.len()) }
+                }
+                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
+                    onclick: move |_| { ui.files_open.set(false); },
+                    "×"
+                }
+            }
+            if files.is_empty() {
+                div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
+                    "no files in loaded messages"
+                }
+            }
+            if files.len() > 50 {
+                div { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); padding: 2px 0;",
+                    { format!("showing 50 of {}", files.len()) }
+                }
+            }
+            for (eid, sender, body, mxc, ts) in files.iter().rev().take(50) {
+                { let eid_scroll = eid.clone();
+                  let nick_class = nick_color_class(sender);
+                  let time = {
+                      let secs = *ts % 86400;
+                      let h = secs / 3600;
+                      let m = (secs % 3600) / 60;
+                      format!("{:02}:{:02}", h, m)
+                  };
+                  // Resolve thumbnail from media cache
+                  let thumb = {
+                      let cache = app_state.media_cache.lock().unwrap();
+                      cache.get(mxc).cloned().or_else(|| cache.get(&format!("event:{}", eid)).cloned())
+                  };
+                rsx! {
+                    div {
+                        style: "display: flex; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; cursor: pointer; align-items: center;",
+                        class: "cmd-item",
+                        onclick: move |_| {
+                            let eid = eid_scroll.clone();
+                            spawn(async move {
+                                let js = format!(r#"
+                                    document.querySelectorAll('.search-highlight').forEach(el => el.classList.remove('search-highlight'));
+                                    let el = document.querySelector('[data-event-id="{}"]');
+                                    if (el) {{
+                                        el.classList.add('search-highlight');
+                                        el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                                    }}
+                                "#, eid);
+                                let _ = document::eval(&js).await;
+                            });
+                        },
+                        if let Some(ref src) = thumb {
+                            img { src: "{src}", style: "width: 36px; height: 36px; border-radius: 4px; object-fit: cover; flex-shrink: 0;" }
+                        } else {
+                            div { style: "width: 36px; height: 36px; border-radius: 4px; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; flex-shrink: 0; opacity: 0.5;",
+                                dangerous_inner_html: ICO_FILE,
+                            }
+                        }
+                        div { style: "min-width: 0; flex: 1; overflow: hidden;",
+                            div { style: "display: flex; gap: 6px; align-items: baseline;",
+                                span { class: "{nick_class}", style: "font-size: 11px; font-weight: 600; flex-shrink: 0;",
+                                    "{sender}"
+                                }
+                                span { style: "font-size: 10px; color: var(--text-dim); flex-shrink: 0;",
+                                    "{time}"
+                                }
+                            }
+                            div { style: "font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                "{body}"
+                            }
+                        }
+                    }
+                } }
+            }
+        }
+    }
+}
+
 /// Search HUD — server-side message search.
 #[component]
 fn SearchHud() -> Element {
@@ -1088,42 +1223,68 @@ fn SearchHud() -> Element {
     let mut searching = use_signal(|| false);
 
     let selected = ui.selected_room_id.read().clone();
+    // Resolve thread IDs to real room IDs for search
+    let search_room_id = selected.as_ref().map(|id| {
+        if id.starts_with("thread::") { id.splitn(3, "::").nth(1).unwrap_or(id).to_string() } else { id.clone() }
+    });
 
-    let _do_search = {
+    let result_count = results.read().len();
+    let idx = *current_idx.read();
+
+    // Scroll to and highlight current search result
+    use_effect(move || {
+        let results = results.read();
+        let idx = *current_idx.read();
+        if let Some((ref event_id, _, _)) = results.get(idx) {
+            let eid = event_id.clone();
+            spawn(async move {
+                let js = format!(r#"
+                    document.querySelectorAll('.search-highlight').forEach(el => el.classList.remove('search-highlight'));
+                    let el = document.querySelector('[data-event-id="{}"]');
+                    if (el) {{
+                        el.classList.add('search-highlight');
+                        el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                    }}
+                "#, eid);
+                let _ = document::eval(&js).await;
+            });
+        }
+    });
+
+    // Trigger search helper
+    let do_search = {
         let app_state = app_state.clone();
-        let selected = selected.clone();
+        let search_room_id = search_room_id.clone();
+        let selected_raw = selected.clone();
         move |_: ()| {
             let q = query().trim().to_string();
-            if q.is_empty() {
-                results.set(Vec::new());
-                return;
-            }
-            if let Some(ref room_id) = selected {
+            if q.is_empty() { results.set(Vec::new()); return; }
+            if let Some(ref room_id) = search_room_id {
                 let app_state = app_state.clone();
                 let room_id = room_id.clone();
-                let q = q.clone();
+                let selected_key = selected_raw.clone().unwrap_or_default();
+                let q2 = q.clone();
                 searching.set(true);
                 spawn(async move {
                     let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { searching.set(false); return; } };
                     match fluxchat_core::messages::search_messages(&client, &room_id, &q, None).await {
-                        Ok((search_results, _next_batch)) => {
+                        Ok((search_results, _)) => {
                             let matches: Vec<_> = search_results.iter()
                                 .map(|r| (r.event_id.clone(), r.sender_name.clone(), r.body.clone()))
                                 .collect();
-                            current_idx.set(if matches.is_empty() { 0 } else { 0 });
+                            current_idx.set(0);
                             results.set(matches);
                         }
                         Err(_) => {
-                            // Fallback to client-side search
                             let ui = consume_context::<UiState>();
                             let matches: Vec<_> = ui.messages_by_room.read()
-                                .get(&room_id)
+                                .get(&selected_key)
                                 .map(|msgs| msgs.iter()
-                                    .filter(|m| m.body.to_lowercase().contains(&q.to_lowercase()))
+                                    .filter(|m| m.body.to_lowercase().contains(&q2.to_lowercase()))
                                     .map(|m| (m.event_id.clone(), m.sender_name.clone(), m.body.clone()))
                                     .collect())
                                 .unwrap_or_default();
-                            current_idx.set(if matches.is_empty() { 0 } else { 0 });
+                            current_idx.set(0);
                             results.set(matches);
                         }
                     }
@@ -1133,78 +1294,84 @@ fn SearchHud() -> Element {
         }
     };
 
-    let result_count = results.read().len();
-    let idx = *current_idx.read();
-
     rsx! {
-        div { class: "search-hud",
-            span { style: "color: var(--text-dim); font-size: 14px;", "⌕" }
-            input {
-                r#type: "text",
-                placeholder: "search messages...",
-                autofocus: true,
-                value: "{query}",
-                oninput: move |e| {
-                    query.set(e.value());
-                },
-                onkeydown: {
-                    let mut ui = ui.clone();
-                    let app_state = app_state.clone();
-                    let selected = selected.clone();
-                    move |e: Event<KeyboardData>| {
-                        if e.key() == Key::Escape {
-                            ui.search_open.set(false);
-                        } else if e.key() == Key::Enter {
-                            if result_count > 0 {
+        div { style: "position: relative;",
+            div { class: "search-hud",
+                span { style: "color: var(--text-dim); font-size: 14px;", "⌕" }
+                input {
+                    r#type: "text",
+                    placeholder: "search messages...",
+                    autofocus: true,
+                    value: "{query}",
+                    oninput: move |e| {
+                        query.set(e.value());
+                    },
+                    onkeydown: {
+                        let mut ui = ui.clone();
+                        let mut do_search = do_search.clone();
+                        move |e: Event<KeyboardData>| {
+                            if e.key() == Key::Escape {
+                                if result_count > 0 {
+                                    results.set(Vec::new());
+                                } else {
+                                    ui.search_open.set(false);
+                                }
+                            } else if e.key() == Key::Enter {
+                                if result_count > 0 {
+                                    // Cycle to next result
+                                    let new_idx = if idx + 1 < result_count { idx + 1 } else { 0 };
+                                    current_idx.set(new_idx);
+                                } else {
+                                    do_search(());
+                                }
+                            } else if e.key() == Key::ArrowDown && result_count > 0 {
                                 let new_idx = if idx + 1 < result_count { idx + 1 } else { 0 };
                                 current_idx.set(new_idx);
-                            } else {
-                                // Trigger search
-                                let q = query().trim().to_string();
-                                if !q.is_empty() {
-                                    if let Some(ref room_id) = selected {
-                                        let app_state = app_state.clone();
-                                        let room_id = room_id.clone();
-                                        searching.set(true);
-                                        spawn(async move {
-                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { searching.set(false); return; } };
-                                            match fluxchat_core::messages::search_messages(&client, &room_id, &q, None).await {
-                                                Ok((search_results, _)) => {
-                                                    let matches: Vec<_> = search_results.iter()
-                                                        .map(|r| (r.event_id.clone(), r.sender_name.clone(), r.body.clone()))
-                                                        .collect();
-                                                    current_idx.set(0);
-                                                    results.set(matches);
-                                                }
-                                                Err(_) => {}
-                                            }
-                                            searching.set(false);
-                                        });
-                                    }
-                                }
+                            } else if e.key() == Key::ArrowUp && result_count > 0 {
+                                let new_idx = if idx > 0 { idx - 1 } else { result_count - 1 };
+                                current_idx.set(new_idx);
                             }
                         }
+                    },
+                }
+                if *searching.read() {
+                    span { class: "search-count", style: "animation: pulse 1s ease-in-out infinite;", "searching..." }
+                } else if result_count > 0 {
+                    span { class: "search-count", "{result_count} results" }
+                } else if !query().is_empty() {
+                    span { class: "search-count", "enter to search" }
+                }
+                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
+                    onclick: move |_| { ui.search_open.set(false); },
+                    "×"
+                }
+            }
+            // Results dropdown
+            if result_count > 0 {
+                div { style: "position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-dark); border: 1px solid var(--border); border-top: none; max-height: 300px; overflow-y: auto; z-index: 50;",
+                    for (i, (eid, sender, body)) in results.read().iter().enumerate() {
+                        { let _eid = eid.clone();
+                          let is_active = i == idx;
+                          let bg = if is_active { "var(--bg-light)" } else { "transparent" };
+                          let nick_class = nick_color_class(sender);
+                          let preview: String = body.chars().take(120).collect();
+                        rsx! {
+                            div {
+                                style: "display: flex; gap: 8px; padding: 6px 12px; cursor: pointer; background: {bg}; border-bottom: 1px solid var(--border);",
+                                class: "cmd-item",
+                                onclick: move |_| {
+                                    current_idx.set(i);
+                                },
+                                span { class: "{nick_class}", style: "font-family: var(--font-mono); font-size: 12px; font-weight: 600; flex-shrink: 0; min-width: 80px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                                    "{sender}"
+                                }
+                                span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;",
+                                    "{preview}"
+                                }
+                            }
+                        } }
                     }
-                },
-            }
-            if *searching.read() {
-                span { class: "search-count", style: "animation: pulse 1s ease-in-out infinite;", "searching..." }
-            } else if result_count > 0 {
-                span { class: "search-count", "{idx + 1}/{result_count}" }
-                span { class: "search-nav",
-                    onclick: move |_| { if idx > 0 { current_idx.set(idx - 1); } },
-                    "▲"
                 }
-                span { class: "search-nav",
-                    onclick: move |_| { if idx + 1 < result_count { current_idx.set(idx + 1); } },
-                    "▼"
-                }
-            } else if !query().is_empty() {
-                span { class: "search-count", "no results" }
-            }
-            span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
-                onclick: move |_| { ui.search_open.set(false); },
-                "×"
             }
         }
     }
@@ -1214,10 +1381,46 @@ fn SearchHud() -> Element {
 #[component]
 fn RoomActions() -> Element {
     let mut ui = use_context::<UiState>();
+    let app_state = consume_context::<Arc<AppState>>();
     let members_visible = *ui.show_member_list.read();
+
+    let selected_rid = ui.selected_room_id.read().clone();
+    let is_fav = selected_rid.as_ref().map(|id| ui.rooms.read().iter().any(|r| r.room_id == *id && r.is_favourite)).unwrap_or(false);
 
     rsx! {
         div { style: "display: flex; align-items: center; gap: 1px; padding: 0 8px; flex-shrink: 0;",
+            // Favourite
+            span {
+                class: if is_fav { "room-action active" } else { "room-action" },
+                title: if is_fav { "Remove favourite" } else { "Favourite" },
+                onclick: move |_| {
+                    let rid = ui.selected_room_id.peek().clone();
+                    if let Some(rid) = rid {
+                        let app = app_state.clone();
+                        let new_fav = !is_fav;
+                        spawn(async move {
+                            let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                            let _ = fluxchat_core::rooms::set_room_favourite(&client, &rid, new_fav).await;
+                        });
+                    }
+                },
+                dangerous_inner_html: ICO_STAR,
+            }
+            // Copy room link
+            span {
+                class: "room-action",
+                title: "Copy room link",
+                onclick: move |_| {
+                    if let Some(ref rid) = *ui.selected_room_id.peek() {
+                        let link = format!("https://matrix.to/#/{}", rid);
+                        spawn(async move {
+                            let js = format!("navigator.clipboard.writeText('{}');", link);
+                            let _ = document::eval(&js).await;
+                        });
+                    }
+                },
+                dangerous_inner_html: ICO_LINK,
+            }
             // Pinned messages
             span {
                 class: if *ui.pins_open.read() { "room-action active" } else { "room-action" },
@@ -1239,6 +1442,13 @@ fn RoomActions() -> Element {
                 onclick: move |_| { let open = *ui.threads_open.read(); ui.threads_open.set(!open); },
                 dangerous_inner_html: ICO_THREAD,
             }
+            // Files
+            span {
+                class: if *ui.files_open.read() { "room-action active" } else { "room-action" },
+                title: "Files",
+                onclick: move |_| { let open = *ui.files_open.read(); ui.files_open.set(!open); },
+                dangerous_inner_html: ICO_FILE,
+            }
             // Toggle member list
             span {
                 class: if members_visible { "room-action active" } else { "room-action" },
@@ -1246,12 +1456,12 @@ fn RoomActions() -> Element {
                 onclick: move |_| { ui.show_member_list.set(!members_visible); },
                 dangerous_inner_html: ICO_MEMBERS,
             }
-            // Room settings
+            // Room info
             span {
                 class: if *ui.room_settings_open.read() { "room-action active" } else { "room-action" },
-                title: "Room settings",
+                title: "Room info",
                 onclick: move |_| { let v = *ui.room_settings_open.read(); ui.room_settings_open.set(!v); },
-                dangerous_inner_html: ICO_SETTINGS,
+                dangerous_inner_html: ICO_INFO,
             }
         }
     }

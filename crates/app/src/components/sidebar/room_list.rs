@@ -31,12 +31,15 @@ pub fn RoomList() -> Element {
     };
 
     // Group into sections
+    let mut favourites: Vec<RoomInfo> = Vec::new();
     let mut ungrouped: Vec<RoomInfo> = Vec::new();
     let mut by_space: std::collections::BTreeMap<String, Vec<RoomInfo>> = std::collections::BTreeMap::new();
     let mut dms: Vec<RoomInfo> = Vec::new();
 
     for room in filtered.iter() {
-        if room.is_direct {
+        if room.is_favourite {
+            favourites.push(room.clone());
+        } else if room.is_direct {
             dms.push(room.clone());
         } else if let Some(ref sn) = room.space_name {
             by_space.entry(sn.clone()).or_default().push(room.clone());
@@ -113,6 +116,20 @@ pub fn RoomList() -> Element {
                         }
                     }
                   } else { rsx! {} }
+                }
+
+                // Favourites
+                if !favourites.is_empty() {
+                    SectionHeader { label: "Favourites".to_string(), collapsed: collapsed, section_key: "favourites".to_string(), icon: Some(r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#.to_string()), avatar_mxc: None }
+                    if !collapsed_set.contains("favourites") {
+                        for room in favourites.iter() {
+                            if room.is_direct {
+                                DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                            } else {
+                                RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                            }
+                        }
+                    }
                 }
 
                 // Ungrouped channels
@@ -265,6 +282,9 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
                         "#"
                     }
                 }
+            }
+            if room.is_favourite {
+                span { style: "color: var(--yellow); font-size: 10px; flex-shrink: 0;", "\u{2605}" }
             }
             span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;",
                 "{name}"
