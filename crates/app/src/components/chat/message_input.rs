@@ -18,6 +18,7 @@ const ICO_EMOJI: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill=
 #[component]
 pub fn MessageInput() -> Element {
     let core = use_context::<Arc<AppState>>();
+    let core_media = core.clone();
     let mut ui = use_context::<UiState>();
     let mut text = use_signal(|| String::new());
     let mut sending = use_signal(|| false);
@@ -342,6 +343,40 @@ pub fn MessageInput() -> Element {
                     }
                 }
             }
+            // Mention preview — shows who you're referencing
+            { let preview_text = text();
+              let preview_ui = consume_context::<UiState>();
+              let sel_rid = preview_ui.selected_room_id.peek().clone();
+              let real_rid = sel_rid.as_ref().map(|r| {
+                  if r.starts_with("thread::") { r.splitn(3, "::").nth(1).unwrap_or(r).to_string() } else { r.clone() }
+              });
+              let mentioned_member = real_rid.and_then(|rid| {
+                  preview_ui.members_by_room.peek().get(&rid).and_then(|members| {
+                      // Find a member whose display name appears in the input (after a space or command)
+                      members.iter().find(|m| {
+                          let name = &m.display_name;
+                          !name.is_empty() && name.len() > 1 && preview_text.contains(name)
+                      }).map(|m| (m.display_name.clone(), m.user_id.clone(), m.avatar_url.clone()))
+                  })
+              });
+              if let Some((ref name, ref uid, ref mxc)) = mentioned_member {
+                  let avatar = mxc.as_ref().and_then(|m| core_media.media_cache.lock().unwrap().get(m).cloned());
+                  let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                  rsx! {
+                      div { style: "display: flex; align-items: center; gap: 6px; padding: 3px 16px; font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); margin: 0 12px;",
+                          if let Some(ref src) = avatar {
+                              img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover;" }
+                          } else {
+                              div { style: "width: 16px; height: 16px; border-radius: 50%; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 600; color: var(--text-muted);",
+                                  "{initial}"
+                              }
+                          }
+                          span { style: "color: var(--text-muted);", "{name}" }
+                          span { style: "color: var(--text-dim);", "{uid}" }
+                      }
+                  }
+              } else { rsx! {} }
+            }
             // Slash command autocomplete popup
             { let current_text = text();
               let show_cmds = current_text.starts_with('/') && !current_text.contains(' ');
@@ -350,6 +385,33 @@ pub fn MessageInput() -> Element {
                       .filter(|(name, _, _)| name.starts_with(&current_text[..]) || current_text == "/")
                       .collect()
               } else { Vec::new() };
+
+              // User @mention autocomplete — trigger on last word starting with @
+              let mention_ui = consume_context::<UiState>();
+              let at_query = current_text.rsplit_once(' ')
+                  .map(|(_, last)| last)
+                  .unwrap_or(&current_text);
+              let show_mentions = at_query.starts_with('@') && at_query.len() > 1 && !show_cmds;
+              // (display_name, user_id, avatar_mxc)
+              let mention_matches: Vec<(String, String, Option<String>)> = if show_mentions {
+                  let needle = at_query[1..].to_lowercase();
+                  let sel = mention_ui.selected_room_id.peek().clone();
+                  if let Some(ref rid) = sel {
+                      let real_rid = if rid.starts_with("thread::") {
+                          rid.splitn(3, "::").nth(1).unwrap_or(rid).to_string()
+                      } else { rid.clone() };
+                      mention_ui.members_by_room.peek()
+                          .get(&real_rid)
+                          .map(|members| members.iter()
+                              .filter(|m| m.display_name.to_lowercase().contains(&needle)
+                                  || m.user_id.to_lowercase().contains(&needle))
+                              .take(8)
+                              .map(|m| (m.display_name.clone(), m.user_id.clone(), m.avatar_url.clone()))
+                              .collect())
+                          .unwrap_or_default()
+                  } else { Vec::new() }
+              } else { Vec::new() };
+
               if !filtered.is_empty() {
                 rsx! {
                     div { style: "margin: 0 12px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px 6px 0 0; border-bottom: none; max-height: 200px; overflow-y: auto; padding: 4px 0;",
@@ -373,6 +435,50 @@ pub fn MessageInput() -> Element {
                                 }
                             } }
                         }
+                    }
+                }
+              } else if !mention_matches.is_empty() {
+                rsx! {
+                    div { style: "margin: 0 12px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px 6px 0 0; border-bottom: none; max-height: 200px; overflow-y: auto; padding: 4px 0;",
+                        { let cache = core_media.media_cache.lock().unwrap();
+                          let resolved: Vec<_> = mention_matches.iter().map(|(dn, uid, mxc)| {
+                              let avatar = mxc.as_ref().and_then(|m| cache.get(m).cloned());
+                              (dn.clone(), uid.clone(), avatar)
+                          }).collect();
+                          drop(cache);
+                        rsx! {
+                        for (display_name, user_id, avatar_src) in resolved.iter() {
+                            { let display = display_name.clone();
+                              let at_q = at_query.to_string();
+                              let initial = display_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                              rsx! {
+                                div {
+                                    class: "cmd-item",
+                                    style: "display: flex; align-items: center; gap: 8px; padding: 4px 12px; cursor: pointer;",
+                                    onclick: move |_| {
+                                        let current = text();
+                                        let before = if let Some(idx) = current.rfind(&at_q) {
+                                            &current[..idx]
+                                        } else { &current };
+                                        text.set(format!("{before}{display} "));
+                                    },
+                                    if let Some(ref src) = avatar_src {
+                                        img { src: "{src}", style: "width: 18px; height: 18px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" }
+                                    } else {
+                                        div { style: "width: 18px; height: 18px; border-radius: 50%; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; color: var(--text-muted); flex-shrink: 0;",
+                                            "{initial}"
+                                        }
+                                    }
+                                    span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--text-bright); font-weight: 600;",
+                                        "{display_name}"
+                                    }
+                                    span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);",
+                                        "{user_id}"
+                                    }
+                                }
+                            } }
+                        }
+                        } }
                     }
                 }
               } else { rsx! {} }
