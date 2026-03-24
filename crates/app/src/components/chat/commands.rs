@@ -423,7 +423,7 @@ pub fn all_commands() -> Vec<SlashCommand> {
                     user_input
                 } else {
                     let real_rid = if rid.starts_with("thread::") {
-                        rid.splitn(3, "::").nth(1).unwrap_or(&rid).to_string()
+                        rid.split("::").nth(1).unwrap_or(&rid).to_string()
                     } else { rid.clone() };
                     ui.members_by_room.peek()
                         .get(&real_rid)
@@ -454,7 +454,7 @@ pub fn all_commands() -> Vec<SlashCommand> {
                     user_input
                 } else {
                     let real_rid = if rid.starts_with("thread::") {
-                        rid.splitn(3, "::").nth(1).unwrap_or(&rid).to_string()
+                        rid.split("::").nth(1).unwrap_or(&rid).to_string()
                     } else { rid.clone() };
                     ui.members_by_room.peek()
                         .get(&real_rid)
@@ -864,7 +864,7 @@ pub fn all_commands() -> Vec<SlashCommand> {
                                 if let Ok(eid_parsed) = matrix_sdk::ruma::EventId::parse(&eid) {
                                     let content = UnstablePollEndEventContent::new(
                                         "Poll ended".to_string(),
-                                        eid_parsed.into(),
+                                        eid_parsed,
                                     );
                                     let _ = timeline.send(AnyMessageLikeEventContent::UnstablePollEnd(content)).await;
                                 }

@@ -1,11 +1,13 @@
 use matrix_sdk::{
     room::{RelationsOptions, IncludeRelations},
-    ruma::{api::Direction, events::room::message::MessageType},
+    ruma::api::Direction,
 };
 
 use crate::error::AppError;
+use crate::messages::extract_message_content;
 use crate::models::MessageInfo;
 
+/// Fetch all messages in a thread, including the root event.
 pub async fn get_thread_messages(client: &matrix_sdk::Client, room_id: &str, thread_root_id: &str) -> Result<Vec<MessageInfo>, AppError> {
     let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -22,7 +24,7 @@ pub async fn get_thread_messages(client: &matrix_sdk::Client, room_id: &str, thr
 
     // Thread replies
     let options = RelationsOptions { from: None, dir: Direction::Forward, limit: Some(100u32.into()), include_relations: IncludeRelations::AllRelations, recurse: false };
-    if let Ok(relations) = room.relations(event_id.into(), options).await {
+    if let Ok(relations) = room.relations(event_id, options).await {
         for event in &relations.chunk {
             if let Ok(ev) = event.raw().deserialize() {
                 if let Some(info) = extract_msg(&room, ev).await { messages.push(info); }
@@ -35,18 +37,7 @@ pub async fn get_thread_messages(client: &matrix_sdk::Client, room_id: &str, thr
 async fn extract_msg(room: &matrix_sdk::Room, event: matrix_sdk::ruma::events::AnySyncTimelineEvent) -> Option<MessageInfo> {
     use matrix_sdk::ruma::events::{AnySyncTimelineEvent, AnySyncMessageLikeEvent, SyncMessageLikeEvent};
     if let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) = event {
-        let (body, formatted_body, image_mxc) = match &msg.content.msgtype {
-            MessageType::Text(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
-            MessageType::Image(img) => {
-                let mxc = match &img.source {
-                    matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
-                    matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
-                };
-                (img.body.clone(), None, mxc)
-            }
-            MessageType::Notice(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
-            _ => return None,
-        };
+        let (body, formatted_body, image_mxc) = extract_message_content(&msg.content.msgtype);
         let member = room.get_member_no_sync(&msg.sender).await.ok().flatten();
         Some(MessageInfo {
             event_id: msg.event_id.to_string(), sender: msg.sender.to_string(),

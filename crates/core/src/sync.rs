@@ -26,6 +26,7 @@ pub trait SyncCallbacks: Send + Sync + 'static {
     fn on_verification_request(&self, info: VerificationInfo);
 }
 
+/// Spawn a background sync loop with event handlers wired to the given callbacks.
 pub fn spawn_sync<C: SyncCallbacks>(client: Client, callbacks: C) {
     let callbacks = std::sync::Arc::new(callbacks);
 
@@ -140,7 +141,7 @@ pub fn spawn_sync<C: SyncCallbacks>(client: Client, callbacks: C) {
                 let own_id = own_id.clone();
                 async move {
                     let user_ids: Vec<String> = ev.content.user_ids.iter()
-                        .filter(|u| own_id.as_ref().map_or(true, |own| *u != own))
+                        .filter(|u| own_id.as_ref() != Some(*u))
                         .map(|u| u.to_string())
                         .collect();
                     cb.on_typing(room.room_id().to_string(), user_ids);

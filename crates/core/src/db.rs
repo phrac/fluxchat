@@ -33,6 +33,7 @@ impl AppDb {
 
     // ── Sessions ──
 
+    /// Save the current session data to the database.
     pub fn save_session(&self, data: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -42,6 +43,7 @@ impl AppDb {
         Ok(())
     }
 
+    /// Load the saved session data, if any.
     pub fn load_session(&self) -> Option<String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -51,13 +53,17 @@ impl AppDb {
         ).ok()
     }
 
+    /// Delete the saved session.
     pub fn delete_session(&self) {
         let conn = self.conn.lock().unwrap();
-        let _ = conn.execute("DELETE FROM sessions WHERE key = 'current'", []);
+        if let Err(e) = conn.execute("DELETE FROM sessions WHERE key = 'current'", []) {
+            tracing::warn!("Failed to delete session from database: {e}");
+        }
     }
 
     // ── Media cache ──
 
+    /// Store a media data URI in the SQLite cache.
     pub fn cache_media(&self, key: &str, data_uri: &str) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
@@ -66,6 +72,7 @@ impl AppDb {
         );
     }
 
+    /// Look up a cached media data URI by key.
     pub fn get_cached_media(&self, key: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -77,6 +84,7 @@ impl AppDb {
 
     // ── Settings ──
 
+    /// Store a key-value setting.
     pub fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -86,6 +94,7 @@ impl AppDb {
         Ok(())
     }
 
+    /// Retrieve a setting value by key.
     pub fn get_setting(&self, key: &str) -> Option<String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -97,14 +106,17 @@ impl AppDb {
 
     // ── Message cache ──
 
+    /// Cache serialized room messages for offline access.
     pub fn cache_room_messages(&self, room_id: &str, messages_json: &str) {
         let _ = self.set_setting(&format!("msgs:{room_id}"), messages_json);
     }
 
+    /// Load cached room messages, if available.
     pub fn get_cached_room_messages(&self, room_id: &str) -> Option<String> {
         self.get_setting(&format!("msgs:{room_id}"))
     }
 
+    /// Remove cached messages for a room.
     pub fn clear_cached_room_messages(&self, room_id: &str) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("msgs:{room_id}")]);

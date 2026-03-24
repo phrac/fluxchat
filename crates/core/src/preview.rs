@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::models::UrlPreview;
 
+/// Fetch an OpenGraph URL preview from the homeserver, with caching.
 pub async fn get_url_preview(
     client: &matrix_sdk::Client,
     cache: &std::sync::Mutex<std::collections::HashMap<String, String>>,

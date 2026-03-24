@@ -10,9 +10,9 @@ pub fn Login() -> Element {
     let ui = use_context::<UiState>();
 
     let mut homeserver = use_signal(|| "matrix.org".to_string());
-    let mut username = use_signal(|| String::new());
-    let mut password = use_signal(|| String::new());
-    let mut error = use_signal(|| String::new());
+    let mut username = use_signal(String::new);
+    let mut password = use_signal(String::new);
+    let mut error = use_signal(String::new);
     let mut submitting = use_signal(|| false);
     let mut login_caps = use_signal(|| Option::<fluxchat_core::auth::LoginCapabilities>::None);
 
@@ -126,7 +126,7 @@ pub fn Login() -> Element {
                                 button {
                                     style: "width: 100%; background: var(--bg-light); color: var(--text-bright); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; margin-bottom: 6px; display: flex; align-items: center; justify-content: center; gap: 8px;",
                                     disabled: *submitting.read(),
-                                    onclick: move |e| handle(e),
+                                    onclick: handle,
                                     if *submitting.read() { "Opening browser..." } else { "{btn_label}" }
                                 }
                             } }

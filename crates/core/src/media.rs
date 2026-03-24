@@ -7,6 +7,11 @@ use crate::db::AppDb;
 use crate::error::AppError;
 use crate::rooms::parse_room_id;
 
+/// Maximum entries in the in-memory media cache before eviction.
+const MEDIA_CACHE_LIMIT: usize = 500;
+/// Number of entries to evict when cache is full.
+const MEDIA_CACHE_EVICT: usize = 100;
+
 /// Generate a thumbnail from image data. Returns (png_bytes, width, height) or None.
 pub fn generate_thumbnail(data: &[u8], max_w: u32, max_h: u32) -> Option<(Vec<u8>, u32, u32)> {
     let img = image::load_from_memory(data).ok()?;
@@ -23,6 +28,7 @@ pub fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     Some((img.width(), img.height()))
 }
 
+/// Convert raw image bytes to a base64 data URI, detecting format from magic bytes.
 pub fn bytes_to_data_uri(data: &[u8]) -> String {
     let content_type = if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) { "image/png" }
     else if data.starts_with(&[0xFF, 0xD8, 0xFF]) { "image/jpeg" }
@@ -49,16 +55,15 @@ pub async fn get_media_url(
         return Ok(v);
     }
     // L3: network
-    let mxc = <&MxcUri>::try_from(mxc_uri).map_err(|_| AppError::Other("Invalid MXC URI".into()))?;
+    let mxc = <&MxcUri>::from(mxc_uri);
     let request = MediaRequestParameters { source: MediaSource::Plain(mxc.to_owned()), format: MediaFormat::File };
     let data = client.media().get_media_content(&request, true).await
         .map_err(|e| AppError::Other(format!("Failed to download media: {e}")))?;
     let data_uri = bytes_to_data_uri(&data);
     let mut c = cache.lock().unwrap();
     // Cap memory cache at 500 entries — evict oldest when full
-    if c.len() >= 500 {
-        // Remove ~100 entries to avoid evicting on every insert
-        let keys: Vec<String> = c.keys().take(100).cloned().collect();
+    if c.len() >= MEDIA_CACHE_LIMIT {
+        let keys: Vec<String> = c.keys().take(MEDIA_CACHE_EVICT).cloned().collect();
         for k in keys { c.remove(&k); }
     }
     c.insert(mxc_uri.to_string(), data_uri.clone());
@@ -108,8 +113,8 @@ pub async fn get_event_media(
         .map_err(|e| AppError::Other(format!("Failed to download: {e}")))?;
     let data_uri = bytes_to_data_uri(&data);
     let mut c = cache.lock().unwrap();
-    if c.len() >= 500 {
-        let keys: Vec<String> = c.keys().take(100).cloned().collect();
+    if c.len() >= MEDIA_CACHE_LIMIT {
+        let keys: Vec<String> = c.keys().take(MEDIA_CACHE_EVICT).cloned().collect();
         for k in keys { c.remove(&k); }
     }
     c.insert(cache_key.clone(), data_uri.clone());
@@ -133,7 +138,7 @@ pub async fn get_media_thumbnail(
         cache.lock().unwrap().insert(cache_key, v.clone());
         return Ok(v);
     }
-    let mxc = <&MxcUri>::try_from(mxc_uri).map_err(|_| AppError::Other("Invalid MXC URI".into()))?;
+    let mxc = <&MxcUri>::from(mxc_uri);
     let settings = MediaThumbnailSettings::new(width.into(), height.into());
     let request = MediaRequestParameters { source: MediaSource::Plain(mxc.to_owned()), format: MediaFormat::Thumbnail(settings) };
     // Don't fallback to full file here — let the caller handle encrypted media via get_event_media
@@ -141,8 +146,8 @@ pub async fn get_media_thumbnail(
         .map_err(|e| AppError::Other(format!("Failed to download thumbnail: {e}")))?;
     let data_uri = bytes_to_data_uri(&data);
     let mut c = cache.lock().unwrap();
-    if c.len() >= 500 {
-        let keys: Vec<String> = c.keys().take(100).cloned().collect();
+    if c.len() >= MEDIA_CACHE_LIMIT {
+        let keys: Vec<String> = c.keys().take(MEDIA_CACHE_EVICT).cloned().collect();
         for k in keys { c.remove(&k); }
     }
     c.insert(cache_key.clone(), data_uri.clone());

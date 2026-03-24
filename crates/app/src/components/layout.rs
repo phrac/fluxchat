@@ -12,7 +12,6 @@ use crate::components::members::member_list::MemberList;
 pub fn MainLayout() -> Element {
     let mut ui = use_context::<UiState>();
 
-    let _app_state = use_context::<Arc<AppState>>();
     let user_id = ui.user_id.read().clone();
     let selected_room = ui.selected_room_id.read().clone();
     let room_name = selected_room.as_ref()
@@ -121,7 +120,7 @@ pub fn MainLayout() -> Element {
                                                     else { "png" };
 
                                                 let dialog = rfd::FileDialog::new()
-                                                    .set_file_name(&format!("image.{ext}"))
+                                                    .set_file_name(format!("image.{ext}"))
                                                     .add_filter("Image", &[ext]);
                                                 if let Some(path) = dialog.save_file() {
                                                     let _ = std::fs::write(&path, &bytes);
@@ -200,8 +199,6 @@ pub fn MainLayout() -> Element {
 #[component]
 fn RightPanelView(panel: RightPanel) -> Element {
     let mut ui = use_context::<UiState>();
-    let _app_state = use_context::<Arc<AppState>>();
-    let _selected = ui.selected_room_id.read().clone();
 
     let title = match panel {
         RightPanel::Pins => "Pinned Messages",
@@ -437,9 +434,7 @@ fn SyncLag() -> Element {
     });
 
     let lag = *ui.sync_lag_ms.read();
-    let color = if lag == 0 {
-        "var(--green)"
-    } else if lag < 200 {
+    let color = if lag < 200 {
         "var(--green)"
     } else if lag < 1000 {
         "var(--yellow)"
@@ -906,7 +901,7 @@ fn SettingsAccountPage() -> Element {
 fn SettingsSessionsPage() -> Element {
     let app_state = use_context::<Arc<AppState>>();
     let mut status_msg = use_signal(|| Option::<String>::None);
-    let mut pw_input = use_signal(|| String::new());
+    let mut pw_input = use_signal(String::new);
     let mut signing_out = use_signal(|| Option::<String>::None); // device_id being signed out
     let mut confirm_signout = use_signal(|| Option::<String>::None); // device_id awaiting password
 
@@ -985,7 +980,7 @@ fn SettingsSessionsPage() -> Element {
                                                     signing_out.set(Some(dev_id.clone()));
                                                     spawn(async move {
                                                         let client = match app_state.get_client().await { Ok(c) => c, Err(_) => { signing_out.set(None); return; } };
-                                                        match fluxchat_core::devices::delete_devices(&client, &[dev_id.clone()], &pw).await {
+                                                        match fluxchat_core::devices::delete_devices(&client, std::slice::from_ref(&dev_id), &pw).await {
                                                             Ok(_) => {
                                                                 status_msg.set(Some(format!("signed out {}", &dev_id[..dev_id.len().min(10)])));
                                                                 confirm_signout.set(None);
@@ -1104,7 +1099,7 @@ fn SessionRow(device: fluxchat_core::devices::DeviceInfo, is_current: bool) -> E
 fn SettingsSecurityPage() -> Element {
     let app_state = use_context::<Arc<AppState>>();
     let mut status_msg = use_signal(|| Option::<String>::None);
-    let mut recovery_key_input = use_signal(|| String::new());
+    let mut recovery_key_input = use_signal(String::new);
     let mut show_recovery_key = use_signal(|| Option::<String>::None);
 
     // Fetch backup/recovery state
@@ -1659,11 +1654,11 @@ fn CreateRoomModal() -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
 
-    let mut name = use_signal(|| String::new());
-    let mut topic = use_signal(|| String::new());
+    let mut name = use_signal(String::new);
+    let mut topic = use_signal(String::new);
     let mut is_public = use_signal(|| false);
     let mut encrypted = use_signal(|| true);
-    let mut join_input = use_signal(|| String::new());
+    let mut join_input = use_signal(String::new);
     let mut creating = use_signal(|| false);
     let mut error_msg = use_signal(|| Option::<String>::None);
 
@@ -1784,9 +1779,9 @@ fn RoomSettingsModal() -> Element {
 
     let mut edit_name = use_signal(|| room.name.clone());
     let mut edit_topic = use_signal(|| room.topic.clone().unwrap_or_default());
-    let mut invite_user = use_signal(|| String::new());
+    let mut invite_user = use_signal(String::new);
     let mut status_msg = use_signal(|| Option::<String>::None);
-    let mut new_alias = use_signal(|| String::new());
+    let mut new_alias = use_signal(String::new);
     let room_id = room.room_id.clone();
 
     rsx! {
@@ -1924,8 +1919,8 @@ fn RoomSettingsModal() -> Element {
                                 div { style: "display: flex; gap: 8px; align-items: center;",
                                     span {
                                         style: if current == "all" { "font-family: var(--font-mono); font-size: 12px; color: var(--green); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--green); background: rgba(34,197,94,0.1);" } else { "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);" },
-                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone(); let notif_mode = notif_mode.clone();
-                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode.clone();
+                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone();
+                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode;
                                                 spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
                                                     let _ = fluxchat_core::rooms::set_notification_mode(&client, &rid, "all").await;
                                                     notif_mode.restart();
@@ -1935,8 +1930,8 @@ fn RoomSettingsModal() -> Element {
                                     }
                                     span {
                                         style: if current == "mentions" { "font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--accent); background: rgba(99,102,241,0.1);" } else { "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);" },
-                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone(); let notif_mode = notif_mode.clone();
-                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode.clone();
+                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone();
+                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode;
                                                 spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
                                                     let _ = fluxchat_core::rooms::set_notification_mode(&client, &rid, "mentions").await;
                                                     notif_mode.restart();
@@ -1946,8 +1941,8 @@ fn RoomSettingsModal() -> Element {
                                     }
                                     span {
                                         style: if current == "mute" { "font-family: var(--font-mono); font-size: 12px; color: var(--red); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--red); background: rgba(239,68,68,0.1);" } else { "font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);" },
-                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone(); let notif_mode = notif_mode.clone();
-                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode.clone();
+                                        onclick: { let app = app_notif.clone(); let rid = rid_notif.clone();
+                                            move |_| { let app = app.clone(); let rid = rid.clone(); let mut notif_mode = notif_mode;
                                                 spawn(async move { let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
                                                     let _ = fluxchat_core::rooms::set_notification_mode(&client, &rid, "mute").await;
                                                     notif_mode.restart();
@@ -2005,7 +2000,7 @@ fn ForwardModal() -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
     let rooms = ui.rooms.read().clone();
-    let mut search = use_signal(|| String::new());
+    let mut search = use_signal(String::new);
 
     let (body, formatted, sender) = match ui.forward_event.read().clone() {
         Some((b, f, s)) => (b, if f.is_empty() { None } else { Some(f) }, s),

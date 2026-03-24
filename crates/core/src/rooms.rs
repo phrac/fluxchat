@@ -42,6 +42,7 @@ pub async fn build_space_map(client: &matrix_sdk::Client) -> HashMap<String, Str
     map
 }
 
+/// Convert a Matrix Room into our RoomInfo model.
 pub async fn room_to_info(room: &matrix_sdk::Room, space_name: Option<String>) -> RoomInfo {
     let name = room.display_name().await
         .map(|n| n.to_string())
@@ -61,6 +62,7 @@ pub async fn room_to_info(room: &matrix_sdk::Room, space_name: Option<String>) -
     }
 }
 
+/// Get all joined rooms (excluding spaces), sorted by category.
 pub async fn get_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, AppError> {
     let space_map = build_space_map(client).await;
     let mut rooms = Vec::new();
@@ -77,6 +79,7 @@ pub async fn get_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, App
     Ok(rooms)
 }
 
+/// Get all joined spaces, sorted alphabetically.
 pub async fn get_spaces(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, AppError> {
     let mut spaces = Vec::new();
     for room in client.joined_rooms() {
@@ -145,6 +148,7 @@ pub async fn check_tombstone(client: &matrix_sdk::Client, room_id: &str) -> Opti
     Some((original.content.body.clone(), original.content.replacement_room.to_string()))
 }
 
+/// Get child rooms of a space.
 pub async fn get_space_rooms(client: &matrix_sdk::Client, space_id: &str) -> Result<Vec<RoomInfo>, AppError> {
     let space_room_id = matrix_sdk::ruma::RoomId::parse(space_id)
         .map_err(|_| AppError::Other("Invalid space ID".into()))?;
@@ -168,6 +172,7 @@ pub async fn get_space_rooms(client: &matrix_sdk::Client, space_id: &str) -> Res
     Ok(rooms)
 }
 
+/// Join a room by ID or alias.
 pub async fn join_room(client: &matrix_sdk::Client, room_id_or_alias: &str) -> Result<RoomInfo, AppError> {
     let room_or_alias = <&RoomOrAliasId>::try_from(room_id_or_alias)
         .map_err(|_| AppError::Other("Invalid room ID or alias".into()))?;
@@ -175,6 +180,7 @@ pub async fn join_room(client: &matrix_sdk::Client, room_id_or_alias: &str) -> R
     Ok(room_to_info(&room, None).await)
 }
 
+/// Leave a room.
 pub async fn leave_room(client: &matrix_sdk::Client, room_id: &str) -> Result<(), AppError> {
     let room_id = matrix_sdk::ruma::RoomId::parse(room_id)
         .map_err(|_| AppError::Other("Invalid room ID".into()))?;
@@ -183,6 +189,7 @@ pub async fn leave_room(client: &matrix_sdk::Client, room_id: &str) -> Result<()
     Ok(())
 }
 
+/// Invite a user to a room.
 pub async fn invite_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let user_id = parse_user_id(user_id)?;
@@ -191,6 +198,7 @@ pub async fn invite_user(client: &matrix_sdk::Client, room_id: &str, user_id: &s
     Ok(())
 }
 
+/// Kick a user from a room with an optional reason.
 pub async fn kick_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str, reason: Option<&str>) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let user_id = parse_user_id(user_id)?;
@@ -199,6 +207,7 @@ pub async fn kick_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str
     Ok(())
 }
 
+/// Ban a user from a room with an optional reason.
 pub async fn ban_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str, reason: Option<&str>) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let user_id = parse_user_id(user_id)?;
@@ -207,6 +216,7 @@ pub async fn ban_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str,
     Ok(())
 }
 
+/// Set a user's power level in a room.
 pub async fn set_user_power_level(client: &matrix_sdk::Client, room_id: &str, user_id: &str, power_level: i64) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let user_id = parse_user_id(user_id)?;
@@ -215,6 +225,7 @@ pub async fn set_user_power_level(client: &matrix_sdk::Client, room_id: &str, us
     Ok(())
 }
 
+/// Set the display name of a room.
 pub async fn set_room_name(client: &matrix_sdk::Client, room_id: &str, name: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -222,6 +233,7 @@ pub async fn set_room_name(client: &matrix_sdk::Client, room_id: &str, name: &st
     Ok(())
 }
 
+/// Set the topic of a room.
 pub async fn set_room_topic(client: &matrix_sdk::Client, room_id: &str, topic: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -229,6 +241,7 @@ pub async fn set_room_topic(client: &matrix_sdk::Client, room_id: &str, topic: &
     Ok(())
 }
 
+/// Create a new room with optional encryption, space association, and invites.
 pub async fn create_room(
     client: &matrix_sdk::Client,
     name: &str,
@@ -263,7 +276,9 @@ pub async fn create_room(
                         content.via = vec![server.to_owned()];
                     }
                 }
-                let _ = space.send_state_event_for_key(room.room_id(), content).await;
+                if let Err(e) = space.send_state_event_for_key(room.room_id(), content).await {
+                    tracing::warn!("Failed to associate room with space: {e}");
+                }
             }
         }
     }
@@ -271,7 +286,9 @@ pub async fn create_room(
     // Enable encryption if requested
     if is_encrypted {
         use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
-        let _ = room.send_state_event(RoomEncryptionEventContent::with_recommended_defaults()).await;
+        if let Err(e) = room.send_state_event(RoomEncryptionEventContent::with_recommended_defaults()).await {
+            tracing::warn!("Failed to enable encryption on new room: {e}");
+        }
     }
 
     Ok(room.room_id().to_string())

@@ -26,6 +26,9 @@ pub enum RightPanel {
     Invites,
 }
 
+/// Tab entry: (room_id, room_name, space_name, space_avatar_mxc)
+pub type TabEntry = (String, String, Option<String>, Option<String>);
+
 /// Global app signals — the reactive UI state.
 #[derive(Clone)]
 pub struct UiState {
@@ -82,14 +85,16 @@ pub struct UiState {
 
     // Channel tabs — recently visited rooms
     // (room_id, room_name, space_name, space_avatar_mxc)
-    pub open_tabs: Signal<Vec<(String, String, Option<String>, Option<String>)>>,
+    pub open_tabs: Signal<Vec<TabEntry>>,
 }
 
 /// Nick color index from a string hash.
 pub fn nick_color_index(name: &str) -> u32 {
+    /// Number of distinct nick color classes (nick-0 through nick-14).
+    const NICK_COLOR_COUNT: u32 = 15;
     let mut hash: u32 = 0;
     for b in name.bytes() { hash = b as u32 + ((hash << 5).wrapping_sub(hash)); }
-    hash % 15
+    hash % NICK_COLOR_COUNT
 }
 
 /// Escape a string for safe inclusion in HTML content and attributes.

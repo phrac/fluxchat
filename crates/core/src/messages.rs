@@ -19,6 +19,28 @@ use crate::error::AppError;
 use crate::models::*;
 use crate::rooms::parse_room_id;
 
+/// Default number of messages to load per page.
+const MESSAGE_PAGE_SIZE: u32 = 20;
+/// Maximum recent events to check for read receipts.
+const RECEIPT_EVENT_LIMIT: usize = 30;
+
+/// Extract body, formatted HTML, and image MXC from a message type.
+pub(crate) fn extract_message_content(msgtype: &MessageType) -> (String, Option<String>, Option<String>) {
+    match msgtype {
+        MessageType::Text(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
+        MessageType::Image(img) => {
+            let mxc = match &img.source {
+                matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
+                matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
+            };
+            (img.body.clone(), None, mxc)
+        }
+        MessageType::Notice(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
+        MessageType::Emote(t) => (t.body.clone(), t.formatted.as_ref().map(|f| format!("* {}", f.body)), None),
+        _ => (format!("[{}]", msgtype.msgtype()), None, None),
+    }
+}
+
 fn extract_reply_info(relates_to: &Option<Relation<RoomMessageEventContentWithoutRelation>>) -> Option<String> {
     match relates_to {
         Some(Relation::Reply { in_reply_to }) => Some(in_reply_to.event_id.to_string()),
@@ -27,12 +49,13 @@ fn extract_reply_info(relates_to: &Option<Relation<RoomMessageEventContentWithou
     }
 }
 
+/// Fetch a page of messages from a room using the REST messages API.
 pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_token: Option<&str>) -> Result<PaginatedMessages, AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
 
     let mut options = MessagesOptions::backward();
-    options.limit = 20u32.into();
+    options.limit = MESSAGE_PAGE_SIZE.into();
     if let Some(token) = from_token { options.from = Some(token.to_string()); }
 
     let response = room.messages(options).await?;
@@ -77,22 +100,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
 
         // Messages
         if let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) = deserialized {
-            let (body, formatted_body, image_mxc) = match &msg.content.msgtype {
-                MessageType::Text(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
-                MessageType::Image(img) => {
-                    let mxc = match &img.source {
-                        matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
-                        matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
-                    };
-                    (img.body.clone(), None, mxc)
-                }
-                MessageType::Notice(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
-                MessageType::Emote(t) => (format!("* {}", t.body), t.formatted.as_ref().map(|f| format!("* {}", f.body)), None),
-                MessageType::Video(_) => ("[video]".into(), None, None),
-                MessageType::Audio(_) => ("[audio]".into(), None, None),
-                MessageType::File(_) => ("[file]".into(), None, None),
-                _ => ("[unsupported]".into(), None, None),
-            };
+            let (body, formatted_body, image_mxc) = extract_message_content(&msg.content.msgtype);
 
             let sender_key = msg.sender.to_string();
             let (sender_name, avatar_url) = if let Some(cached) = member_cache.get(&sender_key) {
@@ -125,6 +133,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
     Ok(PaginatedMessages { messages, end_token: response.end })
 }
 
+/// Send a text message to a room.
 pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str) -> Result<String, AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -132,6 +141,7 @@ pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str
     Ok(room.send(content).await?.event_id.to_string())
 }
 
+/// Reply to a specific message in a room.
 pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, reply_to_event_id: &str) -> Result<String, AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -142,6 +152,7 @@ pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, 
     Ok(room.send(reply_content).await?.event_id.to_string())
 }
 
+/// Edit an existing message in a room.
 pub async fn edit_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str, new_body: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -152,6 +163,7 @@ pub async fn edit_message(client: &matrix_sdk::Client, room_id: &str, event_id: 
     Ok(())
 }
 
+/// Send or cancel a typing indicator in a room.
 pub async fn send_typing(client: &matrix_sdk::Client, room_id: &str, typing: bool) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -159,6 +171,7 @@ pub async fn send_typing(client: &matrix_sdk::Client, room_id: &str, typing: boo
     Ok(())
 }
 
+/// Toggle a reaction emoji on a message.
 pub async fn send_reaction(client: &matrix_sdk::Client, room_id: &str, event_id: &str, emoji: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -167,6 +180,7 @@ pub async fn send_reaction(client: &matrix_sdk::Client, room_id: &str, event_id:
     Ok(())
 }
 
+/// Delete (redact) a message from a room.
 pub async fn delete_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -175,6 +189,7 @@ pub async fn delete_message(client: &matrix_sdk::Client, room_id: &str, event_id
     Ok(())
 }
 
+/// Pin or unpin a message in a room.
 pub async fn pin_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -190,6 +205,7 @@ pub async fn pin_message(client: &matrix_sdk::Client, room_id: &str, event_id: &
     Ok(())
 }
 
+/// Fetch pinned messages for a room.
 pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<MessageInfo>, AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -203,12 +219,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
     for eid in &pinned_ids {
         let event = match room.event(eid, None).await { Ok(e) => e, Err(_) => continue };
         if let Ok(AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg)))) = event.raw().deserialize() {
-            let (body, formatted_body, image_mxc) = match &msg.content.msgtype {
-                MessageType::Text(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
-                MessageType::Notice(t) => (t.body.clone(), t.formatted.as_ref().map(|f| f.body.clone()), None),
-                MessageType::Image(img) => { let mxc = match &img.source { matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()), matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()), }; (img.body.clone(), None, mxc) }
-                _ => ("[message]".into(), None, None),
-            };
+            let (body, formatted_body, image_mxc) = extract_message_content(&msg.content.msgtype);
             let member = room.get_member_no_sync(&msg.sender).await.ok().flatten();
             messages.push(MessageInfo {
                 event_id: msg.event_id.to_string(), sender: msg.sender.to_string(),
@@ -224,6 +235,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
     Ok(messages)
 }
 
+/// Fetch the member list for a room with presence and power level info.
 pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<MemberInfo>, AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -265,10 +277,11 @@ pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Res
     Ok(result)
 }
 
+/// Upload a file attachment to a room, generating a thumbnail for images.
 pub async fn upload_file(client: &matrix_sdk::Client, room_id: &str, filename: &str, mime_type: &str, data: Vec<u8>) -> Result<String, AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    let content_type: mime::Mime = mime_type.parse().unwrap_or("application/octet-stream".parse().unwrap());
+    let content_type: mime::Mime = mime_type.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
 
     // Generate thumbnail for images
     let config = if mime_type.starts_with("image/") {
@@ -293,6 +306,7 @@ pub async fn upload_file(client: &matrix_sdk::Client, room_id: &str, filename: &
     Ok(response.event_id.to_string())
 }
 
+/// Send a read receipt and fully-read marker for a message.
 pub async fn send_read_receipt(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
@@ -316,8 +330,7 @@ pub async fn get_room_read_receipts(
     let mut receipts = Vec::new();
     let mut seen_users = std::collections::HashSet::new();
 
-    // Check the last 30 events for receipts
-    for eid_str in recent_event_ids.iter().rev().take(30) {
+    for eid_str in recent_event_ids.iter().rev().take(RECEIPT_EVENT_LIMIT) {
         let event_id = match matrix_sdk::ruma::EventId::parse(eid_str) {
             Ok(eid) => eid,
             Err(_) => continue,

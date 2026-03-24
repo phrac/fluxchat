@@ -174,12 +174,12 @@ pub fn MessageInput() -> Element {
     let core = use_context::<Arc<AppState>>();
     let core_media = core.clone();
     let mut ui = use_context::<UiState>();
-    let mut text = use_signal(|| String::new());
+    let mut text = use_signal(String::new);
     let mut sending = use_signal(|| false);
     let mut uploading = use_signal(|| false);
     let mut typing_sent = use_signal(|| false);
     let mut emoji_open = use_signal(|| false);
-    let mut tab_prefix = use_signal(|| String::new());
+    let mut tab_prefix = use_signal(String::new);
     let mut tab_index = use_signal(|| 0usize);
     // Use shared help_text signal so async commands can update it too
 
@@ -280,7 +280,7 @@ pub fn MessageInput() -> Element {
 
         let member_map: std::collections::HashMap<String, String> = {
             let real_rid = if room_id.starts_with("thread::") {
-                room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                room_id.split("::").nth(1).unwrap_or(&room_id).to_string()
             } else { room_id.clone() };
             ui.members_by_room.peek()
                 .get(&real_rid)
@@ -533,9 +533,7 @@ pub fn MessageInput() -> Element {
                 })();
             "#);
 
-            loop {
-                match eval.recv::<String>().await {
-                    Ok(msg) => {
+            while let Ok(msg) = eval.recv::<String>().await {
                         if let Some(txt) = msg.strip_prefix("input:") {
                             let val = txt.to_string();
                             text.set(val.clone());
@@ -616,7 +614,7 @@ pub fn MessageInput() -> Element {
                                     let sel = mention_ui.selected_room_id.peek().clone();
                                     if let Some(ref rid) = sel {
                                         let real_rid = if rid.starts_with("thread::") {
-                                            rid.splitn(3, "::").nth(1).unwrap_or(rid).to_string()
+                                            rid.split("::").nth(1).unwrap_or(rid).to_string()
                                         } else { rid.clone() };
                                         if let Some(members) = mention_ui.members_by_room.peek().get(&real_rid) {
                                             if let Some(m) = members.iter().find(|m|
@@ -682,7 +680,7 @@ pub fn MessageInput() -> Element {
                             let room_id = ui.selected_room_id.peek().clone();
                             if let Some(rid) = room_id {
                                 let real_rid = if rid.starts_with("thread::") {
-                                    rid.splitn(3, "::").nth(1).unwrap_or(&rid).to_string()
+                                    rid.split("::").nth(1).unwrap_or(&rid).to_string()
                                 } else { rid.clone() };
                                 if let Some(msgs) = ui.messages_by_room.peek().get(&real_rid) {
                                     // Find the last message sent by the current user
@@ -705,9 +703,6 @@ pub fn MessageInput() -> Element {
                         } else if msg.starts_with("ready:") {
                             // JS listeners installed successfully
                         }
-                    }
-                    Err(_) => break,
-                }
             }
         }
     });
@@ -843,7 +838,7 @@ pub fn MessageInput() -> Element {
                   let sel = mention_ui.selected_room_id.peek().clone();
                   if let Some(ref rid) = sel {
                       let real_rid = if rid.starts_with("thread::") {
-                          rid.splitn(3, "::").nth(1).unwrap_or(rid).to_string()
+                          rid.split("::").nth(1).unwrap_or(rid).to_string()
                       } else { rid.clone() };
                       mention_ui.members_by_room.peek()
                           .get(&real_rid)

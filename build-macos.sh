@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "Building fluxchat with Dioxus CLI (release)..."
 cd crates/app
@@ -7,6 +7,11 @@ dx build --release
 cd ../..
 
 APP_PATH="target/dx/fluxchat-app/release/macos/FluxchatApp.app"
+
+if [ ! -d "$APP_PATH" ]; then
+    echo "ERROR: Build failed — app bundle not found at $APP_PATH"
+    exit 1
+fi
 
 # Copy our custom icon into the bundle
 cp assets/icon.icns "$APP_PATH/Contents/Resources/icon.icns"

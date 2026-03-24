@@ -75,7 +75,7 @@ fn record_usage(app_state: &Arc<AppState>, emoji: &str) {
 #[component]
 pub fn EmojiPicker(on_select: EventHandler<String>) -> Element {
     let app_state = use_context::<Arc<AppState>>();
-    let mut search = use_signal(|| String::new());
+    let mut search = use_signal(String::new);
     let mut active_cat = use_signal(|| 0usize); // 0 = frequent
     let frequent = load_frequent(&app_state);
 

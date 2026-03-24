@@ -15,6 +15,7 @@ fn data_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("fluxchat")
 }
 
+/// Log in with username and password, saving the session to the database.
 pub async fn login(
     state: &AppState,
     homeserver: &str,
@@ -68,6 +69,7 @@ pub async fn login(
     Ok((client, LoginResult { user_id, display_name }))
 }
 
+/// Log out, clearing the saved session and matrix store.
 pub async fn logout(state: &AppState) -> Result<(), AppError> {
     let mut lock = state.client.lock().await;
     if let Some(client) = lock.take() {
@@ -187,6 +189,7 @@ pub async fn login_sso(
     Ok((client, LoginResult { user_id, display_name }))
 }
 
+/// Restore a previously saved session from the database.
 pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginResult)>, AppError> {
     let session_str = match state.db.load_session() {
         Some(s) => s,

@@ -25,8 +25,6 @@ const ICO_EDIT: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="
 const ICO_DELETE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>"#;
 const ICO_FORWARD: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>"#;
 const ICO_FILE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>"#;
-#[allow(dead_code)]
-const ICO_SETTINGS: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#;
 const ICO_STAR: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#;
 const ICO_LINK: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
 const ICO_INFO: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>"#;
@@ -40,7 +38,6 @@ pub fn nick_color_class(name: &str) -> String {
 
 #[component]
 pub fn MessageArea() -> Element {
-    let _app_state = use_context::<Arc<AppState>>();
     let ui = use_context::<UiState>();
     // NOTE: Do NOT read open_tabs or selected_room_id here — those are read
     // by child components (TabBar, ActiveRoomContent) to avoid cascading re-renders.
@@ -140,12 +137,9 @@ pub fn MessageArea() -> Element {
             });
 
         "#);
-        loop {
-            match eval.recv::<String>().await {
-                Ok(msg) => {
-                    if msg.starts_with("file:") {
+        while let Ok(msg) = eval.recv::<String>().await {
+                    if let Some(json) = msg.strip_prefix("file:") {
                         // File drop or paste
-                        let json = &msg[5..];
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json) {
                             let name = parsed["name"].as_str().unwrap_or("file").to_string();
                             let mime = parsed["type"].as_str().unwrap_or("application/octet-stream").to_string();
@@ -157,14 +151,14 @@ pub fn MessageArea() -> Element {
                                 }
                             }
                         }
-                    } else if msg.starts_with("openurl:") {
+                    } else if let Some(url) = msg.strip_prefix("openurl:") {
                         // Open URL in system browser
-                        let url = msg[8..].to_string();
+                        let url = url.to_string();
                         let _ = open::that(&url);
-                    } else if msg.starts_with("paginate:") {
+                    } else if let Some(room_id_str) = msg.strip_prefix("paginate:") {
                         // Pagination via Timeline API — just call paginate_backwards
                         // The diff stream watcher (spawned in select_room) will update messages_by_room
-                        let room_id = msg[9..].to_string();
+                        let room_id = room_id_str.to_string();
                         let app_state = consume_context::<Arc<AppState>>();
                         if let Ok(room_id_parsed) = fluxchat_core::ruma::RoomId::parse(&room_id) {
                             let timelines = app_state.timelines.lock().await;
@@ -179,9 +173,8 @@ pub fn MessageArea() -> Element {
                             let el = document.getElementById('{}');
                             if (el) el.__fluxLoading = false;
                         "#, js_escape(&sid)));
-                    } else if msg.starts_with("switchtab:") {
+                    } else if let Some(idx_str) = msg.strip_prefix("switchtab:") {
                         // Alt/Cmd+1-9 tab switching
-                        let idx_str = &msg[10..];
                         if let Ok(idx) = idx_str.parse::<usize>() {
                             let idx = idx - 1; // Convert 1-based to 0-based
                             let mut ui = consume_context::<UiState>();
@@ -195,9 +188,6 @@ pub fn MessageArea() -> Element {
                         let mut ui = consume_context::<UiState>();
                         ui.profile_user_id.set(Some(msg));
                     }
-                }
-                Err(_) => break,
-            }
         }
     });
 
@@ -577,9 +567,7 @@ fn RoomMessages(room_id: String) -> Element {
                   if is_system {
                     let (arrow, arrow_color) = if msg.body.contains("has joined") {
                         ("-->", "var(--green)")
-                    } else if msg.body.contains("has left") {
-                        ("<--", "var(--red)")
-                    } else if msg.body.contains("was kicked") || msg.body.contains("was banned") {
+                    } else if msg.body.contains("has left") || msg.body.contains("was kicked") || msg.body.contains("was banned") {
                         ("<--", "var(--red)")
                     } else if msg.body.contains("was invited") {
                         ("-->", "var(--accent-muted)")
@@ -867,8 +855,7 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
                         let is_selected = ui.selected_room_id.read().as_ref() == Some(&cid);
                         let next = if is_selected {
                             ui.open_tabs.read().iter()
-                                .filter(|(id, _, _, _)| id != &cid)
-                                .last()
+                                .rfind(|(id, _, _, _)| id != &cid)
                                 .map(|(id, _, _, _)| id.clone())
                         } else { None };
 
@@ -944,7 +931,7 @@ fn PollDisplay(poll: fluxchat_core::PollInfo, event_id: String, room_id: String,
                                             if let Ok(eid_parsed) = matrix_sdk::ruma::EventId::parse(&eid) {
                                                 let content = UnstablePollResponseEventContent::new(
                                                     vec![aid],
-                                                    eid_parsed.into(),
+                                                    eid_parsed,
                                                 );
                                                 let _ = timeline.send(AnyMessageLikeEventContent::UnstablePollResponse(content)).await;
                                             }
@@ -1008,7 +995,7 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
         async move {
             let client = app_state.get_client().await.ok()?;
             let real_room_id = if room_id.starts_with("thread::") {
-                room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                room_id.split("::").nth(1).unwrap_or(&room_id).to_string()
             } else {
                 room_id.clone()
             };
@@ -1044,7 +1031,7 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
                                 let event_id = event_id_click.clone();
                                 spawn(async move {
                                     let real_room_id = if room_id.starts_with("thread::") {
-                                        room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                                        room_id.split("::").nth(1).unwrap_or(&room_id).to_string()
                                     } else { room_id.clone() };
                                     let client = match app.get_client().await { Ok(c) => c, Err(_) => { consume_context::<UiState>().lightbox_url.set(Some(uri)); return; } };
                                     match fluxchat_core::media::get_event_media(&client, &app.db, &app.media_cache, &real_room_id, &event_id).await {
@@ -1079,7 +1066,7 @@ fn HudPanel(title: String, count: String, on_close: EventHandler<()>, children: 
             class: "search-hud",
             style: "flex-direction: column; align-items: stretch; max-height: 300px; overflow-y: auto;",
             tabindex: "0",
-            onmounted: move |e| { let _ = e.data().set_focus(true); },
+            onmounted: move |e| { std::mem::drop(e.data().set_focus(true)); },
             onkeydown: move |e: Event<KeyboardData>| {
                 if e.key() == Key::Escape { on_close.call(()); }
             },
@@ -1390,15 +1377,15 @@ fn NoticesHud() -> Element {
 fn SearchHud() -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
-    let mut query = use_signal(|| String::new());
-    let mut results = use_signal(|| Vec::<(String, String, String)>::new()); // (event_id, sender, body)
+    let mut query = use_signal(String::new);
+    let mut results = use_signal(Vec::<(String, String, String)>::new); // (event_id, sender, body)
     let mut current_idx = use_signal(|| 0usize);
     let mut searching = use_signal(|| false);
 
     let selected = ui.selected_room_id.read().clone();
     // Resolve thread IDs to real room IDs for search
     let search_room_id = selected.as_ref().map(|id| {
-        if id.starts_with("thread::") { id.splitn(3, "::").nth(1).unwrap_or(id).to_string() } else { id.clone() }
+        if id.starts_with("thread::") { id.split("::").nth(1).unwrap_or(id).to_string() } else { id.clone() }
     });
 
     let result_count = results.read().len();
@@ -1683,7 +1670,7 @@ fn extract_urls(text: &str) -> Vec<String> {
         .map(|w| w.trim_matches(|c: char| c == '`' || c == '<' || c == '>' || c == '"' || c == '\''))
         .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
         .take(2)
-        .map(|w| w.trim_end_matches(|c: char| c == '.' || c == ',' || c == ')' || c == ']').to_string())
+        .map(|w| w.trim_end_matches(['.', ',', ')', ']']).to_string())
         .collect()
 }
 
@@ -1779,7 +1766,7 @@ fn SpaceOverview(space_id: String) -> Element {
     });
 
     let rooms = space_rooms.read().clone().flatten().unwrap_or_default();
-    let mut invite_user = use_signal(|| String::new());
+    let mut invite_user = use_signal(String::new);
     let mut status_msg = use_signal(|| Option::<String>::None);
 
     rsx! {

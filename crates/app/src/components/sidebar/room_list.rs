@@ -18,7 +18,7 @@ pub fn RoomList() -> Element {
     let rooms_signal = ui.rooms.read();
     let selected = ui.selected_room_id.read().clone();
     let selected_space = ui.selected_space_id.read().clone();
-    let collapsed = use_signal(|| HashSet::<String>::new());
+    let collapsed = use_signal(HashSet::<String>::new);
 
     // Filter by space and group into sections — use indices to avoid cloning
     let space_filter: Option<Option<String>> = selected_space.as_ref().map(|sid| {

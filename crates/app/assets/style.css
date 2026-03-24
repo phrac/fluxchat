@@ -92,7 +92,6 @@ input:focus, textarea:focus {
   -webkit-animation: none !important;
   animation: none !important;
 }
-}
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }

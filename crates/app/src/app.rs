@@ -44,14 +44,11 @@ pub fn App() -> Element {
         let core = core.clone();
         spawn(async move {
             let mut ui = consume_context::<UiState>();
-            match fluxchat_core::auth::restore_session(&core).await {
-                Ok(Some((client, result))) => {
-                    ui.user_id.set(result.user_id);
-                    ui.display_name.set(result.display_name);
-                    ui.logged_in.set(true);
-                    start_sync_and_load(&core, &mut ui, &client).await;
-                }
-                _ => {}
+            if let Ok(Some((client, result))) = fluxchat_core::auth::restore_session(&core).await {
+                ui.user_id.set(result.user_id);
+                ui.display_name.set(result.display_name);
+                ui.logged_in.set(true);
+                start_sync_and_load(&core, &mut ui, &client).await;
             }
             ui.loading.set(false);
         });
@@ -179,7 +176,6 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
 
             // Spawn a task to periodically refresh room list (SyncService keeps SDK state updated)
             {
-                let _rls = sync_service.room_list_service();
                 let core = core.clone();
                 spawn(async move {
                     // Periodically refresh room list from the SDK (the sliding sync keeps it updated)
