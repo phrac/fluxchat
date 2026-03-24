@@ -54,6 +54,11 @@ pub fn MessageArea() -> Element {
             // Suppress all WebView sounds
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape' || e.key === 'Tab') e.preventDefault();
+                // Alt+1-9 (or Cmd+1-9 on Mac) to switch tabs
+                if ((e.altKey || e.metaKey) && e.key >= '1' && e.key <= '9') {
+                    e.preventDefault();
+                    dioxus.send('switchtab:' + e.key);
+                }
             });
             window.Audio = function() { return { play:()=>{}, pause:()=>{}, load:()=>{} }; };
             window.alert = () => {};
@@ -156,6 +161,17 @@ pub fn MessageArea() -> Element {
                             let el = document.getElementById('{}');
                             if (el) el.__fluxLoading = false;
                         "#, js_escape(&sid)));
+                    } else if msg.starts_with("switchtab:") {
+                        // Alt/Cmd+1-9 tab switching
+                        let idx_str = &msg[10..];
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            let idx = idx - 1; // Convert 1-based to 0-based
+                            let mut ui = consume_context::<UiState>();
+                            let tabs = ui.open_tabs.peek().clone();
+                            if let Some((room_id, _, _, _)) = tabs.get(idx) {
+                                ui.selected_room_id.set(Some(room_id.clone()));
+                            }
+                        }
                     } else if !msg.is_empty() {
                         // Mention pill click
                         let mut ui = consume_context::<UiState>();
@@ -533,12 +549,23 @@ fn RoomMessages(room_id: String) -> Element {
                 { let is_system = msg.event_id.starts_with("~state-") || msg.event_id.starts_with("~system-");
                   let eid = msg.event_id.clone();
                   if is_system {
+                    let (arrow, arrow_color) = if msg.body.contains("has joined") {
+                        ("-->", "var(--green)")
+                    } else if msg.body.contains("has left") {
+                        ("<--", "var(--red)")
+                    } else if msg.body.contains("was kicked") || msg.body.contains("was banned") {
+                        ("<--", "var(--red)")
+                    } else if msg.body.contains("was invited") {
+                        ("-->", "var(--accent-muted)")
+                    } else {
+                        ("---", "var(--text-dim)")
+                    };
                     rsx! {
                         div { key: "{eid}", style: "display: flex; padding: 2px 0; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); align-items: center;",
                             span { class: "msg-time", "" }
                             span { style: "width: 120px; flex-shrink: 0;" }
                             div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
-                            span { style: "color: var(--green); margin-right: 4px;", "-->" }
+                            span { style: "color: {arrow_color}; margin-right: 4px;", "{arrow}" }
                             "{msg.body}"
                         }
                     }

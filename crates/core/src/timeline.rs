@@ -158,10 +158,23 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
         }
 
         TimelineItemContent::MembershipChange(mc) => {
+            use matrix_sdk_ui::timeline::MembershipChange as MChange;
             let display = mc.display_name().unwrap_or_else(|| sender_name.clone());
+            let body = match mc.change() {
+                Some(MChange::Joined) | Some(MChange::InvitationAccepted) => format!("{display} has joined"),
+                Some(MChange::Left) => format!("{display} has left"),
+                Some(MChange::Banned) => format!("{display} was banned"),
+                Some(MChange::Unbanned) => format!("{display} was unbanned"),
+                Some(MChange::Kicked) => format!("{display} was kicked"),
+                Some(MChange::KickedAndBanned) => format!("{display} was kicked and banned"),
+                Some(MChange::Invited) => format!("{display} was invited"),
+                Some(MChange::InvitationRejected) => format!("{display} rejected the invite"),
+                Some(MChange::InvitationRevoked) => format!("{display}'s invite was revoked"),
+                _ => format!("{display} membership changed"),
+            };
             Some(MessageInfo {
                 event_id: format!("~state-{event_id}"), sender: String::new(), sender_name: String::new(),
-                body: format!("{display} membership changed"),
+                body,
                 formatted_body: None, transformed_body: None, image_mxc: None,
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,

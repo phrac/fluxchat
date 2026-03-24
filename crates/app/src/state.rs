@@ -68,6 +68,7 @@ pub struct UiState {
 
     pub settings_tab: Signal<String>,  // "account", "sessions"
     pub loading: Signal<bool>,
+    pub sync_lag_ms: Signal<u64>,
 
     // Resolved avatar data URIs — shared between render and background tasks
     pub _avatar_cache: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
@@ -283,6 +284,7 @@ impl UiState {
             room_settings_open: Signal::new(false),
             settings_tab: Signal::new("account".into()),
             loading: Signal::new(true),
+            sync_lag_ms: Signal::new(0),
             _avatar_cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             _avatar_version: Signal::new(0),
             open_tabs: Signal::new(Vec::new()),

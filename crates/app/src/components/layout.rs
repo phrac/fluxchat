@@ -21,6 +21,13 @@ pub fn MainLayout() -> Element {
     let member_count = selected_room.as_ref()
         .and_then(|id| ui.members_by_room.read().get(id).map(|m| m.len()))
         .unwrap_or(0);
+    let my_power = selected_room.as_ref()
+        .and_then(|id| {
+            let my_id = ui.user_id.peek().clone();
+            ui.members_by_room.read().get(id)
+                .and_then(|members| members.iter().find(|m| m.user_id == my_id).map(|m| m.power_level))
+        })
+        .unwrap_or(0);
     let is_encrypted = selected_room.as_ref()
         .and_then(|id| ui.rooms.read().iter().find(|r| r.room_id == *id).map(|r| r.is_encrypted))
         .unwrap_or(false);
@@ -162,6 +169,11 @@ pub fn MainLayout() -> Element {
             span { class: "sep", "│" }
             if let Some(_) = &selected_room {
                 span { "#{room_name}" }
+                if my_power >= 100 {
+                    span { style: "color: var(--yellow); font-family: var(--font-mono); font-size: 12px; margin-left: 4px;", "@" }
+                } else if my_power >= 50 {
+                    span { style: "color: var(--accent-muted); font-family: var(--font-mono); font-size: 12px; margin-left: 4px;", "+" }
+                }
                 span { class: "sep", "│" }
                 span { "{member_count} nicks" }
                 span { class: "sep", "│" }
@@ -177,7 +189,7 @@ pub fn MainLayout() -> Element {
                 span { "no channel selected" }
             }
             span { class: "sep", "│" }
-            span { style: "color: var(--green);", "synced" }
+            SyncLag {}
             span { class: "sep", "│" }
             DeviceStatus {}
         }
@@ -395,6 +407,49 @@ fn PinnedMessagesPanel() -> Element {
                 "Loading..."
             }
         },
+    }
+}
+
+/// Sync lag meter — periodically pings the homeserver and displays latency.
+#[component]
+fn SyncLag() -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+
+    // Periodically measure sync lag with a lightweight server request
+    use_future({
+        let app_state = app_state.clone();
+        move || {
+            let app_state = app_state.clone();
+            async move {
+                loop {
+                    if let Ok(client) = app_state.get_client().await {
+                        let start = std::time::Instant::now();
+                        // Use get_display_name as a lightweight server ping
+                        let _ = client.account().get_display_name().await;
+                        let lag = start.elapsed().as_millis() as u64;
+                        ui.sync_lag_ms.set(lag);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            }
+        }
+    });
+
+    let lag = *ui.sync_lag_ms.read();
+    let color = if lag == 0 {
+        "var(--green)"
+    } else if lag < 200 {
+        "var(--green)"
+    } else if lag < 1000 {
+        "var(--yellow)"
+    } else {
+        "var(--red)"
+    };
+    let label = if lag == 0 { "synced".to_string() } else { format!("{lag}ms") };
+
+    rsx! {
+        span { style: "color: {color}; font-family: var(--font-mono);", "{label}" }
     }
 }
 
