@@ -15,40 +15,39 @@ const ICO_SPACE: &str = r#"<svg width="16" height="16" viewBox="0 0 24 24" fill=
 pub fn RoomList() -> Element {
     let _core = use_context::<Arc<AppState>>();
     let mut ui = use_context::<UiState>();
-    let rooms = ui.rooms.read().clone();
+    let rooms_signal = ui.rooms.read();
     let selected = ui.selected_room_id.read().clone();
     let selected_space = ui.selected_space_id.read().clone();
     let collapsed = use_signal(|| HashSet::<String>::new());
 
-    // Filter rooms by space if one is selected
-    let filtered: Vec<_> = if let Some(ref sid) = selected_space {
-        let space_name = ui.spaces.read().iter()
-            .find(|s| s.room_id == *sid)
-            .map(|s| s.name.clone());
-        rooms.iter().filter(|r| r.space_name == space_name).cloned().collect()
-    } else {
-        rooms.clone()
-    };
+    // Filter by space and group into sections — use indices to avoid cloning
+    let space_filter: Option<Option<String>> = selected_space.as_ref().map(|sid| {
+        ui.spaces.peek().iter().find(|s| s.room_id == *sid).map(|s| s.name.clone())
+    });
 
-    // Group into sections
-    let mut favourites: Vec<RoomInfo> = Vec::new();
-    let mut ungrouped: Vec<RoomInfo> = Vec::new();
-    let mut by_space: std::collections::BTreeMap<String, Vec<RoomInfo>> = std::collections::BTreeMap::new();
-    let mut dms: Vec<RoomInfo> = Vec::new();
+    let mut favourites: Vec<usize> = Vec::new();
+    let mut ungrouped: Vec<usize> = Vec::new();
+    let mut by_space: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
+    let mut dms: Vec<usize> = Vec::new();
 
-    for room in filtered.iter() {
-        if room.is_favourite {
-            favourites.push(room.clone());
+    for (i, room) in rooms_signal.iter().enumerate() {
+        // Apply space filter
+        if let Some(ref filter_name) = space_filter {
+            if room.space_name != *filter_name { continue; }
         }
-        // Also place in original section
+        if room.is_favourite {
+            favourites.push(i);
+        }
         if room.is_direct {
-            dms.push(room.clone());
+            dms.push(i);
         } else if let Some(ref sn) = room.space_name {
-            by_space.entry(sn.clone()).or_default().push(room.clone());
+            by_space.entry(sn.clone()).or_default().push(i);
         } else {
-            ungrouped.push(room.clone());
+            ungrouped.push(i);
         }
     }
+    // Clone only when passing to child components
+    let rooms = &*rooms_signal;
 
     let core = use_context::<Arc<AppState>>();
 
@@ -124,12 +123,13 @@ pub fn RoomList() -> Element {
                 if !favourites.is_empty() {
                     SectionHeader { label: "Favourites".to_string(), collapsed: collapsed, section_key: "favourites".to_string(), icon: Some(r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#.to_string()), avatar_mxc: None }
                     if !collapsed_set.contains("favourites") {
-                        for room in favourites.iter() {
+                        for idx in favourites.iter() {
+                            { let room = &rooms[*idx];
                             if room.is_direct {
-                                DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                                rsx! { DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) } }
                             } else {
-                                RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
-                            }
+                                rsx! { RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) } }
+                            } }
                         }
                     }
                 }
@@ -138,22 +138,24 @@ pub fn RoomList() -> Element {
                 if !ungrouped.is_empty() {
                     SectionHeader { label: "Channels".to_string(), collapsed: collapsed, section_key: "channels".to_string(), icon: Some(ICO_HASH.to_string()), avatar_mxc: None }
                     if !collapsed_set.contains("channels") {
-                        for room in ungrouped.iter() {
-                            RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                        for idx in ungrouped.iter() {
+                            { let room = &rooms[*idx];
+                            rsx! { RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) } } }
                         }
                     }
                 }
 
                 // Space-grouped channels
-                for (space_name, space_rooms) in by_space.iter() {
+                for (space_name, space_indices) in by_space.iter() {
                     { let mxc = space_avatars.get(space_name).cloned().flatten();
                       rsx! {
                         SectionHeader { label: space_name.clone(), collapsed: collapsed, section_key: space_name.clone(), icon: Some(ICO_SPACE.to_string()), avatar_mxc: mxc }
                       }
                     }
                     if !collapsed_set.contains(space_name) {
-                        for room in space_rooms.iter() {
-                            RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                        for idx in space_indices.iter() {
+                            { let room = &rooms[*idx];
+                            rsx! { RoomEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) } } }
                         }
                     }
                 }
@@ -162,13 +164,14 @@ pub fn RoomList() -> Element {
                 if !dms.is_empty() {
                     SectionHeader { label: "Direct Messages".to_string(), collapsed: collapsed, section_key: "dms".to_string(), icon: Some(ICO_DM.to_string()), avatar_mxc: None }
                     if !collapsed_set.contains("dms") {
-                        for room in dms.iter() {
-                            DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) }
+                        for idx in dms.iter() {
+                            { let room = &rooms[*idx];
+                            rsx! { DmEntry { room: room.clone(), is_selected: selected.as_ref() == Some(&room.room_id) } } }
                         }
                     }
                 }
 
-                if filtered.is_empty() {
+                if favourites.is_empty() && ungrouped.is_empty() && by_space.is_empty() && dms.is_empty() {
                     div { style: "padding: 16px; text-align: center; color: var(--text-dim); font-size: 13px;",
                         "No rooms"
                     }

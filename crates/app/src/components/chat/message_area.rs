@@ -3,7 +3,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use fluxchat_core::AppState;
 
-use crate::state::{UiState, nick_color_index, transform_mentions};
+use crate::state::{UiState, nick_color_index, transform_mentions, highlight_code_blocks};
+
+/// Escape a string for safe interpolation into JavaScript string literals.
+fn js_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+     .replace('\'', "\\'")
+     .replace('"', "\\\"")
+     .replace('\n', "\\n")
+     .replace('\r', "\\r")
+}
 
 // Inline SVG icons — render identically on all platforms
 const ICO_PIN: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 11V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v7"/><path d="M5 15h14l-1.5-4H6.5z"/></svg>"#;
@@ -107,49 +116,6 @@ pub fn MessageArea() -> Element {
                 }
             });
 
-            // Minimal syntax highlighter for code blocks
-            (function() {
-              const KEYWORDS = new Set(['fn','let','mut','const','if','else','while','for','loop','match','return','use','pub','mod','struct','enum','impl','trait','async','await','move','self','super','crate','where','type','static','ref','in','as','break','continue','true','false','None','Some','Ok','Err','Self','dyn','extern','unsafe','macro','yield',
-                'function','var','class','import','export','from','default','new','this','typeof','instanceof','delete','void','throw','try','catch','finally','switch','case','do','with','of','extends','super',
-                'def','elif','except','finally','global','lambda','nonlocal','pass','raise','with','yield','print','range','len','assert','not','and','or','is','None','True','False',
-                'int','float','double','char','bool','string','String','str','i32','i64','u32','u64','f32','f64','usize','isize','Vec','HashMap','Option','Result','Box','Arc','Rc',
-                'null','undefined','NaN','Infinity','console','require','module','exports','prototype','constructor','abstract','interface','implements','package','private','protected','public','final','native','synchronized','transient','volatile','goto','throws']);
-
-              const TYPES_RE = /\b[A-Z][A-Za-z0-9_]*\b/g;
-
-              function highlight(el) {
-                if (el.dataset.highlighted) return;
-                el.dataset.highlighted = '1';
-                let text = el.textContent;
-                // Escape HTML
-                text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                // Tokenize
-                let html = text
-                  // Strings (double and single quoted, with escape handling)
-                  .replace(/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, '<span class="hl-str">$&</span>')
-                  // Line comments
-                  .replace(/(\/\/.*?$|#(?!include|define|ifdef|ifndef|endif|pragma|[A-Fa-f0-9]{3,8}\b).*?$)/gm, '<span class="hl-cmt">$&</span>')
-                  // Numbers
-                  .replace(/\b(0x[0-9a-fA-F_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*\.?[\d_]*(?:e[+-]?\d+)?(?:f32|f64|u32|i32|u64|i64|usize|isize)?)\b/g, '<span class="hl-num">$&</span>');
-                // Keywords (word boundary check)
-                html = html.replace(/\b([a-z_]\w*)\b/g, (m, w) => KEYWORDS.has(w) ? '<span class="hl-kw">' + w + '</span>' : m);
-                // Types (PascalCase)
-                html = html.replace(/\b([A-Z][A-Za-z0-9_]*)\b/g, '<span class="hl-type">$&</span>');
-                // Attributes/decorators
-                html = html.replace(/(#\[[\w:(),\s]*\]|@\w+)/g, '<span class="hl-attr">$&</span>');
-                el.innerHTML = html;
-              }
-
-              function highlightAll() {
-                document.querySelectorAll('pre code:not([data-highlighted])').forEach(highlight);
-              }
-
-              // Run on existing blocks
-              highlightAll();
-
-              // Watch for new code blocks
-              new MutationObserver(highlightAll).observe(document.body, { childList: true, subtree: true });
-            })();
         "#);
         loop {
             match eval.recv::<String>().await {
@@ -187,9 +153,9 @@ pub fn MessageArea() -> Element {
                         let sid = format!("msg-scroll-{}", room_id);
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         document::eval(&format!(r#"
-                            let el = document.getElementById('{sid}');
+                            let el = document.getElementById('{}');
                             if (el) el.__fluxLoading = false;
-                        "#));
+                        "#, js_escape(&sid)));
                     } else if !msg.is_empty() {
                         // Mention pill click
                         let mut ui = consume_context::<UiState>();
@@ -457,7 +423,7 @@ fn RoomMessages(room_id: String) -> Element {
             let room_id = room_id_pg.clone();
             document::eval(&format!(r#"
                 setTimeout(() => {{
-                    let el = document.getElementById('{sid}');
+                    let el = document.getElementById('{}');
                     if (!el || el.__fluxPgSetup) return;
                     el.__fluxPgSetup = true;
                     el.addEventListener('scroll', () => {{
@@ -469,11 +435,11 @@ fn RoomMessages(room_id: String) -> Element {
                         let atTop2 = (Math.abs(el.scrollTop) + el.clientHeight + 100) >= el.scrollHeight;
                         if ((atTop || atTop2) && !el.__fluxLoading) {{
                             el.__fluxLoading = true;
-                            if (window.__fluxchat_dioxus) window.__fluxchat_dioxus.send('paginate:{room_id}');
+                            if (window.__fluxchat_dioxus) window.__fluxchat_dioxus.send('paginate:{}');
                         }}
                     }});
                 }}, 50);
-            "#));
+            "#, js_escape(&sid), js_escape(&room_id)));
         });
     }
 
@@ -519,9 +485,9 @@ fn RoomMessages(room_id: String) -> Element {
                             // Scroll to bottom (which is scroll top in column-reverse)
                             let sid = scroll_id.clone();
                             document::eval(&format!(r#"
-                                let el = document.getElementById('{sid}');
+                                let el = document.getElementById('{}');
                                 if (el) el.scrollTop = 0;
-                            "#));
+                            "#, js_escape(&sid)));
                             // Clear the divider
                             ui.last_read_event.write().remove(&rid);
                         }
@@ -606,10 +572,10 @@ fn RoomMessages(room_id: String) -> Element {
                     let content_rsx = if msg.image_mxc.is_some() {
                         rsx! { InlineImage { room_id: room_id.clone(), event_id: msg.event_id.clone(), body: msg.body.clone(), image_mxc: msg.image_mxc.clone(), image_width: msg.image_width, image_height: msg.image_height } }
                     } else if let Some(ref transformed) = msg.transformed_body {
-                        rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } }
+                        let highlighted = highlight_code_blocks(transformed);
+                        rsx! { span { class: "msg-body", dangerous_inner_html: "{highlighted}" } }
                     } else if let Some(ref html) = msg.formatted_body {
-                        // Compute and save back to the message object if possible (requires write lock, so maybe just compute once)
-                        let transformed = transform_mentions(html, &mention_avatars);
+                        let transformed = highlight_code_blocks(&transform_mentions(html, &mention_avatars));
                         rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } }
                     } else {
                         rsx! { span { class: "msg-body", "{msg.body}" } }
@@ -694,7 +660,7 @@ fn RoomMessages(room_id: String) -> Element {
                                 // Hover actions
                                 if !is_local {
                                     div { class: if showing_react { "msg-actions has-picker" } else { "msg-actions" },
-                                        span { class: "msg-action", onclick: move |_| { react_menu_event.set(if react_menu_event.read().as_ref() == Some(&eid_react) { None } else { Some(eid_react.clone()) }); }, dangerous_inner_html: ICO_REACT }
+                                        span { class: "msg-action", onclick: move |_| { react_menu_event.set(if react_menu_event.peek().as_ref() == Some(&eid_react) { None } else { Some(eid_react.clone()) }); }, dangerous_inner_html: ICO_REACT }
                                         span { class: "msg-action", onclick: { let name = reply_name.clone(); let body = reply_body.clone(); let eid = eid_reply.clone(); move |_| { ui.reply_to.set(Some((eid.clone(), name.clone(), body.clone()))); ui.edit_event.set(None); } }, dangerous_inner_html: ICO_REPLY }
                                         span { class: "msg-action", onclick: { let body = msg.body.clone(); let fb = msg.formatted_body.clone(); let sn = msg.sender_name.clone(); move |_| { let mut ui = consume_context::<UiState>(); ui.forward_event.set(Some((body.clone(), fb.clone().unwrap_or_default(), Some(sn.clone())))); } }, dangerous_inner_html: ICO_FORWARD }
                                         span { class: "msg-action", onclick: { let eid = eid_pin.clone(); let rid = rid_pin.clone(); let app_state = app_state.clone(); move |_| { let eid = eid.clone(); let rid = rid.clone(); let app_state = app_state.clone(); spawn(async move { let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return }; let _ = fluxchat_core::messages::pin_message(&client, &rid, &eid).await; }); } }, dangerous_inner_html: ICO_PIN }
@@ -1181,7 +1147,7 @@ fn FilesHud() -> Element {
                                         el.classList.add('search-highlight');
                                         el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                                     }}
-                                "#, eid);
+                                "#, js_escape(&eid));
                                 let _ = document::eval(&js).await;
                             });
                         },
@@ -1245,7 +1211,7 @@ fn SearchHud() -> Element {
                         el.classList.add('search-highlight');
                         el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
                     }}
-                "#, eid);
+                "#, js_escape(&eid));
                 let _ = document::eval(&js).await;
             });
         }
@@ -1377,77 +1343,27 @@ fn SearchHud() -> Element {
     }
 }
 
+const ICO_MORE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>"#;
+
 /// Room action icons in the tab bar header.
 #[component]
 fn RoomActions() -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = consume_context::<Arc<AppState>>();
     let members_visible = *ui.show_member_list.read();
+    let mut menu_open = use_signal(|| false);
 
     let selected_rid = ui.selected_room_id.read().clone();
     let is_fav = selected_rid.as_ref().map(|id| ui.rooms.read().iter().any(|r| r.room_id == *id && r.is_favourite)).unwrap_or(false);
 
     rsx! {
         div { style: "display: flex; align-items: center; gap: 1px; padding: 0 8px; flex-shrink: 0;",
-            // Favourite
-            span {
-                class: if is_fav { "room-action active" } else { "room-action" },
-                title: if is_fav { "Remove favourite" } else { "Favourite" },
-                onclick: move |_| {
-                    let rid = ui.selected_room_id.peek().clone();
-                    if let Some(rid) = rid {
-                        let app = app_state.clone();
-                        let new_fav = !is_fav;
-                        spawn(async move {
-                            let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
-                            let _ = fluxchat_core::rooms::set_room_favourite(&client, &rid, new_fav).await;
-                        });
-                    }
-                },
-                dangerous_inner_html: ICO_STAR,
-            }
-            // Copy room link
-            span {
-                class: "room-action",
-                title: "Copy room link",
-                onclick: move |_| {
-                    if let Some(ref rid) = *ui.selected_room_id.peek() {
-                        let link = format!("https://matrix.to/#/{}", rid);
-                        spawn(async move {
-                            let js = format!("navigator.clipboard.writeText('{}');", link);
-                            let _ = document::eval(&js).await;
-                        });
-                    }
-                },
-                dangerous_inner_html: ICO_LINK,
-            }
-            // Pinned messages
-            span {
-                class: if *ui.pins_open.read() { "room-action active" } else { "room-action" },
-                title: "Pinned messages",
-                onclick: move |_| { let open = *ui.pins_open.read(); ui.pins_open.set(!open); },
-                dangerous_inner_html: ICO_PIN,
-            }
             // Search
             span {
                 class: if *ui.search_open.read() { "room-action active" } else { "room-action" },
                 title: "Search",
-                onclick: move |_| { let open = *ui.search_open.read(); ui.search_open.set(!open); },
+                onclick: move |_| { let open = *ui.search_open.peek(); ui.search_open.set(!open); },
                 dangerous_inner_html: ICO_SEARCH,
-            }
-            // Threads
-            span {
-                class: if *ui.threads_open.read() { "room-action active" } else { "room-action" },
-                title: "Threads",
-                onclick: move |_| { let open = *ui.threads_open.read(); ui.threads_open.set(!open); },
-                dangerous_inner_html: ICO_THREAD,
-            }
-            // Files
-            span {
-                class: if *ui.files_open.read() { "room-action active" } else { "room-action" },
-                title: "Files",
-                onclick: move |_| { let open = *ui.files_open.read(); ui.files_open.set(!open); },
-                dangerous_inner_html: ICO_FILE,
             }
             // Toggle member list
             span {
@@ -1460,8 +1376,87 @@ fn RoomActions() -> Element {
             span {
                 class: if *ui.room_settings_open.read() { "room-action active" } else { "room-action" },
                 title: "Room info",
-                onclick: move |_| { let v = *ui.room_settings_open.read(); ui.room_settings_open.set(!v); },
+                onclick: move |_| { let v = *ui.room_settings_open.peek(); ui.room_settings_open.set(!v); },
                 dangerous_inner_html: ICO_INFO,
+            }
+            // Overflow menu
+            div { style: "position: relative;",
+                span {
+                    class: if *menu_open.read() { "room-action active" } else { "room-action" },
+                    title: "More",
+                    onclick: move |_| { let v = *menu_open.peek(); menu_open.set(!v); },
+                    dangerous_inner_html: ICO_MORE,
+                }
+                if *menu_open.read() {
+                    // Backdrop to close menu
+                    div {
+                        style: "position: fixed; inset: 0; z-index: 49;",
+                        onclick: move |_| { menu_open.set(false); },
+                    }
+                    div { style: "position: absolute; right: 0; top: 100%; margin-top: 4px; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; min-width: 180px; z-index: 50; padding: 4px 0; box-shadow: 0 4px 12px rgba(0,0,0,0.3);",
+                        // Favourite
+                        div {
+                            class: "cmd-item",
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-normal); cursor: pointer;",
+                            onclick: move |_| {
+                                menu_open.set(false);
+                                let rid = ui.selected_room_id.peek().clone();
+                                if let Some(rid) = rid {
+                                    let app = app_state.clone();
+                                    let new_fav = !is_fav;
+                                    spawn(async move {
+                                        let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                        let _ = fluxchat_core::rooms::set_room_favourite(&client, &rid, new_fav).await;
+                                    });
+                                }
+                            },
+                            span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_STAR }
+                            if is_fav { "Remove favourite" } else { "Favourite" }
+                        }
+                        // Copy link
+                        div {
+                            class: "cmd-item",
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-normal); cursor: pointer;",
+                            onclick: move |_| {
+                                menu_open.set(false);
+                                if let Some(ref rid) = *ui.selected_room_id.peek() {
+                                    let link = format!("https://matrix.to/#/{}", rid);
+                                    spawn(async move {
+                                        let js = format!("navigator.clipboard.writeText('{}');", js_escape(&link));
+                                        let _ = document::eval(&js).await;
+                                    });
+                                }
+                            },
+                            span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_LINK }
+                            "Copy link"
+                        }
+                        div { style: "height: 1px; background: var(--border); margin: 4px 0;" }
+                        // Pins
+                        div {
+                            class: "cmd-item",
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-normal); cursor: pointer;",
+                            onclick: move |_| { menu_open.set(false); let open = *ui.pins_open.peek(); ui.pins_open.set(!open); },
+                            span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_PIN }
+                            "Pinned messages"
+                        }
+                        // Threads
+                        div {
+                            class: "cmd-item",
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-normal); cursor: pointer;",
+                            onclick: move |_| { menu_open.set(false); let open = *ui.threads_open.peek(); ui.threads_open.set(!open); },
+                            span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_THREAD }
+                            "Threads"
+                        }
+                        // Files
+                        div {
+                            class: "cmd-item",
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-normal); cursor: pointer;",
+                            onclick: move |_| { menu_open.set(false); let open = *ui.files_open.peek(); ui.files_open.set(!open); },
+                            span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_FILE }
+                            "Files"
+                        }
+                    }
+                }
             }
         }
     }

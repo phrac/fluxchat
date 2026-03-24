@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use crate::error::AppError;
 use crate::models::*;
+use crate::rooms::parse_room_id;
 
 fn extract_reply_info(relates_to: &Option<Relation<RoomMessageEventContentWithoutRelation>>) -> Option<String> {
     match relates_to {
@@ -27,7 +28,7 @@ fn extract_reply_info(relates_to: &Option<Relation<RoomMessageEventContentWithou
 }
 
 pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_token: Option<&str>) -> Result<PaginatedMessages, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
 
     let mut options = MessagesOptions::backward();
@@ -125,14 +126,14 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
 }
 
 pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str) -> Result<String, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let content = RoomMessageEventContent::text_plain(body);
     Ok(room.send(content).await?.event_id.to_string())
 }
 
 pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, reply_to_event_id: &str) -> Result<String, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(reply_to_event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
     let content = RoomMessageEventContentWithoutRelation::text_plain(body);
@@ -142,7 +143,7 @@ pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, 
 }
 
 pub async fn edit_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str, new_body: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
     let content = RoomMessageEventContentWithoutRelation::text_plain(new_body);
@@ -152,14 +153,14 @@ pub async fn edit_message(client: &matrix_sdk::Client, room_id: &str, event_id: 
 }
 
 pub async fn send_typing(client: &matrix_sdk::Client, room_id: &str, typing: bool) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.typing_notice(typing).await?;
     Ok(())
 }
 
 pub async fn send_reaction(client: &matrix_sdk::Client, room_id: &str, event_id: &str, emoji: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
     room.send(ReactionEventContent::from(Annotation::new(event_id, emoji.to_string()))).await?;
@@ -167,7 +168,7 @@ pub async fn send_reaction(client: &matrix_sdk::Client, room_id: &str, event_id:
 }
 
 pub async fn delete_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
     room.redact(&event_id, None, None).await.map_err(|e| AppError::Other(format!("Failed to delete: {e}")))?;
@@ -175,7 +176,7 @@ pub async fn delete_message(client: &matrix_sdk::Client, room_id: &str, event_id
 }
 
 pub async fn pin_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
 
@@ -190,7 +191,7 @@ pub async fn pin_message(client: &matrix_sdk::Client, room_id: &str, event_id: &
 }
 
 pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<MessageInfo>, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
 
     let pinned_ids: Vec<matrix_sdk::ruma::OwnedEventId> = room.get_state_events_static::<RoomPinnedEventsEventContent>().await.ok()
@@ -224,7 +225,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
 }
 
 pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<MemberInfo>, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let members = room.members(RoomMemberships::JOIN).await?;
     let store = client.state_store();
@@ -265,7 +266,7 @@ pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Res
 }
 
 pub async fn upload_file(client: &matrix_sdk::Client, room_id: &str, filename: &str, mime_type: &str, data: Vec<u8>) -> Result<String, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let content_type: mime::Mime = mime_type.parse().unwrap_or("application/octet-stream".parse().unwrap());
 
@@ -293,7 +294,7 @@ pub async fn upload_file(client: &matrix_sdk::Client, room_id: &str, filename: &
 }
 
 pub async fn send_read_receipt(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
     let receipts = matrix_sdk::room::Receipts::new().fully_read_marker(Some(event_id.clone())).public_read_receipt(Some(event_id));
@@ -309,7 +310,7 @@ pub async fn get_room_read_receipts(
 ) -> Result<Vec<crate::models::ReadReceipt>, AppError> {
     use matrix_sdk::ruma::events::receipt::{ReceiptType, ReceiptThread};
 
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
 
     let mut receipts = Vec::new();

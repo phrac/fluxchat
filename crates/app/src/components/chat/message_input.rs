@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use fluxchat_core::AppState;
 
-use crate::state::UiState;
+use crate::state::{UiState, html_escape};
 use crate::components::chat::emoji_picker::EmojiPicker;
 use crate::components::chat::commands::{self, CommandAction};
 
@@ -112,16 +112,29 @@ fn build_message_content(body: &str, member_map: &std::collections::HashMap<Stri
     let mut html = body.to_string();
     let plain = body.to_string();
 
-    // Newlines → <br> for multiline messages
-    if html.contains('\n') {
-        html = html.replace('\n', "<br>");
-        has_rich = true;
-    }
-
-    // Markdown formatting
+    // Markdown formatting first (before newline conversion, so code blocks preserve \n)
     if let Some(formatted) = simple_markdown_to_html(&html) {
         html = formatted;
         has_rich = true;
+    }
+
+    // Newlines → <br> only outside <pre> blocks
+    if html.contains('\n') {
+        let mut out = String::new();
+        let mut rest = html.as_str();
+        while let Some(pre_start) = rest.find("<pre>") {
+            out.push_str(&rest[..pre_start].replace('\n', "<br>"));
+            let after = &rest[pre_start..];
+            if let Some(pre_end) = after.find("</pre>") {
+                out.push_str(&after[..pre_end + 6]);
+                rest = &after[pre_end + 6..];
+            } else {
+                out.push_str(after);
+                rest = "";
+            }
+        }
+        out.push_str(&rest.replace('\n', "<br>"));
+        if out != html { html = out; has_rich = true; }
     }
 
     // Mention resolution — sort by name length descending to replace longer names first
@@ -131,8 +144,10 @@ fn build_message_content(body: &str, member_map: &std::collections::HashMap<Stri
     for (display_name, user_id) in &names {
         if display_name.len() > 1 && body.contains(display_name.as_str()) {
             has_rich = true;
+            let encoded_uid = user_id.replace('%', "%25").replace('"', "%22").replace('<', "%3C").replace('>', "%3E");
             let mention_html = format!(
-                r#"<a href="https://matrix.to/#/{user_id}">{display_name}</a>"#
+                r#"<a href="https://matrix.to/#/{encoded_uid}">{}</a>"#,
+                html_escape(display_name)
             );
             html = html.replace(display_name.as_str(), &mention_html);
         }
@@ -419,13 +434,19 @@ pub fn MessageInput() -> Element {
                     // Extract plain text from contenteditable, reading display names from pills
                     window.__fluxExtractText = function(node) {
                         let result = '';
-                        for (let child of (node || el).childNodes) {
+                        let children = Array.from((node || el).childNodes);
+                        for (let i = 0; i < children.length; i++) {
+                            let child = children[i];
                             if (child.nodeType === Node.TEXT_NODE) {
                                 result += child.textContent;
                             } else if (child.dataset && child.dataset.displayName) {
                                 result += child.dataset.displayName;
                             } else if (child.nodeName === 'BR') {
                                 result += '\n';
+                            } else if (child.nodeName === 'DIV' || child.nodeName === 'P') {
+                                // Block elements get a newline prefix (unless first child)
+                                if (i > 0) result += '\n';
+                                result += window.__fluxExtractText(child);
                             } else {
                                 result += child.innerText || '';
                             }
@@ -1013,7 +1034,7 @@ pub fn MessageInput() -> Element {
                             class: "cmd-btn",
                             style: "color: var(--text-dim); cursor: pointer; padding: 6px 8px; display: inline-flex; align-items: center; border-radius: 4px; transition: color 0.1s, background 0.1s;",
                             title: "Emoji",
-                            onclick: move |_| { let v = *emoji_open.read(); emoji_open.set(!v); },
+                            onclick: move |_| { let v = *emoji_open.peek(); emoji_open.set(!v); },
                             dangerous_inner_html: ICO_EMOJI,
                         }
                         if *emoji_open.read() {

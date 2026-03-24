@@ -8,6 +8,16 @@ use std::collections::HashMap;
 use crate::error::AppError;
 use crate::models::RoomInfo;
 
+/// Parse a room ID string, returning AppError on failure.
+pub fn parse_room_id(room_id: &str) -> Result<matrix_sdk::ruma::OwnedRoomId, AppError> {
+    matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other(format!("Invalid room ID: {room_id}")))
+}
+
+/// Parse a user ID string, returning AppError on failure.
+pub fn parse_user_id(user_id: &str) -> Result<matrix_sdk::ruma::OwnedUserId, AppError> {
+    matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| AppError::Other(format!("Invalid user ID: {user_id}")))
+}
+
 /// Build a map of room_id -> space display name by scanning all joined spaces.
 pub async fn build_space_map(client: &matrix_sdk::Client) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -172,46 +182,46 @@ pub async fn leave_room(client: &matrix_sdk::Client, room_id: &str) -> Result<()
 }
 
 pub async fn invite_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
-    let user_id = matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| AppError::Other("Invalid user ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
+    let user_id = parse_user_id(user_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.invite_user_by_id(&user_id).await?;
     Ok(())
 }
 
 pub async fn kick_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str, reason: Option<&str>) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
-    let user_id = matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| AppError::Other("Invalid user ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
+    let user_id = parse_user_id(user_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.kick_user(&user_id, reason).await.map_err(|e| AppError::Other(format!("Failed to kick: {e}")))?;
     Ok(())
 }
 
 pub async fn ban_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str, reason: Option<&str>) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
-    let user_id = matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| AppError::Other("Invalid user ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
+    let user_id = parse_user_id(user_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.ban_user(&user_id, reason).await.map_err(|e| AppError::Other(format!("Failed to ban: {e}")))?;
     Ok(())
 }
 
 pub async fn set_user_power_level(client: &matrix_sdk::Client, room_id: &str, user_id: &str, power_level: i64) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
-    let user_id = matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| AppError::Other("Invalid user ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
+    let user_id = parse_user_id(user_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.update_power_levels(vec![(&user_id, Int::new(power_level).unwrap_or(Int::MIN))]).await?;
     Ok(())
 }
 
 pub async fn set_room_name(client: &matrix_sdk::Client, room_id: &str, name: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.set_name(name.to_string()).await.map_err(|e| AppError::Other(format!("Failed to set name: {e}")))?;
     Ok(())
 }
 
 pub async fn set_room_topic(client: &matrix_sdk::Client, room_id: &str, topic: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.set_room_topic(topic).await.map_err(|e| AppError::Other(format!("Failed to set topic: {e}")))?;
     Ok(())
@@ -391,7 +401,7 @@ pub async fn list_public_rooms(
 
 /// Get room aliases (canonical + alt)
 pub async fn get_room_aliases(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<String>, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let mut aliases = Vec::new();
     if let Some(canonical) = room.canonical_alias() {
@@ -405,7 +415,7 @@ pub async fn get_room_aliases(client: &matrix_sdk::Client, room_id: &str) -> Res
 
 /// Add a room alias
 pub async fn add_room_alias(client: &matrix_sdk::Client, room_id: &str, alias: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let alias_id = matrix_sdk::ruma::RoomAliasId::parse(alias).map_err(|_| AppError::Other("Invalid alias (use #name:server format)".into()))?;
     // Create the alias on the server
     use matrix_sdk::ruma::api::client::alias::create_alias::v3::Request;
@@ -433,7 +443,7 @@ pub async fn remove_room_alias(client: &matrix_sdk::Client, alias: &str) -> Resu
 
 /// Get room notification mode: "all", "mentions", or "mute"
 pub async fn get_notification_mode(client: &matrix_sdk::Client, room_id: &str) -> Result<String, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let mode = room.notification_mode().await;
     Ok(match mode {
@@ -446,7 +456,7 @@ pub async fn get_notification_mode(client: &matrix_sdk::Client, room_id: &str) -
 
 /// Set room notification mode: "all", "mentions", or "mute"
 pub async fn set_notification_mode(client: &matrix_sdk::Client, room_id: &str, mode: &str) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let _room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let settings = client.notification_settings().await;
     use matrix_sdk::notification_settings::RoomNotificationMode;
@@ -462,14 +472,14 @@ pub async fn set_notification_mode(client: &matrix_sdk::Client, room_id: &str, m
 
 /// Check if a room is favourited.
 pub async fn is_room_favourite(client: &matrix_sdk::Client, room_id: &str) -> Result<bool, AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     Ok(room.is_favourite())
 }
 
 /// Toggle favourite status on a room.
 pub async fn set_room_favourite(client: &matrix_sdk::Client, room_id: &str, favourite: bool) -> Result<(), AppError> {
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.set_is_favourite(favourite, None).await.map_err(|e| AppError::Other(format!("Failed to set favourite: {e}")))?;
     Ok(())

@@ -148,13 +148,8 @@ input:focus, textarea:focus {
   color: var(--text-normal);
 }
 
-/* Syntax highlighting */
-.hl-kw { color: #c678dd; }       /* keywords — purple */
-.hl-str { color: #98c379; }       /* strings — green */
-.hl-cmt { color: #5c6370; font-style: italic; }  /* comments — dim italic */
-.hl-num { color: #d19a66; }       /* numbers — orange */
-.hl-type { color: #e5c07b; }      /* types — yellow */
-.hl-attr { color: #56b6c2; }      /* attributes — cyan */
+/* Syntax highlighting — syntect uses inline styles, override pre background */
+.msg-body pre code span { font-family: var(--font-mono); }
 
 .msg-body a {
   color: var(--accent);

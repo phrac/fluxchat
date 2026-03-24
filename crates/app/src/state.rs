@@ -85,6 +85,113 @@ pub fn nick_color_index(name: &str) -> u32 {
     hash % 15
 }
 
+/// Escape a string for safe inclusion in HTML content and attributes.
+pub fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+     .replace('\'', "&#39;")
+}
+
+/// Syntax-highlight code blocks in HTML using syntect.
+/// Finds `<pre><code class="language-xxx">...</code></pre>` and replaces the content with highlighted HTML.
+/// Also handles `<pre><code>...</code></pre>` without a language class (auto-detects or uses plain text).
+pub fn highlight_code_blocks(html: &str) -> String {
+    use syntect::highlighting::ThemeSet;
+    use syntect::html::highlighted_html_for_string;
+    use syntect::parsing::SyntaxSet;
+    use std::sync::LazyLock;
+
+    static SS: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+    static TS: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+
+    let mut result = String::with_capacity(html.len());
+    let mut remaining = html;
+
+    while let Some(pre_start) = remaining.find("<pre><code") {
+        result.push_str(&remaining[..pre_start]);
+        let after_pre = &remaining[pre_start..];
+
+        // Extract language class if present
+        let (lang, code_start) = if after_pre.starts_with("<pre><code class=\"language-") {
+            let class_start = "<pre><code class=\"language-".len();
+            if let Some(quote_end) = after_pre[class_start..].find('"') {
+                let lang = &after_pre[class_start..class_start + quote_end];
+                // Skip past the closing >
+                let tag_end = class_start + quote_end + 2; // ">"
+                (Some(lang.to_string()), tag_end)
+            } else {
+                (None, "<pre><code>".len())
+            }
+        } else if after_pre.starts_with("<pre><code>") {
+            (None, "<pre><code>".len())
+        } else {
+            // Not a pattern we handle — skip
+            result.push_str("<pre><code");
+            remaining = &after_pre["<pre><code".len()..];
+            continue;
+        };
+
+        // Find closing </code></pre>
+        let code_content = &after_pre[code_start..];
+        if let Some(end_pos) = code_content.find("</code></pre>") {
+            let raw_code = &code_content[..end_pos];
+            // Unescape HTML entities and convert <br> to newlines
+            let code = raw_code
+                .replace("<br>", "\n")
+                .replace("<br/>", "\n")
+                .replace("<br />", "\n")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("\n\n", "\n")
+                .trim_matches('\n')
+                .to_string();
+
+            // Find syntax by language or auto-detect
+            let syntax = lang.as_ref()
+                .and_then(|l| SS.find_syntax_by_token(l))
+                .unwrap_or_else(|| SS.find_syntax_plain_text());
+
+            let theme = &TS.themes["base16-ocean.dark"];
+
+            match highlighted_html_for_string(&code, &SS, syntax, theme) {
+                Ok(highlighted) => {
+                    // syntect wraps in <pre style="..."> — extract just the inner content
+                    // and wrap in our own <pre><code>
+                    let inner = if let Some(start) = highlighted.find('>') {
+                        let after = &highlighted[start + 1..];
+                        if let Some(end) = after.rfind("</pre>") {
+                            after[..end].trim_matches('\n')
+                        } else {
+                            after.trim_matches('\n')
+                        }
+                    } else {
+                        highlighted.trim_matches('\n')
+                    };
+                    result.push_str("<pre><code>");
+                    result.push_str(inner);
+                    result.push_str("</code></pre>");
+                }
+                Err(_) => {
+                    // Fallback: keep original
+                    result.push_str(&after_pre[..code_start + end_pos + "</code></pre>".len()]);
+                }
+            }
+            remaining = &code_content[end_pos + "</code></pre>".len()..];
+        } else {
+            // No closing tag found — keep as-is
+            result.push_str(after_pre);
+            remaining = "";
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
 /// Transform Matrix mention links into styled mention pills.
 /// `avatar_cache` maps user_id -> resolved data URI for avatars.
 pub fn transform_mentions(html: &str, avatar_cache: &HashMap<String, String>) -> String {
@@ -109,16 +216,20 @@ pub fn transform_mentions(html: &str, avatar_cache: &HashMap<String, String>) ->
                     let color_idx = nick_color_index(display_name);
 
                     // Build avatar HTML — real image or colored initial
+                    let escaped_uid = html_escape(&user_id);
+                    let escaped_name = html_escape(display_name);
                     let avatar_html = if let Some(data_uri) = avatar_cache.get(&user_id) {
-                        format!(r#"<img src="{data_uri}" style="width:14px;height:14px;border-radius:50%;object-fit:cover;vertical-align:middle;">"#)
+                        let escaped_uri = html_escape(data_uri);
+                        format!(r#"<img src="{escaped_uri}" style="width:14px;height:14px;border-radius:50%;object-fit:cover;vertical-align:middle;">"#)
                     } else {
                         let initial = display_name.chars().next()
                             .unwrap_or('?').to_uppercase().to_string();
-                        format!(r#"<span class="mention-avatar nick-{color_idx}">{initial}</span>"#)
+                        let escaped_initial = html_escape(&initial);
+                        format!(r#"<span class="mention-avatar nick-{color_idx}">{escaped_initial}</span>"#)
                     };
 
                     result.push_str(&format!(
-                        r#"<span class="mention-pill" data-userid="{user_id}" onclick="if(window.__fluxchat_dioxus)window.__fluxchat_dioxus.send(this.dataset.userid);">{avatar_html}{display_name}</span>"#
+                        r#"<span class="mention-pill" data-userid="{escaped_uid}" onclick="if(window.__fluxchat_dioxus)window.__fluxchat_dioxus.send(this.dataset.userid);">{avatar_html}{escaped_name}</span>"#
                     ));
                     continue;
                 }

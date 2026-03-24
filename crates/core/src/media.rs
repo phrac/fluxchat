@@ -5,6 +5,7 @@ use matrix_sdk::{
 
 use crate::db::AppDb;
 use crate::error::AppError;
+use crate::rooms::parse_room_id;
 
 /// Generate a thumbnail from image data. Returns (png_bytes, width, height) or None.
 pub fn generate_thumbnail(data: &[u8], max_w: u32, max_h: u32) -> Option<(Vec<u8>, u32, u32)> {
@@ -81,7 +82,7 @@ pub async fn get_event_media(
         return Ok(v);
     }
 
-    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
     let event = room.event(&event_id, None).await.map_err(|e| AppError::Other(format!("Failed to fetch event: {e}")))?;

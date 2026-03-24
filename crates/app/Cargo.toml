@@ -18,3 +18,4 @@ matrix-sdk-ui = "0.16"
 matrix-sdk = "0.16"
 open = "5.3.3"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-fancy"] }

@@ -154,7 +154,7 @@ pub fn MainLayout() -> Element {
         div { class: "status-bar",
             // Gear + avatar + name — all clickable to open settings
             div { style: "display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 0 2px; border-radius: 3px;",
-                onclick: move |_| { let v = *ui.settings_open.read(); ui.settings_open.set(!v); },
+                onclick: move |_| { let v = *ui.settings_open.peek(); ui.settings_open.set(!v); },
                 span { style: "font-size: 15px; opacity: 0.6;", "⚙" }
                 UserAvatar {}
                 span { style: "font-family: var(--font-mono); color: var(--green);", "{user_id}" }
