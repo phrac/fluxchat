@@ -183,7 +183,8 @@ pub fn MessageInput() -> Element {
     };
 
     let handle_send: Rc<RefCell<dyn FnMut(())>> = Rc::new(RefCell::new(move |_: ()| {
-        let mut body = text().trim().to_string();
+        // Trim both ASCII whitespace and non-breaking spaces (contenteditable inserts \u00A0)
+        let mut body = text().replace('\u{00A0}', " ").trim().to_string();
 
         // Handle slash commands via modular registry
         if body.starts_with('/') {
@@ -396,6 +397,8 @@ pub fn MessageInput() -> Element {
                             }
                         }
                         if (result === '\n') result = '';
+                        // Normalize non-breaking spaces to regular spaces
+                        result = result.replace(/\u00A0/g, ' ');
                         return result;
                     };
 
@@ -926,42 +929,36 @@ pub fn MessageInput() -> Element {
                         style: "color: var(--text-dim); cursor: pointer; padding: 6px 8px; display: inline-flex; align-items: center; flex-shrink: 0; border-radius: 4px; transition: color 0.1s, background 0.1s;",
                         title: "Attach file",
                         onclick: move |_| {
-                            spawn(async move {
-                                let mut eval = document::eval(r#"
+                            let _ = document::eval(r#"
+                                (function() {
                                     let input = document.createElement('input');
                                     input.type = 'file';
                                     input.accept = 'image/*,video/*,audio/*,application/*';
-                                    input.onchange = async () => {
+                                    input.style.display = 'none';
+                                    document.body.appendChild(input);
+                                    input.addEventListener('change', () => {
                                         if (input.files.length > 0) {
                                             let file = input.files[0];
                                             let reader = new FileReader();
                                             reader.onload = () => {
                                                 let base64 = reader.result.split(',')[1];
-                                                dioxus.send(JSON.stringify({
-                                                    name: file.name,
-                                                    type: file.type || 'application/octet-stream',
-                                                    data: base64
-                                                }));
+                                                if (window.__fluxchat_dioxus) {
+                                                    window.__fluxchat_dioxus.send('file:' + JSON.stringify({
+                                                        name: file.name,
+                                                        type: file.type || 'application/octet-stream',
+                                                        data: base64
+                                                    }));
+                                                }
+                                                input.remove();
                                             };
                                             reader.readAsDataURL(file);
+                                        } else {
+                                            input.remove();
                                         }
-                                    };
+                                    });
                                     input.click();
-                                "#);
-                                if let Ok(json) = eval.recv::<String>().await {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
-                                        let name = parsed["name"].as_str().unwrap_or("file").to_string();
-                                        let mime = parsed["type"].as_str().unwrap_or("application/octet-stream").to_string();
-                                        if let Some(b64) = parsed["data"].as_str() {
-                                            use base64::Engine;
-                                            if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                                                let mut ui = consume_context::<UiState>();
-                                                ui.upload_pending.set(Some((name, mime, data)));
-                                            }
-                                        }
-                                    }
-                                }
-                            });
+                                })();
+                            "#);
                         },
                         dangerous_inner_html: ICO_PLUS,
                     }

@@ -252,8 +252,18 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
                     style: "width: 18px; height: 18px; border-radius: 4px; object-fit: cover; flex-shrink: 0;",
                 }
             } else {
-                span { style: "font-family: var(--font-mono); opacity: 0.4; font-size: 12px; width: 18px; text-align: center; flex-shrink: 0;",
-                    if room.is_encrypted { "🔒" } else { "#" }
+                if room.is_direct {
+                    span { style: "width: 18px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; opacity: 0.35;",
+                        dangerous_inner_html: r#"<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>"#,
+                    }
+                } else if room.is_encrypted {
+                    span { style: "width: 18px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; opacity: 0.35;",
+                        dangerous_inner_html: r#"<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"#,
+                    }
+                } else {
+                    span { style: "font-family: var(--font-mono); opacity: 0.4; font-size: 12px; width: 18px; text-align: center; flex-shrink: 0;",
+                        "#"
+                    }
                 }
             }
             span { style: "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;",
@@ -500,6 +510,7 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
                 let core = core.clone();
                 spawn(async move {
                     futures_util::pin_mut!(stream);
+                    let mut last_receipt_fetch = std::time::Instant::now();
                     while let Some(_diffs) = stream.next().await {
                         // On any diff, re-convert the full timeline items (Strategy A: simple)
                         let items = timeline.items().await;
@@ -544,12 +555,49 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
                                 }
                             }
                         }
+
+                        // Debounced receipt refresh (every 5s)
+                        if last_receipt_fetch.elapsed() > std::time::Duration::from_secs(5) {
+                            last_receipt_fetch = std::time::Instant::now();
+                            let core = core.clone();
+                            let room_id = room_id.clone();
+                            spawn(async move {
+                                let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                                let ui = consume_context::<UiState>();
+                                let event_ids: Vec<String> = ui.messages_by_room.peek()
+                                    .get(&room_id)
+                                    .map(|msgs| msgs.iter().map(|m| m.event_id.clone()).collect())
+                                    .unwrap_or_default();
+                                if let Ok(receipts) = fluxchat_core::messages::get_room_read_receipts(&client, &room_id, &event_ids).await {
+                                    let mut ui = consume_context::<UiState>();
+                                    ui.receipts_by_room.write().insert(room_id, receipts);
+                                }
+                            });
+                        }
                     }
                 });
             }
 
             if let Ok(members) = fluxchat_core::messages::get_room_members(&client, &room_id).await {
-                ui.members_by_room.write().insert(room_id, members);
+                ui.members_by_room.write().insert(room_id.clone(), members);
+            }
+
+            // Fetch read receipts using recent event IDs
+            {
+                let core = core.clone();
+                let room_id = room_id.clone();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    let ui = consume_context::<UiState>();
+                    let event_ids: Vec<String> = ui.messages_by_room.peek()
+                        .get(&room_id)
+                        .map(|msgs| msgs.iter().map(|m| m.event_id.clone()).collect())
+                        .unwrap_or_default();
+                    if let Ok(receipts) = fluxchat_core::messages::get_room_read_receipts(&client, &room_id, &event_ids).await {
+                        let mut ui = consume_context::<UiState>();
+                        ui.receipts_by_room.write().insert(room_id, receipts);
+                    }
+                });
             }
         });
     }

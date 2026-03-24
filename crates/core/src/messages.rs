@@ -69,7 +69,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                     event_id: format!("~state-{}", member_ev.event_id), sender: String::new(), sender_name: String::new(),
                     body, formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                     reply_to_id: None, reply_to_sender: None, reply_to_body: None,
-                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None,
+                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None, image_width: None, image_height: None,
                 });
             }
         }
@@ -117,7 +117,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                 transformed_body: None, // Will be populated by UI if needed
                 image_mxc,
                 reactions, reply_to_id, reply_to_sender: None, reply_to_body: None,
-                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None,
+                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None, image_width: None, image_height: None,
             });
         }
     }
@@ -216,7 +216,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
                 reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),
-                thread_root: None, thread_count: None,
+                thread_root: None, thread_count: None, image_width: None, image_height: None,
             });
         }
     }
@@ -261,7 +261,27 @@ pub async fn upload_file(client: &matrix_sdk::Client, room_id: &str, filename: &
     let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let content_type: mime::Mime = mime_type.parse().unwrap_or("application/octet-stream".parse().unwrap());
-    let response = room.send_attachment(filename, &content_type, data, AttachmentConfig::new()).await.map_err(|e| AppError::Other(format!("Failed to upload: {e}")))?;
+
+    // Generate thumbnail for images
+    let config = if mime_type.starts_with("image/") {
+        if let Some((thumb_data, thumb_w, thumb_h)) = crate::media::generate_thumbnail(&data, 320, 240) {
+            use matrix_sdk::attachment::Thumbnail;
+            use matrix_sdk::ruma::UInt;
+            AttachmentConfig::new().thumbnail(Some(Thumbnail {
+                data: thumb_data.clone(),
+                content_type: mime::IMAGE_PNG,
+                height: UInt::from(thumb_h),
+                width: UInt::from(thumb_w),
+                size: UInt::try_from(thumb_data.len()).unwrap_or(UInt::from(0u32)),
+            }))
+        } else {
+            AttachmentConfig::new()
+        }
+    } else {
+        AttachmentConfig::new()
+    };
+
+    let response = room.send_attachment(filename, &content_type, data, config).await.map_err(|e| AppError::Other(format!("Failed to upload: {e}")))?;
     Ok(response.event_id.to_string())
 }
 
@@ -272,6 +292,54 @@ pub async fn send_read_receipt(client: &matrix_sdk::Client, room_id: &str, event
     let receipts = matrix_sdk::room::Receipts::new().fully_read_marker(Some(event_id.clone())).public_read_receipt(Some(event_id));
     room.send_multiple_receipts(receipts).await.map_err(|e| AppError::Other(format!("Failed to send receipt: {e}")))?;
     Ok(())
+}
+
+/// Fetch read receipts for a room by checking recent event IDs.
+pub async fn get_room_read_receipts(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    recent_event_ids: &[String],
+) -> Result<Vec<crate::models::ReadReceipt>, AppError> {
+    use matrix_sdk::ruma::events::receipt::{ReceiptType, ReceiptThread};
+
+    let room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let mut receipts = Vec::new();
+    let mut seen_users = std::collections::HashSet::new();
+
+    // Check the last 30 events for receipts
+    for eid_str in recent_event_ids.iter().rev().take(30) {
+        let event_id = match matrix_sdk::ruma::EventId::parse(eid_str) {
+            Ok(eid) => eid,
+            Err(_) => continue,
+        };
+        // Try both Main and Unthreaded thread types
+        for thread in [ReceiptThread::Main, ReceiptThread::Unthreaded] {
+            if let Ok(event_receipts) = room.load_event_receipts(ReceiptType::Read, thread, &event_id).await {
+                for (user_id, _receipt) in event_receipts {
+                    let uid_str = user_id.to_string();
+                    if seen_users.contains(&uid_str) { continue; }
+                    seen_users.insert(uid_str.clone());
+
+                    let (display_name, avatar_url) = if let Some(member) = room.get_member_no_sync(&user_id).await.ok().flatten() {
+                        let name = member.display_name().unwrap_or(user_id.localpart()).to_string();
+                        let avatar = member.avatar_url().map(|u| u.to_string());
+                        (name, avatar)
+                    } else {
+                        (user_id.localpart().to_string(), None)
+                    };
+                    receipts.push(crate::models::ReadReceipt {
+                        user_id: uid_str,
+                        event_id: eid_str.clone(),
+                        display_name,
+                        avatar_url,
+                    });
+                }
+            }
+        }
+    }
+    Ok(receipts)
 }
 
 /// Server-side message search result.

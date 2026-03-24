@@ -103,31 +103,33 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
 
             if let Some(message) = content.as_message() {
                 let body = message.body().to_string();
-                let (formatted_body, image_mxc) = match message.msgtype() {
+                let (formatted_body, image_mxc, image_width, image_height) = match message.msgtype() {
                     matrix_sdk::ruma::events::room::message::MessageType::Text(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None)
+                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
                         let mxc = match &img.source {
                             matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
                             matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
                         };
-                        (None, mxc)
+                        let w = img.info.as_ref().and_then(|i| i.width).and_then(|v| u32::try_from(v).ok());
+                        let h = img.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
+                        (None, mxc, w, h)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Notice(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None)
+                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Emote(t) => {
-                        (t.formatted.as_ref().map(|f| format!("* {}", f.body)), None)
+                        (t.formatted.as_ref().map(|f| format!("* {}", f.body)), None, None, None)
                     }
-                    _ => (None, None),
+                    _ => (None, None, None, None),
                 };
 
                 Some(MessageInfo {
                     event_id, sender, sender_name, body, formatted_body,
                     transformed_body: None, image_mxc, reactions, reply_to_id,
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
-                    thread_root, thread_count,
+                    thread_root, thread_count, image_width, image_height,
                 })
             } else {
                 Some(MessageInfo {
@@ -135,7 +137,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     body: "[unsupported]".into(), formatted_body: None,
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
                     reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
-                    thread_root, thread_count,
+                    thread_root, thread_count, image_width: None, image_height: None,
                 })
             }
         }
@@ -148,7 +150,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 formatted_body: None, transformed_body: None, image_mxc: None,
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
-                thread_root: None, thread_count: None,
+                thread_root: None, thread_count: None, image_width: None, image_height: None,
             })
         }
 

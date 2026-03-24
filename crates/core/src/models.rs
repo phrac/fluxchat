@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReadReceipt {
+    pub user_id: String,
+    pub event_id: String,
+    pub display_name: String,
+    pub avatar_url: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct RoomInfo {
     pub room_id: String,
@@ -30,6 +38,8 @@ pub struct MessageInfo {
     pub avatar_url: Option<String>,
     pub thread_root: Option<String>,      // event is in a thread (root event_id)
     pub thread_count: Option<u32>,        // event is a thread root (reply count)
+    pub image_width: Option<u32>,
+    pub image_height: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

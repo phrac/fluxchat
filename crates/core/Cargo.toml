@@ -15,5 +15,6 @@ anyhow = "1"
 thiserror = "2"
 base64 = "0.22"
 mime = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 matrix-sdk-ui = "0.16"
 open = "5"

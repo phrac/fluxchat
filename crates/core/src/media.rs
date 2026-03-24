@@ -1,10 +1,26 @@
 use matrix_sdk::{
-    media::{MediaFormat, MediaRequestParameters},
+    media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
     ruma::{events::room::MediaSource, MxcUri},
 };
 
 use crate::db::AppDb;
 use crate::error::AppError;
+
+/// Generate a thumbnail from image data. Returns (png_bytes, width, height) or None.
+pub fn generate_thumbnail(data: &[u8], max_w: u32, max_h: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let img = image::load_from_memory(data).ok()?;
+    let thumb = img.thumbnail(max_w, max_h);
+    let (w, h) = (thumb.width(), thumb.height());
+    let mut buf = std::io::Cursor::new(Vec::new());
+    thumb.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some((buf.into_inner(), w, h))
+}
+
+/// Get original image dimensions without full decode.
+pub fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let img = image::load_from_memory(data).ok()?;
+    Some((img.width(), img.height()))
+}
 
 pub fn bytes_to_data_uri(data: &[u8]) -> String {
     let content_type = if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) { "image/png" }
@@ -83,6 +99,39 @@ pub async fn get_event_media(
     let request = MediaRequestParameters { source, format: MediaFormat::File };
     let data = client.media().get_media_content(&request, true).await
         .map_err(|e| AppError::Other(format!("Failed to download: {e}")))?;
+    let data_uri = bytes_to_data_uri(&data);
+    let mut c = cache.lock().unwrap();
+    if c.len() >= 500 {
+        let keys: Vec<String> = c.keys().take(100).cloned().collect();
+        for k in keys { c.remove(&k); }
+    }
+    c.insert(cache_key.clone(), data_uri.clone());
+    drop(c);
+    db.cache_media(&cache_key, &data_uri);
+    Ok(data_uri)
+}
+
+/// Download a thumbnail of media with 3-tier cache.
+pub async fn get_media_thumbnail(
+    client: &matrix_sdk::Client,
+    db: &AppDb,
+    cache: &std::sync::Mutex<std::collections::HashMap<String, String>>,
+    mxc_uri: &str,
+    width: u32,
+    height: u32,
+) -> Result<String, AppError> {
+    let cache_key = format!("thumb:{}x{}:{}", width, height, mxc_uri);
+    { let c = cache.lock().unwrap(); if let Some(v) = c.get(&cache_key) { return Ok(v.clone()); } }
+    if let Some(v) = db.get_cached_media(&cache_key) {
+        cache.lock().unwrap().insert(cache_key, v.clone());
+        return Ok(v);
+    }
+    let mxc = <&MxcUri>::try_from(mxc_uri).map_err(|_| AppError::Other("Invalid MXC URI".into()))?;
+    let settings = MediaThumbnailSettings::new(width.into(), height.into());
+    let request = MediaRequestParameters { source: MediaSource::Plain(mxc.to_owned()), format: MediaFormat::Thumbnail(settings) };
+    // Don't fallback to full file here — let the caller handle encrypted media via get_event_media
+    let data = client.media().get_media_content(&request, true).await
+        .map_err(|e| AppError::Other(format!("Failed to download thumbnail: {e}")))?;
     let data_uri = bytes_to_data_uri(&data);
     let mut c = cache.lock().unwrap();
     if c.len() >= 500 {

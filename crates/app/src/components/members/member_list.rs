@@ -153,6 +153,11 @@ fn MemberRow(member: fluxchat_core::MemberInfo, avatar_src: Option<String>) -> E
             span { class: "{nick_class}", style: "font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
                 "{member.display_name}"
             }
+            if member.power_level >= 100 {
+                span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--yellow); flex-shrink: 0; opacity: 0.8;", title: "Admin ({member.power_level})" }
+            } else if member.power_level >= 50 {
+                span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent-muted); flex-shrink: 0; opacity: 0.8;", title: "Mod ({member.power_level})" }
+            }
         }
     }
 }

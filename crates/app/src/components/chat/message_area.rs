@@ -286,6 +286,18 @@ fn RoomMessages(room_id: String) -> Element {
     let all_messages = ui.messages_by_room.read().get(&room_id).cloned().unwrap_or_default();
     let ignored = ui.ignored_users.peek().clone();
 
+    // Build receipt map: event_id → Vec<ReadReceipt> (excluding self)
+    let receipt_map: HashMap<String, Vec<fluxchat_core::ReadReceipt>> = {
+        let receipts = ui.receipts_by_room.read().get(&room_id).cloned().unwrap_or_default();
+        let mut map: HashMap<String, Vec<fluxchat_core::ReadReceipt>> = HashMap::new();
+        for r in receipts {
+            if r.user_id != my_user_id {
+                map.entry(r.event_id.clone()).or_default().push(r);
+            }
+        }
+        map
+    };
+
     // Build thread reply counts BEFORE filtering (need all messages to count)
     let thread_counts: HashMap<String, u32> = {
         let mut counts = HashMap::new();
@@ -516,7 +528,7 @@ fn RoomMessages(room_id: String) -> Element {
 
                     // Optimization: Check if we have pre-computed transformed_body
                     let content_rsx = if msg.image_mxc.is_some() {
-                        rsx! { InlineImage { room_id: room_id.clone(), event_id: msg.event_id.clone(), body: msg.body.clone() } }
+                        rsx! { InlineImage { room_id: room_id.clone(), event_id: msg.event_id.clone(), body: msg.body.clone(), image_mxc: msg.image_mxc.clone(), image_width: msg.image_width, image_height: msg.image_height } }
                     } else if let Some(ref transformed) = msg.transformed_body {
                         rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } }
                     } else if let Some(ref html) = msg.formatted_body {
@@ -645,6 +657,29 @@ fn RoomMessages(room_id: String) -> Element {
                                     }
                                 }
                             }
+                            // Read receipts — right-aligned below the message row
+                            { if let Some(readers) = receipt_map.get(&eid) {
+                                let readers = readers.clone();
+                                rsx! {
+                                    div { style: "display: flex; justify-content: flex-end; padding: 0 12px 2px 0;",
+                                        for reader in readers.iter().take(8) {
+                                            { let initial = reader.display_name.chars().next().unwrap_or('?').to_uppercase().to_string();
+                                              let avatar = reader.avatar_url.as_ref().and_then(|mxc| {
+                                                  app_state.media_cache.lock().unwrap().get(mxc).cloned()
+                                              });
+                                            rsx! {
+                                                if let Some(ref src) = avatar {
+                                                    img { src: "{src}", title: "{reader.display_name}", style: "width: 14px; height: 14px; border-radius: 50%; object-fit: cover; margin-left: -2px; border: 1.5px solid var(--bg-main);" }
+                                                } else {
+                                                    div { title: "{reader.display_name}", style: "width: 14px; height: 14px; border-radius: 50%; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; font-size: 7px; font-weight: 600; color: var(--text-dim); margin-left: -2px; border: 1.5px solid var(--bg-main);",
+                                                        "{initial}"
+                                                    }
+                                                }
+                                            } }
+                                        }
+                                    }
+                                }
+                            } else { rsx! {} } }
                         }
                     }
                   }
@@ -662,7 +697,8 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
     let core = use_context::<Arc<AppState>>();
 
     let tab_class = if is_active { "channel-tab active" } else { "channel-tab" };
-    let label = format!("#{name}");
+    let is_dm = ui.rooms.peek().iter().any(|r| r.room_id == room_id && r.is_direct);
+    let label = if is_dm { name.clone() } else { format!("#{name}") };
 
     // Resolve space avatar
     let avatar_src = use_resource({
@@ -745,42 +781,88 @@ fn ChannelTab(room_id: String, name: String, space_name: Option<String>, space_a
 }
 
 #[component]
-fn InlineImage(room_id: String, event_id: String, body: String) -> Element {
+fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Option<String>, image_width: Option<u32>, image_height: Option<u32>) -> Element {
     let app_state = use_context::<Arc<AppState>>();
     let mut ui = use_context::<UiState>();
 
-    let image_data = use_resource(move || {
+    // Compute display size (constrain to 400x300 while maintaining aspect ratio)
+    let (display_w, display_h) = match (image_width, image_height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => {
+            let scale = f64::min(400.0 / w as f64, 300.0 / h as f64).min(1.0);
+            ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
+        }
+        _ => (400, 300),
+    };
+
+    // Clone for use in onclick (use_resource moves the originals)
+    let room_id_click = room_id.clone();
+    let event_id_click = event_id.clone();
+
+    // Load image via event (handles both encrypted and unencrypted media)
+    let thumbnail_data = use_resource(move || {
         let app_state = app_state.clone();
         let room_id = room_id.clone();
         let event_id = event_id.clone();
         async move {
             let client = app_state.get_client().await.ok()?;
-            fluxchat_core::media::get_event_media(
-                &client, &app_state.db, &app_state.media_cache, &room_id, &event_id
-            ).await.ok()
+            let real_room_id = if room_id.starts_with("thread::") {
+                room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+            } else {
+                room_id.clone()
+            };
+            let data = fluxchat_core::media::get_event_media(
+                &client, &app_state.db, &app_state.media_cache, &real_room_id, &event_id
+            ).await.ok()?;
+            Some((data, true))
         }
     });
 
-    let resolved = image_data.read().clone();
+    let resolved = thumbnail_data.read().clone();
+    let size_style = format!("width: {}px; height: {}px;", display_w, display_h);
+
     match resolved {
-        Some(Some(data_uri)) => {
+        Some(Some((data_uri, is_full))) if data_uri.starts_with("data:image/") => {
             let uri_for_click = data_uri.clone();
+            let is_full_res = is_full;
             rsx! {
                 div { style: "display: flex; flex-direction: column;",
                     img {
                         src: "{data_uri}",
                         alt: "{body}",
-                        style: "max-width: 400px; max-height: 300px; border-radius: 4px; margin: 2px 0; object-fit: contain; cursor: pointer;",
-                        onclick: move |_| { ui.lightbox_url.set(Some(uri_for_click.clone())); },
+                        style: "max-width: 400px; max-height: 300px; {size_style} border-radius: 4px; margin: 2px 0; object-fit: contain; cursor: pointer;",
+                        onclick: move |_| {
+                            if is_full_res {
+                                // Already have full res
+                                ui.lightbox_url.set(Some(uri_for_click.clone()));
+                            } else {
+                                // Load full-res for lightbox
+                                let uri = uri_for_click.clone();
+                                let app = consume_context::<Arc<AppState>>();
+                                let room_id = room_id_click.clone();
+                                let event_id = event_id_click.clone();
+                                spawn(async move {
+                                    let real_room_id = if room_id.starts_with("thread::") {
+                                        room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                                    } else { room_id.clone() };
+                                    let client = match app.get_client().await { Ok(c) => c, Err(_) => { consume_context::<UiState>().lightbox_url.set(Some(uri)); return; } };
+                                    match fluxchat_core::media::get_event_media(&client, &app.db, &app.media_cache, &real_room_id, &event_id).await {
+                                        Ok(full) => consume_context::<UiState>().lightbox_url.set(Some(full)),
+                                        Err(_) => consume_context::<UiState>().lightbox_url.set(Some(uri)),
+                                    }
+                                });
+                            }
+                        },
                     }
                 }
             }
         },
-        Some(None) => rsx! {
+        Some(Some(_)) | Some(None) => rsx! {
             span { class: "msg-body", style: "color: var(--text-dim);", "[image: {body}]" }
         },
         None => rsx! {
-            span { class: "msg-body", style: "color: var(--text-dim);", "[loading {body}...]" }
+            div { style: "max-width: 400px; max-height: 300px; {size_style} border-radius: 4px; margin: 2px 0; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px;",
+                "[loading {body}...]"
+            }
         },
     }
 }

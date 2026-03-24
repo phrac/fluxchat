@@ -159,7 +159,10 @@ pub fn MainLayout() -> Element {
                 span { "{member_count} nicks" }
                 span { class: "sep", "│" }
                 if is_encrypted {
-                    span { style: "color: var(--green);", "🔒 encrypted" }
+                    span { style: "color: var(--green); display: inline-flex; align-items: center; gap: 4px;",
+                        span { style: "display: inline-flex; opacity: 0.7;", dangerous_inner_html: r#"<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"# }
+                        "encrypted"
+                    }
                 } else {
                     span { "unencrypted" }
                 }
@@ -1306,6 +1309,12 @@ fn ProfileModal(user_id: String) -> Element {
                             span { style: "color: var(--text-muted);", "Role" }
                             span { style: "color: var(--text-normal);", "{role}" }
                         }
+                        if let Some(ref m) = member {
+                            div { style: "display: flex; justify-content: space-between;",
+                                span { style: "color: var(--text-muted);", "Power Level" }
+                                span { style: "color: var(--text-normal); font-family: var(--font-mono);", "{m.power_level}" }
+                            }
+                        }
                         div { style: "display: flex; justify-content: space-between;",
                             span { style: "color: var(--text-muted);", "Status" }
                             span { style: "color: {presence_color};", "{presence}" }
@@ -1314,6 +1323,70 @@ fn ProfileModal(user_id: String) -> Element {
                             span { style: "color: var(--text-muted);", "Server" }
                             span { style: "color: var(--text-normal); font-family: var(--font-mono);", "{server}" }
                         }
+                    }
+
+                    // Power level actions (promote/demote)
+                    { let is_self = ui.user_id.peek().as_str() == user_id;
+                      let my_id = ui.user_id.peek().clone();
+                      let target_pl = member.as_ref().map(|m| m.power_level).unwrap_or(0);
+                      let my_pl = ui.members_by_room.peek().values()
+                          .flat_map(|members| members.iter())
+                          .find(|m| m.user_id == my_id)
+                          .map(|m| m.power_level).unwrap_or(0);
+                      let can_change = !is_self && my_pl > target_pl;
+                      if can_change {
+                          let uid_op = user_id.clone();
+                          let app_op = app_state.clone();
+                          rsx! {
+                              div { style: "margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; gap: 12px; flex-wrap: wrap;",
+                                  if target_pl < 50 {
+                                      { let uid = uid_op.clone(); let app = app_op.clone();
+                                      rsx! {
+                                          span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--accent-muted); cursor: pointer;",
+                                              onclick: move |_| {
+                                                  let uid = uid.clone(); let app = app.clone();
+                                                  spawn(async move {
+                                                      let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                      let _ = fluxchat_core::rooms::set_user_power_level(&client, &consume_context::<UiState>().selected_room_id.peek().clone().unwrap_or_default(), &uid, 50).await;
+                                                  });
+                                              },
+                                              "promote to mod"
+                                          }
+                                      } }
+                                  }
+                                  if target_pl < 100 && my_pl >= 100 {
+                                      { let uid = uid_op.clone(); let app = app_op.clone();
+                                      rsx! {
+                                          span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--yellow); cursor: pointer;",
+                                              onclick: move |_| {
+                                                  let uid = uid.clone(); let app = app.clone();
+                                                  spawn(async move {
+                                                      let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                      let _ = fluxchat_core::rooms::set_user_power_level(&client, &consume_context::<UiState>().selected_room_id.peek().clone().unwrap_or_default(), &uid, 100).await;
+                                                  });
+                                              },
+                                              "promote to admin"
+                                          }
+                                      } }
+                                  }
+                                  if target_pl > 0 {
+                                      { let uid = uid_op.clone(); let app = app_op.clone();
+                                      rsx! {
+                                          span { style: "font-family: var(--font-mono); font-size: 12px; color: var(--red); cursor: pointer;",
+                                              onclick: move |_| {
+                                                  let uid = uid.clone(); let app = app.clone();
+                                                  spawn(async move {
+                                                      let client = match app.get_client().await { Ok(c) => c, Err(_) => return };
+                                                      let _ = fluxchat_core::rooms::set_user_power_level(&client, &consume_context::<UiState>().selected_room_id.peek().clone().unwrap_or_default(), &uid, 0).await;
+                                                  });
+                                              },
+                                              "demote to member"
+                                          }
+                                      } }
+                                  }
+                              }
+                          }
+                      } else { rsx! {} }
                     }
 
                     // Ignore/unignore button (don't show for own user)

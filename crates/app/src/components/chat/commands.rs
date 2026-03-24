@@ -378,6 +378,71 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/op",
+            usage: "<user> [level]",
+            description: "Set a user's power level (default 50)",
+            scope: CommandScope::Room,
+            execute: |args, room_id, core, ui| {
+                if args.is_empty() { return CommandAction::Noop; }
+                let rid = room_id.unwrap_or_default().to_string();
+                let parts: Vec<&str> = args.splitn(2, ' ').collect();
+                let user_input = parts[0].to_string();
+                let level: i64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
+                // Resolve display name → user_id
+                let user = if user_input.starts_with('@') {
+                    user_input
+                } else {
+                    let real_rid = if rid.starts_with("thread::") {
+                        rid.splitn(3, "::").nth(1).unwrap_or(&rid).to_string()
+                    } else { rid.clone() };
+                    ui.members_by_room.peek()
+                        .get(&real_rid)
+                        .and_then(|members| members.iter().find(|m|
+                            m.display_name.to_lowercase() == user_input.to_lowercase()
+                            || m.user_id.to_lowercase().contains(&user_input.to_lowercase())
+                        ))
+                        .map(|m| m.user_id.clone())
+                        .unwrap_or(user_input)
+                };
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    let _ = fluxchat_core::rooms::set_user_power_level(&client, &rid, &user, level).await;
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/deop",
+            usage: "<user>",
+            description: "Remove a user's power level (set to 0)",
+            scope: CommandScope::Room,
+            execute: |args, room_id, core, ui| {
+                if args.is_empty() { return CommandAction::Noop; }
+                let rid = room_id.unwrap_or_default().to_string();
+                let user_input = args.trim().to_string();
+                let user = if user_input.starts_with('@') {
+                    user_input
+                } else {
+                    let real_rid = if rid.starts_with("thread::") {
+                        rid.splitn(3, "::").nth(1).unwrap_or(&rid).to_string()
+                    } else { rid.clone() };
+                    ui.members_by_room.peek()
+                        .get(&real_rid)
+                        .and_then(|members| members.iter().find(|m|
+                            m.display_name.to_lowercase() == user_input.to_lowercase()
+                            || m.user_id.to_lowercase().contains(&user_input.to_lowercase())
+                        ))
+                        .map(|m| m.user_id.clone())
+                        .unwrap_or(user_input)
+                };
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    let _ = fluxchat_core::rooms::set_user_power_level(&client, &rid, &user, 0).await;
+                });
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
             name: "/topic",
             usage: "<text>",
             description: "Set the room topic",
@@ -432,42 +497,36 @@ pub fn all_commands() -> Vec<SlashCommand> {
             description: "Attach a file",
             scope: CommandScope::Room,
             execute: |_, _, _, _| {
-                spawn(async move {
-                    let mut eval = document::eval(r#"
+                let _ = document::eval(r#"
+                    (function() {
                         let input = document.createElement('input');
                         input.type = 'file';
                         input.accept = 'image/*,video/*,audio/*,application/*';
-                        input.onchange = async () => {
+                        input.style.display = 'none';
+                        document.body.appendChild(input);
+                        input.addEventListener('change', () => {
                             if (input.files.length > 0) {
                                 let file = input.files[0];
                                 let reader = new FileReader();
                                 reader.onload = () => {
                                     let base64 = reader.result.split(',')[1];
-                                    dioxus.send(JSON.stringify({
-                                        name: file.name,
-                                        type: file.type || 'application/octet-stream',
-                                        data: base64
-                                    }));
+                                    if (window.__fluxchat_dioxus) {
+                                        window.__fluxchat_dioxus.send('file:' + JSON.stringify({
+                                            name: file.name,
+                                            type: file.type || 'application/octet-stream',
+                                            data: base64
+                                        }));
+                                    }
+                                    input.remove();
                                 };
                                 reader.readAsDataURL(file);
+                            } else {
+                                input.remove();
                             }
-                        };
+                        });
                         input.click();
-                    "#);
-                    if let Ok(json) = eval.recv::<String>().await {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
-                            let name = parsed["name"].as_str().unwrap_or("file").to_string();
-                            let mime = parsed["type"].as_str().unwrap_or("application/octet-stream").to_string();
-                            if let Some(b64) = parsed["data"].as_str() {
-                                use base64::Engine;
-                                if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                                    let mut ui = consume_context::<UiState>();
-                                    ui.upload_pending.set(Some((name, mime, data)));
-                                }
-                            }
-                        }
-                    }
-                });
+                    })();
+                "#);
                 CommandAction::Handled
             },
         },

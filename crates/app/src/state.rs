@@ -42,6 +42,7 @@ pub struct UiState {
     pub messages_by_room: Signal<HashMap<String, Vec<MessageInfo>>>,
     pub members_by_room: Signal<HashMap<String, Vec<MemberInfo>>>,
     pub typing_by_room: Signal<HashMap<String, Vec<String>>>,
+    pub receipts_by_room: Signal<HashMap<String, Vec<fluxchat_core::ReadReceipt>>>,
     pub profile_user_id: Signal<Option<String>>,
 
     // Message action state
@@ -146,6 +147,7 @@ impl UiState {
             messages_by_room: Signal::new(HashMap::new()),
             members_by_room: Signal::new(HashMap::new()),
             typing_by_room: Signal::new(HashMap::new()),
+            receipts_by_room: Signal::new(HashMap::new()),
             profile_user_id: Signal::new(None),
             reply_to: Signal::new(None),
             edit_event: Signal::new(None),

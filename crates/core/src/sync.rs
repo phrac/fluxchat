@@ -107,7 +107,7 @@ pub fn spawn_sync<C: SyncCallbacks>(client: Client, callbacks: C) {
                         reply_to_body: None,
                         timestamp: ev.origin_server_ts.as_secs().into(),
                         avatar_url,
-                        thread_root: None, thread_count: None,
+                        thread_root: None, thread_count: None, image_width: None, image_height: None,
                     };
 
                     cb.on_message(room.room_id().to_string(), msg);
@@ -199,7 +199,7 @@ pub fn spawn_sync<C: SyncCallbacks>(client: Client, callbacks: C) {
                             reply_to_body: None,
                             timestamp: ev.origin_server_ts.as_secs().into(),
                             avatar_url: None,
-                            thread_root: None, thread_count: None,
+                            thread_root: None, thread_count: None, image_width: None, image_height: None,
                         };
 
                         cb.on_membership_change(room.room_id().to_string(), msg);

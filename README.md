@@ -18,15 +18,15 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 ## Features
 
-**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker, replies with context, message editing and deletion (up-arrow to edit last message). Multiline input with Shift+Enter. Markdown formatting (**bold**, *italic*, ~~strike~~, `code`, ```codeblocks```). Unread indicators with divider lines and floating "new messages" pill.
+**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker, replies with context, message editing and deletion (up-arrow to edit last message). Multiline input with Shift+Enter. Markdown formatting (**bold**, *italic*, ~~strike~~, `code`, ```codeblocks```). Read receipt avatars displayed per message. Unread indicators with divider lines and floating "new messages" pill.
 
 **Threads** — Thread indicators on messages with reply counts. Click to open thread as a dedicated tab. Threads HUD dropdown lists all threads in a room. Thread replies sent with proper `m.thread` relation. Live updates via diff stream sync.
 
 **Rooms & Spaces** — Room list grouped by space with collapsible sections and avatars, space sidebar, room creation with encryption toggles, room settings, space overview. Room invitations with accept/reject. Room upgrade/tombstone detection with follow button.
 
-**Slash Commands** — Modular command registry with autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`), messaging (`/me`, `/msg`, `/attach`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`), discovery (`/users`, `/directory`, `/threads`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
+**Slash Commands** — Modular command registry with autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`), messaging (`/me`, `/msg`, `/attach`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`), discovery (`/users`, `/directory`, `/threads`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
 
-**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach`. 3-tier media cache (memory, SQLite, network). URL previews from the Matrix server's preview API.
+**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews from the Matrix server's preview API.
 
 **Security** — End-to-end encryption via matrix-sdk. SAS emoji verification. Key backup and recovery (enable, recover with key/passphrase). Session management with device listing, verification status, and remote sign-out. Cross-signing status display.
 
@@ -34,7 +34,7 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 **Authentication** — Username/password login. SSO/OIDC support with auto-detection, provider-specific buttons, and browser-based auth flow. Session persistence and restore.
 
-**User Management** — Ignore/block users (`/ignore`, `/unignore`) with message filtering. Profile modals with ignore button. Presence display and `/away` status.
+**User Management** — Ignore/block users (`/ignore`, `/unignore`) with message filtering. Profile modals with ignore button, power level display, and promote/demote actions. Power level badges in member list. Presence display and `/away` status.
 
 **Settings** — Sidebar-navigated settings: `/account` (profile, avatar, banner), `/sessions` (device management, remote sign-out), `/security` (key backup, recovery, cross-signing status). All accessible via slash commands.
 
