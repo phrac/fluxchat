@@ -86,7 +86,7 @@ cargo run -p fluxchat-app
 - `SlashCommand` struct: name, usage, description, scope (Global/Room/TextRewrite), execute fn
 - `dispatch()` looks up and executes, `autocomplete_entries()` feeds the popup
 - `CommandAction` enum: Handled, Rewrite(String), ShowHelp(String), Noop
-- 38+ commands: /join /leave /part /invite /kick /ban /topic /op /deop /nick /me /msg /attach /forward /whois /query /ignore /unignore /users /directory /threads /mute /unmute /status /slap /troutslap /shrug /tableflip /unflip /lenny /spoiler /settings /sessions /security /account /away /quit /clear /help
+- 43+ commands: /join /leave /part /invite /kick /ban /topic /op /deop /nick /me /msg /attach /forward /whois /query /ignore /unignore /users /directory /threads /mute /unmute /status /highlight /unhighlight /timestamp /compact /joinpart /slap /troutslap /shrug /tableflip /unflip /lenny /spoiler /settings /sessions /security /account /away /quit /clear /help
 
 ## Settings Modal
 - Sidebar-navigated: /account, /sessions, /security tabs

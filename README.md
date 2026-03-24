@@ -63,7 +63,7 @@ fluxchat/
 │           └── components/
 │               ├── layout.rs          # MainLayout, modals, status bar, threads
 │               ├── chat/
-│               │   ├── commands.rs    # Modular slash command registry (38+ commands)
+│               │   ├── commands.rs    # Modular slash command registry (43+ commands)
 │               │   ├── message_area.rs # Tabs, messages, HUDs (pins/search/threads/files)
 │               │   ├── message_input.rs # Contenteditable input, mention pills, formatting
 │               │   └── emoji_picker.rs  # Categorized emoji with search

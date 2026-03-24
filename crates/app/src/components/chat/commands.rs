@@ -735,21 +735,32 @@ pub fn all_commands() -> Vec<SlashCommand> {
         },
         SlashCommand {
             name: "/unhighlight",
-            usage: "<word>",
-            description: "Remove a highlight word",
+            usage: "[word]",
+            description: "Remove a highlight word (or list all)",
             scope: CommandScope::Global,
             execute: |args, _, core, mut ui| {
                 let word = args.trim().to_lowercase();
                 if word.is_empty() {
-                    return CommandAction::ShowHelp("Usage: /unhighlight <word>".into());
+                    let words = ui.highlight_words.read().clone();
+                    if words.is_empty() {
+                        return CommandAction::ShowHelp("No highlight words set. Use /highlight <word> to add one.".into());
+                    }
+                    return CommandAction::ShowHelp(format!("Highlight words: {}", words.join(", ")));
                 }
                 let mut words = ui.highlight_words.read().clone();
+                if !words.iter().any(|w| w == &word) {
+                    return CommandAction::ShowHelp(format!("'{word}' not in list. Current: {}", words.join(", ")));
+                }
                 words.retain(|w| w != &word);
                 ui.highlight_words.set(words.clone());
                 if let Ok(json) = serde_json::to_string(&words) {
                     let _ = core.db.set_setting("highlight_words", &json);
                 }
-                CommandAction::ShowHelp(format!("Removed highlight word: {word}"))
+                if words.is_empty() {
+                    CommandAction::ShowHelp(format!("Removed '{word}'. No highlight words remaining."))
+                } else {
+                    CommandAction::ShowHelp(format!("Removed '{word}'. Remaining: {}", words.join(", ")))
+                }
             },
         },
         SlashCommand {
