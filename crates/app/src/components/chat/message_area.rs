@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use fluxchat_core::AppState;
 
-use crate::state::{UiState, nick_color_index, transform_mentions, highlight_code_blocks};
+use crate::state::{UiState, nick_color_index, transform_mentions, highlight_code_blocks, html_escape};
 
 /// Escape a string for safe interpolation into JavaScript string literals.
 fn js_escape(s: &str) -> String {
@@ -475,7 +475,7 @@ fn RoomMessages(room_id: String) -> Element {
         }
         // Floating "new messages" pill
         if new_msg_count > 0 {
-            div { style: "position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5;",
+            div { style: "position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); z-index: 5;",
                 div {
                     style: "background: var(--accent-muted); color: var(--bg-deep); font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 3px 12px; border-radius: 12px; cursor: pointer; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.3);",
                     onclick: {
@@ -577,6 +577,9 @@ fn RoomMessages(room_id: String) -> Element {
                     } else if let Some(ref html) = msg.formatted_body {
                         let transformed = highlight_code_blocks(&transform_mentions(html, &mention_avatars));
                         rsx! { span { class: "msg-body", dangerous_inner_html: "{transformed}" } }
+                    } else if msg.body.contains('\n') {
+                        let body_html = html_escape(&msg.body).replace('\n', "<br>");
+                        rsx! { span { class: "msg-body", dangerous_inner_html: "{body_html}" } }
                     } else {
                         rsx! { span { class: "msg-body", "{msg.body}" } }
                     };
