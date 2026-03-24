@@ -209,7 +209,7 @@ fn TabBar() -> Element {
     let selected = ui.selected_room_id.read().clone();
 
     rsx! {
-        div { style: "display: flex; align-items: center; height: 36px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--bg-dark);",
+        div { style: "display: flex; align-items: center; height: 40px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--bg-dark);",
             div { style: "display: flex; align-items: center; flex: 1; min-width: 0; padding: 0 8px; gap: 0; overflow-x: auto;",
                 for (id, name, space, space_mxc) in tabs.iter() {
                     ChannelTab {
@@ -643,13 +643,13 @@ fn RoomMessages(room_id: String) -> Element {
                                 }
                             }
                             div { class: if is_highlighted { "msg-row msg-highlight" } else { "msg-row" }, style: "display: flex; padding: 1px 0; align-items: flex-start;",
-                                span { class: "msg-time", style: "align-self: baseline;", "{time}" }
+                                span { class: "msg-time", style: "line-height: 20px;", "{time}" }
                                 if let Some(src) = avatar_src {
-                                    img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px;" }
+                                    img { src: "{src}", style: "width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex-shrink: 0; margin-right: 4px; margin-top: 2px;" }
                                 } else {
-                                    div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; background: var(--bg-light);", "{initial}" }
+                                    div { class: "{nick_class}", style: "width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; color: white; flex-shrink: 0; margin-right: 4px; margin-top: 2px; background: var(--bg-light);", "{initial}" }
                                 }
-                                span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; align-self: baseline;",
+                                span { style: "width: 100px; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px;",
                                     span { class: "{nick_class}", style: "font-weight: 600; font-family: var(--font-mono); font-size: 13px;", "{msg.sender_name}" }
                                 }
                                 div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }

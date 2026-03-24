@@ -504,10 +504,12 @@ fn DeviceStatus() -> Element {
         let label = if is_verified { "verified" } else { "unverified" };
         let short_id = if device_id.len() > 10 { &device_id[..10] } else { &device_id };
         let tooltip = format!("{} ({}/{} devices verified)", device_id, verified, total);
+        let mut ui = consume_context::<UiState>();
         rsx! {
             span {
-                style: "color: {color}; font-family: var(--font-mono);",
+                style: "color: {color}; font-family: var(--font-mono); cursor: pointer;",
                 title: "{tooltip}",
+                onclick: move |_| { ui.settings_tab.set("security".into()); ui.settings_open.set(true); },
                 "{icon} {label}"
             }
             span { style: "color: var(--text-dim); font-family: var(--font-mono); margin-left: 4px; font-size: 10px;",
