@@ -320,3 +320,68 @@ pub async fn send_dm(client: &matrix_sdk::Client, user_id: &str, body: &str) -> 
 
     Ok(())
 }
+
+/// User search result.
+#[derive(Clone, Debug)]
+pub struct UserSearchResult {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+/// Search the user directory.
+pub async fn search_users(client: &matrix_sdk::Client, query: &str, limit: u64) -> Result<Vec<UserSearchResult>, AppError> {
+    let response = client.search_users(query, limit).await
+        .map_err(|e| AppError::Other(format!("User search failed: {e}")))?;
+    Ok(response.results.iter().map(|u| UserSearchResult {
+        user_id: u.user_id.to_string(),
+        display_name: u.display_name.clone(),
+        avatar_url: u.avatar_url.as_ref().map(|u| u.to_string()),
+    }).collect())
+}
+
+/// Public room listing result.
+#[derive(Clone, Debug)]
+pub struct PublicRoomResult {
+    pub room_id: String,
+    pub name: Option<String>,
+    pub alias: Option<String>,
+    pub topic: Option<String>,
+    pub num_members: u64,
+    pub avatar_url: Option<String>,
+}
+
+/// List public rooms, optionally filtered by search term.
+pub async fn list_public_rooms(
+    client: &matrix_sdk::Client,
+    search: Option<&str>,
+    limit: Option<u32>,
+    since: Option<&str>,
+) -> Result<(Vec<PublicRoomResult>, Option<String>), AppError> {
+    use matrix_sdk::ruma::api::client::directory::get_public_rooms_filtered;
+    use matrix_sdk::ruma::directory::Filter;
+
+    let mut request = get_public_rooms_filtered::v3::Request::new();
+    if let Some(term) = search {
+        request.filter = Filter::new();
+        request.filter.generic_search_term = Some(term.to_string());
+    }
+    if let Some(l) = limit {
+        request.limit = Some(l.into());
+    }
+    request.since = since.map(|s| s.to_string());
+
+    let response = client.send(request).await
+        .map_err(|e| AppError::Other(format!("Public rooms listing failed: {e}")))?;
+
+    let rooms: Vec<PublicRoomResult> = response.chunk.iter().map(|r| PublicRoomResult {
+        room_id: r.room_id.to_string(),
+        name: r.name.clone(),
+        alias: r.canonical_alias.as_ref().map(|a| a.to_string()),
+        topic: r.topic.clone(),
+        num_members: r.num_joined_members.into(),
+        avatar_url: r.avatar_url.as_ref().map(|u| u.to_string()),
+    }).collect();
+
+    Ok((rooms, response.next_batch))
+}

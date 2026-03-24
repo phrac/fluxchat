@@ -56,6 +56,7 @@ pub struct UiState {
     pub read_rooms: Signal<std::collections::HashSet<String>>,  // rooms we've marked as read this session
     pub last_read_event: Signal<HashMap<String, String>>,  // room_id -> last event_id when room was read
     pub ignored_users: Signal<std::collections::HashSet<String>>,  // user IDs we're ignoring
+    pub help_text: Signal<Option<String>>,  // shared help text for command results
     pub upload_pending: Signal<Option<(String, String, Vec<u8>)>>,  // (filename, mime_type, data)
     pub lightbox_url: Signal<Option<String>>,  // data URI for full-size image viewer
     pub create_room_open: Signal<bool>,
@@ -156,6 +157,7 @@ impl UiState {
             read_rooms: Signal::new(std::collections::HashSet::new()),
             last_read_event: Signal::new(HashMap::new()),
             ignored_users: Signal::new(std::collections::HashSet::new()),
+            help_text: Signal::new(None),
             upload_pending: Signal::new(None),
             lightbox_url: Signal::new(None),
             create_room_open: Signal::new(false),

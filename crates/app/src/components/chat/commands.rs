@@ -78,6 +78,75 @@ pub fn all_commands() -> Vec<SlashCommand> {
         },
         // ── Room commands ────────────────────────────────────────
         SlashCommand {
+            name: "/users",
+            usage: "<query>",
+            description: "Search for Matrix users",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                if args.is_empty() { return CommandAction::Noop; }
+                let query = args.to_string();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    match fluxchat_core::rooms::search_users(&client, &query, 20).await {
+                        Ok(results) => {
+                            if results.is_empty() {
+                                ui.help_text.set(Some(format!("No users found for '{query}'")));
+                            } else {
+                                let mut lines = vec![format!("Found {} users:", results.len()), String::new()];
+                                for u in &results {
+                                    let name = u.display_name.as_deref().unwrap_or("");
+                                    if name.is_empty() {
+                                        lines.push(format!("  {}", u.user_id));
+                                    } else {
+                                        lines.push(format!("  {} — {}", u.user_id, name));
+                                    }
+                                }
+                                lines.push(String::new());
+                                lines.push("Use /query <user> to open a DM, /whois <user> for profile".into());
+                                ui.help_text.set(Some(lines.join("\n")));
+                            }
+                        }
+                        Err(e) => { ui.help_text.set(Some(format!("Search failed: {e}"))); }
+                    }
+                });
+                CommandAction::ShowHelp(format!("Searching for '{args}'..."))
+            },
+        },
+        SlashCommand {
+            name: "/directory",
+            usage: "[search]",
+            description: "Browse public rooms",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                let query = if args.is_empty() { None } else { Some(args.to_string()) };
+                let args_display = args.to_string();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    let search = query.as_deref();
+                    match fluxchat_core::rooms::list_public_rooms(&client, search, Some(20), None).await {
+                        Ok((rooms, _next)) => {
+                            if rooms.is_empty() {
+                                ui.help_text.set(Some("No public rooms found".into()));
+                            } else {
+                                let mut lines = vec![format!("Public rooms ({}):", rooms.len()), String::new()];
+                                for r in &rooms {
+                                    let name = r.name.as_deref().unwrap_or("(unnamed)");
+                                    let alias = r.alias.as_deref().unwrap_or(&r.room_id);
+                                    lines.push(format!("  {} — {} ({} members)", alias, name, r.num_members));
+                                }
+                                lines.push(String::new());
+                                lines.push("Use /join <alias> to join a room".into());
+                                ui.help_text.set(Some(lines.join("\n")));
+                            }
+                        }
+                        Err(e) => { ui.help_text.set(Some(format!("Directory failed: {e}"))); }
+                    }
+                });
+                let msg = if args_display.is_empty() { "Loading public rooms...".into() } else { format!("Searching rooms for '{args_display}'...") };
+                CommandAction::ShowHelp(msg)
+            },
+        },
+        SlashCommand {
             name: "/security",
             usage: "",
             description: "Open security settings",

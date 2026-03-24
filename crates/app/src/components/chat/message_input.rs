@@ -24,7 +24,7 @@ pub fn MessageInput() -> Element {
     let mut uploading = use_signal(|| false);
     let mut typing_sent = use_signal(|| false);
     let mut emoji_open = use_signal(|| false);
-    let mut help_text = use_signal(|| Option::<String>::None);
+    // Use shared help_text signal so async commands can update it too
 
     let reply_to = ui.reply_to.read().clone();
     let edit_event = ui.edit_event.read().clone();
@@ -69,17 +69,17 @@ pub fn MessageInput() -> Element {
             match commands::dispatch(&body, room_id.as_deref(), core.clone(), ui.clone()) {
                 CommandAction::Handled => {
                     text.set(String::new());
-                    help_text.set(None);
+                    ui.help_text.set(None);
                     return;
                 }
                 CommandAction::Rewrite(new_body) => {
                     body = new_body;
-                    help_text.set(None);
+                    ui.help_text.set(None);
                     // Fall through to normal send
                 }
                 CommandAction::ShowHelp(msg) => {
                     text.set(String::new());
-                    help_text.set(Some(msg));
+                    ui.help_text.set(Some(msg));
                     return;
                 }
                 CommandAction::Noop => {
@@ -331,15 +331,20 @@ pub fn MessageInput() -> Element {
               } else { rsx! {} }
             }
             // Help text display
-            if let Some(ref msg) = *help_text.read() {
+            { let help_ui = use_context::<UiState>();
+              let help_val = help_ui.help_text.read().clone();
+              if let Some(ref msg) = help_val {
+                rsx! {
                 div { style: "margin: 0 12px 4px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); white-space: pre-wrap; line-height: 1.6; position: relative;",
                     span {
                         style: "position: absolute; top: 4px; right: 8px; cursor: pointer; color: var(--text-dim); font-size: 14px;",
-                        onclick: move |_| { help_text.set(None); },
+                        onclick: move |_| { consume_context::<UiState>().help_text.set(None); },
                         "×"
                     }
                     "{msg}"
                 }
+                }
+              } else { rsx! {} }
             }
 
             // ── The command bar ──────────────────────────────────────
@@ -464,7 +469,7 @@ pub fn MessageInput() -> Element {
                                     ui.reply_to.set(None);
                                     ui.edit_event.set(None);
                                     text.set(String::new());
-                                    help_text.set(None);
+                                    ui.help_text.set(None);
                                 }
                             }
                         },
