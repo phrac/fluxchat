@@ -270,7 +270,12 @@ fn RoomEntry(room: RoomInfo, is_selected: bool) -> Element {
                 "{name}"
             }
             if room.unread_count > 0 {
-                span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;" }
+                { let count_label = if room.unread_count > 99 { "99+".to_string() } else { room.unread_count.to_string() };
+                rsx! {
+                    span { style: "min-width: 16px; height: 16px; border-radius: 8px; background: var(--accent); flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; padding: 0 4px; font-family: var(--font-mono);",
+                        "{count_label}"
+                    }
+                } }
             }
         }
     }
@@ -328,7 +333,12 @@ fn DmEntry(room: RoomInfo, is_selected: bool) -> Element {
                 "{room.name}"
             }
             if has_unread {
-                span { style: "width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;" }
+                { let count_label = if room.unread_count > 99 { "99+".to_string() } else { room.unread_count.to_string() };
+                rsx! {
+                    span { style: "min-width: 16px; height: 16px; border-radius: 8px; background: var(--accent); flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; padding: 0 4px; font-family: var(--font-mono);",
+                        "{count_label}"
+                    }
+                } }
             }
         }
     }

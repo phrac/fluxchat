@@ -42,12 +42,46 @@ fn simple_markdown_to_html(input: &str) -> Option<String> {
     let mut out = input.to_string();
     let mut changed = false;
 
-    // Code blocks first: ```...\n...\n```
-    let (s, c) = replace_delimited(&out, "```\n", "<pre><code>", "</code></pre>");
-    if c { changed = true; out = s; } else {
-        // Try ``` without trailing newline (single-line code blocks)
-        let (s, c) = replace_delimited(&out, "```", "<pre><code>", "</code></pre>");
-        if c { changed = true; out = s; }
+    // Code blocks: ```lang\n...\n``` or ```\n...\n``` or ```...```
+    {
+        let mut result = String::new();
+        let mut src = out.as_str();
+        let mut found = false;
+        while let Some(start) = src.find("```") {
+            result.push_str(&src[..start]);
+            let after = &src[start + 3..];
+            // Extract optional language tag (up to first newline or `)
+            let (lang, code_start) = if let Some(nl) = after.find('\n') {
+                let tag = after[..nl].trim();
+                if !tag.is_empty() && tag.len() < 20 && tag.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '+' || c == '#') {
+                    (Some(tag.to_string()), nl + 1)
+                } else if tag.is_empty() {
+                    (None, nl + 1)
+                } else {
+                    (None, 0)
+                }
+            } else {
+                (None, 0)
+            };
+            let rest = &after[code_start..];
+            if let Some(end) = rest.find("```") {
+                let code = &rest[..end];
+                if let Some(ref lang) = lang {
+                    result.push_str(&format!("<pre><code class=\"language-{}\">", lang));
+                } else {
+                    result.push_str("<pre><code>");
+                }
+                result.push_str(code);
+                result.push_str("</code></pre>");
+                src = &rest[end + 3..];
+                found = true;
+            } else {
+                result.push_str("```");
+                src = after;
+            }
+        }
+        result.push_str(src);
+        if found { changed = true; out = result; }
     }
 
     // Inline code: `...`

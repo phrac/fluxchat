@@ -100,6 +100,50 @@ pub fn MessageArea() -> Element {
                     }
                 }
             });
+
+            // Minimal syntax highlighter for code blocks
+            (function() {
+              const KEYWORDS = new Set(['fn','let','mut','const','if','else','while','for','loop','match','return','use','pub','mod','struct','enum','impl','trait','async','await','move','self','super','crate','where','type','static','ref','in','as','break','continue','true','false','None','Some','Ok','Err','Self','dyn','extern','unsafe','macro','yield',
+                'function','var','class','import','export','from','default','new','this','typeof','instanceof','delete','void','throw','try','catch','finally','switch','case','do','with','of','extends','super',
+                'def','elif','except','finally','global','lambda','nonlocal','pass','raise','with','yield','print','range','len','assert','not','and','or','is','None','True','False',
+                'int','float','double','char','bool','string','String','str','i32','i64','u32','u64','f32','f64','usize','isize','Vec','HashMap','Option','Result','Box','Arc','Rc',
+                'null','undefined','NaN','Infinity','console','require','module','exports','prototype','constructor','abstract','interface','implements','package','private','protected','public','final','native','synchronized','transient','volatile','goto','throws']);
+
+              const TYPES_RE = /\b[A-Z][A-Za-z0-9_]*\b/g;
+
+              function highlight(el) {
+                if (el.dataset.highlighted) return;
+                el.dataset.highlighted = '1';
+                let text = el.textContent;
+                // Escape HTML
+                text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                // Tokenize
+                let html = text
+                  // Strings (double and single quoted, with escape handling)
+                  .replace(/(["'`])(?:(?!\1|\\).|\\.)*?\1/g, '<span class="hl-str">$&</span>')
+                  // Line comments
+                  .replace(/(\/\/.*?$|#(?!include|define|ifdef|ifndef|endif|pragma|[A-Fa-f0-9]{3,8}\b).*?$)/gm, '<span class="hl-cmt">$&</span>')
+                  // Numbers
+                  .replace(/\b(0x[0-9a-fA-F_]+|0b[01_]+|0o[0-7_]+|\d[\d_]*\.?[\d_]*(?:e[+-]?\d+)?(?:f32|f64|u32|i32|u64|i64|usize|isize)?)\b/g, '<span class="hl-num">$&</span>');
+                // Keywords (word boundary check)
+                html = html.replace(/\b([a-z_]\w*)\b/g, (m, w) => KEYWORDS.has(w) ? '<span class="hl-kw">' + w + '</span>' : m);
+                // Types (PascalCase)
+                html = html.replace(/\b([A-Z][A-Za-z0-9_]*)\b/g, '<span class="hl-type">$&</span>');
+                // Attributes/decorators
+                html = html.replace(/(#\[[\w:(),\s]*\]|@\w+)/g, '<span class="hl-attr">$&</span>');
+                el.innerHTML = html;
+              }
+
+              function highlightAll() {
+                document.querySelectorAll('pre code:not([data-highlighted])').forEach(highlight);
+              }
+
+              // Run on existing blocks
+              highlightAll();
+
+              // Watch for new code blocks
+              new MutationObserver(highlightAll).observe(document.body, { childList: true, subtree: true });
+            })();
         "#);
         loop {
             match eval.recv::<String>().await {
@@ -1214,6 +1258,7 @@ fn RoomActions() -> Element {
 /// Extract URLs from message text.
 fn extract_urls(text: &str) -> Vec<String> {
     text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| c == '`' || c == '<' || c == '>' || c == '"' || c == '\''))
         .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
         .take(2)
         .map(|w| w.trim_end_matches(|c: char| c == '.' || c == ',' || c == ')' || c == ']').to_string())
@@ -1225,6 +1270,7 @@ fn extract_urls(text: &str) -> Vec<String> {
 fn UrlPreviewCard(url: String) -> Element {
     let app_state = use_context::<Arc<AppState>>();
 
+    // Fetch preview + resolve og:image in a single resource
     let preview = use_resource({
         let app_state = app_state.clone();
         let url = url.clone();
@@ -1233,16 +1279,30 @@ fn UrlPreviewCard(url: String) -> Element {
             let url = url.clone();
             async move {
                 let client = app_state.get_client().await.ok()?;
-                fluxchat_core::preview::get_url_preview(&client, &app_state.media_cache, &url).await.ok()?
+                let p = fluxchat_core::preview::get_url_preview(&client, &app_state.media_cache, &url).await.ok()??;
+                // Resolve og:image if present
+                let image_data_uri = if let Some(ref mxc) = p.image_url {
+                    if mxc.starts_with("mxc://") {
+                        fluxchat_core::media::get_media_url(&client, &app_state.db, &app_state.media_cache, mxc).await.ok()
+                    } else if mxc.starts_with("http://") || mxc.starts_with("https://") {
+                        Some(mxc.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                Some((p, image_data_uri))
             }
         }
     });
 
     let resolved = preview.read().clone().flatten();
 
-    if let Some(p) = resolved {
+    if let Some((p, image_data_uri)) = resolved {
         rsx! {
-            div { style: "display: flex; gap: 8px; padding: 4px 8px; margin: 4px 0; border-left: 2px solid var(--border); max-width: 400px;",
+            div { style: "display: flex; gap: 8px; padding: 4px 8px; margin: 4px 0; border-left: 2px solid var(--border); max-width: 400px; cursor: pointer;",
+                onclick: { let url = url.clone(); move |_| { let _ = open::that(&url); } },
                 div { style: "min-width: 0; flex: 1;",
                     if let Some(ref site) = p.site_name {
                         div { style: "font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); text-transform: uppercase;",
@@ -1258,6 +1318,12 @@ fn UrlPreviewCard(url: String) -> Element {
                         div { style: "font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;",
                             { desc.chars().take(150).collect::<String>() }
                         }
+                    }
+                }
+                if let Some(ref src) = image_data_uri {
+                    img {
+                        src: "{src}",
+                        style: "width: 60px; height: 60px; border-radius: 4px; object-fit: cover; flex-shrink: 0; align-self: center;",
                     }
                 }
             }
