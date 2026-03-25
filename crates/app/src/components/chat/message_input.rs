@@ -143,13 +143,38 @@ fn build_message_content(body: &str, member_map: &std::collections::HashMap<Stri
 
     for (display_name, user_id) in &names {
         if display_name.len() > 1 && body.contains(display_name.as_str()) {
-            has_rich = true;
+            // Only replace word-bounded occurrences (not inside URLs or other words)
             let encoded_uid = user_id.replace('%', "%25").replace('"', "%22").replace('<', "%3C").replace('>', "%3E");
             let mention_html = format!(
                 r#"<a href="https://matrix.to/#/{encoded_uid}">{}</a>"#,
                 html_escape(display_name)
             );
-            html = html.replace(display_name.as_str(), &mention_html);
+            let mut new_html = String::with_capacity(html.len());
+            let name = display_name.as_str();
+            let mut search = html.as_str();
+            let mut replaced = false;
+            while let Some(pos) = search.find(name) {
+                // Check character before match — skip if part of URL/word
+                let before = if pos > 0 { search.as_bytes()[pos - 1] } else { b' ' };
+                let after_pos = pos + name.len();
+                let after = if after_pos < search.len() { search.as_bytes()[after_pos] } else { b' ' };
+                let before_ok = !before.is_ascii_alphanumeric() && before != b'/' && before != b'.' && before != b'-' && before != b'_';
+                let after_ok = !after.is_ascii_alphanumeric() && after != b'/' && after != b'.' && after != b'-' && after != b'_';
+                if before_ok && after_ok {
+                    new_html.push_str(&search[..pos]);
+                    new_html.push_str(&mention_html);
+                    search = &search[after_pos..];
+                    replaced = true;
+                } else {
+                    new_html.push_str(&search[..after_pos]);
+                    search = &search[after_pos..];
+                }
+            }
+            new_html.push_str(search);
+            if replaced {
+                html = new_html;
+                has_rich = true;
+            }
         }
     }
 

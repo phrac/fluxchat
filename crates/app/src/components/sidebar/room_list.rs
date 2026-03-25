@@ -148,7 +148,9 @@ pub fn RoomList() -> Element {
 
                 // Space-grouped channels
                 for (space_name, (space_id, space_indices)) in by_space.iter() {
-                    { let mxc = space_id.as_ref()
+                    { // Use selected space ID if a space is selected, otherwise use the room's space_id
+                      let effective_sid = selected_space.as_ref().or(space_id.as_ref());
+                      let mxc = effective_sid
                         .and_then(|sid| space_avatars.get(sid).cloned().flatten());
                       rsx! {
                         SectionHeader { label: space_name.clone(), collapsed: collapsed, section_key: space_name.clone(), icon: Some(ICO_SPACE.to_string()), avatar_mxc: mxc }
