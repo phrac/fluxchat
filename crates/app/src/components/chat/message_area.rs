@@ -1457,7 +1457,7 @@ fn SearchHud() -> Element {
     rsx! {
         div { style: "position: relative;",
             div { class: "search-hud",
-                span { style: "color: var(--text-dim); font-size: 14px;", "⌕" }
+                span { style: "color: var(--text-dim); display: inline-flex;", dangerous_inner_html: r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>"# }
                 input {
                     r#type: "text",
                     placeholder: "search messages...",
@@ -1810,7 +1810,11 @@ fn SpaceOverview(space_id: String) -> Element {
                                 }
                             },
                             span { style: "color: var(--text-dim); font-size: 12px;",
-                                if encrypted { "🔒" } else { "#" }
+                                if encrypted {
+                                    span { style: "display: inline-flex; opacity: 0.5;", dangerous_inner_html: r#"<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"# }
+                                } else {
+                                    "#"
+                                }
                             }
                             span { style: "flex: 1;", "{rname}" }
                             if unread > 0 {

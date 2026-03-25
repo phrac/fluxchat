@@ -161,7 +161,7 @@ pub fn MainLayout() -> Element {
             // Gear + avatar + name — all clickable to open settings
             div { style: "display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 0 2px; border-radius: 3px;",
                 onclick: move |_| { let v = *ui.settings_open.peek(); ui.settings_open.set(!v); },
-                span { style: "font-size: 15px; opacity: 0.6;", "⚙" }
+                span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"# }
                 UserAvatar {}
                 span { style: "font-family: var(--font-mono); color: var(--green);", "{user_id}" }
             }
@@ -491,10 +491,10 @@ fn DeviceStatus() -> Element {
     let resolved = status.read().clone().flatten();
 
     if let Some((device_id, is_verified, verified, total)) = resolved {
-        let (icon, color) = if is_verified {
-            ("✓", "var(--green)")
+        let (icon_svg, color) = if is_verified {
+            (r#"<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"#, "var(--green)")
         } else {
-            ("✗", "var(--yellow)")
+            (r#"<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>"#, "var(--yellow)")
         };
         let label = if is_verified { "verified" } else { "unverified" };
         let short_id = if device_id.len() > 10 { &device_id[..10] } else { &device_id };
@@ -502,10 +502,11 @@ fn DeviceStatus() -> Element {
         let mut ui = consume_context::<UiState>();
         rsx! {
             span {
-                style: "color: {color}; font-family: var(--font-mono); cursor: pointer;",
+                style: "color: {color}; font-family: var(--font-mono); cursor: pointer; display: inline-flex; align-items: center; gap: 4px;",
                 title: "{tooltip}",
                 onclick: move |_| { ui.settings_tab.set("security".into()); ui.settings_open.set(true); },
-                "{icon} {label}"
+                span { style: "display: inline-flex;", dangerous_inner_html: icon_svg }
+                "{label}"
             }
             span { style: "color: var(--text-dim); font-family: var(--font-mono); margin-left: 4px; font-size: 10px;",
                 title: "{device_id}",
@@ -1040,10 +1041,10 @@ fn SessionRow(device: fluxchat_core::devices::DeviceInfo, is_current: bool) -> E
         &device.device_id
     };
 
-    let (verified_icon, verified_color, verified_label) = if device.is_verified {
-        ("✓", "var(--green)", "verified")
+    let (verified_icon_svg, verified_color, verified_label) = if device.is_verified {
+        (r#"<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"#, "var(--green)", "verified")
     } else {
-        ("✗", "var(--yellow)", "unverified")
+        (r#"<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>"#, "var(--yellow)", "unverified")
     };
 
     // Format last seen time
@@ -1078,8 +1079,9 @@ fn SessionRow(device: fluxchat_core::devices::DeviceInfo, is_current: bool) -> E
                         "this device"
                     }
                 }
-                span { style: "font-size: 11px; color: {verified_color};",
-                    "{verified_icon} {verified_label}"
+                span { style: "font-size: 11px; color: {verified_color}; display: inline-flex; align-items: center; gap: 4px;",
+                    span { style: "display: inline-flex;", dangerous_inner_html: verified_icon_svg }
+                    "{verified_label}"
                 }
             }
             // Bottom row: details
@@ -1140,12 +1142,18 @@ fn SettingsSecurityPage() -> Element {
                 if let Some((_, _, _, is_verified)) = &state {
                     if *is_verified {
                         div { style: "display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 13px;",
-                            span { style: "color: var(--green);", "✓ verified" }
+                            span { style: "color: var(--green); display: inline-flex; align-items: center; gap: 4px;",
+                                span { style: "display: inline-flex;", dangerous_inner_html: r#"<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"# }
+                                "verified"
+                            }
                             span { style: "color: var(--text-dim);", "This device is cross-signed" }
                         }
                     } else {
                         div { style: "display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 13px;",
-                            span { style: "color: var(--yellow);", "✗ unverified" }
+                            span { style: "color: var(--yellow); display: inline-flex; align-items: center; gap: 4px;",
+                                span { style: "display: inline-flex;", dangerous_inner_html: r#"<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>"# }
+                                "unverified"
+                            }
                             span { style: "color: var(--text-dim);", "Verify this device for secure messaging" }
                         }
                     }

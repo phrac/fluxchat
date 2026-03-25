@@ -19,13 +19,14 @@ pub fn parse_user_id(user_id: &str) -> Result<matrix_sdk::ruma::OwnedUserId, App
 }
 
 /// Build a map of room_id -> space display name by scanning all joined spaces.
-pub async fn build_space_map(client: &matrix_sdk::Client) -> HashMap<String, String> {
+pub async fn build_space_map(client: &matrix_sdk::Client) -> HashMap<String, (String, String)> {
     let mut map = HashMap::new();
     for room in client.joined_rooms() {
         if !room.is_space() { continue; }
         let space_name = room.display_name().await
             .map(|n| n.to_string())
             .unwrap_or_default();
+        let space_id = room.room_id().to_string();
         let child_events = match room
             .get_state_events_static::<SpaceChildEventContent>().await
         {
@@ -35,7 +36,7 @@ pub async fn build_space_map(client: &matrix_sdk::Client) -> HashMap<String, Str
         for event in child_events {
             if let Ok(ev) = event.deserialize() {
                 let child_id = ev.state_key().to_string();
-                map.entry(child_id).or_insert_with(|| space_name.clone());
+                map.entry(child_id).or_insert_with(|| (space_name.clone(), space_id.clone()));
             }
         }
     }
@@ -43,7 +44,7 @@ pub async fn build_space_map(client: &matrix_sdk::Client) -> HashMap<String, Str
 }
 
 /// Convert a Matrix Room into our RoomInfo model.
-pub async fn room_to_info(room: &matrix_sdk::Room, space_name: Option<String>) -> RoomInfo {
+pub async fn room_to_info(room: &matrix_sdk::Room, space_info: Option<(String, String)>) -> RoomInfo {
     let name = room.display_name().await
         .map(|n| n.to_string())
         .unwrap_or_else(|_| room.room_id().to_string());
@@ -57,7 +58,8 @@ pub async fn room_to_info(room: &matrix_sdk::Room, space_name: Option<String>) -
         highlight_count: room.unread_notification_counts().highlight_count,
         avatar_url: room.avatar_url().map(|mxc| mxc.to_string()),
         topic: room.topic(),
-        space_name,
+        space_name: space_info.as_ref().map(|(name, _)| name.clone()),
+        space_id: space_info.as_ref().map(|(_, id)| id.clone()),
         is_favourite: room.is_favourite(),
     }
 }
@@ -68,8 +70,8 @@ pub async fn get_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, App
     let mut rooms = Vec::new();
     for room in client.joined_rooms() {
         if !room.is_space() {
-            let space_name = space_map.get(&room.room_id().to_string()).cloned();
-            rooms.push(room_to_info(&room, space_name).await);
+            let space_info = space_map.get(&room.room_id().to_string()).cloned();
+            rooms.push(room_to_info(&room, space_info).await);
         }
     }
     rooms.sort_by(|a, b| a.is_direct.cmp(&b.is_direct)
@@ -111,6 +113,7 @@ pub async fn get_invited_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
             avatar_url,
             topic,
             space_name: None,
+            space_id: None,
             is_favourite: false,
         });
     }

@@ -27,7 +27,7 @@ pub fn RoomList() -> Element {
 
     let mut favourites: Vec<usize> = Vec::new();
     let mut ungrouped: Vec<usize> = Vec::new();
-    let mut by_space: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
+    let mut by_space: std::collections::BTreeMap<String, (Option<String>, Vec<usize>)> = std::collections::BTreeMap::new();
     let mut dms: Vec<usize> = Vec::new();
 
     for (i, room) in rooms_signal.iter().enumerate() {
@@ -41,7 +41,8 @@ pub fn RoomList() -> Element {
         if room.is_direct {
             dms.push(i);
         } else if let Some(ref sn) = room.space_name {
-            by_space.entry(sn.clone()).or_default().push(i);
+            let entry = by_space.entry(sn.clone()).or_insert_with(|| (room.space_id.clone(), Vec::new()));
+            entry.1.push(i);
         } else {
             ungrouped.push(i);
         }
@@ -73,9 +74,9 @@ pub fn RoomList() -> Element {
     });
     let header_avatar_src = header_avatar.read().clone().flatten();
 
-    // Build a map of space_name -> avatar_mxc for section headers
-    let space_avatars: std::collections::HashMap<String, Option<String>> = ui.spaces.read().iter()
-        .map(|s| (s.name.clone(), s.avatar_url.clone()))
+    // Build a map of space_id -> avatar_mxc for section headers
+    let space_avatars: std::collections::HashMap<String, Option<String>> = ui.spaces.peek().iter()
+        .map(|s| (s.room_id.clone(), s.avatar_url.clone()))
         .collect();
 
     let collapsed_set = collapsed.read().clone();
@@ -146,8 +147,9 @@ pub fn RoomList() -> Element {
                 }
 
                 // Space-grouped channels
-                for (space_name, space_indices) in by_space.iter() {
-                    { let mxc = space_avatars.get(space_name).cloned().flatten();
+                for (space_name, (space_id, space_indices)) in by_space.iter() {
+                    { let mxc = space_id.as_ref()
+                        .and_then(|sid| space_avatars.get(sid).cloned().flatten());
                       rsx! {
                         SectionHeader { label: space_name.clone(), collapsed: collapsed, section_key: space_name.clone(), icon: Some(ICO_SPACE.to_string()), avatar_mxc: mxc }
                       }
