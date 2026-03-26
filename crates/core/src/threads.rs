@@ -46,7 +46,7 @@ async fn extract_msg(room: &matrix_sdk::Room, event: matrix_sdk::ruma::events::A
             reply_to_id: None, reply_to_sender: None, reply_to_body: None,
             timestamp: msg.origin_server_ts.as_secs().into(),
             avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),
-            thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
+            thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, is_emote: false,
         })
     } else { None }
 }

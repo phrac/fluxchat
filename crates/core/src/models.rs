@@ -44,6 +44,8 @@ pub struct MessageInfo {
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
     pub poll: Option<PollInfo>,
+    #[serde(default)]
+    pub is_emote: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

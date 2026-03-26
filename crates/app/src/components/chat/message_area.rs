@@ -586,6 +586,37 @@ fn RoomMessages(room_id: String) -> Element {
                             "{msg.body}"
                         }
                     }
+                  } else if msg.is_emote {
+                    // IRC-style /me action: * nick does something
+                    let nick_class = nick_color_class(&msg.sender);
+                    let time = {
+                        let ts = msg.timestamp;
+                        let secs = ts % 86400;
+                        let h = secs / 3600;
+                        let m = (secs % 3600) / 60;
+                        let s = secs % 60;
+                        match ts_format.as_str() {
+                            "full" => format!("{:02}:{:02}:{:02}", h, m, s),
+                            "off" => String::new(),
+                            _ => format!("{:02}:{:02}", h, m),
+                        }
+                    };
+                    let emote_text = if let Some(ref html) = msg.formatted_body {
+                        let transformed = highlight_code_blocks(&transform_mentions(html, &mention_avatars));
+                        format!("* <span class=\"{nick_class}\" style=\"font-weight: 600;\">{}</span> {}", html_escape(&msg.sender_name), transformed)
+                    } else {
+                        format!("* <span class=\"{nick_class}\" style=\"font-weight: 600;\">{}</span> {}", html_escape(&msg.sender_name), html_escape(&msg.body))
+                    };
+                    rsx! {
+                        div { key: "{eid}", "data-event-id": "{eid}",
+                            div { class: "msg-row", style: "display: flex; padding: 1px 0; align-items: flex-start;",
+                                span { class: "msg-time", style: "line-height: 20px;", "{time}" }
+                                span { style: "width: 120px; flex-shrink: 0;" }
+                                div { style: "width: 1px; align-self: stretch; background: var(--border); margin: 0 8px; flex-shrink: 0;" }
+                                span { class: "msg-body", style: "font-style: italic; color: var(--text-muted);", dangerous_inner_html: "{emote_text}" }
+                            }
+                        }
+                    }
                   } else {
                     let nick_class = nick_color_class(&msg.sender);
                     let time = {
