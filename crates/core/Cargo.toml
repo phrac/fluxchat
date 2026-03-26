@@ -18,3 +18,4 @@ mime = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 matrix-sdk-ui = "0.16"
 open = "5"
+reqwest = { version = "0.12", features = ["json"] }

@@ -26,9 +26,9 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 **Polls** — Create polls with `/poll "Question" "Option1" "Option2"`, vote by clicking options, end with `/pollend`. Interactive UI with progress bars, vote counts, percentages, and ended state. Uses MSC3381 unstable poll events for Element compatibility.
 
-**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`, `/mute`, `/unmute`), messaging (`/me`, `/msg`, `/attach`, `/forward`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`, `/status`, `/highlight`, `/unhighlight`), discovery (`/users`, `/directory`, `/threads`, `/notices`), polls (`/poll`, `/pollend`), display (`/timestamp`, `/compact`, `/joinpart`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`), and system (`/away`, `/quit`, `/clear`).
+**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`, `/mute`, `/unmute`), messaging (`/me`, `/msg`, `/attach`, `/forward`, `/gif`, `/giphy`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`, `/status`, `/highlight`, `/unhighlight`), discovery (`/users`, `/directory`, `/threads`, `/notices`), polls (`/poll`, `/pollend`), display (`/timestamp`, `/compact`, `/joinpart`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`, `/giphykey`), and system (`/away`, `/quit`, `/clear`).
 
-**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews with og:image thumbnails. Files HUD with image previews. Sticker display (`m.sticker` events).
+**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews with og:image thumbnails. Files HUD with image previews. Sticker display (`m.sticker` events). GIF search and send via Giphy API (`/gif`, `/giphy`) with visual picker grid.
 
 **Security** — End-to-end encryption via matrix-sdk. SAS emoji verification. Key backup and recovery (enable, recover with key/passphrase). Session management with device listing, verification status, and remote sign-out. Cross-signing status display.
 
@@ -52,6 +52,7 @@ fluxchat/
 │   │       ├── auth.rs     # Login (password + SSO), logout, session restore
 │   │       ├── timeline.rs # Timeline API: per-room + thread timeline management
 │   │       ├── devices.rs  # Device listing, rename, remote sign-out
+│   │       ├── gif.rs      # Giphy API search and download
 │   │       ├── messages.rs # Send, edit, delete, pin, reactions, server search
 │   │       ├── rooms.rs    # Room CRUD, spaces, DMs, invites, user/room search
 │   │       ├── media.rs    # Media download with 3-tier cache
@@ -65,8 +66,8 @@ fluxchat/
 │           └── components/
 │               ├── layout.rs          # MainLayout, modals, status bar, threads
 │               ├── chat/
-│               │   ├── commands.rs    # Modular slash command registry (45+ commands)
-│               │   ├── message_area.rs # Tabs, messages, HUDs (pins/search/threads/files)
+│               │   ├── commands.rs    # Modular slash command registry (48+ commands)
+│               │   ├── message_area.rs # Tabs, messages, HUDs (pins/search/threads/files/GIFs)
 │               │   ├── message_input.rs # Contenteditable input, mention pills, formatting
 │               │   └── emoji_picker.rs  # Categorized emoji with search
 │               ├── sidebar/

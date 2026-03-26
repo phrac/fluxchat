@@ -2,6 +2,7 @@ pub mod auth;
 pub mod db;
 pub mod devices;
 pub mod error;
+pub mod gif;
 pub mod media;
 pub mod messages;
 pub mod models;

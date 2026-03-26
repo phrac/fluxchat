@@ -143,6 +143,9 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
     if let Some(val) = core.db.get_setting("show_joinpart") {
         ui.show_joinpart.set(val == "true");
     }
+    if let Some(key) = core.db.get_setting("giphy_api_key") {
+        ui.giphy_api_key.set(key);
+    }
 
     // Load ignored users from Matrix account data
     {

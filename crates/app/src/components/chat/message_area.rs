@@ -28,6 +28,7 @@ const ICO_FILE: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="
 const ICO_STAR: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#;
 const ICO_LINK: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
 const ICO_INFO: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>"#;
+const ICO_GIF: &str = r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><text x="12" y="15" text-anchor="middle" font-size="8" font-weight="bold" fill="currentColor" stroke="none">GIF</text></svg>"#;
 use crate::components::chat::message_input::MessageInput;
 use crate::components::chat::emoji_picker::EmojiPicker;
 
@@ -319,6 +320,8 @@ fn ActiveRoomContent() -> Element {
               } else { rsx! {} }
             }
         }
+
+        if *ui.gifs_open.read() { GifsHud {} }
 
         // Input always visible — supports /settings, /sessions etc. without a room
         MessageInput {}
@@ -980,7 +983,7 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
             let scale = f64::min(400.0 / w as f64, 300.0 / h as f64).min(1.0);
             ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
         }
-        _ => (400, 300),
+        _ => (0, 0),
     };
 
     // Clone for use in onclick (use_resource moves the originals)
@@ -1007,7 +1010,11 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
     });
 
     let resolved = thumbnail_data.read().clone();
-    let size_style = format!("width: {}px; height: {}px;", display_w, display_h);
+    let size_style = if display_w > 0 && display_h > 0 {
+        format!("width: {}px; height: {}px;", display_w, display_h)
+    } else {
+        String::new()
+    };
 
     match resolved {
         Some(Some((data_uri, is_full))) if data_uri.starts_with("data:image/") => {
@@ -1048,9 +1055,16 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
         Some(Some(_)) | Some(None) => rsx! {
             span { class: "msg-body", style: "color: var(--text-dim);", "[image: {body}]" }
         },
-        None => rsx! {
-            div { style: "max-width: 400px; max-height: 300px; {size_style} border-radius: 4px; margin: 2px 0; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px;",
-                "[loading {body}...]"
+        None => {
+            let placeholder_style = if size_style.is_empty() {
+                "width: 200px; height: 150px;".to_string()
+            } else {
+                size_style.clone()
+            };
+            rsx! {
+                div { style: "max-width: 400px; max-height: 300px; {placeholder_style} border-radius: 4px; margin: 2px 0; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px;",
+                    "[loading {body}...]"
+                }
             }
         },
     }
@@ -1372,6 +1386,162 @@ fn NoticesHud() -> Element {
     }
 }
 
+/// GIF picker HUD — search Tenor and click to send.
+#[component]
+fn GifsHud() -> Element {
+    let mut ui = use_context::<UiState>();
+    let app_state = use_context::<Arc<AppState>>();
+    let initial_query = ui.gif_query.peek().clone();
+    let mut query = use_signal(move || initial_query);
+    let results = use_signal(Vec::<fluxchat_core::gif::GifResult>::new);
+    let loading = use_signal(|| false);
+    let error_msg = use_signal(|| Option::<String>::None);
+    let sending = use_signal(|| false);
+
+    let selected = ui.selected_room_id.read().clone();
+    let send_room_id = selected.as_ref().map(|id| {
+        if id.starts_with("thread::") { id.split("::").nth(1).unwrap_or(id).to_string() } else { id.clone() }
+    });
+
+    // Shared search logic
+    let do_search = move |q: String| {
+        if q.is_empty() { return; }
+        let api_key = ui.giphy_api_key.peek().clone();
+        let mut loading = loading;
+        let mut results = results;
+        let mut error_msg = error_msg;
+        spawn(async move {
+            loading.set(true);
+            error_msg.set(None);
+            let key_ref = if api_key.is_empty() { None } else { Some(api_key.as_str()) };
+            match fluxchat_core::gif::search_gifs(&q, key_ref).await {
+                Ok(gifs) => results.set(gifs),
+                Err(e) => error_msg.set(Some(format!("{e}"))),
+            }
+            loading.set(false);
+        });
+    };
+
+    // Auto-search on mount if query is pre-filled
+    let mut auto_searched = use_signal(|| false);
+    if !*auto_searched.peek() && !query.peek().is_empty() {
+        auto_searched.set(true);
+        do_search(query.peek().clone());
+    }
+
+    let result_count = results.read().len();
+    let count_str = if *loading.read() { "...".to_string() } else { result_count.to_string() };
+
+    rsx! {
+        div {
+            class: "search-hud",
+            style: "flex-direction: column; align-items: stretch; max-height: 50vh; overflow-y: auto;",
+            tabindex: "0",
+            onmounted: move |e| { std::mem::drop(e.data().set_focus(true)); },
+            onkeydown: move |e: Event<KeyboardData>| {
+                if e.key() == Key::Escape { ui.gifs_open.set(false); }
+            },
+            div { style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
+                span { style: "font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.5px;",
+                    "gif search — {count_str}"
+                }
+                span { style: "color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px;",
+                    onclick: move |_| { ui.gifs_open.set(false); },
+                    "×"
+                }
+            }
+            // Search input
+            div { style: "display: flex; gap: 6px; margin-bottom: 6px;",
+                input {
+                    r#type: "text",
+                    placeholder: "Search GIFs...",
+                    value: "{query}",
+                    style: "flex: 1; background: var(--bg-input); color: var(--text-normal); border: 1px solid var(--border); border-radius: 3px; padding: 4px 8px; font-family: var(--font-mono); font-size: 12px; outline: none;",
+                    oninput: move |e: Event<FormData>| { query.set(e.value()); },
+                    onkeydown: move |e: Event<KeyboardData>| {
+                        if e.key() == Key::Enter { do_search(query.peek().trim().to_string()); }
+                    },
+                }
+                button {
+                    style: "background: var(--bg-input); color: var(--text-normal); border: 1px solid var(--border); border-radius: 3px; padding: 4px 10px; font-family: var(--font-mono); font-size: 12px; cursor: pointer;",
+                    onclick: move |_| { do_search(query.peek().trim().to_string()); },
+                    "Search"
+                }
+            }
+            // Error
+            if let Some(err) = error_msg.read().as_ref() {
+                div { style: "color: #e06060; font-size: 11px; font-family: var(--font-mono); padding: 4px 0;",
+                    "{err}"
+                }
+            }
+            // Sending indicator
+            if *sending.read() {
+                div { style: "color: var(--text-dim); font-size: 11px; font-family: var(--font-mono); padding: 4px 0;",
+                    "Sending GIF..."
+                }
+            }
+            // Results grid
+            if result_count > 0 {
+                div { style: "display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 4px 0;",
+                    for gif in results.read().iter().take(12) {
+                        {
+                            let gif_url = gif.url.clone();
+                            let gif_desc = gif.description.clone();
+                            let preview = gif.preview_url.clone();
+                            let room_id = send_room_id.clone();
+                            let app_state = app_state.clone();
+                            let mut sending = sending;
+                            let mut ui_close = ui.clone();
+                            rsx! {
+                                img {
+                                    src: "{preview}",
+                                    alt: "{gif_desc}",
+                                    title: "{gif_desc}",
+                                    style: "width: 100%; aspect-ratio: 4/3; object-fit: contain; border-radius: 4px; cursor: pointer; border: 1px solid var(--border); background: #111;",
+                                    onclick: move |_| {
+                                        let gif_url = gif_url.clone();
+                                        let room_id = room_id.clone();
+                                        let app_state = app_state.clone();
+                                        spawn(async move {
+                                            let Some(room_id) = room_id else { return };
+                                            sending.set(true);
+                                            match fluxchat_core::gif::download_gif(&gif_url).await {
+                                                Ok(data) => {
+                                                    let client = match app_state.get_client().await {
+                                                        Ok(c) => c,
+                                                        Err(_) => { sending.set(false); return; }
+                                                    };
+                                                    let _ = fluxchat_core::messages::upload_file(
+                                                        &client, &room_id, "tenor.gif", "image/gif", data
+                                                    ).await;
+                                                    sending.set(false);
+                                                    ui_close.gifs_open.set(false);
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!("GIF download failed: {e}");
+                                                    sending.set(false);
+                                                }
+                                            }
+                                        });
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if !*loading.read() && result_count == 0 && *auto_searched.read() {
+                div { style: "color: var(--text-dim); font-size: 12px; font-family: var(--font-mono); padding: 8px 0;",
+                    "no results"
+                }
+            }
+            // Giphy attribution
+            div { style: "font-size: 9px; color: var(--text-dim); font-family: var(--font-mono); text-align: right; padding-top: 4px;",
+                "Powered by GIPHY"
+            }
+        }
+    }
+}
+
 /// Search HUD — server-side message search.
 #[component]
 fn SearchHud() -> Element {
@@ -1648,6 +1818,14 @@ fn RoomActions() -> Element {
                             onclick: move |_| { menu_open.set(false); let open = *ui.files_open.peek(); ui.files_open.set(!open); },
                             span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_FILE }
                             "Files"
+                        }
+                        // GIFs
+                        div {
+                            class: "cmd-item",
+                            style: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; color: var(--text-normal); cursor: pointer;",
+                            onclick: move |_| { menu_open.set(false); ui.gif_query.set(String::new()); let open = *ui.gifs_open.peek(); ui.gifs_open.set(!open); },
+                            span { style: "display: inline-flex; opacity: 0.6;", dangerous_inner_html: ICO_GIF }
+                            "GIFs"
                         }
                         // Notices
                         div {

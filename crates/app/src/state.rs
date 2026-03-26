@@ -74,6 +74,9 @@ pub struct UiState {
     pub compact_mode: Signal<bool>,
     pub show_joinpart: Signal<bool>,
     pub notices_open: Signal<bool>,
+    pub gifs_open: Signal<bool>,
+    pub gif_query: Signal<String>,
+    pub giphy_api_key: Signal<String>,
 
     pub settings_tab: Signal<String>,  // "account", "sessions"
     pub loading: Signal<bool>,
@@ -298,6 +301,9 @@ impl UiState {
             compact_mode: Signal::new(false),
             show_joinpart: Signal::new(true),
             notices_open: Signal::new(false),
+            gifs_open: Signal::new(false),
+            gif_query: Signal::new(String::new()),
+            giphy_api_key: Signal::new(String::new()),
             settings_tab: Signal::new("account".into()),
             loading: Signal::new(true),
             sync_lag_ms: Signal::new(0),

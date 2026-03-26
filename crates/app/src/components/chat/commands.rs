@@ -157,6 +157,54 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/gif",
+            usage: "<search terms>",
+            description: "Search for a GIF to send",
+            scope: CommandScope::Room,
+            execute: |args, _, _, mut ui| {
+                let query = args.trim().to_string();
+                if query.is_empty() {
+                    return CommandAction::ShowHelp("Usage: /gif <search terms>".into());
+                }
+                ui.gif_query.set(query);
+                ui.gifs_open.set(true);
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/giphy",
+            usage: "<search terms>",
+            description: "Search for a GIF to send (alias for /gif)",
+            scope: CommandScope::Room,
+            execute: |args, _, _, mut ui| {
+                let query = args.trim().to_string();
+                if query.is_empty() {
+                    return CommandAction::ShowHelp("Usage: /giphy <search terms>".into());
+                }
+                ui.gif_query.set(query);
+                ui.gifs_open.set(true);
+                CommandAction::Handled
+            },
+        },
+        SlashCommand {
+            name: "/giphykey",
+            usage: "[api_key]",
+            description: "Set or clear your Giphy API key",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                let key = args.trim().to_string();
+                if key.is_empty() {
+                    ui.giphy_api_key.set(String::new());
+                    let _ = core.db.set_setting("giphy_api_key", "");
+                    CommandAction::ShowHelp("Giphy API key cleared (using public beta key)".into())
+                } else {
+                    ui.giphy_api_key.set(key);
+                    let _ = core.db.set_setting("giphy_api_key", args.trim());
+                    CommandAction::ShowHelp("Giphy API key saved".into())
+                }
+            },
+        },
+        SlashCommand {
             name: "/notices",
             usage: "",
             description: "Toggle server/system notices panel",
