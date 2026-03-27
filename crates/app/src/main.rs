@@ -1,6 +1,7 @@
 mod app;
 mod state;
 mod components;
+mod media_server;
 
 use dioxus::desktop::{Config, WindowBuilder};
 
@@ -17,6 +18,8 @@ fn main() {
             tracing_subscriber::EnvFilter::new("warn,fluxchat=info,matrix_sdk_crypto=error")
         )
         .init();
+
+    media_server::start();
 
     let mut window_builder = WindowBuilder::new()
         .with_title("fluxchat")

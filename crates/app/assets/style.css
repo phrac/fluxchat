@@ -1,5 +1,5 @@
-/* Suppress all audio/video playback in the WebView */
-audio, video { display: none !important; muted: true; }
+/* Suppress unexpected audio in the WebView */
+audio { display: none !important; }
 
 /* fluxchat — IRC meets modern */
 

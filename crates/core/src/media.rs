@@ -129,6 +129,40 @@ pub async fn get_event_media(
     Ok(data_uri)
 }
 
+/// Fetch raw media bytes from a room event (handles encrypted media).
+/// Returns (bytes, mime_type). Used for video where data URIs are too large.
+pub async fn get_event_media_bytes(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    event_id: &str,
+) -> Result<(Vec<u8>, String), AppError> {
+    let room_id = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
+    let event = room.event(&event_id, None).await.map_err(|e| AppError::Other(format!("Failed to fetch event: {e}")))?;
+
+    use matrix_sdk::ruma::events::{AnySyncTimelineEvent, AnySyncMessageLikeEvent, SyncMessageLikeEvent};
+    use matrix_sdk::ruma::events::room::message::MessageType;
+
+    let (source, mime) = match event.raw().deserialize().map_err(|e| AppError::Other(e.to_string()))? {
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) => {
+            match msg.content.msgtype {
+                MessageType::Video(vid) => {
+                    let mime = vid.info.as_ref().and_then(|i| i.mimetype.clone()).unwrap_or_else(|| "video/mp4".into());
+                    (vid.source, mime)
+                }
+                _ => return Err(AppError::Other("Not a video message".into())),
+            }
+        }
+        _ => return Err(AppError::Other("Not a message event".into())),
+    };
+
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    let data = client.media().get_media_content(&request, true).await
+        .map_err(|e| AppError::Other(format!("Failed to download: {e}")))?;
+    Ok((data, mime))
+}
+
 /// Download a thumbnail of media with 3-tier cache.
 pub async fn get_media_thumbnail(
     client: &matrix_sdk::Client,

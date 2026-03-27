@@ -43,7 +43,6 @@ pub fn MessageArea() -> Element {
     // NOTE: Do NOT read open_tabs or selected_room_id here — those are read
     // by child components (TabBar, ActiveRoomContent) to avoid cascading re-renders.
 
-
     // Set up JS→Rust channel for mention pill clicks and drag-drop
     use_future(move || async move {
         let mut eval = document::eval(r#"
@@ -1104,6 +1103,7 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
 }
 
 /// Inline video player for m.video messages.
+/// Downloads to disk cache, served via local HTTP server (data URIs too large for video).
 #[component]
 fn InlineVideo(room_id: String, event_id: String, body: String, image_width: Option<u32>, image_height: Option<u32>) -> Element {
     let app_state = use_context::<Arc<AppState>>();
@@ -1113,7 +1113,7 @@ fn InlineVideo(room_id: String, event_id: String, body: String, image_width: Opt
             let scale = f64::min(400.0 / w as f64, 300.0 / h as f64).min(1.0);
             ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
         }
-        _ => (400, 300),
+        _ => (320, 240),
     };
 
     let video_data = use_resource(move || {
@@ -1121,40 +1121,65 @@ fn InlineVideo(room_id: String, event_id: String, body: String, image_width: Opt
         let room_id = room_id.clone();
         let event_id = event_id.clone();
         async move {
+            let safe_id: String = event_id.chars().filter(|c| c.is_alphanumeric()).collect();
+            let cache_dir = std::env::temp_dir().join("fluxchat_video");
+
+            // Check disk cache first
+            if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&safe_id) {
+                        return Some(format!("{}/{}", crate::media_server::base_url(), name));
+                    }
+                }
+            }
+
+            // Download from Matrix server
             let client = app_state.get_client().await.ok()?;
             let real_room_id = if room_id.starts_with("thread::") {
                 room_id.split("::").nth(1).unwrap_or(&room_id).to_string()
             } else {
                 room_id.clone()
             };
-            fluxchat_core::media::get_event_media(
-                &client, &app_state.db, &app_state.media_cache, &real_room_id, &event_id
-            ).await.ok()
+            let (bytes, mime) = fluxchat_core::media::get_event_media_bytes(
+                &client, &real_room_id, &event_id
+            ).await.ok()?;
+
+            let ext = match mime.as_str() {
+                "video/webm" => "webm",
+                "video/quicktime" => "mov",
+                _ => "mp4",
+            };
+            let _ = std::fs::create_dir_all(&cache_dir);
+            let filename = format!("{safe_id}.{ext}");
+            let _ = std::fs::write(cache_dir.join(&filename), &bytes);
+            Some(format!("{}/{}", crate::media_server::base_url(), filename))
         }
     });
 
     let resolved = video_data.read().clone();
 
     match resolved {
-        Some(Some(data_uri)) if data_uri.starts_with("data:video/") => {
+        Some(Some(url)) => {
             rsx! {
                 div { style: "display: flex; flex-direction: column;",
                     video {
-                        src: "{data_uri}",
-                        style: "width: {display_w}px; height: {display_h}px; border-radius: 4px; margin: 2px 0; object-fit: contain;",
+                        src: "{url}",
                         controls: true,
                         preload: "metadata",
+                        style: "max-width: 400px; max-height: 300px; width: {display_w}px; height: {display_h}px; border-radius: 4px; margin: 2px 0; object-fit: contain;",
                     }
                 }
             }
         },
-        Some(Some(_)) | Some(None) => rsx! {
+        Some(None) => rsx! {
             span { class: "msg-body", style: "color: var(--text-dim);", "[video: {body}]" }
         },
         None => {
+            let placeholder_style = format!("width: {display_w}px; height: {display_h}px;");
             rsx! {
-                div { style: "width: {display_w}px; height: {display_h}px; border-radius: 4px; margin: 2px 0; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px;",
-                    "[loading {body}...]"
+                div { style: "max-width: 400px; max-height: 300px; {placeholder_style} border-radius: 4px; margin: 2px 0; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px;",
+                    "[loading video...]"
                 }
             }
         },
