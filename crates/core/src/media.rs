@@ -34,6 +34,8 @@ pub fn bytes_to_data_uri(data: &[u8]) -> String {
     else if data.starts_with(&[0xFF, 0xD8, 0xFF]) { "image/jpeg" }
     else if data.starts_with(b"GIF") { "image/gif" }
     else if data.starts_with(b"RIFF") && data.len() > 12 && &data[8..12] == b"WEBP" { "image/webp" }
+    else if data.len() > 8 && &data[4..8] == b"ftyp" { "video/mp4" }
+    else if data.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) { "video/webm" }
     else { "image/png" };
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(data);
@@ -97,7 +99,11 @@ pub async fn get_event_media(
 
     let source = match event.raw().deserialize().map_err(|e| AppError::Other(e.to_string()))? {
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) => {
-            match msg.content.msgtype { MessageType::Image(img) => img.source, _ => return Err(AppError::Other("Not an image".into())) }
+            match msg.content.msgtype {
+                MessageType::Image(img) => img.source,
+                MessageType::Video(vid) => vid.source,
+                _ => return Err(AppError::Other("Not a media message".into())),
+            }
         }
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::Sticker(SyncMessageLikeEvent::Original(sticker))) => {
             match sticker.content.source {

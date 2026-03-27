@@ -202,7 +202,6 @@ pub fn MessageInput() -> Element {
     let mut text = use_signal(String::new);
     let mut sending = use_signal(|| false);
     let mut uploading = use_signal(|| false);
-    let mut typing_sent = use_signal(|| false);
     let mut emoji_open = use_signal(|| false);
     let mut tab_prefix = use_signal(String::new);
     let mut tab_index = use_signal(|| 0usize);
@@ -212,9 +211,23 @@ pub fn MessageInput() -> Element {
     let edit_event = ui.edit_event.read().clone();
     let upload_pending = ui.upload_pending.read().clone();
 
-    // Auto-focus input on room switch
+    // Auto-focus input on room switch + cancel typing in previous room
+    let mut prev_room = use_signal(|| Option::<String>::None);
+    let core_switch = core.clone();
     use_effect(move || {
-        let _room = ui.selected_room_id.read().clone();
+        let new_room = ui.selected_room_id.read().clone();
+        // Cancel typing in previous room
+        if let Some(old_id) = prev_room.peek().clone() {
+            if !old_id.starts_with("thread::") {
+                let core = core_switch.clone();
+                let old_id = old_id.clone();
+                spawn(async move {
+                    let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
+                    let _ = fluxchat_core::messages::send_typing(&client, &old_id, false).await;
+                });
+            }
+        }
+        prev_room.set(new_room);
         spawn(async move {
             let _ = document::eval("document.getElementById('flux-input')?.focus();");
         });
@@ -324,7 +337,6 @@ pub fn MessageInput() -> Element {
         ui.reply_to.set(None);
         ui.edit_event.set(None);
         ui.upload_pending.set(None);
-        typing_sent.set(false);
         if !room_id.starts_with("thread::") {
             let core = core.clone();
             let room_id = room_id.clone();
@@ -564,23 +576,14 @@ pub fn MessageInput() -> Element {
                             text.set(val.clone());
                             tab_prefix.set(String::new());
 
-                            // Typing indicator logic
-                            if !val.is_empty() && !*typing_sent.read() {
-                                typing_sent.set(true);
-                                let core = core_ce.clone();
-                                if let Some(room_id) = ui_ce.selected_room_id.peek().clone() {
+                            // Typing indicator — SDK debounces to every 3s, server timeout is 4s
+                            let typing = !val.is_empty();
+                            let core = core_ce.clone();
+                            if let Some(room_id) = ui_ce.selected_room_id.peek().clone() {
+                                if !room_id.starts_with("thread::") {
                                     spawn(async move {
                                         let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, true).await;
-                                    });
-                                }
-                            } else if val.is_empty() && *typing_sent.read() {
-                                typing_sent.set(false);
-                                let core = core_ce.clone();
-                                if let Some(room_id) = ui_ce.selected_room_id.peek().clone() {
-                                    spawn(async move {
-                                        let client = match core.get_client().await { Ok(c) => c, Err(_) => return };
-                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, false).await;
+                                        let _ = fluxchat_core::messages::send_typing(&client, &room_id, typing).await;
                                     });
                                 }
                             }

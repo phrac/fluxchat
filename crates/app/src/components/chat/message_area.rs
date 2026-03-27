@@ -652,6 +652,8 @@ fn RoomMessages(room_id: String) -> Element {
                     let content_rsx = if msg.poll.is_some() {
                         let poll = msg.poll.clone().unwrap();
                         rsx! { PollDisplay { poll: poll, event_id: msg.event_id.clone(), room_id: room_id.clone(), my_user_id: my_user_id.clone() } }
+                    } else if msg.is_video && msg.image_mxc.is_some() {
+                        rsx! { InlineVideo { room_id: room_id.clone(), event_id: msg.event_id.clone(), body: msg.body.clone(), image_width: msg.image_width, image_height: msg.image_height } }
                     } else if msg.image_mxc.is_some() {
                         rsx! { InlineImage { room_id: room_id.clone(), event_id: msg.event_id.clone(), body: msg.body.clone(), image_mxc: msg.image_mxc.clone(), image_width: msg.image_width, image_height: msg.image_height } }
                     } else if let Some(ref transformed) = msg.transformed_body {
@@ -1094,6 +1096,64 @@ fn InlineImage(room_id: String, event_id: String, body: String, image_mxc: Optio
             };
             rsx! {
                 div { style: "max-width: 400px; max-height: 300px; {placeholder_style} border-radius: 4px; margin: 2px 0; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px;",
+                    "[loading {body}...]"
+                }
+            }
+        },
+    }
+}
+
+/// Inline video player for m.video messages.
+#[component]
+fn InlineVideo(room_id: String, event_id: String, body: String, image_width: Option<u32>, image_height: Option<u32>) -> Element {
+    let app_state = use_context::<Arc<AppState>>();
+
+    let (display_w, display_h) = match (image_width, image_height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => {
+            let scale = f64::min(400.0 / w as f64, 300.0 / h as f64).min(1.0);
+            ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
+        }
+        _ => (400, 300),
+    };
+
+    let video_data = use_resource(move || {
+        let app_state = app_state.clone();
+        let room_id = room_id.clone();
+        let event_id = event_id.clone();
+        async move {
+            let client = app_state.get_client().await.ok()?;
+            let real_room_id = if room_id.starts_with("thread::") {
+                room_id.split("::").nth(1).unwrap_or(&room_id).to_string()
+            } else {
+                room_id.clone()
+            };
+            fluxchat_core::media::get_event_media(
+                &client, &app_state.db, &app_state.media_cache, &real_room_id, &event_id
+            ).await.ok()
+        }
+    });
+
+    let resolved = video_data.read().clone();
+
+    match resolved {
+        Some(Some(data_uri)) if data_uri.starts_with("data:video/") => {
+            rsx! {
+                div { style: "display: flex; flex-direction: column;",
+                    video {
+                        src: "{data_uri}",
+                        style: "width: {display_w}px; height: {display_h}px; border-radius: 4px; margin: 2px 0; object-fit: contain;",
+                        controls: true,
+                        preload: "metadata",
+                    }
+                }
+            }
+        },
+        Some(Some(_)) | Some(None) => rsx! {
+            span { class: "msg-body", style: "color: var(--text-dim);", "[video: {body}]" }
+        },
+        None => {
+            rsx! {
+                div { style: "width: {display_w}px; height: {display_h}px; border-radius: 4px; margin: 2px 0; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 12px;",
                     "[loading {body}...]"
                 }
             }

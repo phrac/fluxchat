@@ -46,6 +46,8 @@ pub struct MessageInfo {
     pub poll: Option<PollInfo>,
     #[serde(default)]
     pub is_emote: bool,
+    #[serde(default)]
+    pub is_video: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
