@@ -23,6 +23,12 @@ const SVG_CODEBLOCK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="
 const SVG_LINK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
 const SVG_EMOJI: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>"#;
 
+// Sidebar icons
+const SVG_HASH: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>"#;
+const SVG_LOCK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"#;
+const SVG_PERSON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>"#;
+const SVG_CHAT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>"#;
+
 const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
     ..Font::MONOSPACE
@@ -256,50 +262,114 @@ impl FluxChat {
     /// Left space sidebar (icons).
     fn view_sidebar(&self) -> Element<Message> {
         let is_home = self.selected_space_id.is_none();
-        let home_bg = if is_home { theme::BG_LIGHT } else { theme::BG_DARK };
+        // Home button with SVG house icon
+        let home_radius = if is_home { 12.0 } else { 20.0 };
+        let home_bg_color = if is_home { theme::ACCENT } else { theme::BG_MID };
+        let home_handle = iced::widget::svg::Handle::from_memory(
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>"#.as_slice(),
+        );
+        let home_btn = button(
+            iced::widget::svg(home_handle)
+                .width(22).height(22)
+                .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_BRIGHT) }),
+        )
+        .on_press(Message::SelectSpace(None))
+        .padding(9)
+        .style(move |_, _| button::Style {
+            background: Some(home_bg_color.into()),
+            border: iced::Border { radius: home_radius.into(), ..Default::default() },
+            ..Default::default()
+        });
 
-        let home_btn = button(text("H").font(MONO).size(14).color(theme::TEXT_BRIGHT))
-            .on_press(Message::SelectSpace(None))
-            .padding([8, 10])
-            .style(move |_, _| button::Style {
-                background: Some(home_bg.into()),
-                text_color: theme::TEXT_BRIGHT,
-                ..Default::default()
-            });
+        let mut col = column![home_btn].spacing(4).padding([8, 4]).align_x(iced::Alignment::Center);
 
-        let mut col = column![home_btn].spacing(4).padding(4);
+        // Separator
+        col = col.push(
+            container(Space::new())
+                .width(24).height(2)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BORDER.into()),
+                    border: iced::Border { radius: 1.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+        );
 
         for space in &self.spaces {
-            let label = space
-                .name
-                .chars()
-                .next()
-                .unwrap_or('?')
-                .to_uppercase()
-                .to_string();
             let space_id = space.room_id.clone();
             let is_selected = self.selected_space_id.as_deref() == Some(&space.room_id);
-            let bg = if is_selected {
-                theme::BG_LIGHT
-            } else {
-                theme::BG_DARK
-            };
-            let btn = button(text(label).font(MONO).size(14).color(theme::TEXT_NORMAL))
-                .on_press(Message::SelectSpace(Some(space_id)))
-                .padding([8, 10])
-                .style(move |_, _| button::Style {
-                    background: Some(bg.into()),
-                    text_color: theme::TEXT_NORMAL,
+            let radius = if is_selected { 12.0 } else { 20.0 };
+            let border_color = if is_selected { theme::ACCENT } else { Color::TRANSPARENT };
+            let opacity = if is_selected { 1.0 } else { 0.7 };
+
+            let icon_content: Element<Message> = if let Some(handle) = space.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
+                container(
+                    iced::widget::image(handle.clone())
+                        .width(36).height(36)
+                        .content_fit(iced::ContentFit::Cover),
+                )
+                .width(40).height(40)
+                .center(Fill)
+                .clip(true)
+                .style(move |_: &Theme| container::Style {
+                    border: iced::Border {
+                        color: border_color,
+                        width: 2.0,
+                        radius: radius.into(),
+                    },
                     ..Default::default()
-                });
+                })
+                .into()
+            } else {
+                let initials: String = space.name.split_whitespace()
+                    .take(2)
+                    .map(|w| w.chars().next().unwrap_or('?'))
+                    .collect::<String>()
+                    .to_uppercase();
+                container(
+                    text(initials).font(MONO).size(13).color(Color { a: opacity, ..theme::TEXT_MUTED }),
+                )
+                .width(40).height(40)
+                .center(Fill)
+                .style(move |_: &Theme| container::Style {
+                    background: Some(theme::BG_MID.into()),
+                    border: iced::Border {
+                        color: border_color,
+                        width: 2.0,
+                        radius: radius.into(),
+                    },
+                    ..Default::default()
+                })
+                .into()
+            };
+
+            let btn = iced::widget::tooltip(
+                button(icon_content)
+                    .on_press(Message::SelectSpace(Some(space_id)))
+                    .padding(0)
+                    .style(|_, _| button::Style { background: None, ..Default::default() }),
+                text(&space.name).font(MONO).size(12),
+                iced::widget::tooltip::Position::Right,
+            )
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_MID.into()),
+                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+            .padding(6);
+
             col = col.push(btn);
         }
 
         container(scrollable(col))
-            .width(48)
+            .width(56)
             .height(Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(theme::BG_DARK.into()),
+                background: Some(theme::BG_DEEP.into()),
+                border: iced::Border {
+                    color: theme::BORDER,
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
                 ..Default::default()
             })
             .into()
@@ -397,7 +467,7 @@ impl FluxChat {
 
         // Ungrouped channels
         if !ungrouped.is_empty() {
-            col = col.push(self.view_section_header("Channels", ungrouped.len()));
+            col = col.push(self.view_section_header_with_icon("Channels", ungrouped.len(), Some(SVG_HASH), None));
             if !self.collapsed_sections.contains("Channels") {
                 for room in &ungrouped {
                     col = col.push(self.view_room_entry(room, false));
@@ -407,7 +477,11 @@ impl FluxChat {
 
         // Space-grouped rooms
         for (space_name, rooms) in &by_space {
-            col = col.push(self.view_section_header(space_name, rooms.len()));
+            // Find space avatar MXC
+            let space_mxc = self.spaces.iter()
+                .find(|s| s.name == *space_name)
+                .and_then(|s| s.avatar_url.as_deref());
+            col = col.push(self.view_section_header_with_icon(space_name, rooms.len(), Some(SVG_HASH), space_mxc));
             if !self.collapsed_sections.contains(space_name) {
                 for room in rooms {
                     col = col.push(self.view_room_entry(room, false));
@@ -417,7 +491,7 @@ impl FluxChat {
 
         // DMs
         if !dms.is_empty() {
-            col = col.push(self.view_section_header("Direct Messages", dms.len()));
+            col = col.push(self.view_section_header_with_icon("Direct Messages", dms.len(), Some(SVG_CHAT), None));
             if !self.collapsed_sections.contains("Direct Messages") {
                 for room in &dms {
                     col = col.push(self.view_room_entry(room, true));
@@ -435,41 +509,69 @@ impl FluxChat {
             .into()
     }
 
-    /// Collapsible section header.
+    /// Collapsible section header with SVG icon.
     fn view_section_header(&self, name: &str, count: usize) -> Element<'_, Message> {
+        self.view_section_header_with_icon(name, count, None, None)
+    }
+
+    /// Section header with optional SVG icon or space avatar.
+    fn view_section_header_with_icon(&self, name: &str, count: usize, icon_svg: Option<&'static [u8]>, space_avatar_mxc: Option<&str>) -> Element<'_, Message> {
         let collapsed = self.collapsed_sections.contains(name);
         let arrow = if collapsed { "\u{25b8}" } else { "\u{25be}" };
         let name_owned = name.to_string();
         let name_label = name.to_uppercase();
 
-        button(
-            row![
-                text(arrow)
-                    .font(MONO)
-                    .size(12)
-                    .color(theme::TEXT_DIM),
-                text(name_label)
-                    .font(MONO)
-                    .size(13)
-                    .color(theme::TEXT_MUTED),
-                Space::new().width(Fill),
-                text(count.to_string())
-                    .font(MONO)
-                    .size(12)
-                    .color(theme::TEXT_DIM),
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center),
-        )
-        .on_press(Message::ToggleSection(name_owned))
-        .padding([4, 12])
-        .width(Fill)
-        .style(|_, _| button::Style {
-            background: None,
-            text_color: theme::TEXT_MUTED,
-            ..Default::default()
-        })
-        .into()
+        let mut header_row = row![
+            text(arrow).font(MONO).size(14).color(theme::TEXT_DIM),
+        ]
+        .spacing(5)
+        .align_y(iced::Alignment::Center);
+
+        // Space avatar or section icon
+        if let Some(handle) = space_avatar_mxc.and_then(|mxc| self.avatar_cache.get(mxc)) {
+            header_row = header_row.push(
+                container(
+                    iced::widget::image(handle.clone())
+                        .width(16)
+                        .height(16)
+                        .content_fit(iced::ContentFit::Cover),
+                )
+                .width(16).height(16).clip(true)
+                .style(|_: &Theme| container::Style {
+                    border: iced::Border { radius: 3.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+            );
+        } else if let Some(svg_bytes) = icon_svg {
+            let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+            header_row = header_row.push(
+                iced::widget::svg(handle)
+                    .width(14)
+                    .height(14)
+                    .style(|_, _| iced::widget::svg::Style {
+                        color: Some(theme::TEXT_DIM),
+                    }),
+            );
+        }
+
+        header_row = header_row.push(
+            text(name_label).font(MONO).size(12).color(theme::TEXT_DIM)
+        );
+        header_row = header_row.push(Space::new().width(Fill));
+        header_row = header_row.push(
+            text(count.to_string()).font(MONO).size(12).color(theme::TEXT_DIM)
+        );
+
+        button(header_row)
+            .on_press(Message::ToggleSection(name_owned))
+            .padding([6, 10])
+            .width(Fill)
+            .style(|_, _| button::Style {
+                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.02).into()),
+                text_color: theme::TEXT_MUTED,
+                ..Default::default()
+            })
+            .into()
     }
 
     /// Single room entry in the list.
@@ -486,24 +588,50 @@ impl FluxChat {
             theme::BG_DARK
         };
 
-        let prefix = if is_dm { "" } else { "#" };
-        let icon: Element<Message> = if is_dm {
-            // Person icon for DMs
-            text("\u{25cf}").font(MONO).size(8).color(theme::TEXT_DIM).into()
+        // Room icon: avatar > DM person > encrypted lock > hash
+        let room_icon: Element<Message> = if let Some(handle) = room.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
+            container(
+                iced::widget::image(handle.clone())
+                    .width(18)
+                    .height(18)
+                    .content_fit(iced::ContentFit::Cover),
+            )
+            .width(18).height(18).clip(true)
+            .style(|_: &Theme| container::Style {
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+        } else if is_dm {
+            let handle = iced::widget::svg::Handle::from_memory(SVG_PERSON);
+            iced::widget::svg(handle)
+                .width(14).height(14)
+                .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3)) })
+                .into()
         } else if room.is_encrypted {
-            // Lock icon for encrypted rooms
-            text("\u{1f512}").size(13).color(theme::TEXT_DIM).into()
+            let handle = iced::widget::svg::Handle::from_memory(SVG_LOCK);
+            iced::widget::svg(handle)
+                .width(14).height(14)
+                .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3)) })
+                .into()
         } else {
-            Space::new().width(0).into()
+            let handle = iced::widget::svg::Handle::from_memory(SVG_HASH);
+            iced::widget::svg(handle)
+                .width(14).height(14)
+                .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3)) })
+                .into()
         };
+
+        let room_name = room.name.to_lowercase().replace(' ', "-");
         let mut row_content = row![
-            icon,
-            text(format!("{prefix}{}", room.name))
+            room_icon,
+            text(room_name)
                 .font(MONO)
-                .size(15)
-                .color(name_color),
+                .size(14)
+                .color(name_color)
+                .wrapping(iced::widget::text::Wrapping::None),
         ]
-        .spacing(4)
+        .spacing(6)
         .align_y(iced::Alignment::Center);
 
         // Unread badge
@@ -548,14 +676,18 @@ impl FluxChat {
         }
 
         let room_id = room.room_id.clone();
-        button(row_content)
+        button(
+            container(row_content)
+                .width(Fill)
+                .clip(true)
+        )
             .on_press(Message::SelectRoom(room_id))
-            .padding([3, 12])
+            .padding([4, 8])
             .width(Fill)
             .style(move |_, _| button::Style {
                 background: Some(bg.into()),
                 text_color: name_color,
-                border: iced::Border::default(),
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
                 ..Default::default()
             })
             .into()

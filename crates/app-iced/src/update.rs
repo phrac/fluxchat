@@ -168,8 +168,16 @@ impl FluxChat {
                             r
                         })
                         .collect();
+                    // Resolve space and room avatars
+                    let mut mxc_uris: Vec<String> = spaces.iter()
+                        .filter_map(|s| s.avatar_url.clone())
+                        .collect();
+                    mxc_uris.extend(self.rooms.iter().filter_map(|r| r.avatar_url.clone()));
                     self.spaces = spaces;
                     self.invited_rooms = invited;
+                    if !mxc_uris.is_empty() {
+                        return self.resolve_avatars(mxc_uris);
+                    }
                 }
                 SyncEvent::MessagesUpdated(room_id, messages) => {
                     // Advance last_read_event if this is the active room
