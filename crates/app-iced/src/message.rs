@@ -91,6 +91,37 @@ pub enum Message {
     CancelUpload,
     UploadFile,                            // trigger actual upload
 
+    // --- Settings ---
+    SettingsNickChanged(String),
+    SettingsSaveNick,
+    SettingsLoadDevices,
+    SettingsDevicesLoaded(Vec<fluxchat_core::devices::DeviceInfo>),
+    SettingsSignOutDevice(String), // device_id
+    SettingsSignOutPasswordChanged(String),
+    SettingsSignOutConfirm,
+    SettingsStatus(String),
+    SettingsLoadProfile,
+    SettingsProfileLoaded {
+        avatar_data: Option<Vec<u8>>,
+        banner_data: Option<Vec<u8>>,
+    },
+    SettingsUploadAvatar,
+    SettingsRemoveAvatar,
+    SettingsUploadBanner,
+    SettingsRemoveBanner,
+
+    // --- Security ---
+    SecurityLoadState,
+    SecurityStateLoaded(crate::state::SecurityState),
+    SecurityEnableBackup,
+    SecurityBackupEnabled(Option<String>), // recovery key if full recovery was set up
+    SecurityRecoveryKeyInputChanged(String),
+    SecurityRecover,
+    SecurityRecoverResult(Result<(), String>),
+
+    // --- Avatars ---
+    AvatarsResolved(Vec<(String, Vec<u8>)>), // vec of (mxc_uri, image_bytes)
+
     // --- Misc ---
     PaginateBack(String), // room_id
     OpenUrl(String),

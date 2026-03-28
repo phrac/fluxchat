@@ -284,7 +284,7 @@ fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
                         spans.push(
                             Span::new(text.to_string())
                                 .font(Font::MONOSPACE)
-                                .size(13)
+                                .size(15)
                                 .color(color)
                                 .background(code_bg),
                         );
@@ -292,7 +292,7 @@ fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
                     spans.push(
                         Span::new("\n")
                             .font(Font::MONOSPACE)
-                            .size(13)
+                            .size(15)
                             .background(code_bg),
                     );
                 }

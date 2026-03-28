@@ -47,6 +47,12 @@ fn main() -> iced::Result {
     )
     .subscription(FluxChat::subscription)
     .theme(FluxChat::theme)
+    .font(include_bytes!("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf").as_slice())
+    .font(include_bytes!("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf").as_slice())
+    .default_font(iced::Font {
+        family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
+        ..iced::Font::MONOSPACE
+    })
     .window(window::Settings {
         size: Size::new(1200.0, 800.0),
         min_size: Some(Size::new(800.0, 400.0)),

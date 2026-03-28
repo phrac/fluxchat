@@ -104,8 +104,8 @@ pub struct FluxChat {
     // Status
     pub sync_lag_ms: u64,
 
-    // Media/avatar cache
-    pub avatar_cache: HashMap<String, String>,
+    // Media/avatar cache — maps MXC URI to stable image handles (avoids flicker on re-render)
+    pub avatar_cache: HashMap<String, iced::widget::image::Handle>,
 
     // Login form state
     pub login_homeserver: String,
@@ -134,6 +134,31 @@ pub struct FluxChat {
     pub cmd_completion_idx: usize,
     pub mention_completions: Vec<(String, String)>, // (user_id, display_name)
     pub mention_completion_idx: usize,
+
+    // Settings modal state
+    pub settings_devices: Vec<fluxchat_core::devices::DeviceInfo>,
+    pub settings_nick_input: String,
+    pub settings_status: Option<String>,
+    pub settings_signout_password: String,
+    pub settings_signout_device: Option<String>, // device_id being signed out
+
+    // Account tab - avatar/banner
+    pub settings_avatar_data: Option<Vec<u8>>,   // resolved avatar image bytes
+    pub settings_banner_data: Option<Vec<u8>>,   // resolved banner image bytes
+
+    // Security tab state
+    pub security_state: Option<SecurityState>,
+    pub security_recovery_key_input: String,
+    pub security_shown_recovery_key: Option<String>,
+}
+
+/// Encryption/backup state fetched from Matrix SDK.
+#[derive(Debug, Clone)]
+pub struct SecurityState {
+    pub is_verified: bool,
+    pub backup_exists: bool,
+    pub backup_enabled: bool,
+    pub recovery_state: String,
 }
 
 impl FluxChat {
@@ -197,6 +222,16 @@ impl FluxChat {
             cmd_completion_idx: 0,
             mention_completions: Vec::new(),
             mention_completion_idx: 0,
+            settings_devices: Vec::new(),
+            settings_nick_input: String::new(),
+            settings_status: None,
+            settings_signout_password: String::new(),
+            settings_signout_device: None,
+            settings_avatar_data: None,
+            settings_banner_data: None,
+            security_state: None,
+            security_recovery_key_input: String::new(),
+            security_shown_recovery_key: None,
         }
     }
 }

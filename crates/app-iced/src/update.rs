@@ -138,10 +138,19 @@ impl FluxChat {
                 messages,
                 members,
             } => {
+                // Collect MXC URIs for avatar resolution
+                let mut mxc_uris: Vec<String> = messages
+                    .iter()
+                    .filter_map(|m| m.avatar_url.clone())
+                    .collect();
+                if let Some(ref members) = members {
+                    mxc_uris.extend(members.iter().filter_map(|m| m.avatar_url.clone()));
+                }
                 self.messages_by_room.insert(room_id.clone(), messages);
                 if let Some(members) = members {
                     self.members_by_room.insert(room_id, members);
                 }
+                return self.resolve_avatars(mxc_uris);
             }
 
             // --- Sync events ---
@@ -169,10 +178,20 @@ impl FluxChat {
                                 .insert(room_id.clone(), last.event_id.clone());
                         }
                     }
+                    let mxc_uris: Vec<String> = messages
+                        .iter()
+                        .filter_map(|m| m.avatar_url.clone())
+                        .collect();
                     self.messages_by_room.insert(room_id, messages);
+                    return self.resolve_avatars(mxc_uris);
                 }
                 SyncEvent::MembersUpdated(room_id, members) => {
+                    let mxc_uris: Vec<String> = members
+                        .iter()
+                        .filter_map(|m| m.avatar_url.clone())
+                        .collect();
                     self.members_by_room.insert(room_id, members);
+                    return self.resolve_avatars(mxc_uris);
                 }
                 SyncEvent::TypingUpdate(room_id, user_ids) => {
                     self.typing_by_room.insert(room_id, user_ids);
@@ -204,11 +223,12 @@ impl FluxChat {
                 let needs_messages = !self.messages_by_room.contains_key(&room_id);
                 let needs_members = !self.members_by_room.contains_key(&room_id);
 
+                let focus = iced::widget::operation::focus(crate::view::input_id());
                 if needs_messages || needs_members {
                     let core = self.core.clone();
                     let rid = room_id.clone();
                     let tx = self.timeline_tx.clone();
-                    return Task::perform(
+                    let load = Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid).ok()?;
@@ -268,7 +288,6 @@ impl FluxChat {
                         },
                         |result| match result {
                             Some((room_id, msgs, members)) => {
-                                // Return a batch: messages + members
                                 Message::TimelineLoaded {
                                     room_id,
                                     messages: msgs,
@@ -278,7 +297,9 @@ impl FluxChat {
                             None => Message::Noop,
                         },
                     );
+                    return Task::batch([load, focus]);
                 }
+                return focus;
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -336,6 +357,10 @@ impl FluxChat {
                 } else {
                     self.mention_completions.clear();
                 }
+                // Keep input focused when completions popup appears
+                if !self.cmd_completions.is_empty() || !self.mention_completions.is_empty() {
+                    return iced::widget::operation::focus(crate::view::input_id());
+                }
             }
             Message::SendMessage => {
                 if self.input_text.trim().is_empty() {
@@ -348,25 +373,37 @@ impl FluxChat {
                     self.input_text.clear();
                     self.cmd_completions.clear();
 
+                    let focus = iced::widget::operation::focus(crate::view::input_id());
                     match result {
                         crate::commands::CommandResult::Messages(msgs) => {
-                            let mut task = Task::none();
+                            let mut task = focus;
                             for msg in msgs {
                                 task = Task::batch([task, self.update(msg)]);
                             }
                             return task;
                         }
                         crate::commands::CommandResult::Rewrite(text) => {
-                            // Fall through to send as message
-                            self.input_text = text;
-                            return self.update(Message::SendMessage);
+                            // Send the rewritten text directly (don't re-enter command dispatch)
+                            self.help_text = None;
+                            if let Some(room_id) = self.selected_room_id.clone() {
+                                let core = self.core.clone();
+                                return Task::perform(
+                                    async move {
+                                        let client = core.get_client().await.ok()?;
+                                        let _ = fluxchat_core::messages::send_message(&client, &room_id, &text).await;
+                                        Some(())
+                                    },
+                                    |_| Message::Noop,
+                                );
+                            }
+                            return Task::none();
                         }
                         crate::commands::CommandResult::Help(text) => {
                             self.help_text = Some(text);
-                            return Task::none();
+                            return focus;
                         }
                         crate::commands::CommandResult::Noop => {
-                            return Task::none();
+                            return focus;
                         }
                     }
                 }
@@ -380,7 +417,7 @@ impl FluxChat {
                     let core = self.core.clone();
                     let reply_to = self.reply_to.take();
                     let edit = self.edit_event.take();
-                    return Task::perform(
+                    let send = Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             if let Some((event_id, _)) = edit {
@@ -402,6 +439,7 @@ impl FluxChat {
                         },
                         |_| Message::Noop,
                     );
+                    return Task::batch([send, iced::widget::operation::focus(crate::view::input_id())]);
                 }
             }
             Message::CompleteCommand(idx) => {
@@ -409,6 +447,7 @@ impl FluxChat {
                     self.input_text = format!("{name} ");
                     self.cmd_completions.clear();
                 }
+                return iced::widget::operation::focus(crate::view::input_id());
             }
             Message::CompleteMention(idx) => {
                 if let Some((_, display_name)) = self.mention_completions.get(idx) {
@@ -418,6 +457,7 @@ impl FluxChat {
                     }
                     self.mention_completions.clear();
                 }
+                return iced::widget::operation::focus(crate::view::input_id());
             }
             Message::StartReply(event_id, sender, body) => {
                 self.reply_to = Some((event_id, sender, body));
@@ -552,7 +592,22 @@ impl FluxChat {
 
             // --- Modals ---
             Message::OpenModal(modal) => {
+                // Load devices when opening sessions tab
+                let task = if matches!(&modal, crate::state::Modal::Settings { tab } if tab == "sessions") {
+                    self.settings_nick_input = self.display_name.clone().unwrap_or_default();
+                    self.update(Message::SettingsLoadDevices)
+                } else if matches!(&modal, crate::state::Modal::Settings { tab } if tab == "account") {
+                    self.settings_nick_input = self.display_name.clone().unwrap_or_default();
+                    self.settings_status = None;
+                    self.update(Message::SettingsLoadProfile)
+                } else if matches!(&modal, crate::state::Modal::Settings { tab } if tab == "security") {
+                    self.settings_status = None;
+                    self.update(Message::SecurityLoadState)
+                } else {
+                    Task::none()
+                };
                 self.modal = Some(modal);
+                return task;
             }
             Message::CloseModal => {
                 self.modal = None;
@@ -718,6 +773,279 @@ impl FluxChat {
                 }
             }
 
+            // --- Settings ---
+            Message::SettingsNickChanged(s) => {
+                self.settings_nick_input = s;
+            }
+            Message::SettingsSaveNick => {
+                let nick = self.settings_nick_input.clone();
+                if nick.trim().is_empty() {
+                    return Task::none();
+                }
+                self.display_name = Some(nick.clone());
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::profile::set_display_name(&client, &nick).await.ok();
+                        Some(())
+                    },
+                    |_| Message::SettingsStatus("Display name updated".into()),
+                );
+            }
+            Message::SettingsLoadDevices => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::devices::list_devices(&client).await.ok()
+                    },
+                    |result| match result {
+                        Some(devices) => Message::SettingsDevicesLoaded(devices),
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::SettingsDevicesLoaded(devices) => {
+                self.settings_devices = devices;
+            }
+            Message::SettingsSignOutDevice(device_id) => {
+                self.settings_signout_device = Some(device_id);
+                self.settings_signout_password.clear();
+            }
+            Message::SettingsSignOutPasswordChanged(s) => {
+                self.settings_signout_password = s;
+            }
+            Message::SettingsSignOutConfirm => {
+                if let Some(device_id) = self.settings_signout_device.take() {
+                    let password = std::mem::take(&mut self.settings_signout_password);
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::devices::delete_devices(&client, &[device_id], &password).await.ok()
+                        },
+                        |_| Message::SettingsLoadDevices,
+                    );
+                }
+            }
+            Message::SettingsStatus(s) => {
+                self.settings_status = Some(s);
+            }
+            Message::SettingsLoadProfile => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
+                        use matrix_sdk::ruma::events::room::MediaSource;
+                        use matrix_sdk::ruma::MxcUri;
+                        let client = core.get_client().await.ok()?;
+                        let profile = fluxchat_core::profile::get_profile(&client).await.ok()?;
+                        let avatar_data = if let Some(ref mxc) = profile.avatar_url {
+                            let mxc_uri = <&MxcUri>::from(mxc.as_str());
+                            let req = MediaRequestParameters { source: MediaSource::Plain(mxc_uri.to_owned()), format: MediaFormat::File };
+                            client.media().get_media_content(&req, true).await.ok()
+                        } else { None };
+                        let banner_data = if let Some(ref mxc) = profile.banner_url {
+                            let mxc_uri = <&MxcUri>::from(mxc.as_str());
+                            let req = MediaRequestParameters { source: MediaSource::Plain(mxc_uri.to_owned()), format: MediaFormat::File };
+                            client.media().get_media_content(&req, true).await.ok()
+                        } else { None };
+                        Some((avatar_data, banner_data))
+                    },
+                    |result| match result {
+                        Some((avatar_data, banner_data)) => Message::SettingsProfileLoaded { avatar_data, banner_data },
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::SettingsProfileLoaded { avatar_data, banner_data } => {
+                self.settings_avatar_data = avatar_data;
+                self.settings_banner_data = banner_data;
+            }
+            Message::SettingsUploadAvatar => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp"])
+                            .pick_file()
+                            .await?;
+                        let data = handle.read().await;
+                        let name = handle.file_name();
+                        let mime = if name.ends_with(".png") { "image/png" }
+                            else if name.ends_with(".gif") { "image/gif" }
+                            else if name.ends_with(".webp") { "image/webp" }
+                            else { "image/jpeg" };
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::profile::upload_avatar(&client, mime, data.to_vec()).await.ok()?;
+                        Some(())
+                    },
+                    |result| match result {
+                        Some(()) => Message::SettingsStatus("avatar updated".into()),
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::SettingsRemoveAvatar => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::profile::remove_avatar(&client).await.ok()
+                    },
+                    |result| match result {
+                        Some(()) => Message::SettingsStatus("avatar removed".into()),
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::SettingsUploadBanner => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp"])
+                            .pick_file()
+                            .await?;
+                        let data = handle.read().await;
+                        let name = handle.file_name();
+                        let mime = if name.ends_with(".png") { "image/png" }
+                            else if name.ends_with(".gif") { "image/gif" }
+                            else if name.ends_with(".webp") { "image/webp" }
+                            else { "image/jpeg" };
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::profile::upload_banner(&client, mime, data.to_vec()).await.ok()?;
+                        Some(())
+                    },
+                    |result| match result {
+                        Some(()) => Message::SettingsStatus("banner updated".into()),
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::SettingsRemoveBanner => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::profile::remove_banner(&client).await.ok()
+                    },
+                    |result| match result {
+                        Some(()) => Message::SettingsStatus("banner removed".into()),
+                        None => Message::Noop,
+                    },
+                );
+            }
+
+            // --- Security ---
+            Message::SecurityLoadState => {
+                self.security_state = None;
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let encryption = client.encryption();
+
+                        let backup_exists = encryption.backups().exists_on_server().await.unwrap_or(false);
+                        let backup_enabled = encryption.backups().are_enabled().await;
+                        let recovery_state = encryption.recovery().state();
+
+                        let own_device = {
+                            let user_id = client.user_id()?;
+                            let device_id = client.device_id()?;
+                            encryption.get_device(user_id, device_id).await.ok()??
+                        };
+                        let is_verified = own_device.is_verified_with_cross_signing();
+
+                        Some(crate::state::SecurityState {
+                            is_verified,
+                            backup_exists,
+                            backup_enabled,
+                            recovery_state: format!("{recovery_state:?}"),
+                        })
+                    },
+                    |result| match result {
+                        Some(state) => Message::SecurityStateLoaded(state),
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::SecurityStateLoaded(state) => {
+                self.security_state = Some(state);
+            }
+            Message::SecurityEnableBackup => {
+                self.settings_status = Some("enabling backup...".into());
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        match client.encryption().recovery().enable().await {
+                            Ok(key) => Some(Some(key)),
+                            Err(_) => {
+                                // Try just enabling backup without full recovery
+                                match client.encryption().recovery().enable_backup().await {
+                                    Ok(_) => Some(None),
+                                    Err(_) => None,
+                                }
+                            }
+                        }
+                    },
+                    |result| match result {
+                        Some(key) => Message::SecurityBackupEnabled(key),
+                        None => Message::SettingsStatus("failed to enable backup".into()),
+                    },
+                );
+            }
+            Message::SecurityBackupEnabled(key) => {
+                if key.is_some() {
+                    self.settings_status = Some("backup enabled! save your recovery key".into());
+                } else {
+                    self.settings_status = Some("backup enabled".into());
+                }
+                self.security_shown_recovery_key = key;
+                // Refresh security state
+                return self.update(Message::SecurityLoadState);
+            }
+            Message::SecurityRecoveryKeyInputChanged(s) => {
+                self.security_recovery_key_input = s;
+            }
+            Message::SecurityRecover => {
+                let key = self.security_recovery_key_input.trim().to_string();
+                if key.is_empty() {
+                    return Task::none();
+                }
+                self.settings_status = Some("recovering...".into());
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| format!("{e}"))?;
+                        client.encryption().recovery().recover(&key).await.map_err(|e| format!("{e}"))
+                    },
+                    Message::SecurityRecoverResult,
+                );
+            }
+            Message::SecurityRecoverResult(result) => {
+                match result {
+                    Ok(()) => {
+                        self.settings_status = Some("recovery successful! keys restored.".into());
+                        self.security_recovery_key_input.clear();
+                        return self.update(Message::SecurityLoadState);
+                    }
+                    Err(e) => {
+                        self.settings_status = Some(format!("recovery failed: {e}"));
+                    }
+                }
+            }
+
+            // --- Avatars ---
+            Message::AvatarsResolved(entries) => {
+                for (mxc, data) in entries {
+                    let handle = iced::widget::image::Handle::from_bytes(data);
+                    self.avatar_cache.insert(mxc, handle);
+                }
+            }
+
             // --- Misc ---
             Message::PaginateBack(_room_id) => { /* TODO */ }
             Message::OpenUrl(url) => {
@@ -780,6 +1108,58 @@ impl FluxChat {
         }
 
         Task::none()
+    }
+
+    /// Spawn background avatar resolution for any uncached MXC URIs.
+    fn resolve_avatars(&self, mxc_uris: Vec<String>) -> Task<Message> {
+        let uncached: Vec<String> = mxc_uris
+            .into_iter()
+            .filter(|mxc| !self.avatar_cache.contains_key(mxc))
+            .collect();
+        if uncached.is_empty() {
+            return Task::none();
+        }
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
+                use matrix_sdk::ruma::events::room::MediaSource;
+                use matrix_sdk::ruma::MxcUri;
+
+                let client = match core.get_client().await {
+                    Ok(c) => c,
+                    Err(_) => return Vec::new(),
+                };
+                let mut resolved = Vec::new();
+                for mxc in uncached {
+                    let mxc_uri = <&MxcUri>::from(mxc.as_str());
+                    let req = MediaRequestParameters {
+                        source: MediaSource::Plain(mxc_uri.to_owned()),
+                        format: MediaFormat::Thumbnail(matrix_sdk::media::MediaThumbnailSettings::new(
+                            matrix_sdk::ruma::UInt::new(40).unwrap(),
+                            matrix_sdk::ruma::UInt::new(40).unwrap(),
+                        )),
+                    };
+                    // Try thumbnail first, fall back to full file
+                    let data = match client.media().get_media_content(&req, true).await {
+                        Ok(d) => d,
+                        Err(_) => {
+                            let req_full = MediaRequestParameters {
+                                source: MediaSource::Plain(mxc_uri.to_owned()),
+                                format: MediaFormat::File,
+                            };
+                            match client.media().get_media_content(&req_full, true).await {
+                                Ok(d) => d,
+                                Err(_) => continue,
+                            }
+                        }
+                    };
+                    resolved.push((mxc.clone(), data));
+                }
+                resolved
+            },
+            Message::AvatarsResolved,
+        )
     }
 
     /// Complete login: set user info, load settings, start sync.
