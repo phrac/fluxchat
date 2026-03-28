@@ -29,6 +29,12 @@ const SVG_LOCK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" h
 const SVG_PERSON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>"#;
 const SVG_CHAT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>"#;
 
+// Room action bar icons
+const SVG_SEARCH: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>"#;
+const SVG_USERS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>"#;
+const SVG_INFO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>"#;
+const SVG_MORE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>"#;
+
 const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
     ..Font::MONOSPACE
@@ -829,6 +835,58 @@ impl FluxChat {
                         );
                     }
                 }
+            }
+
+            // Room action buttons
+            {
+                let make_action_btn = |svg_bytes: &'static [u8], msg: Message, active: bool| -> Element<Message> {
+                    let icon_color = if active { theme::ACCENT } else { theme::TEXT_DIM };
+                    let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+                    button(
+                        iced::widget::svg(handle)
+                            .width(16).height(16)
+                            .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
+                    )
+                    .on_press(msg)
+                    .padding([4, 6])
+                    .style(move |_, status| button::Style {
+                        background: if active {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        } else if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        } else {
+                            None
+                        },
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    })
+                    .into()
+                };
+
+                let actions = row![
+                    Space::new().width(Fill),
+                    make_action_btn(SVG_SEARCH, Message::ToggleSearch, self.search_open),
+                    make_action_btn(SVG_USERS, Message::ToggleMemberList, self.show_member_list),
+                    make_action_btn(SVG_INFO, Message::OpenModal(crate::state::Modal::RoomSettings), false),
+                    make_action_btn(SVG_MORE, Message::Noop, false), // TODO: overflow menu
+                ]
+                .spacing(2)
+                .align_y(iced::Alignment::Center);
+
+                content = content.push(
+                    container(actions)
+                        .width(Fill)
+                        .padding([2, 8])
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border {
+                                color: theme::BORDER,
+                                width: 1.0,
+                                radius: 0.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                );
             }
 
             // Search bar
@@ -1915,11 +1973,35 @@ impl FluxChat {
         let members = self.members_by_room.get(room_id);
         let total = members.map(|m| m.len()).unwrap_or(0);
 
+        let invite_handle = iced::widget::svg::Handle::from_memory(
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>"#.as_slice(),
+        );
+        let room_id_invite = room_id.clone();
         let header = container(
-            text(format!("Users -- {total}"))
-                .font(MONO)
-                .size(13)
-                .color(theme::TEXT_DIM),
+            row![
+                text(format!("USERS \u{2014} {total}"))
+                    .font(MONO)
+                    .size(13)
+                    .color(theme::TEXT_DIM),
+                Space::new().width(Fill),
+                button(
+                    iced::widget::svg(invite_handle)
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                )
+                .on_press(Message::OpenModal(crate::state::Modal::Profile { user_id: format!("invite:{room_id_invite}") }))
+                .padding([2, 4])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            ]
+            .align_y(iced::Alignment::Center),
         )
         .padding([8, 12])
         .width(Fill)
