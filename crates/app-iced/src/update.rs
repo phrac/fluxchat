@@ -147,11 +147,12 @@ impl FluxChat {
                     mxc_uris.extend(members.iter().filter_map(|m| m.avatar_url.clone()));
                 }
                 let preview_task = self.resolve_url_previews(&messages);
+                let image_task = self.resolve_images(&messages);
                 self.messages_by_room.insert(room_id.clone(), messages);
                 if let Some(members) = members {
                     self.members_by_room.insert(room_id, members);
                 }
-                return Task::batch([self.resolve_avatars(mxc_uris), preview_task]);
+                return Task::batch([self.resolve_avatars(mxc_uris), preview_task, image_task]);
             }
 
             // --- Sync events ---
@@ -192,8 +193,9 @@ impl FluxChat {
                         .filter_map(|m| m.avatar_url.clone())
                         .collect();
                     let preview_task = self.resolve_url_previews(&messages);
+                    let image_task = self.resolve_images(&messages);
                     self.messages_by_room.insert(room_id, messages);
-                    return Task::batch([self.resolve_avatars(mxc_uris), preview_task]);
+                    return Task::batch([self.resolve_avatars(mxc_uris), preview_task, image_task]);
                 }
                 SyncEvent::MembersUpdated(room_id, members) => {
                     let mxc_uris: Vec<String> = members
@@ -1056,6 +1058,17 @@ impl FluxChat {
                 }
             }
 
+            // --- Inline images ---
+            Message::ImageResolved(mxc, data) => {
+                self.image_cache_pending.remove(&mxc);
+                // Persist to SQLite
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                self.core.db.cache_media(&format!("iced_img:{mxc}"), &b64);
+                let handle = iced::widget::image::Handle::from_bytes(data);
+                self.image_cache.insert(mxc, handle);
+            }
+
             // --- URL Previews ---
             Message::UrlPreviewFetched(url, preview) => {
                 self.url_previews_pending.remove(&url);
@@ -1220,6 +1233,50 @@ impl FluxChat {
             },
             Message::AvatarsResolved,
         )
+    }
+
+    /// Spawn full-size image fetches for message images.
+    fn resolve_images(&mut self, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for msg in messages {
+            if let Some(ref mxc) = msg.image_mxc {
+                if self.image_cache.contains_key(mxc) || self.image_cache_pending.contains(mxc) {
+                    continue;
+                }
+                // Check SQLite cache first
+                if let Some(b64) = self.core.db.get_cached_media(&format!("iced_img:{mxc}")) {
+                    use base64::Engine;
+                    if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                        let handle = iced::widget::image::Handle::from_bytes(data);
+                        self.image_cache.insert(mxc.clone(), handle);
+                        continue;
+                    }
+                }
+                self.image_cache_pending.insert(mxc.clone());
+                let core = self.core.clone();
+                let mxc_clone = mxc.clone();
+                tasks.push(Task::perform(
+                    async move {
+                        use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
+                        use matrix_sdk::ruma::events::room::MediaSource;
+                        use matrix_sdk::ruma::MxcUri;
+                        let client = core.get_client().await.ok()?;
+                        let mxc_uri = <&MxcUri>::from(mxc_clone.as_str());
+                        let req = MediaRequestParameters {
+                            source: MediaSource::Plain(mxc_uri.to_owned()),
+                            format: MediaFormat::File,
+                        };
+                        let data = client.media().get_media_content(&req, true).await.ok()?;
+                        Some((mxc_clone, data))
+                    },
+                    |result| match result {
+                        Some((mxc, data)) => Message::ImageResolved(mxc, data),
+                        None => Message::Noop,
+                    },
+                ));
+            }
+        }
+        if tasks.is_empty() { Task::none() } else { Task::batch(tasks) }
     }
 
     /// Spawn URL preview fetches for any uncached URLs in the given messages.

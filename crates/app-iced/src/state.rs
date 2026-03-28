@@ -107,6 +107,10 @@ pub struct FluxChat {
     // Media/avatar cache — maps MXC URI to stable image handles (avoids flicker on re-render)
     pub avatar_cache: HashMap<String, iced::widget::image::Handle>,
 
+    // Inline image cache — maps MXC URI to image handle (full size for message images)
+    pub image_cache: HashMap<String, iced::widget::image::Handle>,
+    pub image_cache_pending: std::collections::HashSet<String>,
+
     // URL preview cache — maps URL to preview data
     pub url_previews: HashMap<String, fluxchat_core::UrlPreview>,
     pub url_preview_images: HashMap<String, iced::widget::image::Handle>, // og:image mxc/url -> handle
@@ -232,6 +236,8 @@ impl FluxChat {
             settings_status: None,
             settings_signout_password: String::new(),
             settings_signout_device: None,
+            image_cache: HashMap::new(),
+            image_cache_pending: std::collections::HashSet::new(),
             url_previews: HashMap::new(),
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),

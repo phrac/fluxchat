@@ -122,6 +122,9 @@ pub enum Message {
     // --- Avatars ---
     AvatarsResolved(Vec<(String, Vec<u8>)>), // vec of (mxc_uri, image_bytes)
 
+    // --- Inline images ---
+    ImageResolved(String, Vec<u8>), // (mxc_uri, image_bytes)
+
     // --- URL Previews ---
     UrlPreviewFetched(String, Option<fluxchat_core::UrlPreview>), // url, preview
     UrlPreviewImageResolved(String, Vec<u8>), // image_url, bytes

@@ -1558,16 +1558,42 @@ impl FluxChat {
             return row![time, nick, msg_avatar, sep, poll_col].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
         }
 
-        // Image messages — show as block element (actual image loading comes later)
-        if msg.image_mxc.is_some() && !msg.is_video {
-            let image_label = format!("[image: {}]", msg.body);
-            let img_element = text(image_label)
-                .font(MONO)
-                .size(15)
-                .color(theme::ACCENT)
-                .width(Fill);
+        // Image messages
+        if let Some(ref mxc) = msg.image_mxc {
+            if !msg.is_video {
+                let img_element: Element<'a, Message> = if let Some(handle) = self.image_cache.get(mxc) {
+                    let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
+                    let img_h = if let (Some(w), Some(h)) = (msg.image_width, msg.image_height) {
+                        (img_w * h as f32 / w as f32).min(300.0)
+                    } else {
+                        240.0
+                    };
+                    let mxc_click = mxc.clone();
+                    button(
+                        container(
+                            iced::widget::image(handle.clone())
+                                .width(img_w)
+                                .height(img_h)
+                                .content_fit(iced::ContentFit::Contain),
+                        )
+                        .clip(true)
+                        .style(|_: &Theme| container::Style {
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        })
+                    )
+                    .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
+                    .padding(0)
+                    .style(|_, _| button::Style { background: None, ..Default::default() })
+                    .into()
+                } else {
+                    text(format!("[image: {}]", msg.body))
+                        .font(MONO).size(15).color(theme::TEXT_DIM)
+                        .into()
+                };
 
-            return row![time, nick, msg_avatar, sep, img_element].spacing(6).width(Fill).align_y(iced::Alignment::Center).into();
+                return row![time, nick, msg_avatar, sep, img_element].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
+            }
         }
 
         // Video messages
@@ -2684,6 +2710,16 @@ impl FluxChat {
             }
 
             crate::state::Modal::Lightbox { url } => {
+                let image_el: Element<Message> = if let Some(handle) = self.image_cache.get(url) {
+                    iced::widget::image(handle.clone())
+                        .content_fit(iced::ContentFit::Contain)
+                        .width(Fill)
+                        .height(Fill)
+                        .into()
+                } else {
+                    text("Loading...").font(MONO).size(14).color(theme::TEXT_DIM).into()
+                };
+
                 column![
                     row![
                         text("Image Viewer")
@@ -2691,7 +2727,7 @@ impl FluxChat {
                             .size(16)
                             .color(theme::TEXT_BRIGHT),
                         Space::new().width(Fill),
-                        button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
+                        button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
                             .on_press(Message::CloseModal)
                             .padding([2, 6])
                             .style(|_, _| button::Style {
@@ -2700,17 +2736,20 @@ impl FluxChat {
                             }),
                     ]
                     .align_y(iced::Alignment::Center),
-                    text("[image viewer]")
-                        .font(MONO)
-                        .size(14)
-                        .color(theme::TEXT_DIM),
-                    text(url.as_str())
-                        .font(MONO)
-                        .size(13)
-                        .color(theme::TEXT_MUTED),
+                    container(image_el)
+                        .width(Fill)
+                        .height(Fill)
+                        .center(Fill)
+                        .clip(true)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.3).into()),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
                 ]
-                .spacing(12)
-                .width(600)
+                .spacing(8)
+                .width(800)
+                .height(600)
                 .into()
             }
 
