@@ -133,6 +133,16 @@ impl FluxChat {
                 self.invited_rooms = invited;
                 self.sync_running = true;
             }
+            Message::TimelineLoaded {
+                room_id,
+                messages,
+                members,
+            } => {
+                self.messages_by_room.insert(room_id.clone(), messages);
+                if let Some(members) = members {
+                    self.members_by_room.insert(room_id, members);
+                }
+            }
 
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
@@ -189,23 +199,81 @@ impl FluxChat {
                     let space_name = room.and_then(|r| r.space_name.clone());
                     self.open_tabs.push((room_id.clone(), name, space_name, None));
                 }
-                // Load members if not cached
+
+                // Load timeline + members if not cached
+                let needs_messages = !self.messages_by_room.contains_key(&room_id);
                 let needs_members = !self.members_by_room.contains_key(&room_id);
-                let core = self.core.clone();
-                let rid = room_id.clone();
-                if needs_members {
+
+                if needs_messages || needs_members {
+                    let core = self.core.clone();
+                    let rid = room_id.clone();
+                    let tx = self.timeline_tx.clone();
                     return Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
-                            let members =
-                                fluxchat_core::messages::get_room_members(&client, &rid)
-                                    .await
-                                    .ok()?;
-                            Some((rid, members))
+                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid).ok()?;
+
+                            // Load members
+                            let members = fluxchat_core::messages::get_room_members(&client, &rid)
+                                .await
+                                .ok();
+
+                            // Get or create timeline
+                            let timeline = fluxchat_core::timeline::get_or_create_timeline(
+                                &client,
+                                &core.timelines,
+                                &room_id_parsed,
+                            )
+                            .await
+                            .ok()?;
+
+                            // Subscribe to get initial items + live stream
+                            let (initial_items, stream) = timeline.subscribe().await;
+
+                            // Convert initial items
+                            let msgs = fluxchat_core::timeline::timeline_items_to_messages(
+                                &initial_items.into_iter().collect::<Vec<_>>(),
+                            );
+
+                            // Paginate backwards if not enough messages
+                            let real_count = msgs.iter()
+                                .filter(|m| !m.event_id.starts_with("~state-"))
+                                .count();
+                            if real_count < 30 {
+                                let _ = timeline.paginate_backwards(30).await;
+                            }
+
+                            // Spawn a background task to watch the diff stream
+                            {
+                                let timeline = timeline.clone();
+                                let rid = rid.clone();
+                                let tx = tx.clone();
+                                tokio::spawn(async move {
+                                    use futures_util::StreamExt;
+                                    futures_util::pin_mut!(stream);
+                                    while let Some(_diffs) = stream.next().await {
+                                        // Re-read full timeline items on any diff
+                                        let items = timeline.items().await;
+                                        let msgs = fluxchat_core::timeline::timeline_items_to_messages(
+                                            &items.into_iter().collect::<Vec<_>>(),
+                                        );
+                                        let _ = tx.send(Message::SyncEvent(
+                                            SyncEvent::MessagesUpdated(rid.clone(), msgs),
+                                        ));
+                                    }
+                                });
+                            }
+
+                            Some((rid, msgs, members))
                         },
                         |result| match result {
-                            Some((room_id, members)) => {
-                                Message::SyncEvent(SyncEvent::MembersUpdated(room_id, members))
+                            Some((room_id, msgs, members)) => {
+                                // Return a batch: messages + members
+                                Message::TimelineLoaded {
+                                    room_id,
+                                    messages: msgs,
+                                    members,
+                                }
                             }
                             None => Message::Noop,
                         },

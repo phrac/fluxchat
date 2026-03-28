@@ -5,6 +5,14 @@ use fluxchat_core::{
     AppState, MemberInfo, MessageInfo, ReadReceipt, RoomInfo, VerificationInfo,
 };
 
+/// Channel for timeline diff stream watcher to send updates back to the Iced event loop.
+pub type TimelineUpdateTx = tokio::sync::mpsc::UnboundedSender<crate::message::Message>;
+pub type TimelineUpdateRx = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
+
+/// Global channel receiver — taken by the Iced subscription on first call.
+pub static TIMELINE_RX: std::sync::OnceLock<std::sync::Mutex<Option<TimelineUpdateRx>>> =
+    std::sync::OnceLock::new();
+
 /// Tab entry: (room_id, room_name, space_name, space_avatar_mxc)
 pub type TabEntry = (String, String, Option<String>, Option<String>);
 
@@ -117,6 +125,9 @@ pub struct FluxChat {
     // Sync state
     pub sync_running: bool,
 
+    // Timeline channel — background diff watchers send updates through this
+    pub timeline_tx: TimelineUpdateTx,
+
     // Input state
     pub input_text: String,
     pub cmd_completions: Vec<(&'static str, &'static str)>, // (name, description)
@@ -127,6 +138,8 @@ pub struct FluxChat {
 
 impl FluxChat {
     pub fn new(core: Arc<AppState>) -> Self {
+        let (timeline_tx, timeline_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = TIMELINE_RX.set(std::sync::Mutex::new(Some(timeline_rx)));
         Self {
             core,
             screen: Screen::Login,
@@ -177,6 +190,7 @@ impl FluxChat {
             collapsed_sections: HashSet::new(),
             search_query: String::new(),
             search_results: Vec::new(),
+            timeline_tx,
             sync_running: false,
             input_text: String::new(),
             cmd_completions: Vec::new(),

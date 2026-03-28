@@ -18,6 +18,11 @@ pub enum Message {
     // --- Post-login startup ---
     SyncStarted,
     InitialRoomsLoaded(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>), // rooms, spaces, invited
+    TimelineLoaded {
+        room_id: String,
+        messages: Vec<MessageInfo>,
+        members: Option<Vec<MemberInfo>>,
+    },
 
     // --- Sync events (from subscription) ---
     SyncEvent(SyncEvent),

@@ -1929,11 +1929,40 @@ impl FluxChat {
             Message::Noop
         });
 
-        Subscription::batch([tick, keys])
+        // Timeline updates from background diff watchers
+        let timeline_sub = Subscription::run(timeline_update_stream);
+
+        Subscription::batch([tick, keys, timeline_sub])
     }
 
     /// Application theme — dark.
     pub fn theme(&self) -> Theme {
         Theme::Dark
+    }
+}
+
+/// Stream that drains the global timeline update channel.
+/// Used as an Iced `Subscription::run` source — function pointer for identity.
+fn timeline_update_stream() -> impl futures_util::Stream<Item = Message> {
+    async_stream::stream! {
+        let mut rx = {
+            let lock = crate::state::TIMELINE_RX.get();
+            match lock {
+                Some(mutex) => {
+                    let mut guard = mutex.lock().unwrap();
+                    match guard.take() {
+                        Some(rx) => rx,
+                        None => return,
+                    }
+                }
+                None => return,
+            }
+        };
+        loop {
+            match rx.recv().await {
+                Some(msg) => yield msg,
+                None => return,
+            }
+        }
     }
 }
