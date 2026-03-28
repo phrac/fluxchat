@@ -14,6 +14,15 @@ use crate::state::{FluxChat, Screen};
 use crate::theme;
 use crate::update::extract_urls;
 
+// Lucide-style SVG icons for formatting toolbar
+const SVG_BOLD: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/><path d="M6 12h9a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z"/></svg>"#;
+const SVG_ITALIC: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="4" x2="10" y2="4"/><line x1="14" y1="20" x2="5" y2="20"/><line x1="15" y1="4" x2="9" y2="20"/></svg>"#;
+const SVG_STRIKE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4H9a3 3 0 0 0-3 3c0 2 1.5 3 3 3h6"/><path d="M4 12h16"/><path d="M15 12a3 3 0 0 1-3 3H8"/></svg>"#;
+const SVG_CODE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
+const SVG_CODEBLOCK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="10 8 6 12 10 16"/><polyline points="14 8 18 12 14 16"/></svg>"#;
+const SVG_LINK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
+const SVG_EMOJI: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>"#;
+
 const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
     ..Font::MONOSPACE
@@ -901,6 +910,48 @@ impl FluxChat {
                 );
             }
 
+            // Upload preview bar
+            if let Some((ref filename, _, _)) = self.upload_pending {
+                content = content.push(
+                    container(
+                        row![
+                            text(format!("attach: {filename}"))
+                                .font(MONO)
+                                .size(14)
+                                .color(theme::ACCENT),
+                            Space::new().width(Fill),
+                            button(text("send").font(MONO).size(14).color(theme::GREEN))
+                                .on_press(Message::UploadFile)
+                                .padding([0, 6])
+                                .style(|_, _| button::Style {
+                                    background: None,
+                                    text_color: theme::GREEN,
+                                    ..Default::default()
+                                }),
+                            button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                                .on_press(Message::CancelUpload)
+                                .padding([0, 4])
+                                .style(|_, _| button::Style {
+                                    background: None,
+                                    ..Default::default()
+                                }),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .padding([4, 12])
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::BG_DEEP.into()),
+                        border: iced::Border {
+                            color: theme::ACCENT,
+                            width: 2.0,
+                            radius: 0.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+                );
+            }
+
             // Help text (command feedback)
             if let Some(ref help) = self.help_text {
                 content = content.push(
@@ -1041,25 +1092,166 @@ impl FluxChat {
             }
 
             // Input bar
-            let input = text_input("message...", &self.input_text)
+            let attach_btn = button(
+                text("+").font(MONO).size(18).color(theme::TEXT_MUTED),
+            )
+            .on_press(Message::PickFile)
+            .padding([2, 8])
+            .style(|_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                } else {
+                    None
+                },
+                text_color: theme::TEXT_MUTED,
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+
+            let prompt = text("\u{276f}").font(MONO).size(16).color(theme::ACCENT);
+
+            let input = text_input("Type a message or /command...", &self.input_text)
                 .id(input_id())
                 .on_input(Message::InputChanged)
                 .on_submit(Message::SendMessage)
                 .font(MONO)
                 .size(14)
-                .padding(8);
+                .padding([8, 4])
+                .style(|_, _| text_input::Style {
+                    background: iced::Background::Color(Color::TRANSPARENT),
+                    border: iced::Border::default(),
+                    icon: theme::TEXT_DIM,
+                    placeholder: theme::TEXT_DIM,
+                    value: theme::TEXT_BRIGHT,
+                    selection: Color::from_rgba(0.23, 0.51, 0.99, 0.3),
+                });
+
+            let emoji_handle = iced::widget::svg::Handle::from_memory(SVG_EMOJI);
+            let emoji_btn: Element<Message> = iced::widget::tooltip(
+                button(
+                    iced::widget::svg(emoji_handle)
+                        .width(18)
+                        .height(18)
+                        .style(|_, _| iced::widget::svg::Style {
+                            color: Some(theme::TEXT_DIM),
+                        }),
+                )
+                .on_press(Message::Noop) // TODO: emoji picker
+                .padding([2, 8])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else {
+                        None
+                    },
+                    text_color: theme::TEXT_DIM,
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+                text("Emoji").font(MONO).size(12),
+                iced::widget::tooltip::Position::Top,
+            )
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_MID.into()),
+                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+            .padding(6)
+            .into();
+
+            let input_row = row![
+                attach_btn,
+                prompt,
+                input,
+                emoji_btn,
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+
+            // Formatting toolbar with SVG icons
+            let make_fmt_btn = |svg_bytes: &'static [u8], prefix: &'static str, suffix: &'static str, title: &'static str| -> Element<Message> {
+                let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+                iced::widget::tooltip(
+                    button(
+                        iced::widget::svg(handle)
+                            .width(14)
+                            .height(14)
+                            .style(|_, _| iced::widget::svg::Style {
+                                color: Some(theme::TEXT_DIM),
+                            }),
+                    )
+                    .on_press(Message::InsertFormat(prefix, suffix))
+                    .padding([3, 6])
+                    .style(|_, status| button::Style {
+                        background: if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        } else {
+                            None
+                        },
+                        text_color: theme::TEXT_DIM,
+                        border: iced::Border { radius: 3.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                    text(title).font(MONO).size(12),
+                    iced::widget::tooltip::Position::Top,
+                )
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_MID.into()),
+                    border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                    ..Default::default()
+                })
+                .padding(6)
+                .into()
+            };
+
+            let fmt_bar = row![
+                make_fmt_btn(SVG_BOLD, "**", "**", "Bold"),
+                make_fmt_btn(SVG_ITALIC, "*", "*", "Italic"),
+                make_fmt_btn(SVG_STRIKE, "~~", "~~", "Strikethrough"),
+                make_fmt_btn(SVG_CODE, "`", "`", "Code"),
+                make_fmt_btn(SVG_CODEBLOCK, "```\n", "\n```", "Code block"),
+                make_fmt_btn(SVG_LINK, "[", "](url)", "Link"),
+            ]
+            .spacing(2)
+            .align_y(iced::Alignment::Center);
 
             content = content.push(
-                container(input)
+                container(
+                    container(
+                        column![
+                            input_row,
+                            container(fmt_bar)
+                                .padding(iced::Padding { top: 4.0, right: 0.0, bottom: 0.0, left: 0.0 })
+                                .style(|_: &Theme| container::Style {
+                                    border: iced::Border {
+                                        color: Color::from_rgba(1.0, 1.0, 1.0, 0.04),
+                                        width: 1.0,
+                                        radius: 0.0.into(),
+                                    },
+                                    ..Default::default()
+                                }),
+                        ].spacing(4)
+                    )
                     .width(Fill)
-                    .padding([4, 8])
+                    .padding([10, 16])
                     .style(|_: &Theme| container::Style {
-                        background: Some(theme::BG_DARK.into()),
+                        background: Some(Color::from_rgba(0.12, 0.13, 0.15, 0.95).into()),
                         border: iced::Border {
-                            color: theme::BORDER,
+                            color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
                             width: 1.0,
-                            radius: 0.0.into(),
+                            radius: 12.0.into(),
                         },
+                        shadow: iced::Shadow {
+                            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                            offset: iced::Vector::new(0.0, 4.0),
+                            blur_radius: 20.0,
+                        },
+                        ..Default::default()
+                    })
+                )
+                    .width(Fill)
+                    .padding(iced::Padding { top: 6.0, right: 14.0, bottom: 10.0, left: 14.0 })
+                    .style(|_: &Theme| container::Style {
                         ..Default::default()
                     }),
             );

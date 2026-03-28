@@ -1091,6 +1091,13 @@ impl FluxChat {
                 self.url_preview_images.insert(url, handle);
             }
 
+            // --- Formatting ---
+            Message::InsertFormat(prefix, suffix) => {
+                self.input_text.push_str(prefix);
+                self.input_text.push_str(suffix);
+                return iced::widget::operation::focus(crate::view::input_id());
+            }
+
             // --- Misc ---
             Message::PaginateBack(_room_id) => { /* TODO */ }
             Message::OpenUrl(url) => {

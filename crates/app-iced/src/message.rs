@@ -126,6 +126,9 @@ pub enum Message {
     UrlPreviewFetched(String, Option<fluxchat_core::UrlPreview>), // url, preview
     UrlPreviewImageResolved(String, Vec<u8>), // image_url, bytes
 
+    // --- Formatting ---
+    InsertFormat(&'static str, &'static str), // (prefix, suffix) e.g. ("**", "**")
+
     // --- Misc ---
     PaginateBack(String), // room_id
     OpenUrl(String),
