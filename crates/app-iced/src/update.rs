@@ -146,11 +146,12 @@ impl FluxChat {
                 if let Some(ref members) = members {
                     mxc_uris.extend(members.iter().filter_map(|m| m.avatar_url.clone()));
                 }
+                let preview_task = self.resolve_url_previews(&messages);
                 self.messages_by_room.insert(room_id.clone(), messages);
                 if let Some(members) = members {
                     self.members_by_room.insert(room_id, members);
                 }
-                return self.resolve_avatars(mxc_uris);
+                return Task::batch([self.resolve_avatars(mxc_uris), preview_task]);
             }
 
             // --- Sync events ---
@@ -182,8 +183,9 @@ impl FluxChat {
                         .iter()
                         .filter_map(|m| m.avatar_url.clone())
                         .collect();
+                    let preview_task = self.resolve_url_previews(&messages);
                     self.messages_by_room.insert(room_id, messages);
-                    return self.resolve_avatars(mxc_uris);
+                    return Task::batch([self.resolve_avatars(mxc_uris), preview_task]);
                 }
                 SyncEvent::MembersUpdated(room_id, members) => {
                     let mxc_uris: Vec<String> = members
@@ -1046,6 +1048,49 @@ impl FluxChat {
                 }
             }
 
+            // --- URL Previews ---
+            Message::UrlPreviewFetched(url, preview) => {
+                self.url_previews_pending.remove(&url);
+                if let Some(preview) = preview {
+                    // Fetch og:image if present
+                    let task = if let Some(ref image_url) = preview.image_url {
+                        if !self.url_preview_images.contains_key(image_url) && image_url.starts_with("mxc://") {
+                            let core = self.core.clone();
+                            let img_url = image_url.clone();
+                            Task::perform(
+                                async move {
+                                    use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
+                                    use matrix_sdk::ruma::events::room::MediaSource;
+                                    use matrix_sdk::ruma::MxcUri;
+                                    let client = core.get_client().await.ok()?;
+                                    let mxc_uri = <&MxcUri>::from(img_url.as_str());
+                                    let req = MediaRequestParameters {
+                                        source: MediaSource::Plain(mxc_uri.to_owned()),
+                                        format: MediaFormat::File,
+                                    };
+                                    let data = client.media().get_media_content(&req, true).await.ok()?;
+                                    Some((img_url, data))
+                                },
+                                |result| match result {
+                                    Some((url, data)) => Message::UrlPreviewImageResolved(url, data),
+                                    None => Message::Noop,
+                                },
+                            )
+                        } else {
+                            Task::none()
+                        }
+                    } else {
+                        Task::none()
+                    };
+                    self.url_previews.insert(url, preview);
+                    return task;
+                }
+            }
+            Message::UrlPreviewImageResolved(url, data) => {
+                let handle = iced::widget::image::Handle::from_bytes(data);
+                self.url_preview_images.insert(url, handle);
+            }
+
             // --- Misc ---
             Message::PaginateBack(_room_id) => { /* TODO */ }
             Message::OpenUrl(url) => {
@@ -1160,6 +1205,41 @@ impl FluxChat {
             },
             Message::AvatarsResolved,
         )
+    }
+
+    /// Spawn URL preview fetches for any uncached URLs in the given messages.
+    fn resolve_url_previews(&mut self, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for msg in messages {
+            for url in extract_urls(&msg.body) {
+                if self.url_previews.contains_key(&url) || self.url_previews_pending.contains(&url) {
+                    continue;
+                }
+                self.url_previews_pending.insert(url.clone());
+                let core = self.core.clone();
+                let url_clone = url.clone();
+                tasks.push(Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let preview = fluxchat_core::preview::get_url_preview(
+                            &client,
+                            &core.media_cache,
+                            &url_clone,
+                        ).await.ok()?;
+                        Some((url_clone, preview))
+                    },
+                    |result| match result {
+                        Some((url, preview)) => Message::UrlPreviewFetched(url, preview),
+                        None => Message::Noop,
+                    },
+                ));
+            }
+        }
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(tasks)
+        }
     }
 
     /// Complete login: set user info, load settings, start sync.
@@ -1277,4 +1357,14 @@ impl fluxchat_core::sync::SyncCallbacks for NoopSyncBridge {
     fn on_membership_change(&self, _: String, _: fluxchat_core::MessageInfo) {}
     fn on_room_list_update(&self) {}
     fn on_verification_request(&self, _: fluxchat_core::VerificationInfo) {}
+}
+
+/// Extract URLs from message text (max 2 per message).
+pub(crate) fn extract_urls(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| c == '`' || c == '<' || c == '>' || c == '"' || c == '\''))
+        .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
+        .take(2)
+        .map(|w| w.trim_end_matches(['.', ',', ')', ']']).to_string())
+        .collect()
 }

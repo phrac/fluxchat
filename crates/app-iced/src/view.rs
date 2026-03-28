@@ -12,6 +12,7 @@ pub fn input_id() -> iced::widget::Id {
 use crate::message::Message;
 use crate::state::{FluxChat, Screen};
 use crate::theme;
+use crate::update::extract_urls;
 
 const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
@@ -1317,9 +1318,25 @@ impl FluxChat {
         // Build message row + reactions + action buttons
         let msg_row: Element<'a, Message> = row![time, nick, msg_avatar, sep, body_element].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
 
+        // URL preview cards
+        let indent = time_width + 100.0 + 22.0 + 18.0;
+        let urls = extract_urls(&msg.body);
+        let preview_elements: Vec<Element<'a, Message>> = urls
+            .iter()
+            .filter_map(|url| self.url_previews.get(url))
+            .map(|preview| self.view_url_preview(preview, indent))
+            .collect();
+
         // Reactions
-        if msg.reactions.is_empty() {
+        if msg.reactions.is_empty() && preview_elements.is_empty() {
             return msg_row;
+        }
+        if msg.reactions.is_empty() {
+            let mut col = column![msg_row].spacing(2).width(Fill);
+            for el in preview_elements {
+                col = col.push(el);
+            }
+            return col.into();
         }
 
         let mut reactions_row = row![
@@ -1351,7 +1368,91 @@ impl FluxChat {
             );
         }
 
-        column![msg_row, reactions_row].spacing(2).width(Fill).into()
+        let mut col = column![msg_row].spacing(2).width(Fill);
+        for el in preview_elements {
+            col = col.push(el);
+        }
+        col = col.push(reactions_row);
+        col.into()
+    }
+
+    /// URL preview card rendered below a message.
+    fn view_url_preview<'a>(&self, preview: &'a fluxchat_core::UrlPreview, indent: f32) -> Element<'a, Message> {
+        let mut content_col = column![].spacing(2);
+
+        if let Some(ref site_name) = preview.site_name {
+            content_col = content_col.push(
+                text(site_name.as_str().to_uppercase())
+                    .font(MONO).size(11).color(theme::TEXT_DIM)
+            );
+        }
+
+        if let Some(ref title) = preview.title {
+            content_col = content_col.push(
+                text(title.as_str())
+                    .font(MONO).size(14).color(theme::ACCENT)
+                    .wrapping(iced::widget::text::Wrapping::None)
+            );
+        }
+
+        if let Some(ref desc) = preview.description {
+            let short = if desc.len() > 150 { &desc[..150] } else { desc };
+            content_col = content_col.push(
+                text(short)
+                    .font(MONO).size(13).color(theme::TEXT_MUTED)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            );
+        }
+
+        let mut card_row = row![container(content_col).width(Fill).clip(true)].spacing(8);
+
+        // OG image thumbnail
+        if let Some(ref image_url) = preview.image_url {
+            if let Some(handle) = self.url_preview_images.get(image_url) {
+                card_row = card_row.push(
+                    container(
+                        iced::widget::image(handle.clone())
+                            .width(60)
+                            .height(60)
+                            .content_fit(iced::ContentFit::Cover),
+                    )
+                    .width(60)
+                    .height(60)
+                    .clip(true)
+                    .style(|_: &Theme| container::Style {
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    })
+                );
+            }
+        }
+
+        let url = preview.url.clone();
+        let card = button(
+            container(card_row)
+                .padding([8, 12])
+                .max_width(450)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_DARK.into()),
+                    border: iced::Border {
+                        color: theme::BORDER,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                }),
+        )
+        .on_press(Message::OpenUrl(url))
+        .padding(0)
+        .style(|_, _| button::Style {
+            background: None,
+            ..Default::default()
+        });
+
+        row![
+            Space::new().width(Length::Fixed(indent)),
+            card,
+        ].spacing(6).width(Fill).into()
     }
 
     /// Single device/session row for the sessions settings tab.

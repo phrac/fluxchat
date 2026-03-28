@@ -107,6 +107,11 @@ pub struct FluxChat {
     // Media/avatar cache — maps MXC URI to stable image handles (avoids flicker on re-render)
     pub avatar_cache: HashMap<String, iced::widget::image::Handle>,
 
+    // URL preview cache — maps URL to preview data
+    pub url_previews: HashMap<String, fluxchat_core::UrlPreview>,
+    pub url_preview_images: HashMap<String, iced::widget::image::Handle>, // og:image mxc/url -> handle
+    pub url_previews_pending: std::collections::HashSet<String>, // URLs currently being fetched
+
     // Login form state
     pub login_homeserver: String,
     pub login_username: String,
@@ -227,6 +232,9 @@ impl FluxChat {
             settings_status: None,
             settings_signout_password: String::new(),
             settings_signout_device: None,
+            url_previews: HashMap::new(),
+            url_preview_images: HashMap::new(),
+            url_previews_pending: std::collections::HashSet::new(),
             settings_avatar_data: None,
             settings_banner_data: None,
             security_state: None,
