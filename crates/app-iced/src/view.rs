@@ -39,6 +39,7 @@ const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
     ..Font::MONOSPACE
 };
+const SANS: Font = Font::DEFAULT;
 
 impl FluxChat {
     /// Top-level view — dispatches to login or main layout.
@@ -423,7 +424,7 @@ impl FluxChat {
         let header = container(
             row![
                 text(header_text)
-                    .font(MONO)
+                    .font(SANS)
                     .size(14)
                     .color(theme::TEXT_BRIGHT),
                 Space::new().width(Fill),
@@ -561,11 +562,11 @@ impl FluxChat {
         }
 
         header_row = header_row.push(
-            text(name_label).font(MONO).size(12).color(theme::TEXT_DIM)
+            text(name_label).font(SANS).size(12).color(theme::TEXT_DIM)
         );
         header_row = header_row.push(Space::new().width(Fill));
         header_row = header_row.push(
-            text(count.to_string()).font(MONO).size(12).color(theme::TEXT_DIM)
+            text(count.to_string()).font(SANS).size(12).color(theme::TEXT_DIM)
         );
 
         button(header_row)
@@ -581,7 +582,7 @@ impl FluxChat {
     }
 
     /// Single room entry in the list.
-    fn view_room_entry(&self, room: &fluxchat_core::RoomInfo, is_dm: bool) -> Element<Message> {
+    fn view_room_entry<'a>(&self, room: &'a fluxchat_core::RoomInfo, is_dm: bool) -> Element<'a, Message> {
         let is_selected = self.selected_room_id.as_deref() == Some(&room.room_id);
         let name_color = if is_selected {
             theme::TEXT_BRIGHT
@@ -628,12 +629,11 @@ impl FluxChat {
                 .into()
         };
 
-        let room_name = room.name.to_lowercase().replace(' ', "-");
         let mut row_content = row![
             room_icon,
-            text(room_name)
-                .font(MONO)
-                .size(14)
+            text(&room.name)
+                .font(SANS)
+                .size(13)
                 .color(name_color)
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
@@ -1980,7 +1980,7 @@ impl FluxChat {
         let header = container(
             row![
                 text(format!("USERS \u{2014} {total}"))
-                    .font(MONO)
+                    .font(SANS)
                     .size(13)
                     .color(theme::TEXT_DIM),
                 Space::new().width(Fill),
@@ -2056,12 +2056,12 @@ impl FluxChat {
     ) -> Element<'a, Message> {
         let mut col = column![
             container(
-                text(format!("{label} -- {}", members.len()))
-                    .font(MONO)
-                    .size(12)
+                text(format!("{label} \u{2014} {}", members.len()))
+                    .font(SANS)
+                    .size(11)
                     .color(theme::TEXT_DIM),
             )
-            .padding([4, 12]),
+            .padding([6, 12]),
         ]
         .spacing(0);
 
@@ -2125,64 +2125,25 @@ impl FluxChat {
             .into()
         };
 
-        let mut member_row = row![
+        let member_row = row![
             avatar,
             text(&member.display_name)
-                .font(MONO)
-                .size(15)
-                .color(nick_col),
+                .font(SANS)
+                .size(13)
+                .color(nick_col)
+                .wrapping(iced::widget::text::Wrapping::None),
             Space::new().width(Fill),
             container(Space::new())
                 .width(8)
                 .height(8)
                 .style(move |_: &Theme| container::Style {
                     background: Some(presence_color.into()),
-                    border: iced::Border {
-                        radius: 4.0.into(),
-                        ..Default::default()
-                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
         ]
-        .spacing(4)
+        .spacing(6)
         .align_y(iced::Alignment::Center);
-
-        // Power level badge
-        if member.power_level >= 100 {
-            member_row = member_row.push(
-                Space::new().width(Fill),
-            );
-            member_row = member_row.push(
-                container(Space::new())
-                    .width(8)
-                    .height(8)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(theme::YELLOW.into()),
-                        border: iced::Border {
-                            radius: 4.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
-            );
-        } else if member.power_level >= 50 {
-            member_row = member_row.push(
-                Space::new().width(Fill),
-            );
-            member_row = member_row.push(
-                container(Space::new())
-                    .width(8)
-                    .height(8)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(theme::ACCENT.into()),
-                        border: iced::Border {
-                            radius: 4.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
-            );
-        }
 
         button(member_row)
             .on_press(Message::OpenModal(crate::state::Modal::Profile {
@@ -2912,27 +2873,29 @@ impl FluxChat {
     fn view_status_bar(&self) -> Element<Message> {
         let mut bar = row![].spacing(0).align_y(iced::Alignment::Center);
 
-        let sep = || text(" | ").font(MONO).size(14).color(theme::TEXT_DIM);
+        let sep = || text(" \u{2502} ").font(MONO).size(13).color(theme::TEXT_DIM);
 
-        // Settings gear
+        // Settings gear SVG
+        let gear_handle = iced::widget::svg::Handle::from_memory(
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#.as_slice(),
+        );
         bar = bar.push(
-            button(text("*").font(MONO).size(15).color(theme::TEXT_DIM))
-                .on_press(Message::OpenModal(crate::state::Modal::Settings {
-                    tab: "account".into(),
-                }))
-                .padding([2, 8])
-                .style(|_, _| button::Style {
-                    background: None,
-                    ..Default::default()
-                }),
+            button(
+                iced::widget::svg(gear_handle)
+                    .width(14).height(14)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+            )
+            .on_press(Message::OpenModal(crate::state::Modal::Settings {
+                tab: "account".into(),
+            }))
+            .padding([2, 6])
+            .style(|_, _| button::Style { background: None, ..Default::default() }),
         );
 
-        // User display name
-        let display = self
-            .display_name
-            .as_deref()
-            .unwrap_or(&self.user_id);
-        bar = bar.push(text(display).font(MONO).size(14).color(theme::TEXT_MUTED));
+        // User ID in green (like IRC)
+        bar = bar.push(
+            text(&self.user_id).font(MONO).size(13).color(theme::GREEN)
+        );
 
         // Current room info
         if let Some(room_id) = &self.selected_room_id {
@@ -2940,29 +2903,44 @@ impl FluxChat {
             let room_name = room.map(|r| r.name.as_str()).unwrap_or(room_id);
 
             bar = bar.push(sep());
-            bar = bar.push(text(format!("#{room_name}")).font(MONO).size(14).color(theme::TEXT_NORMAL));
+            bar = bar.push(text(format!("#{room_name}")).font(MONO).size(13).color(theme::TEXT_NORMAL));
+
+            // Power level badge
+            if let Some(members) = self.members_by_room.get(room_id) {
+                if let Some(me) = members.iter().find(|m| m.user_id == self.user_id) {
+                    if me.power_level >= 100 {
+                        bar = bar.push(text(" @").font(MONO).size(12).color(theme::YELLOW));
+                    } else if me.power_level >= 50 {
+                        bar = bar.push(text(" +").font(MONO).size(12).color(theme::ACCENT));
+                    }
+                }
+            }
 
             // Nick count
             if let Some(members) = self.members_by_room.get(room_id) {
                 bar = bar.push(sep());
                 bar = bar.push(
                     text(format!("{} nicks", members.len()))
-                        .font(MONO)
-                        .size(14)
-                        .color(theme::TEXT_MUTED),
+                        .font(MONO).size(13).color(theme::TEXT_MUTED),
                 );
             }
 
-            // Encryption status
+            bar = bar.push(sep());
+
+            // Encryption status with lock icon
             if let Some(r) = room {
                 if r.is_encrypted {
-                    bar = bar.push(sep());
+                    let lock_handle = iced::widget::svg::Handle::from_memory(SVG_LOCK);
                     bar = bar.push(
-                        text("encrypted")
-                            .font(MONO)
-                            .size(14)
-                            .color(theme::GREEN),
+                        row![
+                            iced::widget::svg(lock_handle)
+                                .width(11).height(11)
+                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::GREEN) }),
+                            text(" encrypted").font(MONO).size(13).color(theme::GREEN),
+                        ].spacing(2).align_y(iced::Alignment::Center)
                     );
+                } else {
+                    bar = bar.push(text("unencrypted").font(MONO).size(13).color(theme::TEXT_MUTED));
                 }
             }
         }
@@ -2970,6 +2948,7 @@ impl FluxChat {
         bar = bar.push(Space::new().width(Fill));
 
         // Sync lag
+        let lag_label = if self.sync_lag_ms == 0 { "synced".to_string() } else { format!("{}ms", self.sync_lag_ms) };
         let lag_color = if self.sync_lag_ms < 200 {
             theme::GREEN
         } else if self.sync_lag_ms < 1000 {
@@ -2977,12 +2956,24 @@ impl FluxChat {
         } else {
             theme::RED
         };
-        bar = bar.push(
-            text(format!("{}ms", self.sync_lag_ms))
-                .font(MONO)
-                .size(13)
-                .color(lag_color),
-        );
+        bar = bar.push(text(lag_label).font(MONO).size(13).color(lag_color));
+
+        // Verification status
+        if let Some(ref sec) = self.security_state {
+            bar = bar.push(sep());
+            if sec.is_verified {
+                bar = bar.push(
+                    text("\u{2713} verified").font(MONO).size(13).color(theme::GREEN)
+                );
+            } else {
+                bar = bar.push(
+                    text("\u{2717} unverified").font(MONO).size(13).color(theme::YELLOW)
+                );
+            }
+        }
+
+        // Device ID
+        // TODO: show short device ID like Dioxus does
 
         container(bar)
             .width(Fill)

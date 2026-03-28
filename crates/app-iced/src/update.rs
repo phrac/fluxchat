@@ -128,10 +128,18 @@ impl FluxChat {
                 self.sync_running = true;
             }
             Message::InitialRoomsLoaded(rooms, spaces, invited) => {
+                let mut mxc_uris: Vec<String> = spaces.iter()
+                    .filter_map(|s| s.avatar_url.clone())
+                    .collect();
+                mxc_uris.extend(rooms.iter().filter_map(|r| r.avatar_url.clone()));
                 self.rooms = rooms;
                 self.spaces = spaces;
                 self.invited_rooms = invited;
                 self.sync_running = true;
+                // Load security state for status bar + resolve space/room avatars
+                let sec_task = self.update(Message::SecurityLoadState);
+                let avatar_task = self.resolve_avatars(mxc_uris);
+                return Task::batch([sec_task, avatar_task]);
             }
             Message::TimelineLoaded {
                 room_id,
