@@ -23,6 +23,33 @@ const SVG_CODEBLOCK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="
 const SVG_LINK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
 const SVG_EMOJI: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>"#;
 
+/// Thin subtle scrollbar style matching the dark theme.
+fn thin_scrollbar(_theme: &Theme, status: iced::widget::scrollable::Status) -> iced::widget::scrollable::Style {
+    use iced::widget::scrollable::{Style, Rail, Scroller, AutoScroll};
+    let is_hovered = matches!(status, iced::widget::scrollable::Status::Hovered { .. } | iced::widget::scrollable::Status::Dragged { .. });
+    let scroller_alpha = if is_hovered { 0.4 } else { 0.15 };
+    let rail = Rail {
+        background: None,
+        border: iced::Border::default(),
+        scroller: Scroller {
+            background: Color::from_rgba(1.0, 1.0, 1.0, scroller_alpha).into(),
+            border: iced::Border { radius: 2.0.into(), ..Default::default() },
+        },
+    };
+    Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
+        auto_scroll: AutoScroll {
+            background: Color::TRANSPARENT.into(),
+            border: iced::Border::default(),
+            shadow: iced::Shadow::default(),
+            icon: Color::TRANSPARENT,
+        },
+    }
+}
+
 // Sidebar icons
 const SVG_HASH: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>"#;
 const SVG_LOCK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"#;
@@ -380,7 +407,7 @@ impl FluxChat {
             col = col.push(btn);
         }
 
-        container(scrollable(col))
+        container(scrollable(col).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
             .width(56)
             .height(Fill)
             .style(|_: &Theme| container::Style {
@@ -519,7 +546,7 @@ impl FluxChat {
             }
         }
 
-        container(scrollable(col).height(Fill))
+        container(scrollable(col).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
             .width(Fill)
             .height(Fill)
             .style(|_: &Theme| container::Style {
@@ -964,7 +991,7 @@ impl FluxChat {
                         );
                     }
                     content = content.push(
-                        container(scrollable(results_col).height(Length::Fixed(200.0)))
+                        container(scrollable(results_col).height(Length::Fixed(200.0)).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
                             .width(Fill)
                             .style(|_: &Theme| container::Style {
                                 background: Some(theme::BG_DARK.into()),
@@ -1024,7 +1051,7 @@ impl FluxChat {
                     scrollable(container(msg_col).width(Fill))
                         .width(Fill)
                         .height(Fill)
-                        .anchor_bottom(),
+                        .anchor_bottom().direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
                 )
                 .on_exit(Message::HoverMessage(None)),
             );
@@ -2231,7 +2258,7 @@ impl FluxChat {
             }
         }
 
-        container(scrollable(col).height(Fill))
+        container(scrollable(col).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
             .width(180)
             .height(Fill)
             .style(|_: &Theme| container::Style {
@@ -2551,7 +2578,7 @@ impl FluxChat {
                                     ..Default::default()
                                 }),
                         );
-                        scrollable(col).height(Length::Shrink).into()
+                        scrollable(col).height(Length::Shrink).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar).into()
                     }
                     "sessions" => {
                         let mut col = column![
@@ -2581,7 +2608,7 @@ impl FluxChat {
                                 col = col.push(self.view_device_row(device));
                             }
                         }
-                        scrollable(col).height(Length::Shrink).into()
+                        scrollable(col).height(Length::Shrink).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar).into()
                     }
                     "security" => {
                         let mut col = column![
@@ -2723,7 +2750,7 @@ impl FluxChat {
                             col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::TEXT_MUTED));
                         }
 
-                        scrollable(col).height(Length::Shrink).into()
+                        scrollable(col).height(Length::Shrink).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar).into()
                     }
                     _ => text("Unknown tab")
                         .font(MONO)
