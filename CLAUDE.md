@@ -1,19 +1,25 @@
 # fluxchat — Claude Code Context
 
 ## What is this
-A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI built with Dioxus. Uses matrix-rust-sdk + matrix-sdk-ui for the Matrix protocol and Timeline API.
+A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI. Uses matrix-rust-sdk + matrix-sdk-ui for the Matrix protocol and Timeline API.
+
+**Active migration from Dioxus (WebView) to Iced (native GPU-rendered).** Both frontends exist and compile:
+- `cargo run -p fluxchat` — Dioxus app (current, feature-complete)
+- `cargo run -p fluxchat-iced` — Iced app (in progress, needs debugging/testing)
 
 ## Architecture
-- **Cargo workspace** with two crates:
-  - `crates/core/` — pure business logic, no UI deps. Matrix operations, Timeline management, message conversion, GIF search (Giphy API).
-  - `crates/app/` — Dioxus desktop frontend with IRC-inspired design
+- **Cargo workspace** with three crates:
+  - `crates/core/` — pure business logic, no UI deps. Matrix operations, Timeline management, message conversion, GIF search (Giphy API). **Shared by both frontends.**
+  - `crates/app/` — Dioxus desktop frontend (WebView-based, being replaced)
+  - `crates/app-iced/` — Iced desktop frontend (native GPU-rendered via wgpu, Elm architecture)
 - **Timeline API**: `matrix-sdk-ui` Timeline per room handles loading, pagination, live updates, local echo, edits, reactions, redactions. Thread timelines via `TimelineFocus::Thread`.
 - **Storage:** rusqlite for app data (sessions, media cache, settings, read rooms, emoji frequency), matrix-sdk's built-in SQLite for crypto/sync/event cache
 - **Sync:** Background sync loop with `SyncCallbacks` trait for typing + room list updates. Message/edit/reaction handling moved to Timeline diff stream.
-- **State:** Dioxus `Signal`s for reactive UI, `Arc<AppState>` for core state including `timelines: Mutex<HashMap<RoomId, Arc<Timeline>>>`
+- **State (Dioxus):** Dioxus `Signal`s for reactive UI, `Arc<AppState>` for core state including `timelines: Mutex<HashMap<RoomId, Arc<Timeline>>>`
+- **State (Iced):** Plain `FluxChat` struct with all fields as owned data. Elm architecture: `Message` enum → `update()` returns `Task<Message>` → `view()` renders UI. No signals, no JS interop.
 
 ## Key Design Decisions
-- Pure Rust — no JavaScript, TypeScript, or Node.js (minimal inline JS via `document::eval()` for WebView interop: scroll detection, drag-drop, paste, mention clicks, contenteditable input)
+- Pure Rust — no JavaScript, TypeScript, or Node.js. Dioxus app has minimal inline JS via `document::eval()` for WebView interop. Iced app has zero JS — fully native.
 - IRC-inspired: right-aligned nicks with vertical separator, colored nicks, monospace fonts throughout, status bar with mode badges (@/+), channel tabs with Alt+1-9 switching
 - Timeline API for all message operations (not manual /messages API)
 - Component isolation for performance: TabBar, ActiveRoomContent, RoomMessages are separate components to prevent cascading re-renders
@@ -56,11 +62,23 @@ A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI bu
 
 ## Build & Run
 ```bash
-cargo run -p fluxchat
+cargo run -p fluxchat        # Dioxus (current)
+cargo run -p fluxchat-iced   # Iced (in progress)
 ```
-- **macOS:** No additional deps (uses WKWebView). Native window decorations enabled via `cfg!(target_os = "macos")`.
-- **Linux:** webkit2gtk-4.1, gtk3, libsoup3, xdotool
+- **Dioxus app — macOS:** No additional deps (uses WKWebView). Native window decorations enabled via `cfg!(target_os = "macos")`.
+- **Dioxus app — Linux:** webkit2gtk-4.1, gtk3, libsoup3, xdotool
+- **Iced app:** No WebView deps. Requires GPU (wgpu). Works on Linux (Wayland/X11), macOS, Windows.
 - **macOS bundle:** `./build-macos.sh` (uses `dx build --release`)
+
+## Iced App Architecture (`crates/app-iced/`)
+- **Elm architecture:** `FluxChat` state struct → `Message` enum → `update(&mut self, msg) -> Task<Message>` → `view(&self) -> Element<Message>`
+- **Files:** main.rs (entry), state.rs (FluxChat struct + enums), message.rs (Message/SyncEvent), update.rs (all state transitions), view.rs (all rendering), html.rs (Matrix HTML→Spans), commands.rs (slash commands), theme.rs (colors)
+- **HTML rendering:** Custom parser converts Matrix HTML to `Vec<Span>` for `rich_text` widget. Handles bold/italic/strike/code/links/mentions/blockquotes. Syntax highlighting via syntect.
+- **Modals:** `stack` + `opaque` + `mouse_area` overlay pattern. Modal enum dispatches to Settings/CreateRoom/Profile/Verification/Lightbox/Forward.
+- **Commands:** 37 slash commands producing `CommandResult` (Messages/Rewrite/Help/Noop). Decoupled from UI — returns Message variants.
+- **Subscriptions:** `time::every(5s)` for room list refresh, `keyboard::listen()` for Alt+1-9 + Escape.
+- **Async:** Room commands (join/leave/invite/kick/ban/topic), file upload, search, member loading all via `Task::perform()`.
+- **Status:** Login, room list, messages, tabs, reactions, member list, search, modals all implemented. Needs: timeline wiring (messages don't load yet), media cache for images, testing.
 
 ## Important Patterns
 - Dioxus signals need `mut` to write: `let mut ui = use_context::<UiState>()`
@@ -137,6 +155,7 @@ cargo run -p fluxchat
 Login (password + SSO/OIDC with provider detection), session persistence, rooms grouped by space, spaces sidebar with overview, channel tabs (Chrome-style with memoized DOM preservation, DM tabs without # prefix, Alt+1-9 switching), messaging via Timeline API with local echo and word-bounded mention resolution, formatted HTML messages with pre-computed mention transforms, inline images with lightbox and save dialog, full emoji picker (7 categories, search, frequently-used), reactions via Timeline toggle_reaction, replies with context preview, message editing via Timeline edit (up-arrow to edit last message), message deletion via Timeline redact, message forwarding with room picker modal, pinned messages (HUD), server-side search (HUD with clickable result list, scroll-to-highlight, arrow keys, client-side fallback), threads (indicators, HUD, dedicated tabs with live updates, proper m.thread relation), typing indicators (send + display), URL previews with og:image thumbnails, sticker display (m.sticker events), polls (create/vote/end with progress bars via MSC3381), modular slash commands (45+) with Tab-cycling autocomplete and /help, @mention autocomplete with inline avatar pills and Tab completion, contenteditable input with multiline (Shift+Enter, recursive div/p extraction), markdown formatting (**bold** *italic* ~~strike~~ `code` ```codeblocks``` with language tags), syntax highlighting via syntect (100+ languages, base16-ocean.dark), file upload (picker + drag-drop + paste + /attach) with thumbnail generation for images, files HUD with image previews, read receipt display (stacked avatars per message via load_event_receipts), read receipts sent via Timeline mark_as_read with persistent unread tracking, unread indicators (numeric sidebar badges, red for mentions / blue for regular, message divider, floating pill), device verification UI (SAS emoji), key backup and recovery (enable/recover/display), profile modal with ignore button and power level management (promote/demote), clickable nicks/avatars in messages, power level badges in member list, /op and /deop commands, custom user status (/status, display in member list + profile modal), profile editing (name, avatar, banner), settings modal (account/sessions/security with SVG icons), room creation with public/encrypted toggles, room settings (name/topic/aliases/notifications/invite/leave), room notification modes (all/mentions/mute), room alias management (add/remove), room invitations (accept/reject in sidebar), room upgrade/tombstone detection with follow button, space overview with channel list and invite, back-pagination via Timeline paginate_backwards, ignore/block users (/ignore /unignore with message filtering), user directory search (/users), public room directory (/directory), presence/away status, favourite rooms (star toggle, dedicated sidebar section + original section), IRC-style topic bar, IRC join/part with colored arrows, mode badges in status bar, lag meter (30s ping), copy room link to clipboard, highlight words with visual indicators, display toggles (timestamp/compact/joinpart), server notices panel, state event rendering (power levels, room name/topic/avatar changes), cross-platform window decorations, all SVG icons (zero emojis), collapsible room list sections with space avatars by ID, DM person icon in sidebar, invite icon in member list header, reusable HudPanel/ForwardModal/PollDisplay components, 3-dot overflow menu for secondary room actions, GIF search via Giphy API (/gif /giphy commands + overflow menu, GifsHud with grid picker, click to download+upload as image, /giphykey for API key persistence)
 
 ## Features Pending
+- **Iced migration:** Timeline wiring (messages don't load in rooms yet), media cache for inline images, GIF support, emoji picker, room creation form, animated GIF frames, video playback (system player for now)
 - Desktop notifications
 - Virtual scrolling (for very large rooms)
 - Keyboard shortcuts (Ctrl+K room switcher)
