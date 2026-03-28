@@ -81,6 +81,8 @@ pub struct FluxChat {
     pub files_open: bool,
     pub notices_open: bool,
     pub gifs_open: bool,
+    pub overflow_menu_open: bool,
+    pub hovered_message: Option<String>, // event_id of hovered message
     pub gif_query: String,
     pub help_text: Option<String>,
     pub modal: Option<Modal>,
@@ -199,6 +201,8 @@ impl FluxChat {
             threads_open: false,
             files_open: false,
             notices_open: false,
+            overflow_menu_open: false,
+            hovered_message: None,
             gifs_open: false,
             gif_query: String::new(),
             help_text: None,

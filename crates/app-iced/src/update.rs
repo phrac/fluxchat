@@ -606,6 +606,9 @@ impl FluxChat {
             Message::ToggleGifs => {
                 self.gifs_open = !self.gifs_open;
             }
+            Message::ToggleOverflowMenu => {
+                self.overflow_menu_open = !self.overflow_menu_open;
+            }
             Message::SetRightPanel(panel) => {
                 self.right_panel = panel;
             }
@@ -1120,6 +1123,11 @@ impl FluxChat {
                 self.url_preview_images.insert(url, handle);
             }
 
+            // --- Message hover ---
+            Message::HoverMessage(id) => {
+                self.hovered_message = id;
+            }
+
             // --- Formatting ---
             Message::InsertFormat(prefix, suffix) => {
                 self.input_text.push_str(prefix);
@@ -1133,8 +1141,10 @@ impl FluxChat {
                 let _ = open::that(&url);
             }
             Message::Escape => {
-                // Priority: completions > modal > panels > reply/edit
-                if !self.cmd_completions.is_empty() {
+                // Priority: overflow > completions > modal > panels > reply/edit
+                if self.overflow_menu_open {
+                    self.overflow_menu_open = false;
+                } else if !self.cmd_completions.is_empty() {
                     self.cmd_completions.clear();
                 } else if !self.mention_completions.is_empty() {
                     self.mention_completions.clear();

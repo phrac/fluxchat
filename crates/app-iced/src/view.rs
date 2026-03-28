@@ -34,6 +34,19 @@ const SVG_SEARCH: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24"
 const SVG_USERS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>"#;
 const SVG_INFO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>"#;
 const SVG_MORE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>"#;
+const SVG_STAR: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#;
+const SVG_COPY: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
+const SVG_PIN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>"#;
+const SVG_THREAD: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/></svg>"#;
+const SVG_FILE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>"#;
+const SVG_GIF: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/></svg>"#;
+const SVG_BELL: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>"#;
+
+// Message action bar icons
+const SVG_REACT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>"#;
+const SVG_REPLY: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>"#;
+const SVG_EDIT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>"#;
+const SVG_DELETE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>"#;
 
 const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
@@ -584,15 +597,16 @@ impl FluxChat {
     /// Single room entry in the list.
     fn view_room_entry<'a>(&self, room: &'a fluxchat_core::RoomInfo, is_dm: bool) -> Element<'a, Message> {
         let is_selected = self.selected_room_id.as_deref() == Some(&room.room_id);
-        let name_color = if is_selected {
+        let has_unread = room.unread_count > 0 && !self.read_rooms.contains(&room.room_id);
+        let name_color = if is_selected || has_unread {
             theme::TEXT_BRIGHT
         } else {
-            theme::TEXT_NORMAL
+            theme::TEXT_MUTED
         };
         let bg = if is_selected {
             theme::BG_LIGHT
         } else {
-            theme::BG_DARK
+            Color::TRANSPARENT
         };
 
         // Room icon: avatar > DM person > encrypted lock > hash
@@ -633,7 +647,7 @@ impl FluxChat {
             room_icon,
             text(&room.name)
                 .font(SANS)
-                .size(13)
+                .size(15)
                 .color(name_color)
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
@@ -682,13 +696,14 @@ impl FluxChat {
         }
 
         let room_id = room.room_id.clone();
-        button(
-            container(row_content)
-                .width(Fill)
-                .clip(true)
-        )
+        container(
+            button(
+                container(row_content)
+                    .width(Fill)
+                    .clip(true)
+            )
             .on_press(Message::SelectRoom(room_id))
-            .padding([4, 8])
+            .padding([5, 8])
             .width(Fill)
             .style(move |_, _| button::Style {
                 background: Some(bg.into()),
@@ -696,7 +711,9 @@ impl FluxChat {
                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                 ..Default::default()
             })
-            .into()
+        )
+        .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
+        .into()
     }
 
     /// Main content area (tabs + messages + input).
@@ -793,8 +810,47 @@ impl FluxChat {
                 tabs = tabs.push(tab);
             }
 
+            // Action buttons in tab bar
+            let make_action_btn = |svg_bytes: &'static [u8], msg: Message, active: bool| -> Element<Message> {
+                let icon_color = if active { theme::ACCENT } else { theme::TEXT_DIM };
+                let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+                button(
+                    iced::widget::svg(handle)
+                        .width(16).height(16)
+                        .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
+                )
+                .on_press(msg)
+                .padding([4, 6])
+                .style(move |_, status| button::Style {
+                    background: if active {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                    } else if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into()
+            };
+
+            let actions = row![
+                make_action_btn(SVG_SEARCH, Message::ToggleSearch, self.search_open),
+                make_action_btn(SVG_USERS, Message::ToggleMemberList, self.show_member_list),
+                make_action_btn(SVG_INFO, Message::OpenModal(crate::state::Modal::RoomSettings), false),
+                make_action_btn(SVG_MORE, Message::ToggleOverflowMenu, self.overflow_menu_open),
+            ]
+            .spacing(2)
+            .align_y(iced::Alignment::Center);
+
+            let tab_row = row![
+                tabs,
+                actions,
+            ].width(Fill).align_y(iced::Alignment::Center);
+
             content = content.push(
-                container(tabs)
+                container(tab_row)
                     .width(Fill)
                     .style(|_: &Theme| container::Style {
                         background: Some(theme::BG_DARK.into()),
@@ -807,6 +863,8 @@ impl FluxChat {
                     }),
             );
         }
+
+        // (overflow menu rendered as overlay below)
 
         // Messages area
         if let Some(room_id) = &self.selected_room_id {
@@ -835,58 +893,6 @@ impl FluxChat {
                         );
                     }
                 }
-            }
-
-            // Room action buttons
-            {
-                let make_action_btn = |svg_bytes: &'static [u8], msg: Message, active: bool| -> Element<Message> {
-                    let icon_color = if active { theme::ACCENT } else { theme::TEXT_DIM };
-                    let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
-                    button(
-                        iced::widget::svg(handle)
-                            .width(16).height(16)
-                            .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
-                    )
-                    .on_press(msg)
-                    .padding([4, 6])
-                    .style(move |_, status| button::Style {
-                        background: if active {
-                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                        } else if matches!(status, button::Status::Hovered) {
-                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                        } else {
-                            None
-                        },
-                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                        ..Default::default()
-                    })
-                    .into()
-                };
-
-                let actions = row![
-                    Space::new().width(Fill),
-                    make_action_btn(SVG_SEARCH, Message::ToggleSearch, self.search_open),
-                    make_action_btn(SVG_USERS, Message::ToggleMemberList, self.show_member_list),
-                    make_action_btn(SVG_INFO, Message::OpenModal(crate::state::Modal::RoomSettings), false),
-                    make_action_btn(SVG_MORE, Message::Noop, false), // TODO: overflow menu
-                ]
-                .spacing(2)
-                .align_y(iced::Alignment::Center);
-
-                content = content.push(
-                    container(actions)
-                        .width(Fill)
-                        .padding([2, 8])
-                        .style(|_: &Theme| container::Style {
-                            background: Some(theme::BG_DARK.into()),
-                            border: iced::Border {
-                                color: theme::BORDER,
-                                width: 1.0,
-                                radius: 0.0.into(),
-                            },
-                            ..Default::default()
-                        }),
-                );
             }
 
             // Search bar
@@ -1014,10 +1020,13 @@ impl FluxChat {
             }
 
             content = content.push(
-                scrollable(container(msg_col).width(Fill))
-                    .width(Fill)
-                    .height(Fill)
-                    .anchor_bottom(),
+                mouse_area(
+                    scrollable(container(msg_col).width(Fill))
+                        .width(Fill)
+                        .height(Fill)
+                        .anchor_bottom(),
+                )
+                .on_exit(Message::HoverMessage(None)),
             );
 
             // Typing indicator
@@ -1457,14 +1466,99 @@ impl FluxChat {
             );
         }
 
-        container(content)
+        let base: Element<Message> = container(content)
             .width(Fill)
             .height(Fill)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::BG_MID.into()),
                 ..Default::default()
             })
+            .into();
+
+        if !self.overflow_menu_open {
+            return base;
+        }
+
+        // Overflow menu as floating overlay
+        let make_menu_item = |svg_bytes: &'static [u8], label: &'static str, msg: Message| -> Element<Message> {
+            let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+            button(
+                row![
+                    iced::widget::svg(handle)
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                    text(label).font(SANS).size(14).color(theme::TEXT_NORMAL),
+                ]
+                .spacing(10)
+                .align_y(iced::Alignment::Center),
+            )
+            .on_press(msg)
+            .padding([6, 14])
+            .width(Fill)
+            .style(|_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                } else {
+                    None
+                },
+                text_color: theme::TEXT_NORMAL,
+                ..Default::default()
+            })
             .into()
+        };
+
+        let menu = container(
+            column![
+                make_menu_item(SVG_STAR, "Favourite", Message::Noop),
+                make_menu_item(SVG_COPY, "Copy link", Message::Noop),
+                container(Space::new()).width(Fill).height(1)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::BORDER.into()),
+                        ..Default::default()
+                    }),
+                make_menu_item(SVG_PIN, "Pinned messages", Message::TogglePins),
+                make_menu_item(SVG_THREAD, "Threads", Message::ToggleThreads),
+                make_menu_item(SVG_FILE, "Files", Message::ToggleFiles),
+                make_menu_item(SVG_GIF, "GIFs", Message::ToggleGifs),
+                make_menu_item(SVG_BELL, "Notices", Message::ToggleNotices),
+            ]
+            .spacing(0)
+        )
+        .width(180)
+        .padding([6, 0])
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::BG_MID.into()),
+            border: iced::Border {
+                color: theme::BORDER,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            },
+            ..Default::default()
+        });
+
+        let overlay: Element<Message> = mouse_area(
+            container(
+                column![
+                    row![
+                        Space::new().width(Fill),
+                        menu,
+                    ],
+                    Space::new().height(Fill),
+                ]
+            )
+            .width(Fill)
+            .height(Fill)
+            .padding(iced::Padding { top: 32.0, right: 8.0, bottom: 0.0, left: 0.0 })
+        )
+        .on_press(Message::ToggleOverflowMenu)
+        .into();
+
+        stack![base, overlay].width(Fill).height(Fill).into()
     }
 
     /// Render a single message row: [time] [nick] | [body]
@@ -1724,7 +1818,106 @@ impl FluxChat {
         }
 
         // Build message row + reactions + action buttons
-        let msg_row: Element<'a, Message> = row![time, nick, msg_avatar, sep, body_element].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
+        // Message row with hover action bar overlay
+        let is_hovered = self.hovered_message.as_deref() == Some(&msg.event_id);
+        let event_id = msg.event_id.clone();
+        let eid_hover = msg.event_id.clone();
+
+        let base_row: Element<'a, Message> = row![time, nick, msg_avatar, sep, body_element]
+            .spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
+
+        // Wrap in container with hover highlight
+        let hover_bg = if is_hovered {
+            Color::from_rgba(1.0, 1.0, 1.0, 0.03)
+        } else {
+            Color::TRANSPARENT
+        };
+        let base_row: Element<'a, Message> = container(base_row)
+            .width(Fill)
+            .padding([2, 0])
+            .style(move |_: &Theme| container::Style {
+                background: Some(hover_bg.into()),
+                ..Default::default()
+            })
+            .into();
+
+        let msg_row: Element<'a, Message> = if is_hovered {
+            let make_msg_action = |svg_bytes: &'static [u8], msg_action: Message| -> Element<'a, Message> {
+                let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+                button(
+                    iced::widget::svg(handle)
+                        .width(18).height(18)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_MUTED) }),
+                )
+                .on_press(msg_action)
+                .padding([5, 7])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into()
+            };
+
+            let is_own = msg.sender == self.user_id;
+            let mut action_row = row![].spacing(2).align_y(iced::Alignment::Center);
+
+            action_row = action_row.push(make_msg_action(SVG_REACT, Message::ToggleReaction(event_id.clone(), "\u{1f44d}".into())));
+            action_row = action_row.push(make_msg_action(SVG_REPLY, Message::StartReply(
+                event_id.clone(),
+                msg.sender_name.clone(),
+                msg.body.chars().take(80).collect(),
+            )));
+
+            if is_own {
+                action_row = action_row.push(make_msg_action(SVG_EDIT, Message::StartEdit(
+                    event_id.clone(),
+                    msg.body.clone(),
+                )));
+                action_row = action_row.push(make_msg_action(SVG_DELETE, Message::DeleteMessage(event_id.clone())));
+            }
+
+            let action_bar: Element<'a, Message> = container(
+                row![
+                    Space::new().width(Fill),
+                    container(action_row)
+                        .padding([2, 4])
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border {
+                                color: theme::BORDER,
+                                width: 1.0,
+                                radius: 5.0.into(),
+                            },
+                            shadow: iced::Shadow {
+                                color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                                offset: iced::Vector::new(0.0, 2.0),
+                                blur_radius: 8.0,
+                            },
+                            ..Default::default()
+                        }),
+                ]
+            )
+            .width(Fill)
+            .padding([0, 8])
+            .into();
+
+            let stacked = mouse_area(
+                stack![base_row, action_bar].width(Fill)
+            )
+            .on_enter(Message::HoverMessage(Some(eid_hover)));
+
+            stacked.into()
+        } else {
+            mouse_area(base_row)
+                .on_enter(Message::HoverMessage(Some(eid_hover)))
+                .on_exit(Message::HoverMessage(None))
+                .into()
+        };
 
         // URL preview cards
         let indent = time_width + 100.0 + 22.0 + 18.0;
@@ -2149,11 +2342,16 @@ impl FluxChat {
             .on_press(Message::OpenModal(crate::state::Modal::Profile {
                 user_id,
             }))
-            .padding([2, 8])
+            .padding([3, 12])
             .width(Fill)
-            .style(|_, _| button::Style {
-                background: None,
+            .style(|_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.04).into())
+                } else {
+                    None
+                },
                 text_color: theme::TEXT_NORMAL,
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
                 ..Default::default()
             })
             .into()

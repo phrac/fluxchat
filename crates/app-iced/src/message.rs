@@ -63,6 +63,7 @@ pub enum Message {
     ToggleFiles,
     ToggleNotices,
     ToggleGifs,
+    ToggleOverflowMenu,
     SetRightPanel(Option<super::state::RightPanel>),
 
     // --- Modals ---
@@ -128,6 +129,9 @@ pub enum Message {
     // --- URL Previews ---
     UrlPreviewFetched(String, Option<fluxchat_core::UrlPreview>), // url, preview
     UrlPreviewImageResolved(String, Vec<u8>), // image_url, bytes
+
+    // --- Message hover ---
+    HoverMessage(Option<String>), // event_id or None
 
     // --- Formatting ---
     InsertFormat(&'static str, &'static str), // (prefix, suffix) e.g. ("**", "**")
