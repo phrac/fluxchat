@@ -6,7 +6,7 @@ cd crates/app
 dx build --release
 cd ../..
 
-APP_PATH="target/dx/fluxchat-app/release/macos/FluxchatApp.app"
+APP_PATH="target/dx/fluxchat/release/macos/FluxchatApp.app"
 
 if [ ! -d "$APP_PATH" ]; then
     echo "ERROR: Build failed — app bundle not found at $APP_PATH"

@@ -69,6 +69,13 @@ pub fn App() -> Element {
         }
     });
 
+    // Apply zoom level
+    use_effect(move || {
+        let zoom = *ui.zoom_level.read();
+        let pct = zoom as f64 / 100.0;
+        document::eval(&format!("document.body.style.zoom = '{pct}'"));
+    });
+
     rsx! {
         document::Stylesheet { href: STYLE }
         div { id: "main",
@@ -145,6 +152,11 @@ pub async fn start_sync_and_load(core: &Arc<AppState>, ui: &mut UiState, client:
     }
     if let Some(key) = core.db.get_setting("giphy_api_key") {
         ui.giphy_api_key.set(key);
+    }
+    if let Some(val) = core.db.get_setting("zoom_level") {
+        if let Ok(level) = val.parse::<u32>() {
+            ui.zoom_level.set(level);
+        }
     }
 
     // Load ignored users from Matrix account data

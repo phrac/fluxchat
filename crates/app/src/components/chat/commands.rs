@@ -767,6 +767,35 @@ pub fn all_commands() -> Vec<SlashCommand> {
             },
         },
         SlashCommand {
+            name: "/zoom",
+            usage: "[50-200]",
+            description: "Set UI zoom level (percentage)",
+            scope: CommandScope::Global,
+            execute: |args, _, core, mut ui| {
+                let new_level = if args.trim().is_empty() {
+                    // Cycle through common zoom levels
+                    match *ui.zoom_level.read() {
+                        z if z < 100 => 100,
+                        100 => 110,
+                        110 => 125,
+                        125 => 150,
+                        _ => 100,
+                    }
+                } else if let Ok(level) = args.trim().parse::<u32>() {
+                    if (50..=200).contains(&level) {
+                        level
+                    } else {
+                        return CommandAction::ShowHelp("Zoom must be between 50 and 200".into());
+                    }
+                } else {
+                    return CommandAction::ShowHelp("Usage: /zoom [50-200]".into());
+                };
+                ui.zoom_level.set(new_level);
+                let _ = core.db.set_setting("zoom_level", &new_level.to_string());
+                CommandAction::ShowHelp(format!("Zoom: {new_level}%"))
+            },
+        },
+        SlashCommand {
             name: "/highlight",
             usage: "<word>",
             description: "Add a highlight word (triggers mention-style notification)",

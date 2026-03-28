@@ -461,29 +461,34 @@ fn DeviceStatus() -> Element {
             let _ = ui.verification_request.read();
             let app_state = app_state.clone();
             async move {
-                // Small delay to let crypto state settle after verification
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let client = app_state.get_client().await.ok()?;
                 let device_id = client.device_id()?.to_string();
                 let user_id = client.user_id()?;
 
-                // Check if our own device is cross-signing verified
-                let own_device = client.encryption()
-                    .get_device(user_id, client.device_id()?)
-                    .await.ok()??;
+                // Retry a few times — cross-signing state may need a sync cycle to propagate
+                for attempt in 0..5 {
+                    tokio::time::sleep(std::time::Duration::from_millis(if attempt == 0 { 500 } else { 2000 })).await;
 
-                let is_verified = own_device.is_verified_with_cross_signing();
+                    let own_device = client.encryption()
+                        .get_device(user_id, client.device_id()?)
+                        .await.ok()??;
 
-                // Count total own devices
-                let devices = client.encryption()
-                    .get_user_devices(user_id)
-                    .await.ok()?;
-                let total = devices.devices().count();
-                let verified_count = devices.devices()
-                    .filter(|d| d.is_verified_with_cross_signing())
-                    .count();
+                    let is_verified = own_device.is_verified_with_cross_signing();
 
-                Some((device_id, is_verified, verified_count, total))
+                    let devices = client.encryption()
+                        .get_user_devices(user_id)
+                        .await.ok()?;
+                    let total = devices.devices().count();
+                    let verified_count = devices.devices()
+                        .filter(|d| d.is_verified_with_cross_signing())
+                        .count();
+
+                    if is_verified || attempt == 4 {
+                        return Some((device_id, is_verified, verified_count, total));
+                    }
+                    tracing::info!("Device not yet verified with cross-signing, retrying... (attempt {})", attempt + 1);
+                }
+                None
             }
         }
     });
@@ -1538,6 +1543,7 @@ fn ProfileModal(user_id: String) -> Element {
 fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
     let mut ui = use_context::<UiState>();
     let app_state = use_context::<Arc<AppState>>();
+    let mut waiting = use_signal(|| false);
 
     let label = if info.is_self_verification {
         "Self-verification request"
@@ -1551,7 +1557,7 @@ fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
             onclick: move |_| { ui.verification_request.set(None); },
 
             div {
-                style: "background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 360px; max-width: 440px;",
+                style: "position: relative; z-index: 1; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; min-width: 360px; max-width: 440px;",
                 onclick: move |e| { e.stop_propagation(); },
 
                 // Header
@@ -1587,10 +1593,16 @@ fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
                         }
                     }
 
+                    if *waiting.read() {
+                        div { style: "font-size: 12px; color: var(--accent); font-family: var(--font-mono); text-align: center; margin-top: 8px;",
+                            "Waiting for other device..."
+                        }
+                    }
+
                     // Action buttons
                     div { style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;",
                         // Cancel
-                        span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border);",
+                        button { style: "font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border); background: transparent;",
                             onclick: {
                                 let flow_id = info.flow_id.clone();
                                 let user_id = info.other_user_id.clone();
@@ -1609,26 +1621,32 @@ fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
                             "cancel"
                         }
                         // Accept / Confirm
-                        { let has_emojis = info.emojis.is_some();
-                          let btn_label = if has_emojis { "confirm match" } else { "accept" };
-                          let flow_id = info.flow_id.clone();
-                          let user_id = info.other_user_id.clone();
-                          rsx! {
-                            span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--green); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--green);",
+                        if !*waiting.read() || info.emojis.is_some() {
+                            button { style: "font-family: var(--font-mono); font-size: 13px; color: var(--green); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--green); background: transparent;",
                                 onclick: {
-                                    let flow_id = flow_id.clone();
-                                    let user_id = user_id.clone();
+                                    let has_emojis = info.emojis.is_some();
+                                    let flow_id = info.flow_id.clone();
+                                    let user_id = info.other_user_id.clone();
                                     let app_state = app_state.clone();
-                                    move |_| {
+                                    move |e: Event<MouseData>| {
+                                        e.stop_propagation();
+                                        waiting.set(true);
+                                        tracing::info!("Verification accept button clicked, flow_id={}", flow_id);
                                         let flow_id = flow_id.clone();
                                         let user_id = user_id.clone();
                                         let app_state = app_state.clone();
                                         spawn(async move {
-                                            let client = match app_state.get_client().await { Ok(c) => c, Err(_) => return };
+                                            let client = match app_state.get_client().await {
+                                                Ok(c) => c,
+                                                Err(e) => { tracing::error!("Failed to get client: {e}"); return; }
+                                            };
                                             if has_emojis {
-                                                let _ = fluxchat_core::verification::confirm_verification(&client, &user_id, &flow_id).await;
+                                                match fluxchat_core::verification::confirm_verification(&client, &user_id, &flow_id).await {
+                                                    Ok(_) => tracing::info!("Verification confirmed"),
+                                                    Err(e) => tracing::error!("Verification confirm failed: {e}"),
+                                                }
                                             } else {
-                                                let _ = fluxchat_core::verification::accept_verification(
+                                                match fluxchat_core::verification::accept_verification(
                                                     &client, &user_id, &flow_id,
                                                     |info| {
                                                         if let Some(tx) = crate::app::SYNC_TX.get() {
@@ -1636,7 +1654,10 @@ fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
                                                         }
                                                     },
                                                     || {},
-                                                ).await;
+                                                ).await {
+                                                    Ok(_) => tracing::info!("Verification accepted, waiting for emojis..."),
+                                                    Err(e) => tracing::error!("Verification accept failed: {e}"),
+                                                }
                                             }
                                             let mut ui = consume_context::<UiState>();
                                             if has_emojis {
@@ -1645,9 +1666,8 @@ fn VerificationModal(info: fluxchat_core::VerificationInfo) -> Element {
                                         });
                                     }
                                 },
-                                "{btn_label}"
+                                if info.emojis.is_some() { "confirm match" } else { "accept" }
                             }
-                          }
                         }
                     }
                 }
@@ -1720,11 +1740,11 @@ fn CreateRoomModal() -> Element {
                         div { style: "font-size: 12px; color: var(--red); font-family: var(--font-mono);", "{err}" }
                     }
                     div { style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;",
-                        span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border);",
+                        button { style: "font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border); background: transparent;",
                             onclick: move |_| { ui.create_room_open.set(false); }, "cancel"
                         }
                         if !join_input().trim().is_empty() {
-                            span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--accent); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--accent);",
+                            button { style: "font-family: var(--font-mono); font-size: 13px; color: var(--accent); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--accent); background: transparent;",
                                 onclick: {
                                     let app_state = app_state.clone();
                                     move |_| {
@@ -1745,7 +1765,7 @@ fn CreateRoomModal() -> Element {
                             }
                         }
                         if !name().trim().is_empty() {
-                            span { style: "font-family: var(--font-mono); font-size: 13px; color: var(--green); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--green);",
+                            button { style: "font-family: var(--font-mono); font-size: 13px; color: var(--green); cursor: pointer; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--green); background: transparent;",
                                 onclick: {
                                     let app_state = app_state.clone();
                                     move |_| {

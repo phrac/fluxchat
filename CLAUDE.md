@@ -56,7 +56,7 @@ A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI bu
 
 ## Build & Run
 ```bash
-cargo run -p fluxchat-app
+cargo run -p fluxchat
 ```
 - **macOS:** No additional deps (uses WKWebView). Native window decorations enabled via `cfg!(target_os = "macos")`.
 - **Linux:** webkit2gtk-4.1, gtk3, libsoup3, xdotool

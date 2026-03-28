@@ -2055,7 +2055,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fluxchat-app"
+name = "fluxchat"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -2082,6 +2082,7 @@ dependencies = [
  "anyhow",
  "base64",
  "dirs",
+ "futures-util",
  "image",
  "matrix-sdk",
  "matrix-sdk-ui",

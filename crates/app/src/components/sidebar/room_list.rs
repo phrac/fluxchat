@@ -580,6 +580,17 @@ fn select_room(core: Arc<AppState>, mut ui: UiState, room_id: String, room_name:
                             let mut mbr = ui.messages_by_room.write();
                             mbr.insert(room_id.clone(), msgs);
 
+                            // If this is the active room, advance the last-read marker
+                            // so the "new messages" divider doesn't show while you're looking at it
+                            if ui.selected_room_id.peek().as_deref() == Some(&room_id) {
+                                if let Some(last_eid) = mbr.get(&room_id)
+                                    .and_then(|m| m.last())
+                                    .map(|m| m.event_id.clone())
+                                {
+                                    ui.last_read_event.write().insert(room_id.clone(), last_eid);
+                                }
+                            }
+
                             // Sync open thread tabs for this room
                             let thread_keys: Vec<String> = mbr.keys()
                                 .filter(|k| k.starts_with(&format!("thread::{room_id}::")))

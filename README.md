@@ -104,13 +104,13 @@ fluxchat/
 ```bash
 git clone https://github.com/phrac/fluxchat.git
 cd fluxchat
-cargo run -p fluxchat-app
+cargo run -p fluxchat
 ```
 
 ### Production Build
 
 ```bash
-cargo build -p fluxchat-app --release
+cargo build -p fluxchat --release
 ```
 
 ## License

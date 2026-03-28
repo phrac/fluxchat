@@ -73,6 +73,7 @@ pub struct UiState {
     pub timestamp_format: Signal<String>,  // "short" (HH:MM), "full" (HH:MM:SS), "off" (hidden)
     pub compact_mode: Signal<bool>,
     pub show_joinpart: Signal<bool>,
+    pub zoom_level: Signal<u32>,  // percentage: 75, 100, 125, 150, etc.
     pub notices_open: Signal<bool>,
     pub gifs_open: Signal<bool>,
     pub gif_query: Signal<String>,
@@ -300,6 +301,7 @@ impl UiState {
             timestamp_format: Signal::new("short".into()),
             compact_mode: Signal::new(false),
             show_joinpart: Signal::new(true),
+            zoom_level: Signal::new(100),
             notices_open: Signal::new(false),
             gifs_open: Signal::new(false),
             gif_query: Signal::new(String::new()),
