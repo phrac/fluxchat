@@ -1,40 +1,69 @@
-mod app;
+#![allow(dead_code, mismatched_lifetime_syntaxes)]
+
+mod commands;
+mod html;
+mod message;
 mod state;
-mod components;
-mod media_server;
+mod theme;
+mod update;
+mod view;
 
-use dioxus::desktop::{Config, WindowBuilder};
+use std::path::PathBuf;
+use std::sync::Arc;
 
-fn load_icon() -> Option<dioxus::desktop::tao::window::Icon> {
-    let bytes = include_bytes!("../../../assets/icons/icon_256x256.png");
-    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
-    let (w, h) = img.dimensions();
-    dioxus::desktop::tao::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+use fluxchat_core::{AppDb, AppState};
+use iced::window;
+use iced::Size;
+
+use state::FluxChat;
+
+/// Initialize the core AppState with SQLite database.
+fn init_core() -> Arc<AppState> {
+    let data_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("fluxchat");
+    std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
+
+    let db_path = data_dir.join("fluxchat.db");
+    let db = AppDb::open(&db_path).expect("Failed to open database");
+
+    Arc::new(AppState::new(db))
 }
 
-fn main() {
+fn main() -> iced::Result {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::new("warn,fluxchat=info,matrix_sdk_crypto=error")
+            tracing_subscriber::EnvFilter::new("warn,fluxchat_iced=info,matrix_sdk_crypto=error"),
         )
         .init();
 
-    media_server::start();
+    let core = init_core();
 
-    let mut window_builder = WindowBuilder::new()
-        .with_title("fluxchat")
-        .with_decorations(cfg!(target_os = "macos"))
-        .with_inner_size(dioxus::desktop::LogicalSize::new(1200, 800));
+    let core2 = core.clone();
+    iced::application(
+        move || FluxChat::new_with_init(core2.clone()),
+        FluxChat::update,
+        FluxChat::view,
+    )
+    .subscription(FluxChat::subscription)
+    .theme(FluxChat::theme)
+    .font(include_bytes!("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf").as_slice())
+    .font(include_bytes!("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf").as_slice())
+    .default_font(iced::Font {
+        family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
+        ..iced::Font::MONOSPACE
+    })
+    .window(window::Settings {
+        size: Size::new(1200.0, 800.0),
+        min_size: Some(Size::new(800.0, 400.0)),
+        decorations: cfg!(target_os = "macos"),
+        icon: load_icon(),
+        ..Default::default()
+    })
+    .run()
+}
 
-    if let Some(icon) = load_icon() {
-        window_builder = window_builder.with_window_icon(Some(icon));
-    }
-
-    dioxus::LaunchBuilder::desktop()
-        .with_cfg(
-            Config::new()
-                .with_window(window_builder)
-                .with_disable_context_menu(true)
-        )
-        .launch(app::App);
+fn load_icon() -> Option<window::icon::Icon> {
+    let bytes = include_bytes!("../../../assets/icons/icon_256x256.png");
+    window::icon::from_file_data(bytes, None).ok()
 }

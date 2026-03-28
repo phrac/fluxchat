@@ -1,6 +1,6 @@
 # fluxchat
 
-A cross-platform Matrix chat client with an IRC-inspired UI, built entirely in Rust with Dioxus.
+A cross-platform Matrix chat client with an IRC-inspired UI, built entirely in Rust with Iced (native GPU-rendered via wgpu).
 
 ## Screenshot
 
@@ -11,8 +11,8 @@ A cross-platform Matrix chat client with an IRC-inspired UI, built entirely in R
 fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a terminal client, something unique.
 
 - **IRC-style messages** — compact layout with right-aligned colored nicks, vertical separator, monospace timestamps
-- **Channel tabs** — Chrome-style tabs for instant room switching with memoized DOM preservation
-- **Command bar** — contenteditable input with multiline support, inline mention pills with avatars, markdown formatting, emoji picker, slash command autocomplete with syntax coloring
+- **Channel tabs** — Chrome-style shrinking tabs for instant room switching
+- **Command bar** — floating input bar with SVG formatting toolbar, slash command autocomplete, file upload
 - **Status bar** — user avatar, room info, encryption status, sync state, device verification
 - **Deep charcoal theme** — monospace throughout, SVG icons, deterministic nick colors
 
@@ -59,31 +59,23 @@ fluxchat/
 │   │       ├── sync.rs     # Sync loop (typing, room list, verification)
 │   │       ├── db.rs       # SQLite storage (sessions, media cache, settings)
 │   │       └── state.rs    # AppState with client, db, media cache, timelines
-│   └── app/                # Dioxus desktop frontend
+│   └── app/                # Iced desktop frontend (native GPU-rendered)
 │       └── src/
-│           ├── app.rs      # Root component, sync bridge
-│           ├── state.rs    # UiState signals, mention transforms
-│           └── components/
-│               ├── layout.rs          # MainLayout, modals, status bar, threads
-│               ├── chat/
-│               │   ├── commands.rs    # Modular slash command registry (48+ commands)
-│               │   ├── message_area.rs # Tabs, messages, HUDs (pins/search/threads/files/GIFs)
-│               │   ├── message_input.rs # Contenteditable input, mention pills, formatting
-│               │   └── emoji_picker.rs  # Categorized emoji with search
-│               ├── sidebar/
-│               │   ├── space_sidebar.rs # Space icons with avatars
-│               │   └── room_list.rs     # Collapsible room list with invitations
-│               └── members/
-│                   └── member_list.rs   # Lazy-loaded with avatars
-└── assets/
-    └── style.css           # IRC-inspired dark theme with CSS variables
+│           ├── main.rs     # Entry point, window config
+│           ├── state.rs    # FluxChat struct, enums
+│           ├── message.rs  # Message enum, SyncEvent
+│           ├── update.rs   # All state transitions
+│           ├── view.rs     # All rendering
+│           ├── html.rs     # Matrix HTML → Spans
+│           ├── commands.rs # Slash command registry
+│           └── theme.rs    # Colors
 ```
 
-**Pure Rust** — no JavaScript, no TypeScript, no Node.js. The core library has zero UI dependencies. Minimal inline JS via `document::eval()` for WebView interop (scroll detection, drag-drop, clipboard paste, contenteditable input management).
+**Pure Rust** — no JavaScript, no TypeScript, no Node.js, no WebView. Fully native GPU-rendered via wgpu.
 
 ## Tech Stack
 
-- **UI:** [Dioxus](https://dioxuslabs.com/) 0.7 (desktop via webview)
+- **UI:** [Iced](https://iced.rs/) 0.14 (native GPU-rendered via wgpu, Elm architecture)
 - **Matrix SDK:** [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk) 0.16
 - **Timeline:** [matrix-sdk-ui](https://github.com/matrix-org/matrix-rust-sdk) 0.16 (Timeline API)
 - **Storage:** [rusqlite](https://github.com/rusqlite/rusqlite) (app data) + SQLite (matrix-sdk crypto/sync/event cache)
@@ -94,10 +86,7 @@ fluxchat/
 ### Prerequisites
 
 - Rust 1.77+
-- System dependencies for Dioxus desktop:
-  - **macOS:** No additional dependencies (uses WKWebView)
-  - **Arch:** `sudo pacman -S webkit2gtk-4.1 gtk3 libsoup3 xdotool`
-  - **Ubuntu/Debian:** `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libxdo-dev`
+- GPU support (wgpu)
 
 ### Development
 
