@@ -294,9 +294,9 @@ impl FluxChat {
                 ..Default::default()
             });
 
+        let mut layers: Vec<Element<Message>> = vec![base.into()];
         if self.modal.is_some() {
-            stack(vec![
-                base.into(),
+            layers.push(
                 opaque(
                     mouse_area(
                         center(opaque(self.view_modal_content()))
@@ -309,11 +309,9 @@ impl FluxChat {
                     )
                     .on_press(Message::CloseModal),
                 ),
-            ])
-            .into()
-        } else {
-            base.into()
+            );
         }
+        stack(layers).into()
     }
 
     /// Left space sidebar (icons).
@@ -1149,9 +1147,22 @@ impl FluxChat {
             let messages = self.messages_by_room.get(room_id);
             let mut msg_col = column![].spacing(0).padding([2, 8]).width(Fill);
 
+            if self.paginating {
+                msg_col = msg_col.push(
+                    container(
+                        text("Loading older messages...")
+                            .font(MONO)
+                            .size(13)
+                            .color(theme::TEXT_DIM),
+                    )
+                    .width(Fill)
+                    .center_x(Fill)
+                    .padding([8, 0]),
+                );
+            }
+
             if let Some(msgs) = messages {
-                let skip = msgs.len().saturating_sub(50);
-                for msg in msgs.iter().skip(skip) {
+                for msg in msgs.iter() {
                     if self.ignored_users.contains(&msg.sender) {
                         continue;
                     }
@@ -1192,7 +1203,8 @@ impl FluxChat {
                         .id(messages_scrollable_id().clone())
                         .width(Fill)
                         .height(Fill)
-                        .anchor_bottom().direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
+                        .on_scroll(Message::MessagesScrolled)
+                        .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
                 )
                 .on_exit(Message::HoverMessage(None)),
             );
@@ -1994,14 +2006,12 @@ impl FluxChat {
                     // Animated GIF
                     let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
                     let mxc_click = mxc.clone();
-                    button(
+                    mouse_area(
                         iced_gif::gif(frames.as_ref())
                             .width(img_w)
                             .content_fit(iced::ContentFit::ScaleDown)
                     )
                     .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
-                    .padding(0)
-                    .style(|_, _| button::Style { background: None, ..Default::default() })
                     .into()
                 } else if let Some(handle) = self.image_cache.get(mxc) {
                     let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
@@ -2011,7 +2021,7 @@ impl FluxChat {
                         240.0
                     };
                     let mxc_click = mxc.clone();
-                    button(
+                    mouse_area(
                         container(
                             iced::widget::image(handle.clone())
                                 .width(img_w)
@@ -2025,8 +2035,6 @@ impl FluxChat {
                         })
                     )
                     .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
-                    .padding(0)
-                    .style(|_, _| button::Style { background: None, ..Default::default() })
                     .into()
                 } else {
                     text(format!("[image: {}]", msg.body))
@@ -2477,7 +2485,7 @@ impl FluxChat {
                         .width(14).height(14)
                         .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
                 )
-                .on_press(Message::OpenModal(crate::state::Modal::Profile { user_id: format!("invite:{room_id_invite}") }))
+                .on_press(Message::OpenModal(crate::state::Modal::Invite))
                 .padding([2, 4])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
@@ -3050,6 +3058,42 @@ impl FluxChat {
             crate::state::Modal::CreateRoom => {
                 let public_label = if self.create_room_public { "\u{25c9} Public" } else { "\u{25cb} Public" };
                 let encrypted_label = if self.create_room_encrypted { "\u{25c9} Encrypted" } else { "\u{25cb} Encrypted" };
+
+                // Space selector
+                let space_label = self.create_room_space.as_ref()
+                    .and_then(|sid| self.spaces.iter().find(|s| s.room_id == *sid))
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("None (top-level)");
+
+                let mut space_buttons = row![
+                    button(text("None").font(SANS).size(13).color(
+                        if self.create_room_space.is_none() { theme::ACCENT } else { theme::TEXT_MUTED }
+                    ))
+                    .on_press(Message::CreateRoomSelectSpace(None))
+                    .padding([3, 8])
+                    .style(move |_, _| button::Style {
+                        background: None,
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                ].spacing(4);
+
+                for space in &self.spaces {
+                    let sid = space.room_id.clone();
+                    let is_sel = self.create_room_space.as_deref() == Some(&space.room_id);
+                    let color = if is_sel { theme::ACCENT } else { theme::TEXT_MUTED };
+                    space_buttons = space_buttons.push(
+                        button(text(&space.name).font(SANS).size(13).color(color))
+                            .on_press(Message::CreateRoomSelectSpace(Some(sid)))
+                            .padding([3, 8])
+                            .style(move |_, _| button::Style {
+                                background: None,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    );
+                }
+
                 column![
                     row![
                         text("Create Room").font(MONO).size(16).color(theme::TEXT_BRIGHT),
@@ -3064,6 +3108,15 @@ impl FluxChat {
                         .on_input(Message::CreateRoomNameChanged)
                         .on_submit(Message::CreateRoomSubmit)
                         .font(MONO).size(14).padding(8),
+                    text("Topic (optional)").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text_input("Room topic...", &self.create_room_topic)
+                        .on_input(Message::CreateRoomTopicChanged)
+                        .font(MONO).size(14).padding(8),
+                    text(format!("Space: {space_label}")).font(SANS).size(13).color(theme::TEXT_DIM),
+                    scrollable(space_buttons)
+                        .direction(iced::widget::scrollable::Direction::Horizontal(
+                            iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0),
+                        )),
                     row![
                         button(text(public_label).font(SANS).size(14).color(theme::TEXT_MUTED))
                             .on_press(Message::CreateRoomTogglePublic)
@@ -3084,8 +3137,8 @@ impl FluxChat {
                             ..Default::default()
                         }),
                 ]
-                .spacing(12)
-                .width(400)
+                .spacing(10)
+                .width(450)
                 .into()
             }
 
@@ -3402,6 +3455,38 @@ impl FluxChat {
                                         .color(if room.is_encrypted { theme::GREEN } else { theme::TEXT_MUTED }),
                                 ].spacing(8)
                             );
+                            // Space membership
+                            info_col = info_col.push(rule::horizontal(1));
+                            info_col = info_col.push(
+                                text("SPACES").font(SANS).size(12).color(theme::TEXT_DIM)
+                            );
+
+                            let current_space = room.space_id.as_deref();
+                            for space in &self.spaces {
+                                let is_in = current_space == Some(&space.room_id);
+                                let sid = space.room_id.clone();
+                                let (label, color, msg) = if is_in {
+                                    (format!("\u{2713} {}", space.name), theme::GREEN,
+                                     Message::RemoveRoomFromSpace(sid))
+                                } else {
+                                    (format!("+ {}", space.name), theme::TEXT_MUTED,
+                                     Message::AddRoomToSpace(sid))
+                                };
+                                info_col = info_col.push(
+                                    button(text(label).font(SANS).size(14).color(color))
+                                        .on_press(msg)
+                                        .padding([3, 8])
+                                        .width(Fill)
+                                        .style(move |_, status| button::Style {
+                                            background: if matches!(status, button::Status::Hovered) {
+                                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.04).into())
+                                            } else { None },
+                                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                            ..Default::default()
+                                        }),
+                                );
+                            }
+
                             info_col = info_col.push(rule::horizontal(1));
                             let rid = room.room_id.clone();
                             info_col = info_col.push(
@@ -3424,6 +3509,85 @@ impl FluxChat {
                 .spacing(12)
                 .width(450)
                 .into()
+            }
+
+            crate::state::Modal::Invite => {
+                let mut col = column![
+                    row![
+                        text("Invite User").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                        Space::new().width(Fill),
+                        button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
+                            .on_press(Message::CloseModal)
+                            .padding([2, 6])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].align_y(iced::Alignment::Center),
+                    text("Search for a user to invite").font(SANS).size(13).color(theme::TEXT_DIM),
+                    row![
+                        text_input("@user:server or display name...", &self.invite_search)
+                            .on_input(Message::InviteSearchChanged)
+                            .on_submit(Message::InviteSearchSubmit)
+                            .font(MONO).size(14).padding(8),
+                        button(text("Search").font(SANS).size(14).color(theme::ACCENT))
+                            .on_press(Message::InviteSearchSubmit)
+                            .padding([8, 16])
+                            .style(|_, _| button::Style {
+                                background: Some(theme::BG_LIGHT.into()),
+                                text_color: theme::ACCENT,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    ].spacing(8),
+                ].spacing(10);
+
+                if self.invite_results.is_empty() && !self.invite_search.is_empty() {
+                    col = col.push(text("No users found").font(SANS).size(13).color(theme::TEXT_DIM));
+                }
+
+                for user in &self.invite_results {
+                    let uid = user.user_id.clone();
+                    let name = user.display_name.as_deref().unwrap_or(&user.user_id);
+                    col = col.push(
+                        button(
+                            row![
+                                text(name).font(SANS).size(14).color(theme::TEXT_NORMAL),
+                                Space::new().width(Fill),
+                                text(&user.user_id).font(MONO).size(12).color(theme::TEXT_DIM),
+                            ].spacing(8).align_y(iced::Alignment::Center)
+                        )
+                        .on_press(Message::InviteUserFromModal(uid))
+                        .padding([6, 10])
+                        .width(Fill)
+                        .style(|_, status| button::Style {
+                            background: if matches!(status, button::Status::Hovered) {
+                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                            } else { None },
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    );
+                }
+
+                // Also allow direct invite by typing a user ID
+                if self.invite_search.starts_with('@') && self.invite_search.contains(':') {
+                    let uid = self.invite_search.clone();
+                    col = col.push(rule::horizontal(1));
+                    col = col.push(
+                        button(
+                            text(format!("Invite {}", &self.invite_search)).font(SANS).size(14).color(theme::GREEN)
+                        )
+                        .on_press(Message::InviteUserFromModal(uid))
+                        .padding([6, 10])
+                        .width(Fill)
+                        .style(|_, _| button::Style {
+                            background: Some(theme::BG_LIGHT.into()),
+                            text_color: theme::GREEN,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    );
+                }
+
+                col.spacing(8).width(450).into()
             }
         };
 

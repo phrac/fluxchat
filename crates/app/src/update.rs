@@ -165,7 +165,10 @@ impl FluxChat {
                     self.members_by_room.insert(room_id, members);
                 }
                 let read_task = self.update(Message::SendReadReceipt);
-                return Task::batch([self.resolve_avatars(mxc_uris), preview_task, image_task, read_task]);
+                let snap = iced::widget::operation::snap_to_end(
+                    crate::view::messages_scrollable_id(),
+                );
+                return Task::batch([self.resolve_avatars(mxc_uris), preview_task, image_task, read_task, snap]);
             }
 
             // --- Sync events ---
@@ -193,24 +196,62 @@ impl FluxChat {
                         return self.resolve_avatars(mxc_uris);
                     }
                 }
-                SyncEvent::MessagesUpdated(room_id, messages) => {
+                SyncEvent::MessagesUpdated(room_id, new_messages) => {
+                    // Merge new messages with existing ones to preserve history
+                    // that the SDK timeline may have trimmed from its buffer.
+                    let merged = if let Some(existing) = self.messages_by_room.get(&room_id) {
+                        let new_ids: std::collections::HashSet<&str> = new_messages
+                            .iter()
+                            .map(|m| m.event_id.as_str())
+                            .collect();
+                        // Keep old messages not present in the new set (trimmed by SDK),
+                        // then append all new messages (which include updates to existing ones)
+                        let mut merged: Vec<fluxchat_core::MessageInfo> = existing
+                            .iter()
+                            .filter(|m| !new_ids.contains(m.event_id.as_str()))
+                            .cloned()
+                            .collect();
+                        merged.extend(new_messages);
+                        // Sort by timestamp to maintain chronological order
+                        merged.sort_by_key(|m| m.timestamp);
+                        merged
+                    } else {
+                        new_messages
+                    };
                     // Advance last_read_event if this is the active room
                     if self.selected_room_id.as_deref() == Some(&room_id) {
-                        if let Some(last) = messages.last() {
+                        if let Some(last) = merged.last() {
                             self.last_read_event
                                 .insert(room_id.clone(), last.event_id.clone());
                         }
                     }
-                    let mxc_uris: Vec<String> = messages
+                    let mxc_uris: Vec<String> = merged
                         .iter()
                         .filter_map(|m| m.avatar_url.clone())
                         .collect();
-                    let preview_task = self.resolve_url_previews(&messages);
-                    let image_task = self.resolve_images(&messages);
+                    let preview_task = self.resolve_url_previews(&merged);
+                    let image_task = self.resolve_images(&merged);
                     let is_active = self.selected_room_id.as_deref() == Some(&room_id);
-                    self.messages_by_room.insert(room_id, messages);
+                    let new_count = merged.len();
+                    self.messages_by_room.insert(room_id, merged);
+                    // Clear paginating when messages arrive from diff stream
+                    if is_active && self.paginating && new_count != self.paginate_msg_count {
+                        let added = new_count - self.paginate_msg_count;
+                        // Keep paginating=true until scroll correction settles
+                        self.paginate_msg_count = new_count;
+                        self.paginate_added_count = added;
+                    }
                     let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task];
-                    if is_active {
+                    if is_active && self.paginate_added_count > 0 {
+                        // Scroll down to keep old messages in view after prepending
+                        let estimated_height = self.paginate_added_count as f32 * 40.0;
+                        let new_offset = self.pre_paginate_offset + estimated_height;
+                        self.paginate_added_count = 0;
+                        tasks.push(iced::widget::operation::scroll_to(
+                            crate::view::messages_scrollable_id(),
+                            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: new_offset },
+                        ));
+                    } else if is_active && self.messages_at_bottom {
                         tasks.push(iced::widget::operation::snap_to_end(
                             crate::view::messages_scrollable_id(),
                         ));
@@ -239,6 +280,9 @@ impl FluxChat {
             // --- Room navigation ---
             Message::SelectRoom(room_id) => {
                 self.selected_room_id = Some(room_id.clone());
+                self.messages_at_bottom = true;
+                self.paginating = false;
+                self.paginate_msg_count = 0;
                 // Mark as read
                 self.read_rooms.insert(room_id.clone());
                 // Add to tabs if not already present
@@ -765,6 +809,14 @@ impl FluxChat {
                 } else if matches!(&modal, crate::state::Modal::Settings { tab } if tab == "security") {
                     self.settings_status = None;
                     self.update(Message::SecurityLoadState)
+                } else if matches!(&modal, crate::state::Modal::CreateRoom) {
+                    // Pre-select current space
+                    self.create_room_space = self.selected_space_id.clone();
+                    self.create_room_name.clear();
+                    self.create_room_topic.clear();
+                    self.create_room_public = false;
+                    self.create_room_encrypted = false;
+                    Task::none()
                 } else {
                     Task::none()
                 };
@@ -814,6 +866,7 @@ impl FluxChat {
                 );
             }
             Message::LeaveRoom(room_id) => {
+                self.modal = None;
                 self.open_tabs.retain(|(id, _, _, _)| id != &room_id);
                 if self.selected_room_id.as_deref() == Some(&room_id) {
                     self.selected_room_id = self.open_tabs.last().map(|(id, _, _, _)| id.clone());
@@ -1353,28 +1406,40 @@ impl FluxChat {
             Message::CreateRoomNameChanged(name) => {
                 self.create_room_name = name;
             }
+            Message::CreateRoomTopicChanged(topic) => {
+                self.create_room_topic = topic;
+            }
             Message::CreateRoomTogglePublic => {
                 self.create_room_public = !self.create_room_public;
             }
             Message::CreateRoomToggleEncrypted => {
                 self.create_room_encrypted = !self.create_room_encrypted;
             }
+            Message::CreateRoomSelectSpace(space_id) => {
+                self.create_room_space = space_id;
+            }
             Message::CreateRoomSubmit => {
                 let name = self.create_room_name.clone();
                 if name.trim().is_empty() {
                     return Task::none();
                 }
+                let topic = if self.create_room_topic.trim().is_empty() { None } else { Some(self.create_room_topic.clone()) };
                 let is_public = self.create_room_public;
                 let encrypted = self.create_room_encrypted;
+                let space_id = self.create_room_space.clone();
                 self.modal = None;
                 self.create_room_name.clear();
+                self.create_room_topic.clear();
                 self.create_room_public = false;
                 self.create_room_encrypted = false;
+                self.create_room_space = None;
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
-                        let room_id = fluxchat_core::rooms::create_room(&client, &name, None, is_public, encrypted, &[], None).await.ok()?;
+                        let room_id = fluxchat_core::rooms::create_room(
+                            &client, &name, topic.as_deref(), is_public, encrypted, &[], space_id.as_deref(),
+                        ).await.ok()?;
                         Some(room_id)
                     },
                     |result| match result {
@@ -1438,6 +1503,72 @@ impl FluxChat {
                     },
                     |_| Message::Noop,
                 );
+            }
+
+            // --- Invite ---
+            Message::InviteSearchChanged(query) => {
+                self.invite_search = query;
+            }
+            Message::InviteSearchSubmit => {
+                let query = self.invite_search.clone();
+                if query.trim().is_empty() {
+                    return Task::none();
+                }
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::search_users(&client, &query, 10).await.ok()
+                    },
+                    |result| match result {
+                        Some(results) => Message::InviteSearchResults(results),
+                        None => Message::InviteSearchResults(Vec::new()),
+                    },
+                );
+            }
+            Message::InviteSearchResults(results) => {
+                self.invite_results = results;
+            }
+            Message::InviteUserFromModal(user_id) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    self.modal = None;
+                    self.invite_search.clear();
+                    self.invite_results.clear();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::invite_user(&client, &room_id, &user_id).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+
+            // --- Space management ---
+            Message::AddRoomToSpace(space_id) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::add_room_to_space(&client, &room_id, &space_id).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::RemoveRoomFromSpace(space_id) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::remove_room_from_space(&client, &room_id, &space_id).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
             }
 
             // --- Highlight words ---
@@ -1582,15 +1713,64 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let _client = core.get_client().await.ok()?;
-                        let timelines = core.timelines.lock().await;
-                        let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
-                        let timeline = timelines.get(&*room_id_parsed)?;
-                        timeline.paginate_backwards(20).await.ok()?;
+                        let timeline = {
+                            let timelines = core.timelines.lock().await;
+                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                            timelines.get(&*room_id_parsed)?.clone()
+                        };
+                        // First call may just adjust lazy-loading window; second call
+                        // actually fetches from server if needed.
+                        let r1 = timeline.paginate_backwards(20).await;
+                        if matches!(r1, Ok(false)) {
+                            let _ = timeline.paginate_backwards(20).await;
+                        }
                         Some(())
                     },
-                    |_| Message::Noop,
+                    |result| match result {
+                        Some(()) => Message::PaginateBackDone,
+                        None => Message::PaginateBackDone,
+                    },
                 );
+            }
+            Message::PaginateBackDone => {
+                // Don't clear paginating here. Messages arrive via diff stream
+                // (MessagesUpdated), which will clear it when count changes.
+                // Set a timeout to clear it in case no messages arrive (end of history).
+                return Task::perform(
+                    async { tokio::time::sleep(std::time::Duration::from_secs(3)).await },
+                    |_| Message::PaginateTimeout,
+                );
+            }
+            Message::PaginateTimeout => {
+                if self.paginating {
+                    self.paginating = false;
+                }
+            }
+            Message::MessagesScrolled(viewport) => {
+                // absolute_offset().y = 0 at bottom, increases scrolling up
+                // No anchor_bottom: offset=0 at top (oldest), increases scrolling down
+                let offset = viewport.absolute_offset().y;
+                let content_h = viewport.content_bounds().height;
+                let viewport_h = viewport.bounds().height;
+                let max_scroll = (content_h - viewport_h).max(0.0);
+                let near_top = offset < 100.0;
+                let near_bottom = (max_scroll - offset) < 50.0;
+                self.messages_at_bottom = near_bottom;
+                // Clear paginating once scroll correction has settled
+                if self.paginating && !near_top {
+                    self.paginating = false;
+                }
+                // When near the top (oldest messages) and not already paginating
+                if near_top && !self.paginating {
+                    if let Some(room_id) = self.selected_room_id.clone() {
+                        let msg_count = self.messages_by_room
+                            .get(&room_id).map(|m| m.len()).unwrap_or(0);
+                        self.paginate_msg_count = msg_count;
+                        self.pre_paginate_offset = offset;
+                        self.paginating = true;
+                        return self.update(Message::PaginateBack(room_id));
+                    }
+                }
             }
             Message::OpenUrl(url) => {
                 let _ = open::that(&url);

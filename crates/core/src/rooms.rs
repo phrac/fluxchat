@@ -297,6 +297,35 @@ pub async fn create_room(
     Ok(room.room_id().to_string())
 }
 
+/// Add an existing room to a space.
+pub async fn add_room_to_space(client: &matrix_sdk::Client, room_id: &str, space_id: &str) -> Result<(), AppError> {
+    let room_id_parsed = parse_room_id(room_id)?;
+    let space_room_id = parse_room_id(space_id)?;
+    let space = client.get_room(&space_room_id)
+        .ok_or(AppError::RoomNotFound(space_id.into()))?;
+    let mut content = SpaceChildEventContent::new(Vec::new());
+    if let Some(host) = client.homeserver().host_str() {
+        if let Ok(server) = matrix_sdk::ruma::ServerName::parse(host) {
+            content.via = vec![server.to_owned()];
+        }
+    }
+    space.send_state_event_for_key(&room_id_parsed, content).await
+        .map_err(|e| AppError::Other(format!("Failed to add room to space: {e}")))?;
+    Ok(())
+}
+
+/// Remove a room from a space.
+pub async fn remove_room_from_space(client: &matrix_sdk::Client, room_id: &str, space_id: &str) -> Result<(), AppError> {
+    let room_id_parsed = parse_room_id(room_id)?;
+    let space_room_id = parse_room_id(space_id)?;
+    let space = client.get_room(&space_room_id)
+        .ok_or(AppError::RoomNotFound(space_id.into()))?;
+    let content = SpaceChildEventContent::new(Vec::new());
+    space.send_state_event_for_key(&room_id_parsed, content).await
+        .map_err(|e| AppError::Other(format!("Failed to remove room from space: {e}")))?;
+    Ok(())
+}
+
 /// Open or create a DM room with a user without sending a message.
 pub async fn open_dm(client: &matrix_sdk::Client, user_id: &str) -> Result<String, AppError> {
     let target = matrix_sdk::ruma::UserId::parse(user_id)

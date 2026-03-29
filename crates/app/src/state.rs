@@ -35,6 +35,7 @@ pub enum Modal {
     Verification { info: VerificationInfo },
     Lightbox { url: String },
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
+    Invite,
 }
 
 /// The screen the app is on.
@@ -160,11 +161,28 @@ pub struct FluxChat {
 
     // Room creation modal state
     pub create_room_name: String,
+    pub create_room_topic: String,
     pub create_room_public: bool,
     pub create_room_encrypted: bool,
+    pub create_room_space: Option<String>, // space room_id to create in
 
     // Forward modal state
     pub forward_search: String,
+
+    // Invite modal state
+    pub invite_search: String,
+    pub invite_results: Vec<fluxchat_core::rooms::UserSearchResult>,
+
+    // Scroll tracking — true when messages scrollable is at/near bottom
+    pub messages_at_bottom: bool,
+    // Whether a back-pagination request is currently in flight
+    pub paginating: bool,
+    // Message count when pagination was triggered — to detect when new messages arrive
+    pub paginate_msg_count: usize,
+    // Scroll offset when pagination was triggered — to restore position after prepend
+    pub pre_paginate_offset: f32,
+    // Number of messages added by last pagination — for scroll correction estimate
+    pub paginate_added_count: usize,
 
     // Animated GIF cache for inline messages
     pub gif_frames_cache: HashMap<String, std::sync::Arc<iced_gif::Frames>>,
@@ -268,9 +286,18 @@ impl FluxChat {
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),
             create_room_name: String::new(),
+            create_room_topic: String::new(),
             create_room_public: false,
             create_room_encrypted: false,
+            create_room_space: None,
             forward_search: String::new(),
+            invite_search: String::new(),
+            invite_results: Vec::new(),
+            messages_at_bottom: true,
+            paginating: false,
+            paginate_msg_count: 0,
+            pre_paginate_offset: 0.0,
+            paginate_added_count: 0,
             gif_frames_cache: HashMap::new(),
             gif_results: Vec::new(),
             gif_searching: false,

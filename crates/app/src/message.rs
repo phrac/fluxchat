@@ -152,8 +152,10 @@ pub enum Message {
 
     // --- Room creation ---
     CreateRoomNameChanged(String),
+    CreateRoomTopicChanged(String),
     CreateRoomTogglePublic,
     CreateRoomToggleEncrypted,
+    CreateRoomSelectSpace(Option<String>),
     CreateRoomSubmit,
 
     // --- Forward ---
@@ -166,6 +168,16 @@ pub enum Message {
 
     // --- Power levels ---
     SetPowerLevel(String, String, i64), // room_id, user_id, level
+
+    // --- Invite ---
+    InviteSearchChanged(String),
+    InviteSearchSubmit,
+    InviteSearchResults(Vec<fluxchat_core::rooms::UserSearchResult>),
+    InviteUserFromModal(String), // user_id
+
+    // --- Space management ---
+    AddRoomToSpace(String),    // space_id (current room)
+    RemoveRoomFromSpace(String), // space_id (current room)
 
     // --- Highlight words ---
     AddHighlight(String),
@@ -187,8 +199,13 @@ pub enum Message {
     // --- Read receipts ---
     SendReadReceipt,
 
+    // --- Scroll ---
+    MessagesScrolled(iced::widget::scrollable::Viewport),
+
     // --- Misc ---
-    PaginateBack(String), // room_id
+    PaginateBack(String),     // room_id
+    PaginateBackDone,
+    PaginateTimeout,
     OpenUrl(String),
     Escape, // close modals/panels/completions
     Tick, // periodic refresh
