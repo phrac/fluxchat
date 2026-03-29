@@ -1461,7 +1461,48 @@ impl FluxChat {
             Message::GifSearch(query) => {
                 self.gifs_open = true;
                 self.gif_query = query;
-                // TODO: trigger actual GIF search and display results
+                return self.update(Message::GifSearchSubmit);
+            }
+            Message::GifQueryChanged(query) => {
+                self.gif_query = query;
+            }
+            Message::GifSearchSubmit => {
+                let query = self.gif_query.clone();
+                if query.trim().is_empty() {
+                    self.gif_results.clear();
+                    return Task::none();
+                }
+                self.gif_searching = true;
+                let api_key = if self.giphy_api_key.is_empty() { None } else { Some(self.giphy_api_key.clone()) };
+                return Task::perform(
+                    async move {
+                        fluxchat_core::gif::search_gifs(&query, api_key.as_deref()).await.unwrap_or_default()
+                    },
+                    Message::GifResultsLoaded,
+                );
+            }
+            Message::GifResultsLoaded(results) => {
+                self.gif_searching = false;
+                self.gif_results = results;
+            }
+            Message::GifSelect(gif_url, description) => {
+                self.gifs_open = false;
+                self.gif_results.clear();
+                self.gif_query.clear();
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            // Download the GIF and upload as image
+                            let data = fluxchat_core::gif::download_gif(&gif_url).await.ok()?;
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::messages::upload_file(
+                                &client, &room_id, &format!("{description}.gif"), "image/gif", data,
+                            ).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
             }
 
             // --- Read receipts ---

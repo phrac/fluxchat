@@ -166,6 +166,10 @@ pub struct FluxChat {
     // Forward modal state
     pub forward_search: String,
 
+    // GIF panel state
+    pub gif_results: Vec<fluxchat_core::gif::GifResult>,
+    pub gif_searching: bool,
+
     // Panels data
     pub pinned_messages: Vec<fluxchat_core::MessageInfo>,
     pub thread_messages: Vec<fluxchat_core::MessageInfo>,
@@ -263,6 +267,8 @@ impl FluxChat {
             create_room_public: false,
             create_room_encrypted: false,
             forward_search: String::new(),
+            gif_results: Vec::new(),
+            gif_searching: false,
             pinned_messages: Vec::new(),
             thread_messages: Vec::new(),
             settings_avatar_data: None,

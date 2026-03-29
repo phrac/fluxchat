@@ -1272,6 +1272,79 @@ impl FluxChat {
                 );
             }
 
+            // GIF search panel
+            if self.gifs_open {
+                let mut gif_col = column![
+                    row![
+                        text("GIF SEARCH").font(SANS).size(12).color(theme::TEXT_DIM),
+                        Space::new().width(Fill),
+                        button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                            .on_press(Message::ToggleGifs)
+                            .padding([0, 6])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].align_y(iced::Alignment::Center),
+                    row![
+                        text_input("Search GIFs...", &self.gif_query)
+                            .on_input(Message::GifQueryChanged)
+                            .on_submit(Message::GifSearchSubmit)
+                            .font(SANS).size(14).padding(6),
+                    ],
+                ].spacing(4);
+
+                if self.gif_searching {
+                    gif_col = gif_col.push(text("Searching...").font(SANS).size(13).color(theme::TEXT_DIM));
+                } else if self.gif_results.is_empty() && !self.gif_query.is_empty() {
+                    gif_col = gif_col.push(text("No results").font(SANS).size(13).color(theme::TEXT_DIM));
+                } else {
+                    // Grid of GIF results (3 columns)
+                    let mut grid = column![].spacing(4);
+                    for chunk in self.gif_results.chunks(3) {
+                        let mut row_items = row![].spacing(4);
+                        for gif in chunk {
+                            let url = gif.url.clone();
+                            let desc = gif.description.clone();
+                            row_items = row_items.push(
+                                button(
+                                    text(&gif.description)
+                                        .font(SANS).size(12).color(theme::ACCENT)
+                                        .wrapping(iced::widget::text::Wrapping::None)
+                                )
+                                .on_press(Message::GifSelect(url, desc))
+                                .padding([8, 12])
+                                .width(Length::FillPortion(1))
+                                .style(|_, status| button::Style {
+                                    background: Some(if matches!(status, button::Status::Hovered) {
+                                        Color::from_rgba(1.0, 1.0, 1.0, 0.08)
+                                    } else {
+                                        theme::BG_DARK
+                                    }.into()),
+                                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                    ..Default::default()
+                                }),
+                            );
+                        }
+                        grid = grid.push(row_items);
+                    }
+                    gif_col = gif_col.push(
+                        scrollable(grid)
+                            .height(Length::Fixed(200.0))
+                            .direction(iced::widget::scrollable::Direction::Vertical(
+                                iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                            ))
+                            .style(thin_scrollbar)
+                    );
+                }
+
+                content = content.push(
+                    container(gif_col).padding([8, 12]).width(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
+                            ..Default::default()
+                        })
+                );
+            }
+
             // Upload preview bar
             if let Some((ref filename, _, _)) = self.upload_pending {
                 content = content.push(

@@ -176,7 +176,11 @@ pub enum Message {
 
     // --- Giphy ---
     SetGiphyKey(String),
-    GifSearch(String), // query
+    GifSearch(String),                                   // query
+    GifQueryChanged(String),                             // search input
+    GifSearchSubmit,                                     // trigger search
+    GifResultsLoaded(Vec<fluxchat_core::gif::GifResult>),
+    GifSelect(String, String),                           // gif_url, description
 
     // --- Read receipts ---
     SendReadReceipt,
