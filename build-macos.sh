@@ -1,14 +1,71 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Building fluxchat for macOS..."
+APP_NAME="FluxChat"
+BUNDLE_ID="com.fluxchat.app"
+BINARY_NAME="fluxchat"
+ICON="assets/icon.icns"
+
+echo "Building $APP_NAME for macOS..."
 cargo build -p fluxchat --release
 
-BINARY="target/release/fluxchat"
-if [ -f "$BINARY" ]; then
-    echo "Build successful: $BINARY"
-    ls -lh "$BINARY"
-else
+BINARY="target/release/$BINARY_NAME"
+if [ ! -f "$BINARY" ]; then
     echo "Build failed: binary not found"
     exit 1
 fi
+
+echo "Creating macOS app bundle..."
+APP_DIR="target/release/$APP_NAME.app"
+CONTENTS="$APP_DIR/Contents"
+rm -rf "$APP_DIR"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+
+# Copy binary
+cp "$BINARY" "$CONTENTS/MacOS/$BINARY_NAME"
+
+# Copy icon
+if [ -f "$ICON" ]; then
+    cp "$ICON" "$CONTENTS/Resources/icon.icns"
+fi
+
+# Create Info.plist
+cat > "$CONTENTS/Info.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleDisplayName</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key>
+    <string>$BUNDLE_ID</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleExecutable</key>
+    <string>$BINARY_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+</dict>
+</plist>
+EOF
+
+echo ""
+echo "Build successful!"
+echo "  App bundle: $APP_DIR"
+ls -lh "$BINARY"
+echo ""
+echo "To install, copy to /Applications:"
+echo "  cp -r \"$APP_DIR\" /Applications/"
+echo ""
+echo "Or open the bundle directly:"
+echo "  open \"$APP_DIR\""

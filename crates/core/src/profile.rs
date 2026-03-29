@@ -1,3 +1,4 @@
+use matrix_sdk::ruma::api::client::account::change_password::v3::Request as ChangePasswordRequest;
 use crate::error::AppError;
 use crate::models::UserProfile;
 
@@ -51,5 +52,37 @@ pub async fn remove_banner(client: &matrix_sdk::Client) -> Result<(), AppError> 
     );
     client.account().set_account_data_raw(matrix_sdk::ruma::events::GlobalAccountDataEventType::from("io.element.banner"), raw)
         .await.map_err(|e| AppError::Other(format!("{e}")))?;
+    Ok(())
+}
+
+/// Change the current user's password.
+pub async fn change_password(client: &matrix_sdk::Client, old_password: &str, new_password: &str) -> Result<(), AppError> {
+    let mut request = ChangePasswordRequest::new(new_password.to_owned());
+    // Provide old password as auth for UIAA
+    request.auth = Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
+        matrix_sdk::ruma::api::client::uiaa::Password::new(
+            matrix_sdk::ruma::api::client::uiaa::UserIdentifier::UserIdOrLocalpart(
+                client.user_id().ok_or(AppError::NotLoggedIn)?.localpart().to_owned(),
+            ),
+            old_password.to_owned(),
+        ),
+    ));
+    client.send(request).await.map_err(|e| AppError::Other(format!("{e}")))?;
+    Ok(())
+}
+
+/// Deactivate the current user's account.
+pub async fn deactivate_account(client: &matrix_sdk::Client, password: &str) -> Result<(), AppError> {
+    use matrix_sdk::ruma::api::client::account::deactivate::v3::Request as DeactivateRequest;
+    let mut request = DeactivateRequest::new();
+    request.auth = Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
+        matrix_sdk::ruma::api::client::uiaa::Password::new(
+            matrix_sdk::ruma::api::client::uiaa::UserIdentifier::UserIdOrLocalpart(
+                client.user_id().ok_or(AppError::NotLoggedIn)?.localpart().to_owned(),
+            ),
+            password.to_owned(),
+        ),
+    ));
+    client.send(request).await.map_err(|e| AppError::Other(format!("{e}")))?;
     Ok(())
 }

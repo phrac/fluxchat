@@ -172,9 +172,15 @@ pub struct FluxChat {
     pub settings_signout_password: String,
     pub settings_signout_device: Option<String>, // device_id being signed out
 
-    // Account tab - avatar/banner
-    pub settings_avatar_data: Option<Vec<u8>>,   // resolved avatar image bytes
-    pub settings_banner_data: Option<Vec<u8>>,   // resolved banner image bytes
+    // Account tab - avatar/banner (cached handles to avoid flicker)
+    pub settings_avatar_data: Option<Vec<u8>>,
+    pub settings_avatar_handle: Option<iced::widget::image::Handle>,
+    pub settings_banner_data: Option<Vec<u8>>,
+    pub settings_banner_handle: Option<iced::widget::image::Handle>,
+    // Password change
+    pub settings_old_password: String,
+    pub settings_new_password: String,
+    pub settings_confirm_password: String,
 
     // Room creation modal state
     pub create_room_name: String,
@@ -186,6 +192,9 @@ pub struct FluxChat {
     // Room settings modal state
     pub room_settings_name: String,
     pub room_settings_topic: String,
+
+    // Profile modal state
+    pub profile_power_input: String,
 
     // Forward modal state
     pub forward_search: String,
@@ -321,6 +330,7 @@ impl FluxChat {
             create_room_space: None,
             room_settings_name: String::new(),
             room_settings_topic: String::new(),
+            profile_power_input: String::new(),
             forward_search: String::new(),
             invite_search: String::new(),
             invite_results: Vec::new(),
@@ -336,7 +346,12 @@ impl FluxChat {
             pinned_messages: Vec::new(),
             thread_messages: Vec::new(),
             settings_avatar_data: None,
+            settings_avatar_handle: None,
             settings_banner_data: None,
+            settings_banner_handle: None,
+            settings_old_password: String::new(),
+            settings_new_password: String::new(),
+            settings_confirm_password: String::new(),
             security_state: None,
             security_recovery_key_input: String::new(),
             security_shown_recovery_key: None,

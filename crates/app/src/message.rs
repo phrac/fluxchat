@@ -118,6 +118,10 @@ pub enum Message {
     SettingsRemoveAvatar,
     SettingsUploadBanner,
     SettingsRemoveBanner,
+    SettingsOldPasswordChanged(String),
+    SettingsNewPasswordChanged(String),
+    SettingsConfirmPasswordChanged(String),
+    SettingsChangePassword,
 
     // --- Security ---
     SecurityLoadState,
@@ -180,6 +184,8 @@ pub enum Message {
     // --- Profile actions ---
     ToggleIgnoreUser(String), // user_id
     SendDmToUser(String),     // user_id
+    ProfilePowerInputChanged(String),
+    ProfileSetPowerLevel,     // apply power level from profile_power_input
 
     // --- Power levels ---
     SetPowerLevel(String, String, i64), // room_id, user_id, level

@@ -847,6 +847,14 @@ impl FluxChat {
 
             // --- Modals ---
             Message::OpenModal(modal) => {
+                // Clicking own profile opens settings instead
+                if let crate::state::Modal::Profile { ref user_id } = modal {
+                    if *user_id == self.user_id {
+                        return self.update(Message::OpenModal(crate::state::Modal::Settings {
+                            tab: "account".into(),
+                        }));
+                    }
+                }
                 // Load devices when opening sessions tab
                 let task = if matches!(&modal, crate::state::Modal::Settings { tab } if tab == "sessions") {
                     self.settings_nick_input = self.display_name.clone().unwrap_or_default();
@@ -874,6 +882,15 @@ impl FluxChat {
                         self.room_settings_name = room.name.clone();
                         self.room_settings_topic = room.topic.clone().unwrap_or_default();
                     }
+                    Task::none()
+                } else if let crate::state::Modal::Profile { ref user_id } = modal {
+                    // Initialize power input with current power level
+                    let power = self.selected_room_id.as_ref()
+                        .and_then(|rid| self.members_by_room.get(rid))
+                        .and_then(|members| members.iter().find(|m| m.user_id == *user_id))
+                        .map(|m| m.power_level)
+                        .unwrap_or(0);
+                    self.profile_power_input = power.to_string();
                     Task::none()
                 } else {
                     Task::none()
@@ -1147,7 +1164,11 @@ impl FluxChat {
                 );
             }
             Message::SettingsProfileLoaded { avatar_data, banner_data } => {
+                self.settings_avatar_handle = avatar_data.as_ref()
+                    .map(|d| iced::widget::image::Handle::from_bytes(d.clone()));
                 self.settings_avatar_data = avatar_data;
+                self.settings_banner_handle = banner_data.as_ref()
+                    .map(|d| iced::widget::image::Handle::from_bytes(d.clone()));
                 self.settings_banner_data = banner_data;
             }
             Message::SettingsUploadAvatar => {
@@ -1169,12 +1190,14 @@ impl FluxChat {
                         Some(())
                     },
                     |result| match result {
-                        Some(()) => Message::SettingsStatus("avatar updated".into()),
+                        Some(()) => Message::SettingsLoadProfile,
                         None => Message::Noop,
                     },
                 );
             }
             Message::SettingsRemoveAvatar => {
+                self.settings_avatar_data = None;
+                self.settings_avatar_handle = None;
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
@@ -1182,7 +1205,7 @@ impl FluxChat {
                         fluxchat_core::profile::remove_avatar(&client).await.ok()
                     },
                     |result| match result {
-                        Some(()) => Message::SettingsStatus("avatar removed".into()),
+                        Some(()) => Message::SettingsLoadProfile,
                         None => Message::Noop,
                     },
                 );
@@ -1206,12 +1229,14 @@ impl FluxChat {
                         Some(())
                     },
                     |result| match result {
-                        Some(()) => Message::SettingsStatus("banner updated".into()),
+                        Some(()) => Message::SettingsLoadProfile,
                         None => Message::Noop,
                     },
                 );
             }
             Message::SettingsRemoveBanner => {
+                self.settings_banner_data = None;
+                self.settings_banner_handle = None;
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
@@ -1219,8 +1244,39 @@ impl FluxChat {
                         fluxchat_core::profile::remove_banner(&client).await.ok()
                     },
                     |result| match result {
-                        Some(()) => Message::SettingsStatus("banner removed".into()),
+                        Some(()) => Message::SettingsLoadProfile,
                         None => Message::Noop,
+                    },
+                );
+            }
+
+            // --- Password change ---
+            Message::SettingsOldPasswordChanged(val) => { self.settings_old_password = val; }
+            Message::SettingsNewPasswordChanged(val) => { self.settings_new_password = val; }
+            Message::SettingsConfirmPasswordChanged(val) => { self.settings_confirm_password = val; }
+            Message::SettingsChangePassword => {
+                if self.settings_new_password != self.settings_confirm_password {
+                    self.settings_status = Some("Passwords don't match".into());
+                    return Task::none();
+                }
+                if self.settings_new_password.is_empty() || self.settings_old_password.is_empty() {
+                    self.settings_status = Some("Fill in all password fields".into());
+                    return Task::none();
+                }
+                let core = self.core.clone();
+                let old_pw = self.settings_old_password.clone();
+                let new_pw = self.settings_new_password.clone();
+                self.settings_old_password.clear();
+                self.settings_new_password.clear();
+                self.settings_confirm_password.clear();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::profile::change_password(&client, &old_pw, &new_pw).await.ok()
+                    },
+                    |result| match result {
+                        Some(()) => Message::SettingsStatus("Password changed".into()),
+                        None => Message::SettingsStatus("Failed to change password".into()),
                     },
                 );
             }
@@ -1616,6 +1672,22 @@ impl FluxChat {
                     self.ignored_users.remove(&user_id);
                 } else {
                     self.ignored_users.insert(user_id);
+                }
+            }
+            Message::ProfilePowerInputChanged(val) => {
+                self.profile_power_input = val;
+            }
+            Message::ProfileSetPowerLevel => {
+                if let Some(crate::state::Modal::Profile { ref user_id }) = self.modal {
+                    if let Ok(level) = self.profile_power_input.trim().parse::<i64>() {
+                        if let Some(ref room_id) = self.selected_room_id {
+                            return self.update(Message::SetPowerLevel(
+                                room_id.clone(),
+                                user_id.clone(),
+                                level,
+                            ));
+                        }
+                    }
                 }
             }
             Message::SendDmToUser(user_id) => {

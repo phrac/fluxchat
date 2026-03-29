@@ -39,7 +39,7 @@ use crate::update::extract_urls;
 fn thin_scrollbar(_theme: &Theme, status: iced::widget::scrollable::Status) -> iced::widget::scrollable::Style {
     use iced::widget::scrollable::{Style, Rail, Scroller, AutoScroll};
     let is_hovered = matches!(status, iced::widget::scrollable::Status::Hovered { .. } | iced::widget::scrollable::Status::Dragged { .. });
-    let scroller_alpha = if is_hovered { 0.4 } else { 0.15 };
+    let scroller_alpha = if is_hovered { 0.35 } else { 0.1 };
     let rail = Rail {
         background: None,
         border: iced::Border::default(),
@@ -2906,18 +2906,19 @@ impl FluxChat {
             let bg = if is_active {
                 theme::BG_LIGHT
             } else {
-                theme::BG_MID
+                iced::Color::TRANSPARENT
             };
             let color = if is_active {
                 theme::TEXT_BRIGHT
             } else {
                 theme::TEXT_MUTED
             };
-            button(text(label).font(MONO).size(15).color(color))
+            button(text(label).font(MONO).size(14).color(color))
                 .on_press(Message::OpenModal(crate::state::Modal::Settings {
                     tab: tab_id,
                 }))
-                .padding([6, 16])
+                .padding([6, 10])
+                .width(Fill)
                 .style(move |_, _| button::Style {
                     background: Some(bg.into()),
                     text_color: color,
@@ -2930,22 +2931,22 @@ impl FluxChat {
                 .into()
         };
 
-        let tabs = row![
+        let sidebar = column![
             make_tab_btn("Account".into(), "account".into(), &tab_owned),
             make_tab_btn("Sessions".into(), "sessions".into(), &tab_owned),
             make_tab_btn("Security".into(), "security".into(), &tab_owned),
         ]
-        .spacing(4);
+        .spacing(4)
+        .width(120);
 
         let tab_content: Element<Message> = match tab_owned.as_str() {
             "account" => {
                 let display = self.display_name.as_deref().unwrap_or(&self.user_id);
 
-                // Avatar section
-                let avatar_element: Element<Message> = if let Some(ref data) = self.settings_avatar_data {
-                    let handle = iced::widget::image::Handle::from_bytes(data.clone());
+                // Avatar section (use cached handle to avoid flicker)
+                let avatar_element: Element<Message> = if let Some(ref handle) = self.settings_avatar_handle {
                     container(
-                        iced::widget::image(handle)
+                        iced::widget::image(handle.clone())
                             .width(64)
                             .height(64)
                             .content_fit(iced::ContentFit::Cover),
@@ -2988,11 +2989,10 @@ impl FluxChat {
                     ].spacing(2),
                 ].spacing(12).align_y(iced::Alignment::Center);
 
-                // Banner section
-                let banner_element: Element<Message> = if let Some(ref data) = self.settings_banner_data {
-                    let handle = iced::widget::image::Handle::from_bytes(data.clone());
+                // Banner section (use cached handle to avoid flicker)
+                let banner_element: Element<Message> = if let Some(ref handle) = self.settings_banner_handle {
                     container(
-                        iced::widget::image(handle)
+                        iced::widget::image(handle.clone())
                             .width(Fill)
                             .height(80)
                             .content_fit(iced::ContentFit::Cover),
@@ -3066,6 +3066,38 @@ impl FluxChat {
                     col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::GREEN));
                 }
 
+                // Password change section
+                col = col.push(Space::new().height(4));
+                col = col.push(rule::horizontal(1));
+                col = col.push(text("PASSWORD").font(MONO).size(12).color(theme::TEXT_DIM));
+                col = col.push(
+                    text_input("Current password", &self.settings_old_password)
+                        .on_input(Message::SettingsOldPasswordChanged)
+                        .font(MONO).size(13).padding(6).secure(true),
+                );
+                col = col.push(
+                    text_input("New password", &self.settings_new_password)
+                        .on_input(Message::SettingsNewPasswordChanged)
+                        .font(MONO).size(13).padding(6).secure(true),
+                );
+                col = col.push(
+                    row![
+                        text_input("Confirm new password", &self.settings_confirm_password)
+                            .on_input(Message::SettingsConfirmPasswordChanged)
+                            .on_submit(Message::SettingsChangePassword)
+                            .font(MONO).size(13).padding(6).secure(true),
+                        button(text("Change").font(MONO).size(13).color(theme::TEXT_BRIGHT))
+                            .on_press(Message::SettingsChangePassword)
+                            .padding([6, 12])
+                            .style(|_, _| button::Style {
+                                background: Some(theme::ACCENT.into()),
+                                text_color: theme::TEXT_BRIGHT,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    ].spacing(6).align_y(iced::Alignment::Center),
+                );
+
                 col = col.push(Space::new().height(8));
                 col = col.push(rule::horizontal(1));
                 col = col.push(
@@ -3079,7 +3111,7 @@ impl FluxChat {
                             ..Default::default()
                         }),
                 );
-                scrollable(col).height(Length::Shrink).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar).into()
+                scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
             }
             "sessions" => {
                 let mut col = column![
@@ -3109,7 +3141,7 @@ impl FluxChat {
                         col = col.push(self.view_device_row(device));
                     }
                 }
-                scrollable(col).height(Length::Shrink).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar).into()
+                scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
             }
             "security" => {
                 let mut col = column![
@@ -3251,7 +3283,7 @@ impl FluxChat {
                     col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::TEXT_MUTED));
                 }
 
-                scrollable(col).height(Length::Shrink).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar).into()
+                scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
             }
             _ => text("Unknown tab")
                 .font(MONO)
@@ -3276,12 +3308,18 @@ impl FluxChat {
                     }),
             ]
             .align_y(iced::Alignment::Center),
-            tabs,
             rule::horizontal(1),
-            tab_content,
+            row![
+                sidebar,
+                rule::vertical(1),
+                container(tab_content).width(Fill),
+            ]
+            .spacing(8)
+            .height(Fill),
         ]
         .spacing(12)
-        .width(500)
+        .width(700)
+        .height(500)
         .into()
     }
 
@@ -3387,13 +3425,33 @@ impl FluxChat {
         let power = member.map(|m| m.power_level).unwrap_or(0);
         let role = member.map(|m| m.role.as_str()).unwrap_or("Member");
         let is_ignored = self.ignored_users.contains(user_id);
+        let uid = user_id.to_owned();
+
+        // Avatar (large, centered)
+        let avatar_el: Element<Message> = self.render_avatar_with_initial(
+            member.and_then(|m| m.avatar_url.as_deref()),
+            display_name,
+            72.0,
+        );
+
+        // My power level in this room
+        let my_power = self.selected_room_id.as_ref()
+            .and_then(|rid| self.members_by_room.get(rid))
+            .and_then(|members| members.iter().find(|m| m.user_id == self.user_id))
+            .map(|m| m.power_level)
+            .unwrap_or(0);
+        let can_set_power = my_power > power && user_id != self.user_id;
+
+        // Role color
+        let role_color = match power {
+            100.. => theme::YELLOW,
+            50..=99 => theme::ACCENT,
+            _ => theme::TEXT_NORMAL,
+        };
 
         let mut profile_col = column![
+            // Close button
             row![
-                text(display_name)
-                    .font(MONO)
-                    .size(16)
-                    .color(nick_col),
                 Space::new().width(Fill),
                 button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
                     .on_press(Message::CloseModal)
@@ -3402,40 +3460,111 @@ impl FluxChat {
                         background: None,
                         ..Default::default()
                     }),
-            ]
-            .align_y(iced::Alignment::Center),
-            text(user_id)
-                .font(MONO)
-                .size(14)
-                .color(theme::TEXT_MUTED),
-            rule::horizontal(1),
-            row![
-                text("Role: ")
-                    .font(MONO)
-                    .size(14)
-                    .color(theme::TEXT_DIM),
-                text(role)
-                    .font(MONO)
-                    .size(14)
-                    .color(theme::TEXT_NORMAL),
             ],
-            row![
-                text("Power: ")
-                    .font(MONO)
-                    .size(14)
-                    .color(theme::TEXT_DIM),
-                text(power.to_string())
-                    .font(MONO)
-                    .size(14)
-                    .color(theme::TEXT_NORMAL),
-            ],
+            // Avatar centered
+            container(avatar_el).width(Fill).center_x(Fill),
+            Space::new().height(4),
+            // Name
+            container(
+                text(display_name).font(MONO).size(18).color(nick_col)
+            ).width(Fill).center_x(Fill),
+            // User ID
+            container(
+                text(user_id).font(MONO).size(13).color(theme::TEXT_MUTED)
+            ).width(Fill).center_x(Fill),
         ]
-        .spacing(8);
+        .spacing(4);
+
+        // Role & power level section
+        profile_col = profile_col.push(Space::new().height(4));
+        profile_col = profile_col.push(rule::horizontal(1));
+
+        if can_set_power {
+            // Section header
+            profile_col = profile_col.push(
+                text("ROLE").font(MONO).size(11).color(theme::TEXT_DIM),
+            );
+
+            // Role preset buttons with descriptions
+            let room_id = self.selected_room_id.clone().unwrap_or_default();
+            for (label, desc, level, color) in [
+                ("Member", "Default permissions", 0i64, theme::TEXT_NORMAL),
+                ("Moderator", "Can kick, ban, mute", 50, theme::ACCENT),
+                ("Admin", "Full room control", 100, theme::YELLOW),
+            ] {
+                let is_active = power == level;
+                let bg = if is_active { theme::BG_LIGHT } else { theme::BG_MID };
+                let fg = if is_active { color } else { theme::TEXT_MUTED };
+                let border_color = if is_active { color } else { theme::BG_LIGHT };
+                profile_col = profile_col.push(
+                    button(
+                        row![
+                            column![
+                                text(label).font(MONO).size(13).color(fg),
+                                text(desc).font(MONO).size(11).color(theme::TEXT_DIM),
+                            ].spacing(1),
+                            Space::new().width(Fill),
+                            text(level.to_string()).font(MONO).size(12).color(theme::TEXT_DIM),
+                        ]
+                        .align_y(iced::Alignment::Center)
+                    )
+                    .on_press(Message::SetPowerLevel(room_id.clone(), uid.clone(), level))
+                    .padding([6, 10])
+                    .width(Fill)
+                    .style(move |_, _| button::Style {
+                        background: Some(bg.into()),
+                        text_color: fg,
+                        border: iced::Border {
+                            color: border_color,
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+                );
+            }
+
+            // Custom power level
+            profile_col = profile_col.push(Space::new().height(2));
+            profile_col = profile_col.push(
+                text("CUSTOM LEVEL").font(MONO).size(11).color(theme::TEXT_DIM),
+            );
+            profile_col = profile_col.push(
+                row![
+                    text_input("0-100", &self.profile_power_input)
+                        .on_input(Message::ProfilePowerInputChanged)
+                        .on_submit(Message::ProfileSetPowerLevel)
+                        .font(MONO)
+                        .size(13)
+                        .padding(4)
+                        .width(Fill),
+                    button(text("Apply").font(MONO).size(12).color(theme::TEXT_BRIGHT))
+                        .on_press(Message::ProfileSetPowerLevel)
+                        .padding([4, 12])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::ACCENT.into()),
+                            text_color: theme::TEXT_BRIGHT,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
+            );
+        } else {
+            // Read-only display
+            profile_col = profile_col.push(
+                row![
+                    text(role).font(MONO).size(14).color(role_color),
+                    Space::new().width(Fill),
+                    text(format!("Power: {power}")).font(MONO).size(13).color(theme::TEXT_DIM),
+                ].align_y(iced::Alignment::Center),
+            );
+        }
 
         // Action buttons
         profile_col = profile_col.push(rule::horizontal(1));
 
-        let uid = user_id.to_owned();
         let ignore_label = if is_ignored { "Unignore" } else { "Ignore" };
         let ignore_color = if is_ignored { theme::GREEN } else { theme::RED };
 
@@ -3469,11 +3598,11 @@ impl FluxChat {
 
         if is_ignored {
             profile_col = profile_col.push(
-                text("(ignored)").font(MONO).size(14).color(theme::RED),
+                text("(ignored)").font(MONO).size(13).color(theme::RED),
             );
         }
 
-        profile_col.width(350).into()
+        profile_col.width(320).into()
     }
 
     fn view_verification_modal<'a>(&'a self, info: &'a fluxchat_core::VerificationInfo) -> Element<'a, Message> {
