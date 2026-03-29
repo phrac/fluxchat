@@ -163,6 +163,21 @@ pub enum Message {
     ToggleIgnoreUser(String), // user_id
     SendDmToUser(String),     // user_id
 
+    // --- Power levels ---
+    SetPowerLevel(String, String, i64), // room_id, user_id, level
+
+    // --- Highlight words ---
+    AddHighlight(String),
+    RemoveHighlight(String),
+
+    // --- Room notifications ---
+    MuteRoom,
+    UnmuteRoom,
+
+    // --- Giphy ---
+    SetGiphyKey(String),
+    GifSearch(String), // query
+
     // --- Read receipts ---
     SendReadReceipt,
 

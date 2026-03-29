@@ -85,8 +85,6 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/poll", usage: "<question> | <opt1> | <opt2>...", description: "Create a poll", needs_room: true },
         Command { name: "/pollend", usage: "", description: "End the current poll", needs_room: true },
         Command { name: "/away", usage: "[message]", description: "Set away status", needs_room: false },
-        Command { name: "/mute", usage: "", description: "Mute room notifications", needs_room: true },
-        Command { name: "/unmute", usage: "", description: "Unmute room notifications", needs_room: true },
     ]
 }
 
@@ -300,8 +298,9 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 .map(|(u, l)| (u.to_string(), l.parse::<i64>().unwrap_or(50)))
                 .unwrap_or((args.to_string(), 50));
             if let Some(room_id) = &state.selected_room_id {
-                CommandResult::Help(format!("Setting {user} to power level {level} in {room_id}"))
-                // TODO: wire to SetUserPowerLevel message
+                // Resolve display name to user_id
+                let user_id = resolve_user_id(&user, room_id, state);
+                CommandResult::Messages(vec![Message::SetPowerLevel(room_id.clone(), user_id, level)])
             } else {
                 CommandResult::Help("No room selected".into())
             }
@@ -310,8 +309,12 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 return CommandResult::Help("Usage: /deop <user>".into());
             }
-            CommandResult::Help(format!("Removing power level for {args}"))
-            // TODO: wire to SetUserPowerLevel(0)
+            if let Some(room_id) = &state.selected_room_id {
+                let user_id = resolve_user_id(args, room_id, state);
+                CommandResult::Messages(vec![Message::SetPowerLevel(room_id.clone(), user_id, 0)])
+            } else {
+                CommandResult::Help("No room selected".into())
+            }
         }
 
         // --- GIF ---
@@ -319,14 +322,18 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 CommandResult::Messages(vec![Message::ToggleGifs])
             } else {
-                CommandResult::Help(format!("GIF search for: {args} (GIF picker coming soon)"))
+                CommandResult::Messages(vec![Message::GifSearch(args.to_string())])
             }
         }
         "/giphykey" => {
             if args.is_empty() {
-                CommandResult::Help("Usage: /giphykey <api-key>".into())
+                if state.giphy_api_key.is_empty() {
+                    CommandResult::Help("No Giphy API key set. Usage: /giphykey <key>".into())
+                } else {
+                    CommandResult::Help(format!("Giphy API key: {}...", &state.giphy_api_key[..state.giphy_api_key.len().min(8)]))
+                }
             } else {
-                CommandResult::Help(format!("Giphy API key set"))
+                CommandResult::Messages(vec![Message::SetGiphyKey(args.to_string())])
             }
         }
 
@@ -375,10 +382,11 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         // --- Status ---
         "/status" | "/away" => {
+            // Status/away — just show feedback (presence is handled by SDK automatically)
             if args.is_empty() {
                 CommandResult::Help("Status cleared".into())
             } else {
-                CommandResult::Help(format!("Status set: {args}"))
+                CommandResult::Help(format!("Status: {args}"))
             }
         }
 
@@ -387,19 +395,19 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 let words: Vec<_> = state.highlight_words.iter().cloned().collect();
                 if words.is_empty() {
-                    CommandResult::Help("No highlight words".into())
+                    CommandResult::Help("No highlight words. Usage: /highlight <word>".into())
                 } else {
                     CommandResult::Help(format!("Highlights: {}", words.join(", ")))
                 }
             } else {
-                CommandResult::Help(format!("Added highlight: {args}"))
+                CommandResult::Messages(vec![Message::AddHighlight(args.to_string())])
             }
         }
         "/unhighlight" => {
             if args.is_empty() {
                 CommandResult::Help("Usage: /unhighlight <word>".into())
             } else {
-                CommandResult::Help(format!("Removed highlight: {args}"))
+                CommandResult::Messages(vec![Message::RemoveHighlight(args.to_string())])
             }
         }
 
@@ -430,12 +438,8 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         }
 
         // --- Mute/unmute ---
-        "/mute" => {
-            CommandResult::Help("Room muted".into())
-        }
-        "/unmute" => {
-            CommandResult::Help("Room unmuted".into())
-        }
+        "/mute" => CommandResult::Messages(vec![Message::MuteRoom]),
+        "/unmute" => CommandResult::Messages(vec![Message::UnmuteRoom]),
 
         // --- Clear ---
         "/clear" => {
@@ -473,4 +477,20 @@ pub fn autocomplete_entries(prefix: &str) -> Vec<(&'static str, &'static str)> {
         .filter(|c| c.name.starts_with(prefix))
         .map(|c| (c.name, c.description))
         .collect()
+}
+
+/// Resolve a display name or user ID to a user_id.
+/// If the input starts with @, treat as user_id directly.
+/// Otherwise, search the room's member list for a matching display name.
+fn resolve_user_id(input: &str, room_id: &str, state: &FluxChat) -> String {
+    if input.starts_with('@') {
+        return input.to_string();
+    }
+    if let Some(members) = state.members_by_room.get(room_id) {
+        let lower = input.to_lowercase();
+        if let Some(member) = members.iter().find(|m| m.display_name.to_lowercase() == lower) {
+            return member.user_id.clone();
+        }
+    }
+    input.to_string()
 }

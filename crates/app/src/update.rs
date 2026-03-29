@@ -1399,6 +1399,71 @@ impl FluxChat {
                 );
             }
 
+            // --- Power levels ---
+            Message::SetPowerLevel(room_id, user_id, level) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::set_user_power_level(&client, &room_id, &user_id, level).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+
+            // --- Highlight words ---
+            Message::AddHighlight(word) => {
+                if !self.highlight_words.contains(&word) {
+                    self.highlight_words.push(word);
+                    if let Ok(json) = serde_json::to_string(&self.highlight_words) {
+                        let _ = self.core.db.set_setting("highlight_words", &json);
+                    }
+                }
+            }
+            Message::RemoveHighlight(word) => {
+                self.highlight_words.retain(|w| w != &word);
+                if let Ok(json) = serde_json::to_string(&self.highlight_words) {
+                    let _ = self.core.db.set_setting("highlight_words", &json);
+                }
+            }
+
+            // --- Room notifications ---
+            Message::MuteRoom => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::set_notification_mode(&client, &room_id, "mute").await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::UnmuteRoom => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::set_notification_mode(&client, &room_id, "all").await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+
+            // --- Giphy ---
+            Message::SetGiphyKey(key) => {
+                self.giphy_api_key = key.clone();
+                let _ = self.core.db.set_setting("giphy_api_key", &key);
+            }
+            Message::GifSearch(query) => {
+                self.gifs_open = true;
+                self.gif_query = query;
+                // TODO: trigger actual GIF search and display results
+            }
+
             // --- Read receipts ---
             Message::SendReadReceipt => {
                 if let Some(room_id) = self.selected_room_id.clone() {
