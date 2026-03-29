@@ -1032,9 +1032,9 @@ impl FluxChat {
                 if !self.search_results.is_empty() {
                     let mut results_col = column![].spacing(1);
                     for result in self.search_results.iter().take(20) {
-                        let secs = (result.timestamp / 1000) % 86400;
-                        let h = secs / 3600;
-                        let m = (secs % 3600) / 60;
+                        let local_secs = local_time_of_day(result.timestamp);
+                        let h = local_secs / 3600;
+                        let m = (local_secs % 3600) / 60;
                         let time_str = format!("{h:02}:{m:02}");
                         let nick_col = theme::nick_color(&result.sender_name);
                         results_col = results_col.push(
@@ -1958,11 +1958,12 @@ impl FluxChat {
         let time_str = if self.timestamp_format == "off" {
             String::new()
         } else {
-            let secs = (msg.timestamp / 1000) % 86400;
-            let h = secs / 3600;
-            let m = (secs % 3600) / 60;
+            // Convert Unix timestamp to local time using libc
+            let local_secs = local_time_of_day(msg.timestamp);
+            let h = local_secs / 3600;
+            let m = (local_secs % 3600) / 60;
             if self.timestamp_format == "full" {
-                let s = secs % 60;
+                let s = local_secs % 60;
                 format!("{h:02}:{m:02}:{s:02}")
             } else {
                 format!("{h:02}:{m:02}")
@@ -4061,6 +4062,18 @@ impl FluxChat {
     /// Application theme — dark.
     pub fn theme(&self) -> Theme {
         Theme::Dark
+    }
+}
+
+/// Convert a Unix timestamp (seconds) to local time-of-day in seconds.
+fn local_time_of_day(unix_secs: u64) -> u64 {
+    use chrono::{TimeZone, Timelike};
+    let dt = chrono::Utc.timestamp_opt(unix_secs as i64, 0)
+        .single()
+        .map(|utc| utc.with_timezone(&chrono::Local));
+    match dt {
+        Some(local) => (local.hour() * 3600 + local.minute() * 60 + local.second()) as u64,
+        None => unix_secs % 86400,
     }
 }
 
