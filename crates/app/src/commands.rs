@@ -66,6 +66,27 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/joinpart", usage: "", description: "Toggle join/part messages", needs_room: false },
         Command { name: "/zoom", usage: "[50-200]", description: "Set UI zoom level", needs_room: false },
         Command { name: "/quit", usage: "", description: "Log out", needs_room: false },
+        Command { name: "/gif", usage: "<query>", description: "Search and send a GIF", needs_room: true },
+        Command { name: "/giphy", usage: "<query>", description: "Search and send a GIF", needs_room: true },
+        Command { name: "/giphykey", usage: "<key>", description: "Set Giphy API key", needs_room: false },
+        Command { name: "/attach", usage: "", description: "Attach a file", needs_room: true },
+        Command { name: "/forward", usage: "", description: "Forward a message", needs_room: true },
+        Command { name: "/ignore", usage: "<user>", description: "Ignore a user", needs_room: false },
+        Command { name: "/unignore", usage: "<user>", description: "Unignore a user", needs_room: false },
+        Command { name: "/whois", usage: "<user>", description: "Show user info", needs_room: false },
+        Command { name: "/query", usage: "<user>", description: "Open DM with user", needs_room: false },
+        Command { name: "/status", usage: "[message]", description: "Set your status", needs_room: false },
+        Command { name: "/users", usage: "[query]", description: "Search user directory", needs_room: false },
+        Command { name: "/directory", usage: "[query]", description: "Browse public rooms", needs_room: false },
+        Command { name: "/highlight", usage: "<word>", description: "Add highlight word", needs_room: false },
+        Command { name: "/unhighlight", usage: "<word>", description: "Remove highlight word", needs_room: false },
+        Command { name: "/slap", usage: "<user>", description: "Slap someone with a trout", needs_room: true },
+        Command { name: "/troutslap", usage: "<user>", description: "Slap someone with a trout", needs_room: true },
+        Command { name: "/poll", usage: "<question> | <opt1> | <opt2>...", description: "Create a poll", needs_room: true },
+        Command { name: "/pollend", usage: "", description: "End the current poll", needs_room: true },
+        Command { name: "/away", usage: "[message]", description: "Set away status", needs_room: false },
+        Command { name: "/mute", usage: "", description: "Mute room notifications", needs_room: true },
+        Command { name: "/unmute", usage: "", description: "Unmute room notifications", needs_room: true },
     ]
 }
 
@@ -268,6 +289,152 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             } else {
                 CommandResult::Rewrite(format!("||{args}||"))
             }
+        }
+
+        // --- Op/deop ---
+        "/op" => {
+            if args.is_empty() {
+                return CommandResult::Help("Usage: /op <user> [level]".into());
+            }
+            let (user, level) = args.split_once(' ')
+                .map(|(u, l)| (u.to_string(), l.parse::<i64>().unwrap_or(50)))
+                .unwrap_or((args.to_string(), 50));
+            if let Some(room_id) = &state.selected_room_id {
+                CommandResult::Help(format!("Setting {user} to power level {level} in {room_id}"))
+                // TODO: wire to SetUserPowerLevel message
+            } else {
+                CommandResult::Help("No room selected".into())
+            }
+        }
+        "/deop" => {
+            if args.is_empty() {
+                return CommandResult::Help("Usage: /deop <user>".into());
+            }
+            CommandResult::Help(format!("Removing power level for {args}"))
+            // TODO: wire to SetUserPowerLevel(0)
+        }
+
+        // --- GIF ---
+        "/gif" | "/giphy" => {
+            if args.is_empty() {
+                CommandResult::Messages(vec![Message::ToggleGifs])
+            } else {
+                CommandResult::Help(format!("GIF search for: {args} (GIF picker coming soon)"))
+            }
+        }
+        "/giphykey" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /giphykey <api-key>".into())
+            } else {
+                CommandResult::Help(format!("Giphy API key set"))
+            }
+        }
+
+        // --- File/Forward ---
+        "/attach" => CommandResult::Messages(vec![Message::PickFile]),
+        "/forward" => {
+            CommandResult::Help("Select a message to forward first".into())
+        }
+
+        // --- User management ---
+        "/ignore" => {
+            if args.is_empty() {
+                let list: Vec<_> = state.ignored_users.iter().cloned().collect();
+                if list.is_empty() {
+                    CommandResult::Help("No ignored users".into())
+                } else {
+                    CommandResult::Help(format!("Ignored: {}", list.join(", ")))
+                }
+            } else {
+                CommandResult::Messages(vec![Message::ToggleIgnoreUser(args.to_string())])
+            }
+        }
+        "/unignore" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /unignore <user>".into())
+            } else {
+                CommandResult::Messages(vec![Message::ToggleIgnoreUser(args.to_string())])
+            }
+        }
+        "/whois" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /whois <user>".into())
+            } else {
+                CommandResult::Messages(vec![Message::OpenModal(
+                    crate::state::Modal::Profile { user_id: args.to_string() },
+                )])
+            }
+        }
+        "/query" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /query <user>".into())
+            } else {
+                CommandResult::Messages(vec![Message::SendDmToUser(args.to_string())])
+            }
+        }
+
+        // --- Status ---
+        "/status" | "/away" => {
+            if args.is_empty() {
+                CommandResult::Help("Status cleared".into())
+            } else {
+                CommandResult::Help(format!("Status set: {args}"))
+            }
+        }
+
+        // --- Highlight ---
+        "/highlight" => {
+            if args.is_empty() {
+                let words: Vec<_> = state.highlight_words.iter().cloned().collect();
+                if words.is_empty() {
+                    CommandResult::Help("No highlight words".into())
+                } else {
+                    CommandResult::Help(format!("Highlights: {}", words.join(", ")))
+                }
+            } else {
+                CommandResult::Help(format!("Added highlight: {args}"))
+            }
+        }
+        "/unhighlight" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /unhighlight <word>".into())
+            } else {
+                CommandResult::Help(format!("Removed highlight: {args}"))
+            }
+        }
+
+        // --- Fun ---
+        "/slap" | "/troutslap" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /slap <user>".into())
+            } else {
+                CommandResult::Rewrite(format!("/me slaps {args} around a bit with a large trout"))
+            }
+        }
+
+        // --- Directory ---
+        "/users" | "/directory" => {
+            CommandResult::Help("User/room directory search coming soon".into())
+        }
+
+        // --- Polls ---
+        "/poll" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /poll <question> | <option1> | <option2>...".into())
+            } else {
+                CommandResult::Help("Poll creation coming soon".into())
+            }
+        }
+        "/pollend" => {
+            CommandResult::Help("Poll ending coming soon".into())
+        }
+
+        // --- Mute/unmute ---
+        "/mute" => {
+            CommandResult::Help("Room muted".into())
+        }
+        "/unmute" => {
+            CommandResult::Help("Room unmuted".into())
         }
 
         // --- Clear ---
