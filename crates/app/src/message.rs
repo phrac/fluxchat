@@ -180,6 +180,7 @@ pub enum Message {
     GifQueryChanged(String),                             // search input
     GifSearchSubmit,                                     // trigger search
     GifResultsLoaded(Vec<fluxchat_core::gif::GifResult>),
+    GifPreviewLoaded(String, Vec<u8>),                   // preview_url, bytes
     GifSelect(String, String),                           // gif_url, description
 
     // --- Read receipts ---

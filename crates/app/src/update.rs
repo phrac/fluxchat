@@ -1483,7 +1483,32 @@ impl FluxChat {
             }
             Message::GifResultsLoaded(results) => {
                 self.gif_searching = false;
+                // Fetch preview images
+                let mut tasks = Vec::new();
+                for gif in &results {
+                    let url = gif.preview_url.clone();
+                    if !self.gif_preview_cache.contains_key(&url) {
+                        let url_clone = url.clone();
+                        tasks.push(Task::perform(
+                            async move {
+                                let bytes = fluxchat_core::gif::download_gif(&url_clone).await.ok()?;
+                                Some((url_clone, bytes))
+                            },
+                            |result| match result {
+                                Some((url, data)) => Message::GifPreviewLoaded(url, data),
+                                None => Message::Noop,
+                            },
+                        ));
+                    }
+                }
                 self.gif_results = results;
+                if !tasks.is_empty() {
+                    return Task::batch(tasks);
+                }
+            }
+            Message::GifPreviewLoaded(url, data) => {
+                let handle = iced::widget::image::Handle::from_bytes(data);
+                self.gif_preview_cache.insert(url, handle);
             }
             Message::GifSelect(gif_url, description) => {
                 self.gifs_open = false;

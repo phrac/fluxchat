@@ -1303,24 +1303,38 @@ impl FluxChat {
                         for gif in chunk {
                             let url = gif.url.clone();
                             let desc = gif.description.clone();
-                            row_items = row_items.push(
-                                button(
-                                    text(&gif.description)
-                                        .font(SANS).size(12).color(theme::ACCENT)
-                                        .wrapping(iced::widget::text::Wrapping::None)
+                            let content: Element<Message> = if let Some(handle) = self.gif_preview_cache.get(&gif.preview_url) {
+                                container(
+                                    iced::widget::image(handle.clone())
+                                        .width(Fill)
+                                        .height(100)
+                                        .content_fit(iced::ContentFit::Cover),
                                 )
-                                .on_press(Message::GifSelect(url, desc))
-                                .padding([8, 12])
-                                .width(Length::FillPortion(1))
-                                .style(|_, status| button::Style {
-                                    background: Some(if matches!(status, button::Status::Hovered) {
-                                        Color::from_rgba(1.0, 1.0, 1.0, 0.08)
-                                    } else {
-                                        theme::BG_DARK
-                                    }.into()),
+                                .clip(true)
+                                .style(|_: &Theme| container::Style {
                                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                     ..Default::default()
-                                }),
+                                })
+                                .into()
+                            } else {
+                                text(&gif.description)
+                                    .font(SANS).size(11).color(theme::TEXT_DIM)
+                                    .into()
+                            };
+                            row_items = row_items.push(
+                                button(content)
+                                    .on_press(Message::GifSelect(url, desc))
+                                    .padding(2)
+                                    .width(Length::FillPortion(1))
+                                    .style(|_, status| button::Style {
+                                        background: Some(if matches!(status, button::Status::Hovered) {
+                                            Color::from_rgba(1.0, 1.0, 1.0, 0.1)
+                                        } else {
+                                            theme::BG_DARK
+                                        }.into()),
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
                             );
                         }
                         grid = grid.push(row_items);

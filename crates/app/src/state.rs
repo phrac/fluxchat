@@ -169,6 +169,7 @@ pub struct FluxChat {
     // GIF panel state
     pub gif_results: Vec<fluxchat_core::gif::GifResult>,
     pub gif_searching: bool,
+    pub gif_preview_cache: HashMap<String, iced::widget::image::Handle>, // preview_url -> handle
 
     // Panels data
     pub pinned_messages: Vec<fluxchat_core::MessageInfo>,
@@ -269,6 +270,7 @@ impl FluxChat {
             forward_search: String::new(),
             gif_results: Vec::new(),
             gif_searching: false,
+            gif_preview_cache: HashMap::new(),
             pinned_messages: Vec::new(),
             thread_messages: Vec::new(),
             settings_avatar_data: None,
