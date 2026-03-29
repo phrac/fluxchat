@@ -2146,12 +2146,14 @@ impl FluxChat {
                 .on_link_click(Message::OpenUrl)
                 .into()
         } else {
-            text(&msg.body)
+            // Parse basic markdown in plain text bodies
+            let spans = crate::html::plain_text_to_spans(&msg.body);
+            rich_text(spans)
                 .font(MONO)
                 .size(15)
-                .color(theme::TEXT_NORMAL)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(Fill)
+                .on_link_click(Message::OpenUrl)
                 .into()
         };
 

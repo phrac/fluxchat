@@ -324,7 +324,7 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
 
     if style.code {
         span.font = Some(Font {
-            family: font::Family::Monospace,
+            family: font::Family::Name("JetBrainsMono Nerd Font"),
             weight,
             style: font_style,
             ..Font::default()
@@ -339,6 +339,7 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
         span.padding = iced::Padding::from([0, 3]);
     } else if style.bold || style.italic {
         span.font = Some(Font {
+            family: font::Family::Name("JetBrainsMono Nerd Font"),
             weight,
             style: font_style,
             ..Font::MONOSPACE
@@ -438,6 +439,108 @@ fn strip_tags(s: &str) -> String {
         }
     }
     result
+}
+
+/// Convert plain text with basic markdown to Spans.
+/// Handles **bold**, *italic*, ~~strike~~, `code`, and ```codeblocks```.
+pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
+    // Convert basic markdown to HTML, then use the HTML parser
+    let mut html = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '`' if chars.peek() == Some(&'`') => {
+                chars.next(); // second `
+                if chars.peek() == Some(&'`') {
+                    chars.next(); // third `
+                    // Code block — collect until ```
+                    let mut code = String::new();
+                    loop {
+                        match chars.next() {
+                            Some('`') if chars.peek() == Some(&'`') => {
+                                chars.next();
+                                if chars.peek() == Some(&'`') {
+                                    chars.next();
+                                    break;
+                                }
+                                code.push_str("``");
+                            }
+                            Some(ch) => code.push(ch),
+                            None => break,
+                        }
+                    }
+                    html.push_str("<pre><code>");
+                    html.push_str(&html_escape(&code));
+                    html.push_str("</code></pre>");
+                } else {
+                    html.push_str("``");
+                }
+            }
+            '`' => {
+                let mut code = String::new();
+                for ch in chars.by_ref() {
+                    if ch == '`' { break; }
+                    code.push(ch);
+                }
+                html.push_str("<code>");
+                html.push_str(&html_escape(&code));
+                html.push_str("</code>");
+            }
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut bold = String::new();
+                loop {
+                    match chars.next() {
+                        Some('*') if chars.peek() == Some(&'*') => { chars.next(); break; }
+                        Some(ch) => bold.push(ch),
+                        None => break,
+                    }
+                }
+                html.push_str("<b>");
+                html.push_str(&html_escape(&bold));
+                html.push_str("</b>");
+            }
+            '*' => {
+                let mut italic = String::new();
+                for ch in chars.by_ref() {
+                    if ch == '*' { break; }
+                    italic.push(ch);
+                }
+                html.push_str("<i>");
+                html.push_str(&html_escape(&italic));
+                html.push_str("</i>");
+            }
+            '~' if chars.peek() == Some(&'~') => {
+                chars.next();
+                let mut strike = String::new();
+                loop {
+                    match chars.next() {
+                        Some('~') if chars.peek() == Some(&'~') => { chars.next(); break; }
+                        Some(ch) => strike.push(ch),
+                        None => break,
+                    }
+                }
+                html.push_str("<del>");
+                html.push_str(&html_escape(&strike));
+                html.push_str("</del>");
+            }
+            '<' => html.push_str("&lt;"),
+            '>' => html.push_str("&gt;"),
+            '&' => html.push_str("&amp;"),
+            '\n' => html.push_str("<br>"),
+            _ => html.push(c),
+        }
+    }
+
+    html_to_spans(&html)
+}
+
+/// Escape special HTML characters in user content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Unescape common HTML entities.
