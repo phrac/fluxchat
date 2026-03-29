@@ -9,6 +9,11 @@ pub fn input_id() -> iced::widget::Id {
     iced::widget::Id::new("main_input")
 }
 
+/// Fixed ID for the GIF search input.
+pub fn gif_search_id() -> iced::widget::Id {
+    iced::widget::Id::new("gif_search_input")
+}
+
 /// Fixed ID for the message scrollable so we can snap to bottom.
 pub fn messages_scrollable_id() -> iced::widget::Id {
     iced::widget::Id::new("messages_scroll")
@@ -1285,6 +1290,7 @@ impl FluxChat {
                     ].align_y(iced::Alignment::Center),
                     row![
                         text_input("Search GIFs...", &self.gif_query)
+                            .id(gif_search_id())
                             .on_input(Message::GifQueryChanged)
                             .on_submit(Message::GifSearchSubmit)
                             .font(SANS).size(14).padding(6),
@@ -1303,19 +1309,11 @@ impl FluxChat {
                         for gif in chunk {
                             let url = gif.url.clone();
                             let desc = gif.description.clone();
-                            let content: Element<Message> = if let Some(handle) = self.gif_preview_cache.get(&gif.preview_url) {
-                                container(
-                                    iced::widget::image(handle.clone())
-                                        .width(Fill)
-                                        .height(100)
-                                        .content_fit(iced::ContentFit::Cover),
-                                )
-                                .clip(true)
-                                .style(|_: &Theme| container::Style {
-                                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                    ..Default::default()
-                                })
-                                .into()
+                            let content: Element<Message> = if let Some(frames) = self.gif_preview_cache.get(&gif.preview_url) {
+                                iced_gif::gif(frames.as_ref())
+                                    .width(Fill)
+                                    .content_fit(iced::ContentFit::ScaleDown)
+                                    .into()
                             } else {
                                 text(&gif.description)
                                     .font(SANS).size(11).color(theme::TEXT_DIM)
@@ -1992,7 +1990,20 @@ impl FluxChat {
         // Image messages
         if let Some(ref mxc) = msg.image_mxc {
             if !msg.is_video {
-                let img_element: Element<'a, Message> = if let Some(handle) = self.image_cache.get(mxc) {
+                let img_element: Element<'a, Message> = if let Some(frames) = self.gif_frames_cache.get(mxc) {
+                    // Animated GIF
+                    let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
+                    let mxc_click = mxc.clone();
+                    button(
+                        iced_gif::gif(frames.as_ref())
+                            .width(img_w)
+                            .content_fit(iced::ContentFit::ScaleDown)
+                    )
+                    .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
+                    .padding(0)
+                    .style(|_, _| button::Style { background: None, ..Default::default() })
+                    .into()
+                } else if let Some(handle) = self.image_cache.get(mxc) {
                     let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
                     let img_h = if let (Some(w), Some(h)) = (msg.image_width, msg.image_height) {
                         (img_w * h as f32 / w as f32).min(300.0)

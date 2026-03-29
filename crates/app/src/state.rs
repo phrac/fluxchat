@@ -166,10 +166,13 @@ pub struct FluxChat {
     // Forward modal state
     pub forward_search: String,
 
+    // Animated GIF cache for inline messages
+    pub gif_frames_cache: HashMap<String, std::sync::Arc<iced_gif::Frames>>,
+
     // GIF panel state
     pub gif_results: Vec<fluxchat_core::gif::GifResult>,
     pub gif_searching: bool,
-    pub gif_preview_cache: HashMap<String, iced::widget::image::Handle>, // preview_url -> handle
+    pub gif_preview_cache: HashMap<String, std::sync::Arc<iced_gif::Frames>>, // preview_url -> animated frames
 
     // Panels data
     pub pinned_messages: Vec<fluxchat_core::MessageInfo>,
@@ -268,6 +271,7 @@ impl FluxChat {
             create_room_public: false,
             create_room_encrypted: false,
             forward_search: String::new(),
+            gif_frames_cache: HashMap::new(),
             gif_results: Vec::new(),
             gif_searching: false,
             gif_preview_cache: HashMap::new(),

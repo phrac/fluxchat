@@ -470,19 +470,24 @@ impl FluxChat {
                         self.mention_completions.clear();
                     }
 
-                    // Send typing indicator
+                    // Send typing indicator + refocus
+                    let focus = iced::widget::operation::focus(crate::view::input_id());
                     if let Some(room_id) = self.selected_room_id.clone() {
                         let core = self.core.clone();
                         let typing = !new_text.is_empty();
-                        return Task::perform(
+                        let typing_task = Task::perform(
                             async move {
                                 let client = core.get_client().await.ok()?;
                                 fluxchat_core::messages::send_typing(&client, &room_id, typing).await.ok()
                             },
                             |_| Message::Noop,
                         );
+                        return Task::batch([typing_task, focus]);
                     }
+                    return focus;
                 }
+                // Even if text didn't change, keep focus
+                return iced::widget::operation::focus(crate::view::input_id());
             }
             Message::SendMessage => {
                 if self.input_text.trim().is_empty() {
@@ -736,6 +741,9 @@ impl FluxChat {
             Message::ToggleGifs => {
                 self.gifs_open = !self.gifs_open;
                 self.overflow_menu_open = false;
+                if self.gifs_open {
+                    return iced::widget::operation::focus(crate::view::gif_search_id());
+                }
             }
             Message::ToggleOverflowMenu => {
                 self.overflow_menu_open = !self.overflow_menu_open;
@@ -1207,8 +1215,29 @@ impl FluxChat {
                 use base64::Engine;
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                 self.core.db.cache_media(&format!("iced_img:{mxc}"), &b64);
+                // Try to decode as animated GIF
+                let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
+                if is_gif {
+                    let mxc_clone = mxc.clone();
+                    let data_clone = data.clone();
+                    let handle = iced::widget::image::Handle::from_bytes(data);
+                    self.image_cache.insert(mxc.clone(), handle);
+                    return Task::perform(
+                        async move {
+                            let frames = iced_gif::Frames::from_bytes(data_clone).ok()?;
+                            Some((mxc_clone, std::sync::Arc::new(frames)))
+                        },
+                        |result| match result {
+                            Some((mxc, frames)) => Message::GifFramesResolved(mxc, frames),
+                            None => Message::Noop,
+                        },
+                    );
+                }
                 let handle = iced::widget::image::Handle::from_bytes(data);
                 self.image_cache.insert(mxc, handle);
+            }
+            Message::GifFramesResolved(mxc, frames) => {
+                self.gif_frames_cache.insert(mxc, frames);
             }
 
             // --- URL Previews ---
@@ -1461,7 +1490,9 @@ impl FluxChat {
             Message::GifSearch(query) => {
                 self.gifs_open = true;
                 self.gif_query = query;
-                return self.update(Message::GifSearchSubmit);
+                let search = self.update(Message::GifSearchSubmit);
+                let focus = iced::widget::operation::focus(crate::view::gif_search_id());
+                return Task::batch([search, focus]);
             }
             Message::GifQueryChanged(query) => {
                 self.gif_query = query;
@@ -1492,10 +1523,11 @@ impl FluxChat {
                         tasks.push(Task::perform(
                             async move {
                                 let bytes = fluxchat_core::gif::download_gif(&url_clone).await.ok()?;
-                                Some((url_clone, bytes))
+                                let frames = iced_gif::Frames::from_bytes(bytes).ok()?;
+                                Some((url_clone, std::sync::Arc::new(frames)))
                             },
                             |result| match result {
-                                Some((url, data)) => Message::GifPreviewLoaded(url, data),
+                                Some((url, frames)) => Message::GifPreviewLoaded(url, frames),
                                 None => Message::Noop,
                             },
                         ));
@@ -1506,9 +1538,8 @@ impl FluxChat {
                     return Task::batch(tasks);
                 }
             }
-            Message::GifPreviewLoaded(url, data) => {
-                let handle = iced::widget::image::Handle::from_bytes(data);
-                self.gif_preview_cache.insert(url, handle);
+            Message::GifPreviewLoaded(url, frames) => {
+                self.gif_preview_cache.insert(url, frames);
             }
             Message::GifSelect(gif_url, description) => {
                 self.gifs_open = false;
@@ -1690,8 +1721,22 @@ impl FluxChat {
                 if let Some(b64) = self.core.db.get_cached_media(&format!("iced_img:{mxc}")) {
                     use base64::Engine;
                     if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                        let handle = iced::widget::image::Handle::from_bytes(data);
+                        let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
+                        let handle = iced::widget::image::Handle::from_bytes(data.clone());
                         self.image_cache.insert(mxc.clone(), handle);
+                        if is_gif && !self.gif_frames_cache.contains_key(mxc) {
+                            let mxc_clone = mxc.clone();
+                            tasks.push(Task::perform(
+                                async move {
+                                    let frames = iced_gif::Frames::from_bytes(data).ok()?;
+                                    Some((mxc_clone, std::sync::Arc::new(frames)))
+                                },
+                                |result| match result {
+                                    Some((mxc, frames)) => Message::GifFramesResolved(mxc, frames),
+                                    None => Message::Noop,
+                                },
+                            ));
+                        }
                         continue;
                     }
                 }
