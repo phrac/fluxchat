@@ -1,4 +1,5 @@
-use iced::Color;
+use iced::widget::{button, container};
+use iced::{Border, Color, Theme};
 
 // Color palette from the existing CSS design
 pub const BG_DEEP: Color = Color::from_rgb(0x1a as f32 / 255.0, 0x1b as f32 / 255.0, 0x1e as f32 / 255.0);
@@ -52,4 +53,31 @@ pub fn nick_color_index(name: &str) -> usize {
 /// Get a nick color from a username hash.
 pub fn nick_color(name: &str) -> Color {
     NICK_COLORS[nick_color_index(name)]
+}
+
+/// Transparent button with no background.
+pub fn button_transparent(_: &Theme, _: button::Status) -> button::Style {
+    button::Style { background: None, ..Default::default() }
+}
+
+/// Button that shows a subtle highlight on hover.
+pub fn button_subtle(_: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: if matches!(status, button::Status::Hovered) {
+            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+        } else {
+            None
+        },
+        border: Border { radius: 4.0.into(), ..Default::default() },
+        ..Default::default()
+    }
+}
+
+/// Panel container with BG_DARK background and BORDER.
+pub fn container_panel(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(BG_DARK.into()),
+        border: Border { color: BORDER, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    }
 }

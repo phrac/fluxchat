@@ -2,6 +2,7 @@
 
 mod commands;
 mod html;
+mod icons;
 mod message;
 mod state;
 mod theme;
