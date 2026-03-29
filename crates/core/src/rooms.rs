@@ -492,6 +492,30 @@ pub async fn remove_room_alias(client: &matrix_sdk::Client, alias: &str) -> Resu
     Ok(())
 }
 
+/// Upload a room avatar image.
+pub async fn upload_room_avatar(client: &matrix_sdk::Client, room_id: &str, mime_type: &str, data: Vec<u8>) -> Result<(), AppError> {
+    let room_id = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let ct: mime::Mime = mime_type.parse().unwrap_or(mime::IMAGE_PNG);
+    let mxc = client.media().upload(&ct, data, None).await
+        .map_err(|e| AppError::Other(format!("Failed to upload: {e}")))?.content_uri;
+    use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
+    let mut content = RoomAvatarEventContent::new();
+    content.url = Some(mxc);
+    room.send_state_event(content).await.map_err(|e| AppError::Other(format!("Failed to set avatar: {e}")))?;
+    Ok(())
+}
+
+/// Remove the room avatar.
+pub async fn remove_room_avatar(client: &matrix_sdk::Client, room_id: &str) -> Result<(), AppError> {
+    let room_id = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
+    let content = RoomAvatarEventContent::new();
+    room.send_state_event(content).await.map_err(|e| AppError::Other(format!("Failed to remove avatar: {e}")))?;
+    Ok(())
+}
+
 /// Get room notification mode: "all", "mentions", or "mute"
 pub async fn get_notification_mode(client: &matrix_sdk::Client, room_id: &str) -> Result<String, AppError> {
     let room_id = parse_room_id(room_id)?;

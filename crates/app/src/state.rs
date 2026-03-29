@@ -120,6 +120,9 @@ pub struct FluxChat {
 
     // Status
     pub sync_lag_ms: u64,
+    pub sidebar_width: f32,
+    pub sidebar_dragging: bool,
+    pub device_id: Option<String>,
 
     // Media/avatar cache — maps MXC URI to stable image handles (avoids flicker on re-render)
     pub avatar_cache: HashMap<String, iced::widget::image::Handle>,
@@ -179,6 +182,10 @@ pub struct FluxChat {
     pub create_room_public: bool,
     pub create_room_encrypted: bool,
     pub create_room_space: Option<String>, // space room_id to create in
+
+    // Room settings modal state
+    pub room_settings_name: String,
+    pub room_settings_topic: String,
 
     // Forward modal state
     pub forward_search: String,
@@ -276,6 +283,9 @@ impl FluxChat {
             zoom_level: 100,
             giphy_api_key: String::new(),
             sync_lag_ms: 0,
+            sidebar_width: 220.0,
+            sidebar_dragging: false,
+            device_id: None,
             avatar_cache: HashMap::new(),
             login_homeserver: "matrix.org".into(),
             login_username: String::new(),
@@ -309,6 +319,8 @@ impl FluxChat {
             create_room_public: false,
             create_room_encrypted: false,
             create_room_space: None,
+            room_settings_name: String::new(),
+            room_settings_topic: String::new(),
             forward_search: String::new(),
             invite_search: String::new(),
             invite_results: Vec::new(),

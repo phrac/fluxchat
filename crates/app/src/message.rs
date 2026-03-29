@@ -46,6 +46,7 @@ pub enum Message {
     CompleteMention(usize),  // index in mention_completions
 
     // --- Message actions ---
+    CopyMessageText(String),       // body text to copy
     ToggleReaction(String, String), // event_id, emoji
     DeleteMessage(String),          // event_id
     PinMessage(String),             // event_id
@@ -94,6 +95,7 @@ pub enum Message {
 
     // --- File upload ---
     PickFile,
+    FileDropped(std::path::PathBuf),
     FileSelected(String, String, Vec<u8>), // filename, mime, data
     CancelUpload,
     UploadFile,                            // trigger actual upload
@@ -163,6 +165,14 @@ pub enum Message {
     CreateRoomSelectSpace(Option<String>),
     CreateRoomSubmit,
 
+    // --- Room settings ---
+    RoomSettingsNameChanged(String),
+    RoomSettingsTopicChanged(String),
+    RoomSettingsSaveName,
+    RoomSettingsSaveTopic,
+    RoomSettingsUploadAvatar,
+    RoomSettingsRemoveAvatar,
+
     // --- Forward ---
     ForwardSearchChanged(String),
     ForwardToRoom(String), // target room_id
@@ -204,8 +214,14 @@ pub enum Message {
     // --- Read receipts ---
     SendReadReceipt,
 
+    // --- Sidebar resize ---
+    SidebarDragStart,
+    SidebarDragEnd,
+    SidebarDrag(f32), // new x position
+
     // --- Scroll ---
     MessagesScrolled(iced::widget::scrollable::Viewport),
+    ScrollToBottom,
 
     // --- Misc ---
     PaginateBack(String),     // room_id

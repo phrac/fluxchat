@@ -655,6 +655,9 @@ impl FluxChat {
             }
 
             // --- Message actions ---
+            Message::CopyMessageText(body) => {
+                return iced::clipboard::write(body);
+            }
             Message::ToggleReaction(event_id, emoji) => {
                 if let Some(room_id) = self.selected_room_id.clone() {
                     let core = self.core.clone();
@@ -863,6 +866,15 @@ impl FluxChat {
                     self.create_room_public = false;
                     self.create_room_encrypted = false;
                     Task::none()
+                } else if matches!(&modal, crate::state::Modal::RoomSettings) {
+                    // Pre-populate with current room data
+                    if let Some(room) = self.selected_room_id.as_ref()
+                        .and_then(|rid| self.rooms.iter().find(|r| r.room_id == *rid))
+                    {
+                        self.room_settings_name = room.name.clone();
+                        self.room_settings_topic = room.topic.clone().unwrap_or_default();
+                    }
+                    Task::none()
                 } else {
                     Task::none()
                 };
@@ -1000,6 +1012,20 @@ impl FluxChat {
                             .await?;
                         let name = handle.file_name();
                         let data = handle.read().await;
+                        let mime = mime_from_extension(&name);
+                        Some((name, mime, data))
+                    },
+                    |result| match result {
+                        Some((name, mime, data)) => Message::FileSelected(name, mime, data),
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::FileDropped(path) => {
+                return Task::perform(
+                    async move {
+                        let data = tokio::fs::read(&path).await.ok()?;
+                        let name = path.file_name()?.to_string_lossy().to_string();
                         let mime = mime_from_extension(&name);
                         Some((name, mime, data))
                     },
@@ -1495,6 +1521,74 @@ impl FluxChat {
                 );
             }
 
+            // --- Room settings ---
+            Message::RoomSettingsNameChanged(name) => {
+                self.room_settings_name = name;
+            }
+            Message::RoomSettingsTopicChanged(topic) => {
+                self.room_settings_topic = topic;
+            }
+            Message::RoomSettingsSaveName => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let name = self.room_settings_name.clone();
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::set_room_name(&client, &room_id, &name).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::RoomSettingsSaveTopic => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let topic = self.room_settings_topic.clone();
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::set_room_topic(&client, &room_id, &topic).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::RoomSettingsUploadAvatar => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let handle = rfd::AsyncFileDialog::new()
+                                .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp"])
+                                .pick_file()
+                                .await?;
+                            let data = handle.read().await;
+                            let name = handle.file_name();
+                            let mime = if name.ends_with(".png") { "image/png" }
+                                else if name.ends_with(".gif") { "image/gif" }
+                                else if name.ends_with(".webp") { "image/webp" }
+                                else { "image/jpeg" };
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::upload_room_avatar(&client, &room_id, mime, data.to_vec()).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::RoomSettingsRemoveAvatar => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::remove_room_avatar(&client, &room_id).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+
             // --- Forward ---
             Message::ForwardSearchChanged(query) => {
                 self.forward_search = query;
@@ -1792,6 +1886,12 @@ impl FluxChat {
                     self.paginating = false;
                 }
             }
+            Message::ScrollToBottom => {
+                self.messages_at_bottom = true;
+                return iced::widget::operation::snap_to_end(
+                    crate::view::messages_scrollable_id(),
+                );
+            }
             Message::MessagesScrolled(viewport) => {
                 // absolute_offset().y = 0 at bottom, increases scrolling up
                 // No anchor_bottom: offset=0 at top (oldest), increases scrolling down
@@ -1816,6 +1916,19 @@ impl FluxChat {
                         self.paginating = true;
                         return self.update(Message::PaginateBack(room_id));
                     }
+                }
+            }
+            Message::SidebarDragStart => {
+                self.sidebar_dragging = true;
+            }
+            Message::SidebarDragEnd => {
+                self.sidebar_dragging = false;
+            }
+            Message::SidebarDrag(x) => {
+                if self.sidebar_dragging {
+                    // x is the cursor position; subtract the space sidebar width (~56px)
+                    let new_width = (x - 56.0).clamp(150.0, 400.0);
+                    self.sidebar_width = new_width;
                 }
             }
             Message::OpenUrl(url) => {
@@ -2048,6 +2161,11 @@ impl FluxChat {
                     Err(_) => return None,
                 };
 
+                // Store device ID
+                if let Some(did) = client.device_id() {
+                    let _ = core.db.set_setting("device_id", &did.to_string());
+                }
+
                 // Enable event cache
                 let _ = client.event_cache().subscribe();
 
@@ -2111,6 +2229,9 @@ impl FluxChat {
         }
         if let Some(json) = self.core.db.get_setting("emoji_freq") {
             self.emoji_freq = serde_json::from_str(&json).unwrap_or_default();
+        }
+        if let Some(did) = self.core.db.get_setting("device_id") {
+            self.device_id = Some(did);
         }
     }
 }

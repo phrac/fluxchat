@@ -133,6 +133,21 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                         let h = vid.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
                         (None, mxc, w, h)
                     }
+                    matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
+                        // Show files with image MIME types as inline images (e.g. GIFs sent as files)
+                        let is_image = file.info.as_ref()
+                            .and_then(|i| i.mimetype.as_ref())
+                            .is_some_and(|m| m.starts_with("image/"));
+                        if is_image {
+                            let mxc = match &file.source {
+                                matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
+                                matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
+                            };
+                            (None, mxc, None, None)
+                        } else {
+                            (None, None, None, None)
+                        }
+                    }
                     _ => (None, None, None, None),
                 };
 

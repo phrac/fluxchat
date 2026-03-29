@@ -83,6 +83,7 @@ const SVG_INFO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" h
 const SVG_MORE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>"#;
 const SVG_STAR: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>"#;
 const SVG_COPY: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
+const SVG_CLIPBOARD: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>"#;
 const SVG_PIN: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>"#;
 const SVG_THREAD: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="9" y1="10" x2="15" y2="10"/></svg>"#;
 const SVG_FILE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>"#;
@@ -100,6 +101,7 @@ const MONO: Font = Font {
     ..Font::MONOSPACE
 };
 const SANS: Font = Font::DEFAULT;
+const SANS_BOLD: Font = Font { weight: iced::font::Weight::Bold, ..Font::DEFAULT };
 
 impl FluxChat {
     /// Top-level view — dispatches to login or main layout.
@@ -281,9 +283,22 @@ impl FluxChat {
         let room_list = self.view_room_list();
         let main_content = self.view_content();
 
+        // Drag handle between room list and content
+        let drag_handle: Element<Message> = mouse_area(
+            container(Space::new().width(3).height(Fill))
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BORDER.into()),
+                    ..Default::default()
+                })
+        )
+        .on_press(Message::SidebarDragStart)
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .into();
+
         let mut main_area = row![
             sidebar,
-            container(room_list).width(200),
+            container(room_list).width(Length::Fixed(self.sidebar_width)),
+            drag_handle,
             main_content,
         ];
 
@@ -482,7 +497,7 @@ impl FluxChat {
         let header = container(
             row![
                 text(header_text)
-                    .font(SANS)
+                    .font(MONO)
                     .size(14)
                     .color(theme::TEXT_BRIGHT),
                 Space::new().width(Fill),
@@ -520,7 +535,7 @@ impl FluxChat {
                     col = col.push(
                         container(
                             row![
-                                text(&room.name).font(SANS).size(13).color(theme::TEXT_NORMAL),
+                                text(&room.name).font(MONO).size(13).color(theme::TEXT_NORMAL),
                                 Space::new().width(Fill),
                                 button(text("\u{2713}").font(MONO).size(14).color(theme::GREEN))
                                     .on_press(Message::AcceptInvite(rid_accept))
@@ -640,11 +655,11 @@ impl FluxChat {
         }
 
         header_row = header_row.push(
-            text(name_label).font(SANS).size(12).color(theme::TEXT_DIM)
+            text(name_label).font(MONO).size(14).color(theme::TEXT_BRIGHT)
         );
         header_row = header_row.push(Space::new().width(Fill));
         header_row = header_row.push(
-            text(count.to_string()).font(SANS).size(12).color(theme::TEXT_DIM)
+            text(count.to_string()).font(MONO).size(12).color(theme::TEXT_MUTED)
         );
 
         button(header_row)
@@ -711,7 +726,7 @@ impl FluxChat {
         let mut row_content = row![
             room_icon,
             text(&room.name)
-                .font(SANS)
+                .font(MONO)
                 .size(15)
                 .color(name_color)
                 .wrapping(iced::widget::text::Wrapping::None),
@@ -1048,7 +1063,7 @@ impl FluxChat {
             if self.pins_open {
                 let mut panel_col = column![
                     row![
-                        text("PINNED MESSAGES").font(SANS).size(12).color(theme::TEXT_DIM),
+                        text("PINNED MESSAGES").font(MONO).size(12).color(theme::TEXT_DIM),
                         Space::new().width(Fill),
                         button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
                             .on_press(Message::TogglePins)
@@ -1057,7 +1072,7 @@ impl FluxChat {
                     ].align_y(iced::Alignment::Center),
                 ].spacing(4);
                 if self.pinned_messages.is_empty() {
-                    panel_col = panel_col.push(text("No pinned messages").font(SANS).size(13).color(theme::TEXT_DIM));
+                    panel_col = panel_col.push(text("No pinned messages").font(MONO).size(13).color(theme::TEXT_DIM));
                 } else {
                     for msg in self.pinned_messages.iter().take(20) {
                         panel_col = panel_col.push(
@@ -1079,14 +1094,14 @@ impl FluxChat {
             if self.threads_open {
                 let panel_col = column![
                     row![
-                        text("THREADS").font(SANS).size(12).color(theme::TEXT_DIM),
+                        text("THREADS").font(MONO).size(12).color(theme::TEXT_DIM),
                         Space::new().width(Fill),
                         button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
                             .on_press(Message::ToggleThreads)
                             .padding([0, 6])
                             .style(|_, _| button::Style { background: None, ..Default::default() }),
                     ].align_y(iced::Alignment::Center),
-                    text("Thread view coming soon").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text("Thread view coming soon").font(MONO).size(13).color(theme::TEXT_DIM),
                 ].spacing(4);
                 content = content.push(
                     container(panel_col).padding([8, 12]).width(Fill)
@@ -1101,7 +1116,7 @@ impl FluxChat {
             if self.files_open {
                 let mut panel_col = column![
                     row![
-                        text("FILES").font(SANS).size(12).color(theme::TEXT_DIM),
+                        text("FILES").font(MONO).size(12).color(theme::TEXT_DIM),
                         Space::new().width(Fill),
                         button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
                             .on_press(Message::ToggleFiles)
@@ -1113,7 +1128,7 @@ impl FluxChat {
                 if let Some(msgs) = self.messages_by_room.get(room_id) {
                     let files: Vec<_> = msgs.iter().filter(|m| m.image_mxc.is_some()).take(20).collect();
                     if files.is_empty() {
-                        panel_col = panel_col.push(text("No files").font(SANS).size(13).color(theme::TEXT_DIM));
+                        panel_col = panel_col.push(text("No files").font(MONO).size(13).color(theme::TEXT_DIM));
                     } else {
                         for msg in files {
                             panel_col = panel_col.push(
@@ -1135,14 +1150,14 @@ impl FluxChat {
             if self.notices_open {
                 let panel_col = column![
                     row![
-                        text("NOTICES").font(SANS).size(12).color(theme::TEXT_DIM),
+                        text("NOTICES").font(MONO).size(12).color(theme::TEXT_DIM),
                         Space::new().width(Fill),
                         button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
                             .on_press(Message::ToggleNotices)
                             .padding([0, 6])
                             .style(|_, _| button::Style { background: None, ..Default::default() }),
                     ].align_y(iced::Alignment::Center),
-                    text("No server notices").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text("No server notices").font(MONO).size(13).color(theme::TEXT_DIM),
                 ].spacing(4);
                 content = content.push(
                     container(panel_col).padding([8, 12]).width(Fill)
@@ -1156,6 +1171,7 @@ impl FluxChat {
 
             let messages = self.messages_by_room.get(room_id);
             let mut msg_col = column![].spacing(0).padding([2, 8]).width(Fill);
+            let mut divider_shown = false;
 
             if self.paginating {
                 msg_col = msg_col.push(
@@ -1172,6 +1188,11 @@ impl FluxChat {
             }
 
             if let Some(msgs) = messages {
+                let last_read = self.last_read_event.get(room_id).cloned();
+                // Don't show divider if the last read event is the very last message
+                let show_divider = last_read.as_ref().is_some_and(|lr| {
+                    msgs.last().map(|m| &m.event_id) != Some(lr)
+                });
                 for msg in msgs.iter() {
                     if self.ignored_users.contains(&msg.sender) {
                         continue;
@@ -1196,6 +1217,35 @@ impl FluxChat {
                     {
                         continue;
                     }
+                    // Unread divider: show after the last-read message
+                    if show_divider && !divider_shown {
+                        if let Some(ref lr) = last_read {
+                            if msg.event_id == *lr {
+                                divider_shown = true;
+                                msg_col = msg_col.push(self.view_message(msg));
+                                msg_col = msg_col.push(
+                                    container(
+                                        row![
+                                            rule::horizontal(1).style(|_: &Theme| rule::Style {
+                                                color: theme::RED,
+                                                radius: 0.0.into(),
+                                                fill_mode: rule::FillMode::Full,
+                                                snap: true,
+                                            }),
+                                            text(" NEW ").font(MONO).size(11).color(theme::RED),
+                                            rule::horizontal(1).style(|_: &Theme| rule::Style {
+                                                color: theme::RED,
+                                                radius: 0.0.into(),
+                                                fill_mode: rule::FillMode::Full,
+                                                snap: true,
+                                            }),
+                                        ].spacing(8).align_y(iced::Alignment::Center)
+                                    ).padding([4.0, 8.0])
+                                );
+                                continue;
+                            }
+                        }
+                    }
                     msg_col = msg_col.push(self.view_message(msg));
                 }
             } else {
@@ -1207,17 +1257,59 @@ impl FluxChat {
                 );
             }
 
-            content = content.push(
-                mouse_area(
-                    scrollable(container(msg_col).width(Fill))
-                        .id(messages_scrollable_id().clone())
+            let msg_scrollable = mouse_area(
+                scrollable(container(msg_col).width(Fill))
+                    .id(messages_scrollable_id().clone())
+                    .width(Fill)
+                    .height(Fill)
+                    .on_scroll(Message::MessagesScrolled)
+                    .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
+            )
+            .on_exit(Message::HoverMessage(None));
+
+            // Floating "new messages" pill when scrolled up and new messages arrived
+            if !self.messages_at_bottom {
+                let unread = self.rooms.iter()
+                    .find(|r| Some(&r.room_id) == self.selected_room_id.as_ref())
+                    .map(|r| r.unread_count)
+                    .unwrap_or(0);
+                if unread > 0 || divider_shown {
+                    let pill = button(
+                        text(if unread > 0 {
+                            format!("\u{2193} {unread} new message{}", if unread == 1 { "" } else { "s" })
+                        } else {
+                            "\u{2193} New messages".to_string()
+                        })
+                        .font(MONO).size(12).color(Color::WHITE)
+                    )
+                    .on_press(Message::ScrollToBottom)
+                    .padding([4, 12])
+                    .style(|_, status| button::Style {
+                        background: Some(if matches!(status, button::Status::Hovered) {
+                            Color::from_rgba(0.23, 0.51, 0.96, 0.9)
+                        } else {
+                            Color::from_rgba(0.23, 0.51, 0.96, 0.75)
+                        }.into()),
+                        border: iced::Border { radius: 12.0.into(), ..Default::default() },
+                        ..Default::default()
+                    });
+                    let overlay = container(pill)
                         .width(Fill)
-                        .height(Fill)
-                        .on_scroll(Message::MessagesScrolled)
-                        .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
-                )
-                .on_exit(Message::HoverMessage(None)),
-            );
+                        .center_x(Fill)
+                        .padding(8.0);
+                    content = content.push(
+                        stack![
+                            container(msg_scrollable).width(Fill).height(Fill),
+                            container(Space::new()).width(Fill).height(Fill), // spacer
+                            container(overlay).width(Fill).align_y(iced::alignment::Vertical::Bottom),
+                        ].width(Fill).height(Fill)
+                    );
+                } else {
+                    content = content.push(msg_scrollable);
+                }
+            } else {
+                content = content.push(msg_scrollable);
+            }
 
             // Typing indicator
             if let Some(typers) = self.typing_by_room.get(room_id) {
@@ -1303,7 +1395,7 @@ impl FluxChat {
             if self.gifs_open {
                 let mut gif_col = column![
                     row![
-                        text("GIF SEARCH").font(SANS).size(12).color(theme::TEXT_DIM),
+                        text("GIF SEARCH").font(MONO).size(12).color(theme::TEXT_DIM),
                         Space::new().width(Fill),
                         button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
                             .on_press(Message::ToggleGifs)
@@ -1315,14 +1407,14 @@ impl FluxChat {
                             .id(gif_search_id())
                             .on_input(Message::GifQueryChanged)
                             .on_submit(Message::GifSearchSubmit)
-                            .font(SANS).size(14).padding(6),
+                            .font(MONO).size(14).padding(6),
                     ],
                 ].spacing(4);
 
                 if self.gif_searching {
-                    gif_col = gif_col.push(text("Searching...").font(SANS).size(13).color(theme::TEXT_DIM));
+                    gif_col = gif_col.push(text("Searching...").font(MONO).size(13).color(theme::TEXT_DIM));
                 } else if self.gif_results.is_empty() && !self.gif_query.is_empty() {
-                    gif_col = gif_col.push(text("No results").font(SANS).size(13).color(theme::TEXT_DIM));
+                    gif_col = gif_col.push(text("No results").font(MONO).size(13).color(theme::TEXT_DIM));
                 } else {
                     // Grid of GIF results (3 columns)
                     let mut grid = column![].spacing(4);
@@ -1338,7 +1430,7 @@ impl FluxChat {
                                     .into()
                             } else {
                                 text(&gif.description)
-                                    .font(SANS).size(11).color(theme::TEXT_DIM)
+                                    .font(MONO).size(11).color(theme::TEXT_DIM)
                                     .into()
                             };
                             row_items = row_items.push(
@@ -1791,7 +1883,7 @@ impl FluxChat {
                     iced::widget::svg(handle)
                         .width(14).height(14)
                         .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
-                    text(label).font(SANS).size(14).color(theme::TEXT_NORMAL),
+                    text(label).font(MONO).size(14).color(theme::TEXT_NORMAL),
                 ]
                 .spacing(10)
                 .align_y(iced::Alignment::Center),
@@ -2175,6 +2267,7 @@ impl FluxChat {
             let mut action_row = row![].spacing(2).align_y(iced::Alignment::Center);
 
             action_row = action_row.push(make_msg_action(SVG_REACT, Message::OpenEmojiReact(event_id.clone())));
+            action_row = action_row.push(make_msg_action(SVG_CLIPBOARD, Message::CopyMessageText(msg.body.clone())));
             action_row = action_row.push(make_msg_action(SVG_REPLY, Message::StartReply(
                 event_id.clone(),
                 msg.sender_name.clone(),
@@ -2309,11 +2402,11 @@ impl FluxChat {
             "EMOJI"
         };
         let header = row![
-            text(title).font(SANS).size(12).color(theme::TEXT_DIM),
+            text(title).font(MONO).size(12).color(theme::TEXT_DIM),
             text_input("Search emoji...", &self.emoji_query)
                 .id(emoji_search_id())
                 .on_input(Message::EmojiQueryChanged)
-                .font(SANS).size(14).padding(6)
+                .font(MONO).size(14).padding(6)
                 .width(Fill),
             button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
                 .on_press(Message::ToggleEmojiPicker)
@@ -2402,7 +2495,7 @@ impl FluxChat {
             } else {
                 "No results"
             };
-            grid = grid.push(text(hint).font(SANS).size(13).color(theme::TEXT_DIM));
+            grid = grid.push(text(hint).font(MONO).size(13).color(theme::TEXT_DIM));
         } else {
             for chunk in emojis_to_show.chunks(EMOJI_GRID_COLUMNS) {
                 let mut row_items = row![].spacing(2);
@@ -2643,13 +2736,12 @@ impl FluxChat {
         let invite_handle = iced::widget::svg::Handle::from_memory(
             br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>"#.as_slice(),
         );
-        let room_id_invite = room_id.clone();
         let header = container(
             row![
                 text(format!("USERS \u{2014} {total}"))
-                    .font(SANS)
-                    .size(13)
-                    .color(theme::TEXT_DIM),
+                    .font(MONO)
+                    .size(14)
+                    .color(theme::TEXT_BRIGHT),
                 Space::new().width(Fill),
                 button(
                     iced::widget::svg(invite_handle)
@@ -2671,15 +2763,7 @@ impl FluxChat {
             .align_y(iced::Alignment::Center),
         )
         .padding([8, 12])
-        .width(Fill)
-        .style(|_: &Theme| container::Style {
-            border: iced::Border {
-                color: theme::BORDER,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        });
+        .width(Fill);
 
         let mut col = column![header].spacing(0);
 
@@ -2701,10 +2785,10 @@ impl FluxChat {
         }
 
         container(scrollable(col).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
-            .width(180)
+            .width(200)
             .height(Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(theme::BG_DARK.into()),
+                background: Some(theme::BG_DEEP.into()),
                 border: iced::Border {
                     color: theme::BORDER,
                     width: 1.0,
@@ -2723,12 +2807,12 @@ impl FluxChat {
     ) -> Element<'a, Message> {
         let mut col = column![
             container(
-                text(format!("{label} \u{2014} {}", members.len()))
-                    .font(SANS)
+                text(format!("{} \u{2014} {}", label.to_uppercase(), members.len()))
+                    .font(MONO)
                     .size(11)
                     .color(theme::TEXT_DIM),
             )
-            .padding([6, 12]),
+            .padding([10.0, 14.0]),
         ]
         .spacing(0);
 
@@ -2745,24 +2829,24 @@ impl FluxChat {
         let presence_color = match member.presence.as_str() {
             "online" => theme::GREEN,
             "idle" => theme::YELLOW,
-            _ => theme::TEXT_DIM,
+            _ => Color::TRANSPARENT,
         };
         let user_id = member.user_id.clone();
 
         // Avatar — use cached image or fallback to initial
-        let avatar: Element<'a, Message> = if let Some(handle) = member.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
+        let avatar_img: Element<'a, Message> = if let Some(handle) = member.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
             let handle = handle.clone();
             container(
                 iced::widget::image(handle)
-                    .width(20)
-                    .height(20)
+                    .width(28)
+                    .height(28)
                     .content_fit(iced::ContentFit::Cover),
             )
-            .width(20)
-            .height(20)
+            .width(28)
+            .height(28)
             .clip(true)
             .style(|_: &Theme| container::Style {
-                border: iced::Border { radius: 10.0.into(), ..Default::default() },
+                border: iced::Border { radius: 14.0.into(), ..Default::default() },
                 ..Default::default()
             })
             .into()
@@ -2777,46 +2861,57 @@ impl FluxChat {
             container(
                 text(initial)
                     .font(MONO)
-                    .size(11)
+                    .size(12)
                     .color(theme::TEXT_MUTED),
             )
-            .width(20)
-            .height(20)
+            .width(28)
+            .height(28)
             .center_x(Fill)
             .center_y(Fill)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::BG_LIGHT.into()),
-                border: iced::Border { radius: 10.0.into(), ..Default::default() },
+                border: iced::Border { radius: 14.0.into(), ..Default::default() },
                 ..Default::default()
             })
             .into()
         };
 
+        // Presence dot overlaid on avatar (bottom-right)
+        let presence_dot = container(Space::new())
+            .width(10).height(10)
+            .style(move |_: &Theme| container::Style {
+                background: Some(presence_color.into()),
+                border: iced::Border {
+                    radius: 5.0.into(),
+                    color: theme::BG_DEEP,
+                    width: 2.0,
+                },
+                ..Default::default()
+            });
+        let avatar: Element<'a, Message> = stack![
+            container(avatar_img).width(32).height(32),
+            container(presence_dot)
+                .width(32).height(32)
+                .align_x(iced::alignment::Horizontal::Right)
+                .align_y(iced::alignment::Vertical::Bottom),
+        ].width(32).height(32).into();
+
         let member_row = row![
             avatar,
             text(&member.display_name)
-                .font(SANS)
+                .font(MONO)
                 .size(13)
                 .color(nick_col)
                 .wrapping(iced::widget::text::Wrapping::None),
-            Space::new().width(Fill),
-            container(Space::new())
-                .width(8)
-                .height(8)
-                .style(move |_: &Theme| container::Style {
-                    background: Some(presence_color.into()),
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                }),
         ]
-        .spacing(6)
+        .spacing(8)
         .align_y(iced::Alignment::Center);
 
         button(member_row)
             .on_press(Message::OpenModal(crate::state::Modal::Profile {
                 user_id,
             }))
-            .padding([3, 12])
+            .padding([4, 12])
             .width(Fill)
             .style(|_, status| button::Style {
                 background: if matches!(status, button::Status::Hovered) {
@@ -3237,7 +3332,7 @@ impl FluxChat {
                     .unwrap_or("None (top-level)");
 
                 let mut space_buttons = row![
-                    button(text("None").font(SANS).size(13).color(
+                    button(text("None").font(MONO).size(13).color(
                         if self.create_room_space.is_none() { theme::ACCENT } else { theme::TEXT_MUTED }
                     ))
                     .on_press(Message::CreateRoomSelectSpace(None))
@@ -3254,7 +3349,7 @@ impl FluxChat {
                     let is_sel = self.create_room_space.as_deref() == Some(&space.room_id);
                     let color = if is_sel { theme::ACCENT } else { theme::TEXT_MUTED };
                     space_buttons = space_buttons.push(
-                        button(text(&space.name).font(SANS).size(13).color(color))
+                        button(text(&space.name).font(MONO).size(13).color(color))
                             .on_press(Message::CreateRoomSelectSpace(Some(sid)))
                             .padding([3, 8])
                             .style(move |_, _| button::Style {
@@ -3274,26 +3369,26 @@ impl FluxChat {
                             .padding([2, 6])
                             .style(|_, _| button::Style { background: None, ..Default::default() }),
                     ].align_y(iced::Alignment::Center),
-                    text("Room Name").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text("Room Name").font(MONO).size(13).color(theme::TEXT_DIM),
                     text_input("e.g. my-room", &self.create_room_name)
                         .on_input(Message::CreateRoomNameChanged)
                         .on_submit(Message::CreateRoomSubmit)
                         .font(MONO).size(14).padding(8),
-                    text("Topic (optional)").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text("Topic (optional)").font(MONO).size(13).color(theme::TEXT_DIM),
                     text_input("Room topic...", &self.create_room_topic)
                         .on_input(Message::CreateRoomTopicChanged)
                         .font(MONO).size(14).padding(8),
-                    text(format!("Space: {space_label}")).font(SANS).size(13).color(theme::TEXT_DIM),
+                    text(format!("Space: {space_label}")).font(MONO).size(13).color(theme::TEXT_DIM),
                     scrollable(space_buttons)
                         .direction(iced::widget::scrollable::Direction::Horizontal(
                             iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0),
                         )),
                     row![
-                        button(text(public_label).font(SANS).size(14).color(theme::TEXT_MUTED))
+                        button(text(public_label).font(MONO).size(14).color(theme::TEXT_MUTED))
                             .on_press(Message::CreateRoomTogglePublic)
                             .padding([4, 8])
                             .style(|_, _| button::Style { background: None, ..Default::default() }),
-                        button(text(encrypted_label).font(SANS).size(14).color(theme::TEXT_MUTED))
+                        button(text(encrypted_label).font(MONO).size(14).color(theme::TEXT_MUTED))
                             .on_press(Message::CreateRoomToggleEncrypted)
                             .padding([4, 8])
                             .style(|_, _| button::Style { background: None, ..Default::default() }),
@@ -3381,7 +3476,7 @@ impl FluxChat {
                 let ignore_color = if is_ignored { theme::GREEN } else { theme::RED };
 
                 let mut actions_row = row![
-                    button(text(ignore_label).font(SANS).size(13).color(ignore_color))
+                    button(text(ignore_label).font(MONO).size(13).color(ignore_color))
                         .on_press(Message::ToggleIgnoreUser(uid.clone()))
                         .padding([4, 12])
                         .style(move |_, _| button::Style {
@@ -3394,7 +3489,7 @@ impl FluxChat {
 
                 if uid != self.user_id {
                     actions_row = actions_row.push(
-                        button(text("Message").font(SANS).size(13).color(theme::ACCENT))
+                        button(text("Message").font(MONO).size(13).color(theme::ACCENT))
                             .on_press(Message::SendDmToUser(uid))
                             .padding([4, 12])
                             .style(|_, _| button::Style {
@@ -3491,16 +3586,17 @@ impl FluxChat {
 
                 column![
                     row![
-                        text("Image Viewer")
-                            .font(MONO)
-                            .size(16)
-                            .color(theme::TEXT_BRIGHT),
                         Space::new().width(Fill),
-                        button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
+                        button(text("\u{00d7}").font(MONO).size(20).color(theme::TEXT_BRIGHT))
                             .on_press(Message::CloseModal)
-                            .padding([2, 6])
-                            .style(|_, _| button::Style {
-                                background: None,
+                            .padding([4, 10])
+                            .style(|_, status| button::Style {
+                                background: if matches!(status, button::Status::Hovered) {
+                                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
+                                } else {
+                                    None
+                                },
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
                     ]
@@ -3509,16 +3605,11 @@ impl FluxChat {
                         .width(Fill)
                         .height(Fill)
                         .center(Fill)
-                        .clip(true)
-                        .style(|_: &Theme| container::Style {
-                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.3).into()),
-                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                            ..Default::default()
-                        }),
+                        .clip(true),
                 ]
-                .spacing(8)
-                .width(800)
-                .height(600)
+                .spacing(4)
+                .width(Length::FillPortion(9))
+                .height(Length::FillPortion(9))
                 .into()
             }
 
@@ -3542,10 +3633,10 @@ impl FluxChat {
                     text(format!("Message: {}", &body.chars().take(80).collect::<String>()))
                         .font(MONO).size(13).color(theme::TEXT_MUTED),
                     rule::horizontal(1),
-                    text("Send to:").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text("Send to:").font(MONO).size(13).color(theme::TEXT_DIM),
                     text_input("Search rooms...", &self.forward_search)
                         .on_input(Message::ForwardSearchChanged)
-                        .font(SANS).size(14).padding(6),
+                        .font(MONO).size(14).padding(6),
                     {
                         let query = self.forward_search.to_lowercase();
                         let mut room_list = column![].spacing(2);
@@ -3555,7 +3646,7 @@ impl FluxChat {
                         {
                             let rid = room.room_id.clone();
                             room_list = room_list.push(
-                                button(text(&room.name).font(SANS).size(14).color(theme::TEXT_NORMAL))
+                                button(text(&room.name).font(MONO).size(14).color(theme::TEXT_NORMAL))
                                     .on_press(Message::ForwardToRoom(rid))
                                     .padding([4, 8])
                                     .width(Fill)
@@ -3584,7 +3675,7 @@ impl FluxChat {
                             .size(16)
                             .color(theme::TEXT_BRIGHT),
                         Space::new().width(Fill),
-                        button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
+                        button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
                             .on_press(Message::CloseModal)
                             .padding([2, 6])
                             .style(|_, _| button::Style {
@@ -3598,38 +3689,108 @@ impl FluxChat {
                             .and_then(|rid| self.rooms.iter().find(|r| r.room_id == *rid));
                         let mut info_col = column![].spacing(6);
                         if let Some(room) = room {
+                            // Avatar row
+                            let avatar_el: Element<Message> = if let Some(handle) = room.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
+                                container(
+                                    iced::widget::image(handle.clone())
+                                        .width(48).height(48)
+                                        .content_fit(iced::ContentFit::Cover),
+                                ).width(48).height(48).clip(true)
+                                .style(|_: &Theme| container::Style {
+                                    border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                                    ..Default::default()
+                                }).into()
+                            } else {
+                                container(text("#").font(MONO).size(20).color(theme::TEXT_DIM))
+                                    .width(48).height(48)
+                                    .center_x(Length::Fixed(48.0)).center_y(Length::Fixed(48.0))
+                                    .style(|_: &Theme| container::Style {
+                                        background: Some(theme::BG_LIGHT.into()),
+                                        border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }).into()
+                            };
                             info_col = info_col.push(
                                 row![
-                                    text("Name:").font(SANS).size(13).color(theme::TEXT_DIM),
-                                    text(&room.name).font(SANS).size(14).color(theme::TEXT_NORMAL),
-                                ].spacing(8)
+                                    avatar_el,
+                                    button(text("Upload").font(MONO).size(12).color(theme::ACCENT))
+                                        .on_press(Message::RoomSettingsUploadAvatar)
+                                        .padding([4, 8])
+                                        .style(|_, _| button::Style {
+                                            background: Some(theme::BG_LIGHT.into()),
+                                            text_color: theme::ACCENT,
+                                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                            ..Default::default()
+                                        }),
+                                    button(text("Remove").font(MONO).size(12).color(theme::TEXT_DIM))
+                                        .on_press(Message::RoomSettingsRemoveAvatar)
+                                        .padding([4, 8])
+                                        .style(|_, _| button::Style {
+                                            background: None, text_color: theme::TEXT_DIM,
+                                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                            ..Default::default()
+                                        }),
+                                ].spacing(8).align_y(iced::Alignment::Center)
                             );
-                            if let Some(ref topic) = room.topic {
-                                info_col = info_col.push(
-                                    row![
-                                        text("Topic:").font(SANS).size(13).color(theme::TEXT_DIM),
-                                        text(topic.as_str()).font(SANS).size(14).color(theme::TEXT_MUTED)
-                                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                                    ].spacing(8)
-                                );
-                            }
+
+                            // Editable name
+                            info_col = info_col.push(text("Name").font(MONO).size(11).color(theme::TEXT_DIM));
                             info_col = info_col.push(
                                 row![
-                                    text("Room ID:").font(SANS).size(13).color(theme::TEXT_DIM),
+                                    text_input("Room name", &self.room_settings_name)
+                                        .on_input(Message::RoomSettingsNameChanged)
+                                        .on_submit(Message::RoomSettingsSaveName)
+                                        .font(MONO).size(13).padding(6),
+                                    button(text("Save").font(MONO).size(12).color(theme::ACCENT))
+                                        .on_press(Message::RoomSettingsSaveName)
+                                        .padding([6, 10])
+                                        .style(|_, _| button::Style {
+                                            background: Some(theme::BG_LIGHT.into()),
+                                            text_color: theme::ACCENT,
+                                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                            ..Default::default()
+                                        }),
+                                ].spacing(6)
+                            );
+
+                            // Editable topic
+                            info_col = info_col.push(text("Topic").font(MONO).size(11).color(theme::TEXT_DIM));
+                            info_col = info_col.push(
+                                row![
+                                    text_input("Room topic", &self.room_settings_topic)
+                                        .on_input(Message::RoomSettingsTopicChanged)
+                                        .on_submit(Message::RoomSettingsSaveTopic)
+                                        .font(MONO).size(13).padding(6),
+                                    button(text("Save").font(MONO).size(12).color(theme::ACCENT))
+                                        .on_press(Message::RoomSettingsSaveTopic)
+                                        .padding([6, 10])
+                                        .style(|_, _| button::Style {
+                                            background: Some(theme::BG_LIGHT.into()),
+                                            text_color: theme::ACCENT,
+                                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                            ..Default::default()
+                                        }),
+                                ].spacing(6)
+                            );
+
+                            info_col = info_col.push(rule::horizontal(1));
+                            info_col = info_col.push(
+                                row![
+                                    text("Room ID:").font(MONO).size(13).color(theme::TEXT_DIM),
                                     text(&room.room_id).font(MONO).size(12).color(theme::TEXT_DIM),
                                 ].spacing(8)
                             );
                             info_col = info_col.push(
                                 row![
-                                    text("Encrypted:").font(SANS).size(13).color(theme::TEXT_DIM),
-                                    text(if room.is_encrypted { "Yes" } else { "No" }).font(SANS).size(14)
+                                    text("Encrypted:").font(MONO).size(13).color(theme::TEXT_DIM),
+                                    text(if room.is_encrypted { "Yes" } else { "No" }).font(MONO).size(14)
                                         .color(if room.is_encrypted { theme::GREEN } else { theme::TEXT_MUTED }),
                                 ].spacing(8)
                             );
                             // Space membership
                             info_col = info_col.push(rule::horizontal(1));
                             info_col = info_col.push(
-                                text("SPACES").font(SANS).size(12).color(theme::TEXT_DIM)
+                                text("SPACES").font(MONO).size(12).color(theme::TEXT_DIM)
                             );
 
                             let current_space = room.space_id.as_deref();
@@ -3644,7 +3805,7 @@ impl FluxChat {
                                      Message::AddRoomToSpace(sid))
                                 };
                                 info_col = info_col.push(
-                                    button(text(label).font(SANS).size(14).color(color))
+                                    button(text(label).font(MONO).size(14).color(color))
                                         .on_press(msg)
                                         .padding([3, 8])
                                         .width(Fill)
@@ -3661,7 +3822,7 @@ impl FluxChat {
                             info_col = info_col.push(rule::horizontal(1));
                             let rid = room.room_id.clone();
                             info_col = info_col.push(
-                                button(text("Leave Room").font(SANS).size(14).color(theme::RED))
+                                button(text("Leave Room").font(MONO).size(14).color(theme::RED))
                                     .on_press(Message::LeaveRoom(rid))
                                     .padding([6, 16])
                                     .style(|_, _| button::Style {
@@ -3672,7 +3833,7 @@ impl FluxChat {
                                     }),
                             );
                         } else {
-                            info_col = info_col.push(text("No room selected").font(SANS).size(14).color(theme::TEXT_DIM));
+                            info_col = info_col.push(text("No room selected").font(MONO).size(14).color(theme::TEXT_DIM));
                         }
                         info_col
                     },
@@ -3692,13 +3853,13 @@ impl FluxChat {
                             .padding([2, 6])
                             .style(|_, _| button::Style { background: None, ..Default::default() }),
                     ].align_y(iced::Alignment::Center),
-                    text("Search for a user to invite").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text("Search for a user to invite").font(MONO).size(13).color(theme::TEXT_DIM),
                     row![
                         text_input("@user:server or display name...", &self.invite_search)
                             .on_input(Message::InviteSearchChanged)
                             .on_submit(Message::InviteSearchSubmit)
                             .font(MONO).size(14).padding(8),
-                        button(text("Search").font(SANS).size(14).color(theme::ACCENT))
+                        button(text("Search").font(MONO).size(14).color(theme::ACCENT))
                             .on_press(Message::InviteSearchSubmit)
                             .padding([8, 16])
                             .style(|_, _| button::Style {
@@ -3711,7 +3872,7 @@ impl FluxChat {
                 ].spacing(10);
 
                 if self.invite_results.is_empty() && !self.invite_search.is_empty() {
-                    col = col.push(text("No users found").font(SANS).size(13).color(theme::TEXT_DIM));
+                    col = col.push(text("No users found").font(MONO).size(13).color(theme::TEXT_DIM));
                 }
 
                 for user in &self.invite_results {
@@ -3720,7 +3881,7 @@ impl FluxChat {
                     col = col.push(
                         button(
                             row![
-                                text(name).font(SANS).size(14).color(theme::TEXT_NORMAL),
+                                text(name).font(MONO).size(14).color(theme::TEXT_NORMAL),
                                 Space::new().width(Fill),
                                 text(&user.user_id).font(MONO).size(12).color(theme::TEXT_DIM),
                             ].spacing(8).align_y(iced::Alignment::Center)
@@ -3744,7 +3905,7 @@ impl FluxChat {
                     col = col.push(rule::horizontal(1));
                     col = col.push(
                         button(
-                            text(format!("Invite {}", &self.invite_search)).font(SANS).size(14).color(theme::GREEN)
+                            text(format!("Invite {}", &self.invite_search)).font(MONO).size(14).color(theme::GREEN)
                         )
                         .on_press(Message::InviteUserFromModal(uid))
                         .padding([6, 10])
@@ -3880,7 +4041,11 @@ impl FluxChat {
         }
 
         // Device ID
-        // TODO: show short device ID like Dioxus does
+        if let Some(ref did) = self.device_id {
+            bar = bar.push(sep());
+            let short = if did.len() > 10 { &did[..10] } else { did };
+            bar = bar.push(text(short).font(MONO).size(13).color(theme::TEXT_DIM));
+        }
 
         container(bar)
             .width(Fill)
@@ -3925,10 +4090,26 @@ impl FluxChat {
             Message::Noop
         });
 
+        // File drag-drop + sidebar resize mouse tracking
+        let file_drop = iced::event::listen_with(|event, _status, _window| {
+            match event {
+                iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+                    Some(Message::FileDropped(path))
+                }
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::SidebarDrag(position.x))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::SidebarDragEnd)
+                }
+                _ => None,
+            }
+        });
+
         // Timeline updates from background diff watchers
         let timeline_sub = Subscription::run(timeline_update_stream);
 
-        Subscription::batch([tick, keys, timeline_sub])
+        Subscription::batch([tick, keys, file_drop, timeline_sub])
     }
 
     /// Application theme — dark.
