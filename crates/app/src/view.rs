@@ -9,6 +9,11 @@ pub fn input_id() -> iced::widget::Id {
     iced::widget::Id::new("main_input")
 }
 
+/// Fixed ID for the message scrollable so we can snap to bottom.
+pub fn messages_scrollable_id() -> iced::widget::Id {
+    iced::widget::Id::new("messages_scroll")
+}
+
 use crate::message::Message;
 use crate::state::{FluxChat, Screen};
 use crate::theme;
@@ -1049,6 +1054,7 @@ impl FluxChat {
             content = content.push(
                 mouse_area(
                     scrollable(container(msg_col).width(Fill))
+                        .id(messages_scrollable_id().clone())
                         .width(Fill)
                         .height(Fill)
                         .anchor_bottom().direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
@@ -1336,17 +1342,30 @@ impl FluxChat {
 
             let prompt = text("\u{276f}").font(MONO).size(16).color(theme::ACCENT);
 
-            let input = text_input("Type a message or /command...", &self.input_text)
+            let input = iced::widget::TextEditor::new(&self.input_content)
                 .id(input_id())
-                .on_input(Message::InputChanged)
-                .on_submit(Message::SendMessage)
+                .placeholder("Type a message or /command...")
+                .on_action(Message::InputAction)
+                .key_binding(|key_press| {
+                    use iced::keyboard::Key;
+                    use iced::widget::text_editor::Binding;
+                    // Enter without Shift = send message
+                    if key_press.key == Key::Named(iced::keyboard::key::Named::Enter)
+                        && !key_press.modifiers.shift()
+                    {
+                        Some(Binding::Custom(Message::SendMessage))
+                    } else {
+                        Binding::from_key_press(key_press)
+                    }
+                })
                 .font(MONO)
                 .size(14)
+                .height(Length::Shrink)
+                .max_height(120)
                 .padding([8, 4])
-                .style(|_, _| text_input::Style {
+                .style(|_: &Theme, _| iced::widget::text_editor::Style {
                     background: iced::Background::Color(Color::TRANSPARENT),
                     border: iced::Border::default(),
-                    icon: theme::TEXT_DIM,
                     placeholder: theme::TEXT_DIM,
                     value: theme::TEXT_BRIGHT,
                     selection: Color::from_rgba(0.23, 0.51, 0.99, 0.3),

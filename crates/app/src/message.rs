@@ -36,6 +36,7 @@ pub enum Message {
 
     // --- Message input ---
     InputChanged(String),
+    InputAction(iced::widget::text_editor::Action),
     SendMessage,
     StartReply(String, String, String), // event_id, sender_name, body
     CancelReply,

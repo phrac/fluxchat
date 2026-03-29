@@ -140,7 +140,8 @@ pub struct FluxChat {
     pub timeline_tx: TimelineUpdateTx,
 
     // Input state
-    pub input_text: String,
+    pub input_content: iced::widget::text_editor::Content,
+    pub input_text: String, // plain text mirror of input_content
     pub cmd_completions: Vec<(&'static str, &'static str)>, // (name, description)
     pub cmd_completion_idx: usize,
     pub mention_completions: Vec<(String, String)>, // (user_id, display_name)
@@ -230,6 +231,7 @@ impl FluxChat {
             search_results: Vec::new(),
             timeline_tx,
             sync_running: false,
+            input_content: iced::widget::text_editor::Content::new(),
             input_text: String::new(),
             cmd_completions: Vec::new(),
             cmd_completion_idx: 0,

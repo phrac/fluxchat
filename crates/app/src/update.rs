@@ -202,8 +202,15 @@ impl FluxChat {
                         .collect();
                     let preview_task = self.resolve_url_previews(&messages);
                     let image_task = self.resolve_images(&messages);
+                    let is_active = self.selected_room_id.as_deref() == Some(&room_id);
                     self.messages_by_room.insert(room_id, messages);
-                    return Task::batch([self.resolve_avatars(mxc_uris), preview_task, image_task]);
+                    let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task];
+                    if is_active {
+                        tasks.push(iced::widget::operation::snap_to_end(
+                            crate::view::messages_scrollable_id(),
+                        ));
+                    }
+                    return Task::batch(tasks);
                 }
                 SyncEvent::MembersUpdated(room_id, members) => {
                     let mxc_uris: Vec<String> = members
@@ -377,9 +384,49 @@ impl FluxChat {
                 } else {
                     self.mention_completions.clear();
                 }
-                // Keep input focused when completions popup appears
-                if !self.cmd_completions.is_empty() || !self.mention_completions.is_empty() {
-                    return iced::widget::operation::focus(crate::view::input_id());
+                // Always keep input focused
+                return iced::widget::operation::focus(crate::view::input_id());
+            }
+            Message::InputAction(action) => {
+                self.input_content.perform(action);
+                // Sync plain text mirror
+                let new_text = self.input_content.text();
+                // Trim trailing newline that Content always adds
+                let new_text = new_text.trim_end_matches('\n').to_string();
+                if new_text != self.input_text {
+                    // Update text but don't refocus (InputChanged handles it)
+                    self.input_text = new_text.clone();
+
+                    // Update command autocomplete
+                    if new_text.starts_with('/') && !new_text.contains(' ') {
+                        self.cmd_completions = crate::commands::autocomplete_entries(&new_text);
+                        self.cmd_completion_idx = 0;
+                    } else {
+                        self.cmd_completions.clear();
+                    }
+
+                    // Update @mention autocomplete
+                    if let Some(at_pos) = new_text.rfind('@') {
+                        let after_at = &new_text[at_pos + 1..];
+                        if !after_at.contains(' ') && !after_at.is_empty() {
+                            let query = after_at.to_lowercase();
+                            if let Some(room_id) = &self.selected_room_id {
+                                if let Some(members) = self.members_by_room.get(room_id) {
+                                    self.mention_completions = members
+                                        .iter()
+                                        .filter(|m| m.display_name.to_lowercase().contains(&query))
+                                        .take(8)
+                                        .map(|m| (m.user_id.clone(), m.display_name.clone()))
+                                        .collect();
+                                    self.mention_completion_idx = 0;
+                                }
+                            }
+                        } else {
+                            self.mention_completions.clear();
+                        }
+                    } else {
+                        self.mention_completions.clear();
+                    }
                 }
             }
             Message::SendMessage => {
@@ -391,6 +438,7 @@ impl FluxChat {
                 if self.input_text.starts_with('/') {
                     let result = crate::commands::dispatch(&self.input_text, self);
                     self.input_text.clear();
+                    self.input_content = iced::widget::text_editor::Content::new();
                     self.cmd_completions.clear();
 
                     let focus = iced::widget::operation::focus(crate::view::input_id());
@@ -429,6 +477,7 @@ impl FluxChat {
                 }
 
                 let body = std::mem::take(&mut self.input_text);
+                self.input_content = iced::widget::text_editor::Content::new();
                 self.help_text = None;
                 self.cmd_completions.clear();
                 self.mention_completions.clear();
@@ -459,12 +508,16 @@ impl FluxChat {
                         },
                         |_| Message::Noop,
                     );
-                    return Task::batch([send, iced::widget::operation::focus(crate::view::input_id())]);
+                    let snap = iced::widget::operation::snap_to_end(
+                        crate::view::messages_scrollable_id(),
+                    );
+                    return Task::batch([send, iced::widget::operation::focus(crate::view::input_id()), snap]);
                 }
             }
             Message::CompleteCommand(idx) => {
                 if let Some((name, _)) = self.cmd_completions.get(idx) {
                     self.input_text = format!("{name} ");
+                    self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
                     self.cmd_completions.clear();
                 }
                 return iced::widget::operation::focus(crate::view::input_id());
@@ -474,6 +527,7 @@ impl FluxChat {
                     // Replace @partial with @display_name
                     if let Some(at_pos) = self.input_text.rfind('@') {
                         self.input_text = format!("{}{display_name} ", &self.input_text[..at_pos + 1]);
+                        self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
                     }
                     self.mention_completions.clear();
                 }
@@ -487,11 +541,13 @@ impl FluxChat {
             }
             Message::StartEdit(event_id, body) => {
                 self.edit_event = Some((event_id, body.clone()));
-                self.input_text = body;
+                self.input_text = body.clone();
+                self.input_content = iced::widget::text_editor::Content::with_text(&body);
             }
             Message::CancelEdit => {
                 self.edit_event = None;
                 self.input_text.clear();
+                self.input_content = iced::widget::text_editor::Content::new();
             }
 
             // --- Message actions ---
@@ -1132,6 +1188,7 @@ impl FluxChat {
             Message::InsertFormat(prefix, suffix) => {
                 self.input_text.push_str(prefix);
                 self.input_text.push_str(suffix);
+                self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
                 return iced::widget::operation::focus(crate::view::input_id());
             }
 
@@ -1169,6 +1226,7 @@ impl FluxChat {
                 } else if self.edit_event.is_some() {
                     self.edit_event = None;
                     self.input_text.clear();
+                    self.input_content = iced::widget::text_editor::Content::new();
                 }
             }
             Message::Tick => {
