@@ -156,11 +156,16 @@ impl FluxChat {
                 }
                 let preview_task = self.resolve_url_previews(&messages);
                 let image_task = self.resolve_images(&messages);
+                // Track last read event for read receipts
+                if let Some(last) = messages.last() {
+                    self.last_read_event.insert(room_id.clone(), last.event_id.clone());
+                }
                 self.messages_by_room.insert(room_id.clone(), messages);
                 if let Some(members) = members {
                     self.members_by_room.insert(room_id, members);
                 }
-                return Task::batch([self.resolve_avatars(mxc_uris), preview_task, image_task]);
+                let read_task = self.update(Message::SendReadReceipt);
+                return Task::batch([self.resolve_avatars(mxc_uris), preview_task, image_task, read_task]);
             }
 
             // --- Sync events ---
@@ -352,6 +357,43 @@ impl FluxChat {
 
             // --- Message input ---
             Message::InputChanged(text) => {
+                // Handle special key signals
+                if text == "/\t" {
+                    // Tab cycling through command completions
+                    if !self.cmd_completions.is_empty() {
+                        self.cmd_completion_idx = (self.cmd_completion_idx + 1) % self.cmd_completions.len();
+                        if let Some((name, _)) = self.cmd_completions.get(self.cmd_completion_idx) {
+                            self.input_text = format!("{name} ");
+                            self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                        }
+                    }
+                    return iced::widget::operation::focus(crate::view::input_id());
+                }
+                if text == "@\t" {
+                    // Tab cycling through mention completions
+                    if !self.mention_completions.is_empty() {
+                        self.mention_completion_idx = (self.mention_completion_idx + 1) % self.mention_completions.len();
+                        if let Some((_, display_name)) = self.mention_completions.get(self.mention_completion_idx) {
+                            if let Some(at_pos) = self.input_text.rfind('@') {
+                                self.input_text = format!("{}{display_name} ", &self.input_text[..at_pos + 1]);
+                                self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                            }
+                        }
+                    }
+                    return iced::widget::operation::focus(crate::view::input_id());
+                }
+                if text == "\x1b[A" {
+                    // Up arrow on empty input — edit last own message
+                    if let Some(room_id) = &self.selected_room_id {
+                        if let Some(msgs) = self.messages_by_room.get(room_id) {
+                            if let Some(msg) = msgs.iter().rev().find(|m| m.sender == self.user_id && !m.event_id.starts_with('~')) {
+                                return self.update(Message::StartEdit(msg.event_id.clone(), msg.body.clone()));
+                            }
+                        }
+                    }
+                    return Task::none();
+                }
+
                 self.input_text = text.clone();
 
                 // Update command autocomplete
@@ -426,6 +468,19 @@ impl FluxChat {
                         }
                     } else {
                         self.mention_completions.clear();
+                    }
+
+                    // Send typing indicator
+                    if let Some(room_id) = self.selected_room_id.clone() {
+                        let core = self.core.clone();
+                        let typing = !new_text.is_empty();
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                fluxchat_core::messages::send_typing(&client, &room_id, typing).await.ok()
+                            },
+                            |_| Message::Noop,
+                        );
                     }
                 }
             }
@@ -649,18 +704,38 @@ impl FluxChat {
             }
             Message::TogglePins => {
                 self.pins_open = !self.pins_open;
+                self.overflow_menu_open = false;
+                if self.pins_open {
+                    if let Some(room_id) = self.selected_room_id.clone() {
+                        let core = self.core.clone();
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                fluxchat_core::messages::get_pinned_messages(&client, &room_id).await.ok()
+                            },
+                            |result| match result {
+                                Some(msgs) => Message::PinsLoaded(msgs),
+                                None => Message::PinsLoaded(Vec::new()),
+                            },
+                        );
+                    }
+                }
             }
             Message::ToggleThreads => {
                 self.threads_open = !self.threads_open;
+                self.overflow_menu_open = false;
             }
             Message::ToggleFiles => {
                 self.files_open = !self.files_open;
+                self.overflow_menu_open = false;
             }
             Message::ToggleNotices => {
                 self.notices_open = !self.notices_open;
+                self.overflow_menu_open = false;
             }
             Message::ToggleGifs => {
                 self.gifs_open = !self.gifs_open;
+                self.overflow_menu_open = false;
             }
             Message::ToggleOverflowMenu => {
                 self.overflow_menu_open = !self.overflow_menu_open;
@@ -1192,8 +1267,169 @@ impl FluxChat {
                 return iced::widget::operation::focus(crate::view::input_id());
             }
 
+            // --- Overflow menu actions ---
+            Message::ToggleFavourite => {
+                self.overflow_menu_open = false;
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            let is_fav = fluxchat_core::rooms::is_room_favourite(&client, &room_id).await.ok()?;
+                            fluxchat_core::rooms::set_room_favourite(&client, &room_id, !is_fav).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::CopyRoomLink => {
+                self.overflow_menu_open = false;
+                if let Some(room_id) = &self.selected_room_id {
+                    let link = format!("https://matrix.to/#/{room_id}");
+                    return iced::clipboard::write(link);
+                }
+            }
+
+            // --- Invites ---
+            Message::AcceptInvite(room_id) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::accept_invite(&client, &room_id).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::RejectInvite(room_id) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::reject_invite(&client, &room_id).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+
+            // --- Panels data ---
+            Message::PinsLoaded(msgs) => {
+                self.pinned_messages = msgs;
+            }
+            Message::ThreadsLoaded(msgs) => {
+                self.thread_messages = msgs;
+            }
+
+            // --- Room creation ---
+            Message::CreateRoomNameChanged(name) => {
+                self.create_room_name = name;
+            }
+            Message::CreateRoomTogglePublic => {
+                self.create_room_public = !self.create_room_public;
+            }
+            Message::CreateRoomToggleEncrypted => {
+                self.create_room_encrypted = !self.create_room_encrypted;
+            }
+            Message::CreateRoomSubmit => {
+                let name = self.create_room_name.clone();
+                if name.trim().is_empty() {
+                    return Task::none();
+                }
+                let is_public = self.create_room_public;
+                let encrypted = self.create_room_encrypted;
+                self.modal = None;
+                self.create_room_name.clear();
+                self.create_room_public = false;
+                self.create_room_encrypted = false;
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let room_id = fluxchat_core::rooms::create_room(&client, &name, None, is_public, encrypted, &[], None).await.ok()?;
+                        Some(room_id)
+                    },
+                    |result| match result {
+                        Some(room_id) => Message::SelectRoom(room_id),
+                        None => Message::Noop,
+                    },
+                );
+            }
+
+            // --- Forward ---
+            Message::ForwardSearchChanged(query) => {
+                self.forward_search = query;
+            }
+            Message::ForwardToRoom(target_room_id) => {
+                if let Some(crate::state::Modal::Forward { body, formatted_body, .. }) = &self.modal {
+                    let body = body.clone();
+                    let formatted = if formatted_body.is_empty() { None } else { Some(formatted_body.clone()) };
+                    let core = self.core.clone();
+                    let rid = target_room_id.clone();
+                    self.modal = None;
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::messages::forward_message(&client, &rid, &body, formatted.as_deref()).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+
+            // --- Profile actions ---
+            Message::ToggleIgnoreUser(user_id) => {
+                if self.ignored_users.contains(&user_id) {
+                    self.ignored_users.remove(&user_id);
+                } else {
+                    self.ignored_users.insert(user_id);
+                }
+            }
+            Message::SendDmToUser(user_id) => {
+                self.modal = None;
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::open_dm(&client, &user_id).await.ok()
+                    },
+                    |result| match result {
+                        Some(room_id) => Message::SelectRoom(room_id),
+                        None => Message::Noop,
+                    },
+                );
+            }
+
+            // --- Read receipts ---
+            Message::SendReadReceipt => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    if let Some(event_id) = self.last_read_event.get(&room_id).cloned() {
+                        let core = self.core.clone();
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                fluxchat_core::messages::send_read_receipt(&client, &room_id, &event_id).await.ok()
+                            },
+                            |_| Message::Noop,
+                        );
+                    }
+                }
+            }
+
             // --- Misc ---
-            Message::PaginateBack(_room_id) => { /* TODO */ }
+            Message::PaginateBack(room_id) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let _client = core.get_client().await.ok()?;
+                        let timelines = core.timelines.lock().await;
+                        let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                        let timeline = timelines.get(&*room_id_parsed)?;
+                        timeline.paginate_backwards(20).await.ok()?;
+                        Some(())
+                    },
+                    |_| Message::Noop,
+                );
+            }
             Message::OpenUrl(url) => {
                 let _ = open::that(&url);
             }

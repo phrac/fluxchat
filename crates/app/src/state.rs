@@ -158,6 +158,18 @@ pub struct FluxChat {
     pub settings_avatar_data: Option<Vec<u8>>,   // resolved avatar image bytes
     pub settings_banner_data: Option<Vec<u8>>,   // resolved banner image bytes
 
+    // Room creation modal state
+    pub create_room_name: String,
+    pub create_room_public: bool,
+    pub create_room_encrypted: bool,
+
+    // Forward modal state
+    pub forward_search: String,
+
+    // Panels data
+    pub pinned_messages: Vec<fluxchat_core::MessageInfo>,
+    pub thread_messages: Vec<fluxchat_core::MessageInfo>,
+
     // Security tab state
     pub security_state: Option<SecurityState>,
     pub security_recovery_key_input: String,
@@ -247,6 +259,12 @@ impl FluxChat {
             url_previews: HashMap::new(),
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),
+            create_room_name: String::new(),
+            create_room_public: false,
+            create_room_encrypted: false,
+            forward_search: String::new(),
+            pinned_messages: Vec::new(),
+            thread_messages: Vec::new(),
             settings_avatar_data: None,
             settings_banner_data: None,
             security_state: None,

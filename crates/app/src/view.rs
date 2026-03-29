@@ -502,7 +502,27 @@ impl FluxChat {
             col = col.push(self.view_section_header("Invites", self.invited_rooms.len()));
             if !self.collapsed_sections.contains("Invites") {
                 for room in &self.invited_rooms {
-                    col = col.push(self.view_room_entry(room, false));
+                    let rid_accept = room.room_id.clone();
+                    let rid_reject = room.room_id.clone();
+                    col = col.push(
+                        container(
+                            row![
+                                text(&room.name).font(SANS).size(13).color(theme::TEXT_NORMAL),
+                                Space::new().width(Fill),
+                                button(text("\u{2713}").font(MONO).size(14).color(theme::GREEN))
+                                    .on_press(Message::AcceptInvite(rid_accept))
+                                    .padding([2, 6])
+                                    .style(|_, _| button::Style { background: None, text_color: theme::GREEN, ..Default::default() }),
+                                button(text("\u{2717}").font(MONO).size(14).color(theme::RED))
+                                    .on_press(Message::RejectInvite(rid_reject))
+                                    .padding([2, 6])
+                                    .style(|_, _| button::Style { background: None, text_color: theme::RED, ..Default::default() }),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::Alignment::Center),
+                        )
+                        .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
+                    );
                 }
             }
         }
@@ -1011,6 +1031,116 @@ impl FluxChat {
                 }
             }
 
+            // Panels (pinned messages, threads, files, notices)
+            if self.pins_open {
+                let mut panel_col = column![
+                    row![
+                        text("PINNED MESSAGES").font(SANS).size(12).color(theme::TEXT_DIM),
+                        Space::new().width(Fill),
+                        button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                            .on_press(Message::TogglePins)
+                            .padding([0, 6])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].align_y(iced::Alignment::Center),
+                ].spacing(4);
+                if self.pinned_messages.is_empty() {
+                    panel_col = panel_col.push(text("No pinned messages").font(SANS).size(13).color(theme::TEXT_DIM));
+                } else {
+                    for msg in self.pinned_messages.iter().take(20) {
+                        panel_col = panel_col.push(
+                            text(format!("{}: {}", msg.sender_name, msg.body))
+                                .font(MONO).size(13).color(theme::TEXT_MUTED)
+                        );
+                    }
+                }
+                content = content.push(
+                    container(panel_col).padding([8, 12]).width(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
+                            ..Default::default()
+                        })
+                );
+            }
+
+            if self.threads_open {
+                let panel_col = column![
+                    row![
+                        text("THREADS").font(SANS).size(12).color(theme::TEXT_DIM),
+                        Space::new().width(Fill),
+                        button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                            .on_press(Message::ToggleThreads)
+                            .padding([0, 6])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].align_y(iced::Alignment::Center),
+                    text("Thread view coming soon").font(SANS).size(13).color(theme::TEXT_DIM),
+                ].spacing(4);
+                content = content.push(
+                    container(panel_col).padding([8, 12]).width(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
+                            ..Default::default()
+                        })
+                );
+            }
+
+            if self.files_open {
+                let mut panel_col = column![
+                    row![
+                        text("FILES").font(SANS).size(12).color(theme::TEXT_DIM),
+                        Space::new().width(Fill),
+                        button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                            .on_press(Message::ToggleFiles)
+                            .padding([0, 6])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].align_y(iced::Alignment::Center),
+                ].spacing(4);
+                // Show images from messages
+                if let Some(msgs) = self.messages_by_room.get(room_id) {
+                    let files: Vec<_> = msgs.iter().filter(|m| m.image_mxc.is_some()).take(20).collect();
+                    if files.is_empty() {
+                        panel_col = panel_col.push(text("No files").font(SANS).size(13).color(theme::TEXT_DIM));
+                    } else {
+                        for msg in files {
+                            panel_col = panel_col.push(
+                                text(format!("\u{1f4ce} {}", msg.body)).font(MONO).size(13).color(theme::ACCENT)
+                            );
+                        }
+                    }
+                }
+                content = content.push(
+                    container(panel_col).padding([8, 12]).width(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
+                            ..Default::default()
+                        })
+                );
+            }
+
+            if self.notices_open {
+                let panel_col = column![
+                    row![
+                        text("NOTICES").font(SANS).size(12).color(theme::TEXT_DIM),
+                        Space::new().width(Fill),
+                        button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                            .on_press(Message::ToggleNotices)
+                            .padding([0, 6])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].align_y(iced::Alignment::Center),
+                    text("No server notices").font(SANS).size(13).color(theme::TEXT_DIM),
+                ].spacing(4);
+                content = content.push(
+                    container(panel_col).padding([8, 12]).width(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border { color: theme::BORDER, width: 1.0, radius: 0.0.into() },
+                            ..Default::default()
+                        })
+                );
+            }
+
             let messages = self.messages_by_room.get(room_id);
             let mut msg_col = column![].spacing(0).padding([2, 8]).width(Fill);
 
@@ -1346,16 +1476,32 @@ impl FluxChat {
                 .id(input_id())
                 .placeholder("Type a message or /command...")
                 .on_action(Message::InputAction)
-                .key_binding(|key_press| {
-                    use iced::keyboard::Key;
-                    use iced::widget::text_editor::Binding;
-                    // Enter without Shift = send message
-                    if key_press.key == Key::Named(iced::keyboard::key::Named::Enter)
-                        && !key_press.modifiers.shift()
-                    {
-                        Some(Binding::Custom(Message::SendMessage))
-                    } else {
-                        Binding::from_key_press(key_press)
+                .key_binding({
+                    let has_completions = !self.cmd_completions.is_empty();
+                    let has_mentions = !self.mention_completions.is_empty();
+                    let input_empty = self.input_text.trim().is_empty();
+                    move |key_press| {
+                        use iced::keyboard::Key;
+                        use iced::keyboard::key::Named;
+                        use iced::widget::text_editor::Binding;
+                        match key_press.key {
+                            // Enter without Shift = send message
+                            Key::Named(Named::Enter) if !key_press.modifiers.shift() => {
+                                Some(Binding::Custom(Message::SendMessage))
+                            }
+                            // Tab = cycle autocomplete
+                            Key::Named(Named::Tab) if has_completions => {
+                                Some(Binding::Custom(Message::InputChanged("/\t".into())))
+                            }
+                            Key::Named(Named::Tab) if has_mentions => {
+                                Some(Binding::Custom(Message::InputChanged("@\t".into())))
+                            }
+                            // Up arrow on empty input = edit last message
+                            Key::Named(Named::ArrowUp) if input_empty => {
+                                Some(Binding::Custom(Message::InputChanged("\x1b[A".into())))
+                            }
+                            _ => Binding::from_key_press(key_press),
+                        }
                     }
                 })
                 .font(MONO)
@@ -1555,8 +1701,8 @@ impl FluxChat {
 
         let menu = container(
             column![
-                make_menu_item(SVG_STAR, "Favourite", Message::Noop),
-                make_menu_item(SVG_COPY, "Copy link", Message::Noop),
+                make_menu_item(SVG_STAR, "Favourite", Message::ToggleFavourite),
+                make_menu_item(SVG_COPY, "Copy link", Message::CopyRoomLink),
                 container(Space::new()).width(Fill).height(1)
                     .style(|_: &Theme| container::Style {
                         background: Some(theme::BORDER.into()),
@@ -2804,64 +2950,41 @@ impl FluxChat {
             }
 
             crate::state::Modal::CreateRoom => {
+                let public_label = if self.create_room_public { "\u{25c9} Public" } else { "\u{25cb} Public" };
+                let encrypted_label = if self.create_room_encrypted { "\u{25c9} Encrypted" } else { "\u{25cb} Encrypted" };
                 column![
                     row![
-                        text("Create Room")
-                            .font(MONO)
-                            .size(16)
-                            .color(theme::TEXT_BRIGHT),
+                        text("Create Room").font(MONO).size(16).color(theme::TEXT_BRIGHT),
                         Space::new().width(Fill),
-                        button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
+                        button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
                             .on_press(Message::CloseModal)
                             .padding([2, 6])
-                            .style(|_, _| button::Style {
-                                background: None,
-                                ..Default::default()
-                            }),
-                    ]
-                    .align_y(iced::Alignment::Center),
-                    text("Room Name")
-                        .font(MONO)
-                        .size(14)
-                        .color(theme::TEXT_MUTED),
-                    text_input("e.g. my-room", "")
-                        .font(MONO)
-                        .size(14)
-                        .padding(8),
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].align_y(iced::Alignment::Center),
+                    text("Room Name").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text_input("e.g. my-room", &self.create_room_name)
+                        .on_input(Message::CreateRoomNameChanged)
+                        .on_submit(Message::CreateRoomSubmit)
+                        .font(MONO).size(14).padding(8),
                     row![
-                        text("Public").font(MONO).size(14).color(theme::TEXT_MUTED),
-                        Space::new().width(8),
-                        text("[toggle]")
-                            .font(MONO)
-                            .size(14)
-                            .color(theme::TEXT_DIM),
-                        Space::new().width(16),
-                        text("Encrypted")
-                            .font(MONO)
-                            .size(14)
-                            .color(theme::TEXT_MUTED),
-                        Space::new().width(8),
-                        text("[toggle]")
-                            .font(MONO)
-                            .size(14)
-                            .color(theme::TEXT_DIM),
-                    ],
-                    button(
-                        text("Create")
-                            .font(MONO)
-                            .size(14)
-                            .color(theme::BG_DEEP),
-                    )
-                    .padding([8, 24])
-                    .style(|_, _| button::Style {
-                        background: Some(theme::ACCENT.into()),
-                        text_color: theme::BG_DEEP,
-                        border: iced::Border {
-                            radius: 4.0.into(),
+                        button(text(public_label).font(SANS).size(14).color(theme::TEXT_MUTED))
+                            .on_press(Message::CreateRoomTogglePublic)
+                            .padding([4, 8])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                        button(text(encrypted_label).font(SANS).size(14).color(theme::TEXT_MUTED))
+                            .on_press(Message::CreateRoomToggleEncrypted)
+                            .padding([4, 8])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].spacing(12),
+                    button(text("Create").font(MONO).size(14).color(theme::BG_DEEP))
+                        .on_press(Message::CreateRoomSubmit)
+                        .padding([8, 24])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::ACCENT.into()),
+                            text_color: theme::BG_DEEP,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
                             ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
+                        }),
                 ]
                 .spacing(12)
                 .width(400)
@@ -2928,12 +3051,44 @@ impl FluxChat {
                 ]
                 .spacing(8);
 
+                // Action buttons
+                profile_col = profile_col.push(rule::horizontal(1));
+
+                let uid = user_id.clone();
+                let ignore_label = if is_ignored { "Unignore" } else { "Ignore" };
+                let ignore_color = if is_ignored { theme::GREEN } else { theme::RED };
+
+                let mut actions_row = row![
+                    button(text(ignore_label).font(SANS).size(13).color(ignore_color))
+                        .on_press(Message::ToggleIgnoreUser(uid.clone()))
+                        .padding([4, 12])
+                        .style(move |_, _| button::Style {
+                            background: Some(theme::BG_LIGHT.into()),
+                            text_color: ignore_color,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                ].spacing(8);
+
+                if uid != self.user_id {
+                    actions_row = actions_row.push(
+                        button(text("Message").font(SANS).size(13).color(theme::ACCENT))
+                            .on_press(Message::SendDmToUser(uid))
+                            .padding([4, 12])
+                            .style(|_, _| button::Style {
+                                background: Some(theme::BG_LIGHT.into()),
+                                text_color: theme::ACCENT,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    );
+                }
+
+                profile_col = profile_col.push(actions_row);
+
                 if is_ignored {
                     profile_col = profile_col.push(
-                        text("(ignored)")
-                            .font(MONO)
-                            .size(14)
-                            .color(theme::RED),
+                        text("(ignored)").font(MONO).size(14).color(theme::RED),
                     );
                 }
 
@@ -3062,16 +3217,39 @@ impl FluxChat {
                             }),
                     ]
                     .align_y(iced::Alignment::Center),
-                    text("[forward modal]")
-                        .font(MONO)
-                        .size(14)
-                        .color(theme::TEXT_DIM),
-                    text(body.as_str())
-                        .font(MONO)
-                        .size(14)
-                        .color(theme::TEXT_MUTED),
+                    text(format!("Message: {}", &body.chars().take(80).collect::<String>()))
+                        .font(MONO).size(13).color(theme::TEXT_MUTED),
+                    rule::horizontal(1),
+                    text("Send to:").font(SANS).size(13).color(theme::TEXT_DIM),
+                    text_input("Search rooms...", &self.forward_search)
+                        .on_input(Message::ForwardSearchChanged)
+                        .font(SANS).size(14).padding(6),
+                    {
+                        let query = self.forward_search.to_lowercase();
+                        let mut room_list = column![].spacing(2);
+                        for room in self.rooms.iter()
+                            .filter(|r| query.is_empty() || r.name.to_lowercase().contains(&query))
+                            .take(10)
+                        {
+                            let rid = room.room_id.clone();
+                            room_list = room_list.push(
+                                button(text(&room.name).font(SANS).size(14).color(theme::TEXT_NORMAL))
+                                    .on_press(Message::ForwardToRoom(rid))
+                                    .padding([4, 8])
+                                    .width(Fill)
+                                    .style(|_, status| button::Style {
+                                        background: if matches!(status, button::Status::Hovered) {
+                                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                                        } else { None },
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                            );
+                        }
+                        room_list
+                    },
                 ]
-                .spacing(12)
+                .spacing(8)
                 .width(450)
                 .into()
             }
@@ -3093,10 +3271,57 @@ impl FluxChat {
                             }),
                     ]
                     .align_y(iced::Alignment::Center),
-                    text("[room settings]")
-                        .font(MONO)
-                        .size(14)
-                        .color(theme::TEXT_DIM),
+                    {
+                        let room = self.selected_room_id.as_ref()
+                            .and_then(|rid| self.rooms.iter().find(|r| r.room_id == *rid));
+                        let mut info_col = column![].spacing(6);
+                        if let Some(room) = room {
+                            info_col = info_col.push(
+                                row![
+                                    text("Name:").font(SANS).size(13).color(theme::TEXT_DIM),
+                                    text(&room.name).font(SANS).size(14).color(theme::TEXT_NORMAL),
+                                ].spacing(8)
+                            );
+                            if let Some(ref topic) = room.topic {
+                                info_col = info_col.push(
+                                    row![
+                                        text("Topic:").font(SANS).size(13).color(theme::TEXT_DIM),
+                                        text(topic.as_str()).font(SANS).size(14).color(theme::TEXT_MUTED)
+                                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                                    ].spacing(8)
+                                );
+                            }
+                            info_col = info_col.push(
+                                row![
+                                    text("Room ID:").font(SANS).size(13).color(theme::TEXT_DIM),
+                                    text(&room.room_id).font(MONO).size(12).color(theme::TEXT_DIM),
+                                ].spacing(8)
+                            );
+                            info_col = info_col.push(
+                                row![
+                                    text("Encrypted:").font(SANS).size(13).color(theme::TEXT_DIM),
+                                    text(if room.is_encrypted { "Yes" } else { "No" }).font(SANS).size(14)
+                                        .color(if room.is_encrypted { theme::GREEN } else { theme::TEXT_MUTED }),
+                                ].spacing(8)
+                            );
+                            info_col = info_col.push(rule::horizontal(1));
+                            let rid = room.room_id.clone();
+                            info_col = info_col.push(
+                                button(text("Leave Room").font(SANS).size(14).color(theme::RED))
+                                    .on_press(Message::LeaveRoom(rid))
+                                    .padding([6, 16])
+                                    .style(|_, _| button::Style {
+                                        background: Some(theme::BG_LIGHT.into()),
+                                        text_color: theme::RED,
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                            );
+                        } else {
+                            info_col = info_col.push(text("No room selected").font(SANS).size(14).color(theme::TEXT_DIM));
+                        }
+                        info_col
+                    },
                 ]
                 .spacing(12)
                 .width(450)

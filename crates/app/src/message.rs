@@ -137,6 +137,35 @@ pub enum Message {
     // --- Formatting ---
     InsertFormat(&'static str, &'static str), // (prefix, suffix) e.g. ("**", "**")
 
+    // --- Overflow menu actions ---
+    ToggleFavourite,
+    CopyRoomLink,
+
+    // --- Invites ---
+    AcceptInvite(String), // room_id
+    RejectInvite(String), // room_id
+
+    // --- Panels data ---
+    PinsLoaded(Vec<fluxchat_core::MessageInfo>),
+    ThreadsLoaded(Vec<fluxchat_core::MessageInfo>),
+
+    // --- Room creation ---
+    CreateRoomNameChanged(String),
+    CreateRoomTogglePublic,
+    CreateRoomToggleEncrypted,
+    CreateRoomSubmit,
+
+    // --- Forward ---
+    ForwardSearchChanged(String),
+    ForwardToRoom(String), // target room_id
+
+    // --- Profile actions ---
+    ToggleIgnoreUser(String), // user_id
+    SendDmToUser(String),     // user_id
+
+    // --- Read receipts ---
+    SendReadReceipt,
+
     // --- Misc ---
     PaginateBack(String), // room_id
     OpenUrl(String),
