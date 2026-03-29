@@ -1853,6 +1853,7 @@ dependencies = [
  "async-stream",
  "base64",
  "dirs",
+ "emojis",
  "fluxchat-core",
  "futures-util",
  "iced",

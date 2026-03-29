@@ -14,6 +14,16 @@ pub fn gif_search_id() -> iced::widget::Id {
     iced::widget::Id::new("gif_search_input")
 }
 
+/// Fixed ID for the emoji search input.
+pub fn emoji_search_id() -> iced::widget::Id {
+    iced::widget::Id::new("emoji_search_input")
+}
+
+const EMOJI_GRID_COLUMNS: usize = 8;
+const EMOJI_PANEL_HEIGHT: f32 = 280.0;
+const EMOJI_CELL_SIZE: f32 = 36.0;
+const EMOJI_FREQ_COUNT: usize = 24;
+
 /// Fixed ID for the message scrollable so we can snap to bottom.
 pub fn messages_scrollable_id() -> iced::widget::Id {
     iced::widget::Id::new("messages_scroll")
@@ -1369,6 +1379,11 @@ impl FluxChat {
                 );
             }
 
+            // Emoji picker panel
+            if self.emoji_open {
+                content = content.push(self.view_emoji_picker());
+            }
+
             // Upload preview bar
             if let Some((ref filename, _, _)) = self.upload_pending {
                 content = content.push(
@@ -1624,7 +1639,7 @@ impl FluxChat {
                             color: Some(theme::TEXT_DIM),
                         }),
                 )
-                .on_press(Message::Noop) // TODO: emoji picker
+                .on_press(Message::ToggleEmojiPicker)
                 .padding([2, 8])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
@@ -1999,11 +2014,11 @@ impl FluxChat {
             return row![time, nick, msg_avatar, sep, poll_col].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
         }
 
-        // Image messages
-        if let Some(ref mxc) = msg.image_mxc {
+        // Build the content element — image, video, or text
+        let body_element: Element<'a, Message> = if let Some(ref mxc) = msg.image_mxc {
             if !msg.is_video {
-                let img_element: Element<'a, Message> = if let Some(frames) = self.gif_frames_cache.get(mxc) {
-                    // Animated GIF
+                // Image messages
+                if let Some(frames) = self.gif_frames_cache.get(mxc) {
                     let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
                     let mxc_click = mxc.clone();
                     mouse_area(
@@ -2040,26 +2055,18 @@ impl FluxChat {
                     text(format!("[image: {}]", msg.body))
                         .font(MONO).size(15).color(theme::TEXT_DIM)
                         .into()
-                };
-
-                return row![time, nick, msg_avatar, sep, img_element].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
+                }
+            } else {
+                // Video messages
+                text(format!("[video: {}]", msg.body))
+                    .font(MONO).size(15).color(theme::PURPLE).width(Fill)
+                    .into()
             }
-        }
-
-        // Video messages
-        if msg.is_video {
-            let video_label = format!("[video: {}]", msg.body);
-            let vid_element = text(video_label)
-                .font(MONO)
-                .size(15)
-                .color(theme::PURPLE)
-                .width(Fill);
-
-            return row![time, nick, msg_avatar, sep, vid_element].spacing(6).width(Fill).align_y(iced::Alignment::Center).into();
-        }
-
-        // Body — use rich_text with HTML parsing when formatted body is available
-        let body_element: Element<'a, Message> = if let Some(ref formatted) = msg.formatted_body {
+        } else if msg.is_video {
+            text(format!("[video: {}]", msg.body))
+                .font(MONO).size(15).color(theme::PURPLE).width(Fill)
+                .into()
+        } else if let Some(ref formatted) = msg.formatted_body {
             let spans = crate::html::html_to_spans(formatted);
             rich_text(spans)
                 .font(MONO)
@@ -2167,7 +2174,7 @@ impl FluxChat {
             let is_own = msg.sender == self.user_id;
             let mut action_row = row![].spacing(2).align_y(iced::Alignment::Center);
 
-            action_row = action_row.push(make_msg_action(SVG_REACT, Message::ToggleReaction(event_id.clone(), "\u{1f44d}".into())));
+            action_row = action_row.push(make_msg_action(SVG_REACT, Message::OpenEmojiReact(event_id.clone())));
             action_row = action_row.push(make_msg_action(SVG_REPLY, Message::StartReply(
                 event_id.clone(),
                 msg.sender_name.clone(),
@@ -2251,21 +2258,31 @@ impl FluxChat {
         for reaction in &msg.reactions {
             let event_id = msg.event_id.clone();
             let emoji = reaction.emoji.clone();
-            let label = format!("{} {}", reaction.emoji, reaction.count);
             let is_mine = reaction.users.iter().any(|u| u == &self.user_id);
-            let border_color = if is_mine { theme::ACCENT } else { theme::BORDER };
+            let bg = if is_mine {
+                Color::from_rgba(0.23, 0.51, 0.96, 0.15) // ACCENT tint
+            } else {
+                Color::from_rgba(1.0, 1.0, 1.0, 0.06)
+            };
 
             reactions_row = reactions_row.push(
-                button(text(label).font(MONO).size(13).color(theme::TEXT_MUTED))
+                button(
+                    row![
+                        text(&reaction.emoji).size(16),
+                        text(reaction.count.to_string()).font(MONO).size(12).color(theme::TEXT_MUTED),
+                    ].spacing(4).align_y(iced::Alignment::Center)
+                )
                     .on_press(Message::ToggleReaction(event_id, emoji))
-                    .padding([1, 6])
-                    .style(move |_, _| button::Style {
-                        background: Some(theme::BG_DARK.into()),
-                        text_color: theme::TEXT_MUTED,
+                    .padding([2, 8])
+                    .style(move |_, status| button::Style {
+                        background: Some(if matches!(status, button::Status::Hovered) {
+                            Color::from_rgba(1.0, 1.0, 1.0, 0.12)
+                        } else {
+                            bg
+                        }.into()),
                         border: iced::Border {
-                            color: border_color,
-                            width: 1.0,
-                            radius: 4.0.into(),
+                            radius: 10.0.into(),
+                            ..Default::default()
                         },
                         ..Default::default()
                     }),
@@ -2281,6 +2298,160 @@ impl FluxChat {
     }
 
     /// URL preview card rendered below a message.
+    /// Render the emoji picker panel.
+    fn view_emoji_picker(&self) -> Element<Message> {
+        let query_lower = self.emoji_query.to_lowercase();
+
+        // Header row
+        let title = if matches!(self.emoji_mode, crate::state::EmojiPickerMode::React(_)) {
+            "REACT"
+        } else {
+            "EMOJI"
+        };
+        let header = row![
+            text(title).font(SANS).size(12).color(theme::TEXT_DIM),
+            text_input("Search emoji...", &self.emoji_query)
+                .id(emoji_search_id())
+                .on_input(Message::EmojiQueryChanged)
+                .font(SANS).size(14).padding(6)
+                .width(Fill),
+            button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                .on_press(Message::ToggleEmojiPicker)
+                .padding([0, 6])
+                .style(|_, _| button::Style { background: None, ..Default::default() }),
+        ].spacing(8).align_y(iced::Alignment::Center);
+
+        // Category tabs
+        let category_labels = [
+            "\u{2605}", // ★ frequent
+            "\u{1f600}", // 😀 SmileysAndEmotion
+            "\u{1f464}", // 👤 PeopleAndBody
+            "\u{1f43e}", // 🐾 AnimalsAndNature
+            "\u{1f34e}", // 🍎 FoodAndDrink
+            "\u{2708}",  // ✈ TravelAndPlaces
+            "\u{26bd}",  // ⚽ Activities
+            "\u{1f4a1}", // 💡 Objects
+            "\u{2660}",  // ♠ Symbols
+            "\u{1f3f4}", // 🏴 Flags
+        ];
+        let mut tabs = row![].spacing(2);
+        for (i, label) in category_labels.iter().enumerate() {
+            let is_active = self.emoji_category == i as u8;
+            tabs = tabs.push(
+                button(text(*label).size(18).center().width(EMOJI_CELL_SIZE))
+                    .on_press(Message::EmojiCategoryChanged(i as u8))
+                    .padding([2, 0])
+                    .style(move |_, status| button::Style {
+                        background: Some(if is_active {
+                            Color::from_rgba(1.0, 1.0, 1.0, 0.12)
+                        } else if matches!(status, button::Status::Hovered) {
+                            Color::from_rgba(1.0, 1.0, 1.0, 0.06)
+                        } else {
+                            Color::TRANSPARENT
+                        }.into()),
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+            );
+        }
+
+        // Collect emojis to display
+        let emojis_to_show: Vec<&str> = if !query_lower.is_empty() {
+            // Search mode
+            emojis::iter()
+                .filter(|e| e.skin_tone().is_none())
+                .filter(|e| {
+                    e.name().to_lowercase().contains(&query_lower)
+                        || e.shortcode().is_some_and(|s| s.to_lowercase().contains(&query_lower))
+                })
+                .map(|e| e.as_str())
+                .take(200)
+                .collect()
+        } else if self.emoji_category == 0 {
+            // Frequently used
+            let mut freq: Vec<_> = self.emoji_freq.iter().collect();
+            freq.sort_by(|a, b| b.1.cmp(a.1));
+            freq.into_iter()
+                .take(EMOJI_FREQ_COUNT)
+                .map(|(emoji, _)| emoji.as_str())
+                .collect()
+        } else {
+            // Category
+            let group = match self.emoji_category {
+                1 => emojis::Group::SmileysAndEmotion,
+                2 => emojis::Group::PeopleAndBody,
+                3 => emojis::Group::AnimalsAndNature,
+                4 => emojis::Group::FoodAndDrink,
+                5 => emojis::Group::TravelAndPlaces,
+                6 => emojis::Group::Activities,
+                7 => emojis::Group::Objects,
+                8 => emojis::Group::Symbols,
+                _ => emojis::Group::Flags,
+            };
+            group.emojis()
+                .filter(|e| e.skin_tone().is_none())
+                .map(|e| e.as_str())
+                .collect()
+        };
+
+        // Build emoji grid
+        let mut grid = column![].spacing(2);
+        if emojis_to_show.is_empty() {
+            let hint = if self.emoji_category == 0 && query_lower.is_empty() {
+                "No frequently used emoji yet"
+            } else {
+                "No results"
+            };
+            grid = grid.push(text(hint).font(SANS).size(13).color(theme::TEXT_DIM));
+        } else {
+            for chunk in emojis_to_show.chunks(EMOJI_GRID_COLUMNS) {
+                let mut row_items = row![].spacing(2);
+                for emoji in chunk {
+                    let e = emoji.to_string();
+                    row_items = row_items.push(
+                        button(
+                            text(*emoji).size(22).center()
+                                .width(EMOJI_CELL_SIZE).height(EMOJI_CELL_SIZE)
+                        )
+                        .on_press(Message::EmojiSelect(e))
+                        .padding(0)
+                        .style(|_, status| button::Style {
+                            background: Some(if matches!(status, button::Status::Hovered) {
+                                Color::from_rgba(1.0, 1.0, 1.0, 0.1)
+                            } else {
+                                Color::TRANSPARENT
+                            }.into()),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    );
+                }
+                grid = grid.push(row_items);
+            }
+        }
+
+        let panel = column![
+            header,
+            tabs,
+            scrollable(grid)
+                .height(Length::Fixed(EMOJI_PANEL_HEIGHT))
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                ))
+                .style(thin_scrollbar),
+        ].spacing(4);
+
+        let picker = container(panel).padding([8, 12]).width(Length::Fixed(380.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_DARK.into()),
+                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            });
+        // Right-align the picker
+        container(picker).width(Fill).align_x(iced::alignment::Horizontal::Right)
+            .into()
+    }
+
     fn view_url_preview<'a>(&self, preview: &'a fluxchat_core::UrlPreview, indent: f32) -> Element<'a, Message> {
         let mut content_col = column![].spacing(2);
 

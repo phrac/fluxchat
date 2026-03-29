@@ -38,6 +38,15 @@ pub enum Modal {
     Invite,
 }
 
+/// What action selecting an emoji should perform.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EmojiPickerMode {
+    /// Insert the emoji character into the message input.
+    Insert,
+    /// Send the emoji as a reaction to the given event.
+    React(String), // event_id
+}
+
 /// The screen the app is on.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
@@ -82,6 +91,11 @@ pub struct FluxChat {
     pub files_open: bool,
     pub notices_open: bool,
     pub gifs_open: bool,
+    pub emoji_open: bool,
+    pub emoji_mode: EmojiPickerMode,
+    pub emoji_query: String,
+    pub emoji_category: u8, // 0=frequent, 1-9=emojis::Group
+    pub emoji_freq: std::collections::HashMap<String, u32>,
     pub overflow_menu_open: bool,
     pub hovered_message: Option<String>, // event_id of hovered message
     pub gif_query: String,
@@ -243,6 +257,11 @@ impl FluxChat {
             overflow_menu_open: false,
             hovered_message: None,
             gifs_open: false,
+            emoji_open: false,
+            emoji_mode: EmojiPickerMode::Insert,
+            emoji_query: String::new(),
+            emoji_category: 0,
+            emoji_freq: std::collections::HashMap::new(),
             gif_query: String::new(),
             help_text: None,
             modal: None,

@@ -784,9 +784,55 @@ impl FluxChat {
             }
             Message::ToggleGifs => {
                 self.gifs_open = !self.gifs_open;
+                self.emoji_open = false;
                 self.overflow_menu_open = false;
                 if self.gifs_open {
                     return iced::widget::operation::focus(crate::view::gif_search_id());
+                }
+            }
+            Message::ToggleEmojiPicker => {
+                self.emoji_open = !self.emoji_open;
+                self.gifs_open = false;
+                self.overflow_menu_open = false;
+                if self.emoji_open {
+                    self.emoji_mode = crate::state::EmojiPickerMode::Insert;
+                    self.emoji_query.clear();
+                    self.emoji_category = 0;
+                    return iced::widget::operation::focus(crate::view::emoji_search_id());
+                }
+            }
+            Message::OpenEmojiReact(event_id) => {
+                self.emoji_open = true;
+                self.emoji_mode = crate::state::EmojiPickerMode::React(event_id);
+                self.emoji_query.clear();
+                self.emoji_category = 0;
+                self.gifs_open = false;
+                self.overflow_menu_open = false;
+                return iced::widget::operation::focus(crate::view::emoji_search_id());
+            }
+            Message::EmojiQueryChanged(query) => {
+                self.emoji_query = query;
+            }
+            Message::EmojiCategoryChanged(idx) => {
+                self.emoji_category = idx;
+            }
+            Message::EmojiSelect(emoji) => {
+                // Update frequency
+                *self.emoji_freq.entry(emoji.clone()).or_insert(0) += 1;
+                if let Ok(json) = serde_json::to_string(&self.emoji_freq) {
+                    let _ = self.core.db.set_setting("emoji_freq", &json);
+                }
+                match &self.emoji_mode {
+                    crate::state::EmojiPickerMode::Insert => {
+                        self.input_text.push_str(&emoji);
+                        self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                        return iced::widget::operation::focus(crate::view::input_id());
+                    }
+                    crate::state::EmojiPickerMode::React(event_id) => {
+                        let eid = event_id.clone();
+                        self.emoji_open = false;
+                        return self.update(Message::ToggleReaction(eid, emoji));
+                    }
                 }
             }
             Message::ToggleOverflowMenu => {
@@ -1797,6 +1843,8 @@ impl FluxChat {
                     self.notices_open = false;
                 } else if self.gifs_open {
                     self.gifs_open = false;
+                } else if self.emoji_open {
+                    self.emoji_open = false;
                 } else if self.help_text.is_some() {
                     self.help_text = None;
                 } else if self.reply_to.is_some() {
@@ -2060,6 +2108,9 @@ impl FluxChat {
         }
         if let Some(words) = self.core.db.get_setting("highlight_words") {
             self.highlight_words = serde_json::from_str(&words).unwrap_or_default();
+        }
+        if let Some(json) = self.core.db.get_setting("emoji_freq") {
+            self.emoji_freq = serde_json::from_str(&json).unwrap_or_default();
         }
     }
 }

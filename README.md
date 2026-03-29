@@ -4,7 +4,7 @@ A cross-platform Matrix chat client with an IRC-inspired UI, built entirely in R
 
 ## Screenshot
 
-![fluxchat screenshot](assets/screenshot-v2.png)
+![fluxchat screenshot](assets/screenshot-iced.png)
 
 ## Design
 
@@ -18,29 +18,27 @@ fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a 
 
 ## Features
 
-**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker, replies with context, message editing and deletion (up-arrow to edit last message). Multiline input with Shift+Enter. Markdown formatting (**bold**, *italic*, ~~strike~~, `code`, ```codeblocks```). Read receipt avatars displayed per message. Unread indicators with numeric badge counts (red for mentions, blue for regular) and floating "new messages" pill. Message forwarding with room picker modal. Custom highlight words (`/highlight`) with visual indicators on matching messages.
+**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll-up with Loading indicator, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker (9 categories, search, frequently-used), replies with context, message editing and deletion (up-arrow to edit last message). Multiline input with Shift+Enter. Markdown formatting (**bold**, *italic*, ~~strike~~, `code`, ```codeblocks```). Read receipt avatars displayed per message. Unread indicators with numeric badge counts (red for mentions, blue for regular) and floating "new messages" pill. Message forwarding with room picker modal. Custom highlight words (`/highlight`) with visual indicators on matching messages.
 
 **Threads** — Thread indicators on messages with reply counts. Click to open thread as a dedicated tab. Threads HUD dropdown lists all threads in a room. Thread replies sent with proper `m.thread` relation. Live updates via diff stream sync.
 
 **Rooms & Spaces** — Room list grouped by space with collapsible sections and avatars, space sidebar, room creation with encryption toggles, room settings (name, topic, aliases, notifications, invite, leave), space overview. Room invitations with accept/reject. Room upgrade/tombstone detection with follow button. Favourite rooms with dedicated sidebar section. IRC-style topic bar below tabs. Copy room link to clipboard.
 
+**Emoji & Reactions** — Full emoji picker with 9 categories (Smileys, People, Animals, Food, Travel, Activities, Objects, Symbols, Flags), search by name/shortcode, frequently-used tracking persisted to SQLite. Picker opens from message input bar (insert mode) or message hover react button (reaction mode). Pill-shaped reaction badges with accent tint for own reactions.
+
 **Polls** — Create polls with `/poll "Question" "Option1" "Option2"`, vote by clicking options, end with `/pollend`. Interactive UI with progress bars, vote counts, percentages, and ended state. Uses MSC3381 unstable poll events for Element compatibility.
 
-**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. Room commands (`/join`, `/leave`, `/part`, `/invite`, `/kick`, `/ban`, `/topic`, `/op`, `/deop`, `/mute`, `/unmute`), messaging (`/me`, `/msg`, `/attach`, `/forward`, `/gif`, `/giphy`), user management (`/nick`, `/whois`, `/query`, `/ignore`, `/unignore`, `/status`, `/highlight`, `/unhighlight`), discovery (`/users`, `/directory`, `/threads`, `/notices`), polls (`/poll`, `/pollend`), display (`/timestamp`, `/compact`, `/joinpart`), text macros (`/shrug`, `/tableflip`, `/lenny`), settings (`/settings`, `/sessions`, `/security`, `/account`, `/giphykey`), and system (`/away`, `/quit`, `/clear`).
+**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. 48+ commands covering room management, messaging, user management, discovery, polls, display toggles, text macros, settings, and system.
 
-**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews with og:image thumbnails. Files HUD with image previews. Sticker display (`m.sticker` events). GIF search and send via Giphy API (`/gif`, `/giphy`) with visual picker grid.
+**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews with og:image thumbnails. Files HUD with image previews. Sticker display (`m.sticker` events). GIF search and send via Giphy API (`/gif`, `/giphy`) with animated preview grid.
 
 **Security** — End-to-end encryption via matrix-sdk. SAS emoji verification. Key backup and recovery (enable, recover with key/passphrase). Session management with device listing, verification status, and remote sign-out. Cross-signing status display.
 
-**Search** — Server-side message search via Matrix search API with fallback to client-side filtering. Search HUD with clickable result list, scroll-to-message highlighting, and arrow key navigation. User directory search (`/users`). Public room directory (`/directory`). Server notices panel (`/notices`) for aggregated system messages.
+**Search** — Server-side message search via Matrix search API with fallback to client-side filtering. Search HUD with clickable result list, scroll-to-message highlighting, and arrow key navigation. User directory search (`/users`). Public room directory (`/directory`).
 
 **Authentication** — Username/password login. SSO/OIDC support with auto-detection, provider-specific buttons, and browser-based auth flow. Session persistence and restore.
 
-**User Management** — Ignore/block users (`/ignore`, `/unignore`) with message filtering. Profile modals with ignore button, power level display, and promote/demote actions. Power level badges in member list. Presence display, `/away` status, and custom `/status` messages shown in member list and profile modal.
-
-**Settings** — Sidebar-navigated settings: `/account` (profile, avatar, banner), `/sessions` (device management, remote sign-out), `/security` (key backup, recovery, cross-signing status). Room settings with notification modes (all/mentions/mute), alias management, and room info panel. Display preferences: timestamp format toggle (`/timestamp short|full|off`), compact mode (`/compact`), join/part message visibility (`/joinpart`). All persisted to SQLite and accessible via slash commands.
-
-**Code Display** — Syntax highlighting for code blocks via `syntect` with language detection (```rust, ```python, etc.) and 100+ supported languages. Base16 Ocean Dark theme. Plain text messages preserve newlines.
+**Code Display** — Syntax highlighting for code blocks via `syntect` with language detection and 100+ supported languages. Base16 Ocean Dark theme.
 
 ## Architecture
 

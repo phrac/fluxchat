@@ -64,6 +64,11 @@ pub enum Message {
     ToggleFiles,
     ToggleNotices,
     ToggleGifs,
+    ToggleEmojiPicker,
+    OpenEmojiReact(String),        // event_id
+    EmojiQueryChanged(String),
+    EmojiCategoryChanged(u8),
+    EmojiSelect(String),           // emoji character
     ToggleOverflowMenu,
     SetRightPanel(Option<super::state::RightPanel>),
 
