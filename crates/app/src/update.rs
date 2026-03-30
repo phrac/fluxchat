@@ -1167,9 +1167,14 @@ impl FluxChat {
                 self.settings_avatar_handle = avatar_data.as_ref()
                     .map(|d| iced::widget::image::Handle::from_bytes(d.clone()));
                 self.settings_avatar_data = avatar_data;
+                self.settings_banner_dimensions = banner_data.as_ref()
+                    .and_then(|d| fluxchat_core::media::get_image_dimensions(d));
                 self.settings_banner_handle = banner_data.as_ref()
                     .map(|d| iced::widget::image::Handle::from_bytes(d.clone()));
                 self.settings_banner_data = banner_data;
+                self.settings_banner_offset = 0.5;
+                // Apply initial center crop
+                let _ = self.update(Message::SettingsBannerOffsetChanged(0.5));
             }
             Message::SettingsUploadAvatar => {
                 let core = self.core.clone();
@@ -1210,29 +1215,73 @@ impl FluxChat {
                     },
                 );
             }
-            Message::SettingsUploadBanner => {
-                let core = self.core.clone();
+            Message::SettingsPickBanner => {
                 return Task::perform(
                     async move {
                         let handle = rfd::AsyncFileDialog::new()
                             .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp"])
                             .pick_file()
                             .await?;
-                        let data = handle.read().await;
-                        let name = handle.file_name();
-                        let mime = if name.ends_with(".png") { "image/png" }
-                            else if name.ends_with(".gif") { "image/gif" }
-                            else if name.ends_with(".webp") { "image/webp" }
-                            else { "image/jpeg" };
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::upload_banner(&client, mime, data.to_vec()).await.ok()?;
-                        Some(())
+                        Some(handle.read().await.to_vec())
                     },
                     |result| match result {
-                        Some(()) => Message::SettingsLoadProfile,
+                        Some(data) => Message::SettingsBannerPicked(data),
                         None => Message::Noop,
                     },
                 );
+            }
+            Message::SettingsBannerPicked(data) => {
+                self.settings_banner_dimensions = fluxchat_core::media::get_image_dimensions(&data);
+                self.settings_banner_handle = Some(
+                    iced::widget::image::Handle::from_bytes(data.clone())
+                );
+                self.settings_banner_data = Some(data);
+                self.settings_banner_offset = 0.5;
+                let _ = self.update(Message::SettingsBannerOffsetChanged(0.5));
+            }
+            Message::SettingsSaveBanner => {
+                if let Some(ref data) = self.settings_banner_data {
+                    let core = self.core.clone();
+                    let data = data.clone();
+                    let offset = self.settings_banner_offset;
+                    let dims = self.settings_banner_dimensions;
+                    return Task::perform(
+                        async move {
+                            // Crop to 4:1 aspect at the selected offset
+                            let upload_data = if let Some((w, h)) = dims {
+                                let target_h = (w as f32 / 4.0) as u32;
+                                if h > target_h {
+                                    if let Ok(img) = image::load_from_memory(&data) {
+                                        let max_y = h.saturating_sub(target_h);
+                                        let y = (max_y as f32 * offset) as u32;
+                                        let cropped = image::DynamicImage::from(
+                                            image::imageops::crop_imm(&img, 0, y, w, target_h.min(h - y)).to_image()
+                                        );
+                                        let mut buf = std::io::Cursor::new(Vec::new());
+                                        if cropped.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
+                                            buf.into_inner()
+                                        } else {
+                                            data
+                                        }
+                                    } else {
+                                        data
+                                    }
+                                } else {
+                                    data
+                                }
+                            } else {
+                                data
+                            };
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::profile::upload_banner(&client, "image/png", upload_data).await.ok()?;
+                            Some(())
+                        },
+                        |result| match result {
+                            Some(()) => Message::SettingsLoadProfile,
+                            None => Message::SettingsStatus("Failed to upload banner".into()),
+                        },
+                    );
+                }
             }
             Message::SettingsRemoveBanner => {
                 self.settings_banner_data = None;
@@ -1250,6 +1299,32 @@ impl FluxChat {
                 );
             }
 
+            Message::SettingsBannerOffsetChanged(val) => {
+                self.settings_banner_offset = val;
+                // Re-crop banner preview from original data
+                if let Some(ref data) = self.settings_banner_data {
+                    if let Some((w, h)) = self.settings_banner_dimensions {
+                        // Target aspect ratio ~4:1 for banner display
+                        let target_h = (w as f32 / 4.0) as u32;
+                        if h > target_h {
+                            // Crop vertically based on offset
+                            if let Ok(img) = image::load_from_memory(data) {
+                                let max_y = h.saturating_sub(target_h);
+                                let y = (max_y as f32 * val) as u32;
+                                let cropped = image::DynamicImage::from(
+                                    image::imageops::crop_imm(&img, 0, y, w, target_h.min(h - y)).to_image()
+                                );
+                                let mut buf = std::io::Cursor::new(Vec::new());
+                                if cropped.write_to(&mut buf, image::ImageFormat::Png).is_ok() {
+                                    self.settings_banner_handle = Some(
+                                        iced::widget::image::Handle::from_bytes(buf.into_inner())
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // --- Password change ---
             Message::SettingsOldPasswordChanged(val) => { self.settings_old_password = val; }
             Message::SettingsNewPasswordChanged(val) => { self.settings_new_password = val; }
@@ -1920,6 +1995,10 @@ impl FluxChat {
                 }
             }
 
+            Message::ReadReceiptsLoaded(room_id, receipts) => {
+                self.receipts_by_room.insert(room_id, receipts);
+            }
+
             // --- Misc ---
             Message::PaginateBack(room_id) => {
                 let core = self.core.clone();
@@ -2041,10 +2120,12 @@ impl FluxChat {
                 }
             }
             Message::Tick => {
-                // Periodic room list refresh
                 if self.sync_running {
+                    let mut tasks = Vec::new();
+
+                    // Periodic room list refresh
                     let core = self.core.clone();
-                    return Task::perform(
+                    tasks.push(Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             let rooms = fluxchat_core::rooms::get_rooms(&client).await.ok()?;
@@ -2061,7 +2142,34 @@ impl FluxChat {
                             }
                             None => Message::Noop,
                         },
-                    );
+                    ));
+
+                    // Load read receipts for current room
+                    if let Some(ref room_id) = self.selected_room_id {
+                        let core2 = self.core.clone();
+                        let rid = room_id.clone();
+                        let event_ids: Vec<String> = self.messages_by_room
+                            .get(room_id)
+                            .map(|msgs| msgs.iter().map(|m| m.event_id.clone()).collect())
+                            .unwrap_or_default();
+                        if !event_ids.is_empty() {
+                            tasks.push(Task::perform(
+                                async move {
+                                    let client = core2.get_client().await.ok()?;
+                                    let receipts = fluxchat_core::messages::get_room_read_receipts(
+                                        &client, &rid, &event_ids,
+                                    ).await.ok()?;
+                                    Some((rid, receipts))
+                                },
+                                |result| match result {
+                                    Some((rid, receipts)) => Message::ReadReceiptsLoaded(rid, receipts),
+                                    None => Message::Noop,
+                                },
+                            ));
+                        }
+                    }
+
+                    return Task::batch(tasks);
                 }
             }
             Message::Noop => {}

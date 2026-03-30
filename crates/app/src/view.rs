@@ -84,6 +84,46 @@ impl FluxChat {
         }
     }
 
+    /// Render stacked read receipt avatars for a message, right-aligned.
+    fn view_read_receipts<'a>(
+        &'a self,
+        event_id: &str,
+        receipts: Option<&'a Vec<fluxchat_core::ReadReceipt>>,
+    ) -> Option<Element<'a, Message>> {
+        let receipts = receipts?;
+        let msg_receipts: Vec<_> = receipts.iter()
+            .filter(|r| r.event_id == event_id && r.user_id != self.user_id)
+            .collect();
+        if msg_receipts.is_empty() {
+            return None;
+        }
+        // Right-aligned row of small stacked avatars (max 5 shown)
+        let mut avatars_row = row![].spacing(2);
+        let shown = msg_receipts.len().min(5);
+        for r in msg_receipts.iter().take(shown) {
+            avatars_row = avatars_row.push(
+                self.render_avatar_with_initial(r.avatar_url.as_deref(), &r.display_name, 14.0),
+            );
+        }
+        if msg_receipts.len() > 5 {
+            avatars_row = avatars_row.push(
+                text(format!("+{}", msg_receipts.len() - 5))
+                    .font(MONO).size(10).color(theme::TEXT_DIM),
+            );
+        }
+        // Offset to align with message content area (timestamp + nick + avatar + separator)
+        Some(
+            row![
+                Space::new().width(Length::Fixed(170.0)),
+                Space::new().width(Fill),
+                avatars_row,
+            ]
+            .align_y(iced::Alignment::Center)
+            .padding([0, 8])
+            .into(),
+        )
+    }
+
     /// Render a cached avatar image, or a blank space fallback.
     fn render_avatar<'a>(&self, mxc: Option<&str>, size: f32) -> Element<'a, Message> {
         if let Some(handle) = mxc.and_then(|m| self.avatar_cache.get(m)) {
@@ -1186,6 +1226,9 @@ impl FluxChat {
                 );
             }
 
+            // Read receipts for current room
+            let room_receipts = self.receipts_by_room.get(room_id);
+
             if let Some(msgs) = messages {
                 let last_read = self.last_read_event.get(room_id).cloned();
                 // Don't show divider if the last read event is the very last message
@@ -1222,6 +1265,10 @@ impl FluxChat {
                             if msg.event_id == *lr {
                                 divider_shown = true;
                                 msg_col = msg_col.push(self.view_message(msg));
+                                // Read receipts for this message
+                                if let Some(receipt_row) = self.view_read_receipts(&msg.event_id, room_receipts) {
+                                    msg_col = msg_col.push(receipt_row);
+                                }
                                 msg_col = msg_col.push(
                                     container(
                                         row![
@@ -1246,6 +1293,10 @@ impl FluxChat {
                         }
                     }
                     msg_col = msg_col.push(self.view_message(msg));
+                    // Read receipts for this message
+                    if let Some(receipt_row) = self.view_read_receipts(&msg.event_id, room_receipts) {
+                        msg_col = msg_col.push(receipt_row);
+                    }
                 }
             } else {
                 msg_col = msg_col.push(
@@ -2884,8 +2935,9 @@ impl FluxChat {
             crate::state::Modal::Invite => self.view_invite_modal(),
         };
 
+        let pad = if matches!(modal, crate::state::Modal::Profile { .. }) { 0 } else { 24 };
         container(modal_body)
-            .padding(24)
+            .padding(pad)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::BG_DARK.into()),
                 border: iced::Border {
@@ -2989,19 +3041,20 @@ impl FluxChat {
                     ].spacing(2),
                 ].spacing(12).align_y(iced::Alignment::Center);
 
-                // Banner section (use cached handle to avoid flicker)
+                // Banner at top (use cached handle to avoid flicker)
+                const BANNER_HEIGHT: f32 = 150.0;
                 let banner_element: Element<Message> = if let Some(ref handle) = self.settings_banner_handle {
                     container(
                         iced::widget::image(handle.clone())
                             .width(Fill)
-                            .height(80)
+                            .height(BANNER_HEIGHT)
                             .content_fit(iced::ContentFit::Cover),
                     )
                     .width(Fill)
-                    .height(80)
+                    .height(BANNER_HEIGHT)
                     .clip(true)
                     .style(|_: &Theme| container::Style {
-                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        border: iced::Border { radius: 6.0.into(), ..Default::default() },
                         ..Default::default()
                     })
                     .into()
@@ -3010,32 +3063,66 @@ impl FluxChat {
                         text("no banner").font(MONO).size(13).color(theme::TEXT_DIM),
                     )
                     .width(Fill)
-                    .height(80)
+                    .height(BANNER_HEIGHT)
                     .center(Fill)
                     .style(|_: &Theme| container::Style {
                         background: Some(theme::BG_LIGHT.into()),
-                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        border: iced::Border { radius: 6.0.into(), ..Default::default() },
                         ..Default::default()
                     })
                     .into()
                 };
 
-                let banner_actions = row![
-                    button(text("change banner").font(MONO).size(13).color(theme::ACCENT))
-                        .on_press(Message::SettingsUploadBanner)
+                // Banner actions + position slider
+                let mut banner_actions = row![
+                    button(text("change").font(MONO).size(12).color(theme::ACCENT))
+                        .on_press(Message::SettingsPickBanner)
                         .padding([2, 0])
                         .style(|_, _| button::Style { background: None, text_color: theme::ACCENT, ..Default::default() }),
-                    button(text("remove banner").font(MONO).size(13).color(theme::TEXT_DIM))
+                    button(text("remove").font(MONO).size(12).color(theme::TEXT_DIM))
                         .on_press(Message::SettingsRemoveBanner)
                         .padding([2, 0])
                         .style(|_, _| button::Style { background: None, text_color: theme::TEXT_DIM, ..Default::default() }),
-                ].spacing(8);
+                ].spacing(8).align_y(iced::Alignment::Center);
+
+                // Show position slider + save if banner needs cropping
+                if self.settings_banner_handle.is_some() {
+                    let (img_w, img_h) = self.settings_banner_dimensions.unwrap_or((800, 200));
+                    let target_h = (img_w as f32 / 4.0) as u32;
+                    if img_h > target_h {
+                        banner_actions = banner_actions.push(Space::new().width(Fill));
+                        banner_actions = banner_actions.push(
+                            text("crop").font(MONO).size(11).color(theme::TEXT_DIM),
+                        );
+                        banner_actions = banner_actions.push(
+                            iced::widget::slider(0.0..=1.0, self.settings_banner_offset, Message::SettingsBannerOffsetChanged)
+                                .step(0.01)
+                                .width(80),
+                        );
+                        banner_actions = banner_actions.push(
+                            button(text("save").font(MONO).size(12).color(theme::GREEN))
+                                .on_press(Message::SettingsSaveBanner)
+                                .padding([2, 6])
+                                .style(|_, _| button::Style { background: None, text_color: theme::GREEN, ..Default::default() }),
+                        );
+                    } else {
+                        // Already good aspect ratio, save directly
+                        banner_actions = banner_actions.push(Space::new().width(Fill));
+                        banner_actions = banner_actions.push(
+                            button(text("save").font(MONO).size(12).color(theme::GREEN))
+                                .on_press(Message::SettingsSaveBanner)
+                                .padding([2, 6])
+                                .style(|_, _| button::Style { background: None, text_color: theme::GREEN, ..Default::default() }),
+                        );
+                    }
+                }
 
                 let mut col = column![
-                    text("Account Settings").font(MONO).size(16).color(theme::TEXT_BRIGHT),
-                    rule::horizontal(1),
-                    // Profile
-                    text("PROFILE").font(MONO).size(12).color(theme::TEXT_DIM),
+                    // Banner first, like other clients
+                    banner_element,
+                    banner_actions,
+                    Space::new().height(2),
+                    // Avatar + profile info
                     avatar_row,
                     text(format!("User ID: {}", self.user_id)).font(MONO).size(13).color(theme::TEXT_DIM),
                     // Display name
@@ -3055,11 +3142,6 @@ impl FluxChat {
                                 ..Default::default()
                             }),
                     ].spacing(8).align_y(iced::Alignment::Center),
-                    Space::new().height(4),
-                    // Banner
-                    text("BANNER").font(MONO).size(12).color(theme::TEXT_DIM),
-                    banner_element,
-                    banner_actions,
                 ].spacing(10);
 
                 if let Some(ref status) = self.settings_status {
@@ -3427,13 +3509,6 @@ impl FluxChat {
         let is_ignored = self.ignored_users.contains(user_id);
         let uid = user_id.to_owned();
 
-        // Avatar (large, centered)
-        let avatar_el: Element<Message> = self.render_avatar_with_initial(
-            member.and_then(|m| m.avatar_url.as_deref()),
-            display_name,
-            72.0,
-        );
-
         // My power level in this room
         let my_power = self.selected_room_id.as_ref()
             .and_then(|rid| self.members_by_room.get(rid))
@@ -3442,80 +3517,110 @@ impl FluxChat {
             .unwrap_or(0);
         let can_set_power = my_power > power && user_id != self.user_id;
 
-        // Role color
+        // Role color + badge
         let role_color = match power {
             100.. => theme::YELLOW,
             50..=99 => theme::ACCENT,
             _ => theme::TEXT_NORMAL,
         };
 
-        let mut profile_col = column![
-            // Close button
-            row![
-                Space::new().width(Fill),
-                button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
-                    .on_press(Message::CloseModal)
-                    .padding([2, 6])
-                    .style(|_, _| button::Style {
-                        background: None,
-                        ..Default::default()
-                    }),
-            ],
-            // Avatar centered
-            container(avatar_el).width(Fill).center_x(Fill),
-            Space::new().height(4),
-            // Name
-            container(
-                text(display_name).font(MONO).size(18).color(nick_col)
-            ).width(Fill).center_x(Fill),
-            // User ID
-            container(
-                text(user_id).font(MONO).size(13).color(theme::TEXT_MUTED)
-            ).width(Fill).center_x(Fill),
+        // --- Colored banner strip ---
+        let banner_color = iced::Color { a: 0.5, ..nick_col };
+        let banner = container(Space::new())
+            .width(Fill)
+            .height(60)
+            .style(move |_: &Theme| container::Style {
+                background: Some(banner_color.into()),
+                ..Default::default()
+            });
+
+        // --- Avatar + name row ---
+        let avatar_el: Element<Message> = self.render_avatar_with_initial(
+            member.and_then(|m| m.avatar_url.as_deref()),
+            display_name,
+            48.0,
+        );
+
+        // --- Header: avatar + name + close ---
+        let header = row![
+            avatar_el,
+            column![
+                text(display_name).font(MONO).size(16).color(nick_col),
+                text(user_id).font(MONO).size(11).color(theme::TEXT_MUTED),
+            ].spacing(2),
+            Space::new().width(Fill),
+            button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
+                .on_press(Message::CloseModal)
+                .padding([2, 6])
+                .style(|_, _| button::Style {
+                    background: None,
+                    ..Default::default()
+                }),
         ]
-        .spacing(4);
+        .spacing(10)
+        .padding([12, 16])
+        .align_y(iced::Alignment::Center);
 
-        // Role & power level section
-        profile_col = profile_col.push(Space::new().height(4));
-        profile_col = profile_col.push(rule::horizontal(1));
+        // --- About section ---
+        let role_badge: Element<Message> = container(
+            text(role).font(MONO).size(11).color(role_color),
+        )
+        .padding([2, 8])
+        .style(move |_: &Theme| container::Style {
+            background: Some(iced::Color { a: 0.15, ..role_color }.into()),
+            border: iced::Border { radius: 10.0.into(), ..Default::default() },
+            ..Default::default()
+        })
+        .into();
 
-        if can_set_power {
-            // Section header
-            profile_col = profile_col.push(
-                text("ROLE").font(MONO).size(11).color(theme::TEXT_DIM),
-            );
+        let about_section = container(
+            column![
+                text("ABOUT").font(MONO).size(10).color(theme::TEXT_DIM),
+                Space::new().height(4),
+                row![
+                    role_badge,
+                    Space::new().width(Fill),
+                    text(format!("Power {power}")).font(MONO).size(11).color(theme::TEXT_DIM),
+                ].align_y(iced::Alignment::Center),
+            ].spacing(0),
+        )
+        .padding([10, 16])
+        .width(Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::BG_MID.into()),
+            border: iced::Border { radius: 6.0.into(), ..Default::default() },
+            ..Default::default()
+        });
 
-            // Role preset buttons with descriptions
+        // --- Roles section (only if can edit) ---
+        let roles_section: Option<Element<Message>> = if can_set_power {
             let room_id = self.selected_room_id.clone().unwrap_or_default();
+            let mut role_col = column![].spacing(4);
             for (label, desc, level, color) in [
                 ("Member", "Default permissions", 0i64, theme::TEXT_NORMAL),
-                ("Moderator", "Can kick, ban, mute", 50, theme::ACCENT),
+                ("Moderator", "Kick, ban, mute", 50, theme::ACCENT),
                 ("Admin", "Full room control", 100, theme::YELLOW),
             ] {
                 let is_active = power == level;
-                let bg = if is_active { theme::BG_LIGHT } else { theme::BG_MID };
+                let bg = if is_active { theme::BG_LIGHT } else { theme::BG_DEEP };
                 let fg = if is_active { color } else { theme::TEXT_MUTED };
-                let border_color = if is_active { color } else { theme::BG_LIGHT };
-                profile_col = profile_col.push(
+                let border_c = if is_active { color } else { theme::BG_LIGHT };
+                role_col = role_col.push(
                     button(
                         row![
-                            column![
-                                text(label).font(MONO).size(13).color(fg),
-                                text(desc).font(MONO).size(11).color(theme::TEXT_DIM),
-                            ].spacing(1),
+                            text(label).font(MONO).size(12).color(fg),
                             Space::new().width(Fill),
-                            text(level.to_string()).font(MONO).size(12).color(theme::TEXT_DIM),
-                        ]
-                        .align_y(iced::Alignment::Center)
+                            text(desc).font(MONO).size(10).color(theme::TEXT_DIM),
+                        ].align_y(iced::Alignment::Center),
                     )
                     .on_press(Message::SetPowerLevel(room_id.clone(), uid.clone(), level))
-                    .padding([6, 10])
+                    .padding([6, 12])
                     .width(Fill)
                     .style(move |_, _| button::Style {
                         background: Some(bg.into()),
                         text_color: fg,
                         border: iced::Border {
-                            color: border_color,
+                            color: border_c,
                             width: 1.0,
                             radius: 4.0.into(),
                         },
@@ -3524,67 +3629,69 @@ impl FluxChat {
                 );
             }
 
-            // Custom power level
-            profile_col = profile_col.push(Space::new().height(2));
-            profile_col = profile_col.push(
-                text("CUSTOM LEVEL").font(MONO).size(11).color(theme::TEXT_DIM),
-            );
-            profile_col = profile_col.push(
-                row![
-                    text_input("0-100", &self.profile_power_input)
-                        .on_input(Message::ProfilePowerInputChanged)
-                        .on_submit(Message::ProfileSetPowerLevel)
-                        .font(MONO)
-                        .size(13)
-                        .padding(4)
-                        .width(Fill),
-                    button(text("Apply").font(MONO).size(12).color(theme::TEXT_BRIGHT))
-                        .on_press(Message::ProfileSetPowerLevel)
-                        .padding([4, 12])
-                        .style(|_, _| button::Style {
-                            background: Some(theme::ACCENT.into()),
-                            text_color: theme::TEXT_BRIGHT,
-                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                            ..Default::default()
-                        }),
-                ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
-            );
-        } else {
-            // Read-only display
-            profile_col = profile_col.push(
-                row![
-                    text(role).font(MONO).size(14).color(role_color),
-                    Space::new().width(Fill),
-                    text(format!("Power: {power}")).font(MONO).size(13).color(theme::TEXT_DIM),
-                ].align_y(iced::Alignment::Center),
-            );
-        }
-
-        // Action buttons
-        profile_col = profile_col.push(rule::horizontal(1));
-
-        let ignore_label = if is_ignored { "Unignore" } else { "Ignore" };
-        let ignore_color = if is_ignored { theme::GREEN } else { theme::RED };
-
-        let mut actions_row = row![
-            button(text(ignore_label).font(MONO).size(13).color(ignore_color))
-                .on_press(Message::ToggleIgnoreUser(uid.clone()))
+            // Custom level inline
+            role_col = role_col.push(
+                button(
+                    row![
+                        text("Custom").font(MONO).size(12).color(theme::TEXT_MUTED),
+                        Space::new().width(Fill),
+                        text_input("0-100", &self.profile_power_input)
+                            .on_input(Message::ProfilePowerInputChanged)
+                            .on_submit(Message::ProfileSetPowerLevel)
+                            .font(MONO).size(11).padding(3).width(60),
+                        button(text("Set").font(MONO).size(11).color(theme::TEXT_BRIGHT))
+                            .on_press(Message::ProfileSetPowerLevel)
+                            .padding([3, 8])
+                            .style(|_, _| button::Style {
+                                background: Some(theme::ACCENT.into()),
+                                text_color: theme::TEXT_BRIGHT,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    ].spacing(6).align_y(iced::Alignment::Center),
+                )
                 .padding([4, 12])
-                .style(move |_, _| button::Style {
-                    background: Some(theme::BG_LIGHT.into()),
-                    text_color: ignore_color,
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                .width(Fill)
+                .style(|_, _| button::Style {
+                    background: Some(theme::BG_DEEP.into()),
+                    border: iced::Border {
+                        color: theme::BG_LIGHT,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
                     ..Default::default()
                 }),
-        ].spacing(8);
+            );
 
+            Some(container(
+                column![
+                    text("SET ROLE").font(MONO).size(10).color(theme::TEXT_DIM),
+                    Space::new().height(6),
+                    role_col,
+                ].spacing(0),
+            )
+            .padding([10, 16])
+            .width(Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_MID.into()),
+                border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into())
+        } else {
+            None
+        };
+
+        // --- Action buttons ---
+        let ignore_label = if is_ignored { "Unignore" } else { "Ignore" };
+        let ignore_color = if is_ignored { theme::GREEN } else { theme::RED };
+        let mut actions_row = row![].spacing(6);
         if uid != self.user_id {
             actions_row = actions_row.push(
-                button(text("Message").font(MONO).size(13).color(theme::ACCENT))
-                    .on_press(Message::SendDmToUser(uid))
-                    .padding([4, 12])
+                button(text("Message").font(MONO).size(12).color(theme::ACCENT))
+                    .on_press(Message::SendDmToUser(uid.clone()))
+                    .padding([5, 14])
+                    .width(Fill)
                     .style(|_, _| button::Style {
                         background: Some(theme::BG_LIGHT.into()),
                         text_color: theme::ACCENT,
@@ -3593,16 +3700,42 @@ impl FluxChat {
                     }),
             );
         }
+        actions_row = actions_row.push(
+            button(text(ignore_label).font(MONO).size(12).color(ignore_color))
+                .on_press(Message::ToggleIgnoreUser(uid))
+                .padding([5, 14])
+                .width(Fill)
+                .style(move |_, _| button::Style {
+                    background: Some(theme::BG_LIGHT.into()),
+                    text_color: ignore_color,
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+        );
 
-        profile_col = profile_col.push(actions_row);
+        // --- Assemble ---
+        let mut card = column![
+            banner,
+            header,
+            container(rule::horizontal(1)).padding([0, 16]),
+            container(about_section).padding([6, 12]),
+        ].spacing(0).width(340);
+
+        if let Some(roles) = roles_section {
+            card = card.push(container(roles).padding([6, 12]));
+        }
+
+        card = card.push(container(rule::horizontal(1)).padding([2, 16]));
+        card = card.push(container(actions_row).padding([8, 12]));
 
         if is_ignored {
-            profile_col = profile_col.push(
-                text("(ignored)").font(MONO).size(13).color(theme::RED),
+            card = card.push(
+                container(text("(ignored)").font(MONO).size(11).color(theme::RED)).padding([0, 16]),
             );
         }
 
-        profile_col.width(320).into()
+        card = card.push(Space::new().height(6));
+        card.into()
     }
 
     fn view_verification_modal<'a>(&'a self, info: &'a fluxchat_core::VerificationInfo) -> Element<'a, Message> {

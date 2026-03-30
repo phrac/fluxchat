@@ -1,103 +1,99 @@
 # fluxchat
 
-A cross-platform Matrix chat client with an IRC-inspired UI, built entirely in Rust with Iced (native GPU-rendered via wgpu).
-
-## Screenshot
+A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app with an IRC-inspired interface.
 
 ![fluxchat screenshot](assets/screenshot-iced.png)
 
-## Design
+## Why fluxchat
 
-fluxchat blends IRC heritage with modern chat UX — not a Discord clone, not a terminal client, something unique.
-
-- **IRC-style messages** — compact layout with right-aligned colored nicks, vertical separator, monospace timestamps
-- **Channel tabs** — Chrome-style shrinking tabs for instant room switching
-- **Command bar** — floating input bar with SVG formatting toolbar, slash command autocomplete, file upload
-- **Status bar** — user avatar, room info, encryption status, sync state, device verification
-- **Deep charcoal theme** — monospace throughout, SVG icons, deterministic nick colors
+- **Pure Rust** -- no JavaScript, no Electron, no WebView. Native GPU rendering via wgpu.
+- **IRC meets modern chat** -- right-aligned colored nicks, monospace layout, channel tabs, but with inline images, reactions, threads, and encryption.
+- **Fast** -- native binary, GPU-accelerated UI, 3-tier media cache, lazy-loaded member lists.
 
 ## Features
 
-**Messaging** — Real-time send/receive via matrix-sdk-ui Timeline API with local echo, back-pagination on scroll-up with Loading indicator, formatted HTML with mention pills, inline images with lightbox, reactions with emoji picker (9 categories, search, frequently-used), replies with context, message editing and deletion (up-arrow to edit last message). Multiline input with Shift+Enter. Markdown formatting (**bold**, *italic*, ~~strike~~, `code`, ```codeblocks```). Read receipt avatars displayed per message. Unread indicators with numeric badge counts (red for mentions, blue for regular) and floating "new messages" pill. Message forwarding with room picker modal. Custom highlight words (`/highlight`) with visual indicators on matching messages.
+### Messaging
+Send and receive messages in real-time via the Matrix Timeline API. Local echo, back-pagination on scroll-up, markdown formatting (`**bold**`, `*italic*`, `` `code` ``, `~~~codeblocks~~~`), inline images with lightbox, message editing (up-arrow), deletion, and forwarding. Multiline input with Shift+Enter. Read receipt avatars displayed per message.
 
-**Threads** — Thread indicators on messages with reply counts. Click to open thread as a dedicated tab. Threads HUD dropdown lists all threads in a room. Thread replies sent with proper `m.thread` relation. Live updates via diff stream sync.
+### Reactions & Emoji
+Full emoji picker with 9 categories, search, and frequently-used tracking. React to messages with any emoji. Pill-shaped reaction badges.
 
-**Rooms & Spaces** — Room list grouped by space with collapsible sections and avatars, space sidebar, room creation with encryption toggles, room settings (name, topic, aliases, notifications, invite, leave), space overview. Room invitations with accept/reject. Room upgrade/tombstone detection with follow button. Favourite rooms with dedicated sidebar section. IRC-style topic bar below tabs. Copy room link to clipboard.
+### Threads
+Thread indicators with reply counts. Open threads as dedicated tabs with live updates. Thread replies use proper `m.thread` relation for cross-client compatibility.
 
-**Emoji & Reactions** — Full emoji picker with 9 categories (Smileys, People, Animals, Food, Travel, Activities, Objects, Symbols, Flags), search by name/shortcode, frequently-used tracking persisted to SQLite. Picker opens from message input bar (insert mode) or message hover react button (reaction mode). Pill-shaped reaction badges with accent tint for own reactions.
+### Encryption
+End-to-end encryption via matrix-sdk (vodozemac). SAS emoji verification, key backup and recovery, session management with remote sign-out, cross-signing status.
 
-**Polls** — Create polls with `/poll "Question" "Option1" "Option2"`, vote by clicking options, end with `/pollend`. Interactive UI with progress bars, vote counts, percentages, and ended state. Uses MSC3381 unstable poll events for Element compatibility.
+### Rooms & Spaces
+Room list grouped by space with collapsible sections. Room creation, settings, invitations, favourites. Room notifications (all/mentions/mute). Aliases, topic bar, upgrade detection.
 
-**Slash Commands** — Modular command registry with Tab-cycling autocomplete and `/help`. 48+ commands covering room management, messaging, user management, discovery, polls, display toggles, text macros, settings, and system.
+### Search
+Server-side search with client-side fallback for encrypted rooms. Clickable results with scroll-to-highlight. User directory and public room directory.
 
-**Files & Media** — File upload via button, drag-drop, clipboard paste, or `/attach` with thumbnail generation for images. 3-tier media cache (memory, SQLite, network). URL previews with og:image thumbnails. Files HUD with image previews. Sticker display (`m.sticker` events). GIF search and send via Giphy API (`/gif`, `/giphy`) with animated preview grid.
+### Polls
+Create interactive polls with `/poll`, vote with progress bars, end with `/pollend`. MSC3381 compatible.
 
-**Security** — End-to-end encryption via matrix-sdk. SAS emoji verification. Key backup and recovery (enable, recover with key/passphrase). Session management with device listing, verification status, and remote sign-out. Cross-signing status display.
+### Files & Media
+Upload via button, drag-drop, paste, or `/attach`. Thumbnail generation for images. GIF search via Giphy API. Sticker display. URL previews with og:image.
 
-**Search** — Server-side message search via Matrix search API with fallback to client-side filtering. Search HUD with clickable result list, scroll-to-message highlighting, and arrow key navigation. User directory search (`/users`). Public room directory (`/directory`).
+### Code Highlighting
+Syntax highlighting for 100+ languages via syntect. Base16 Ocean Dark theme.
 
-**Authentication** — Username/password login. SSO/OIDC support with auto-detection, provider-specific buttons, and browser-based auth flow. Session persistence and restore.
+### Slash Commands
+48+ commands with Tab-cycling autocomplete. Room management, messaging, user ops, discovery, polls, display toggles, text macros.
 
-**Code Display** — Syntax highlighting for code blocks via `syntect` with language detection and 100+ supported languages. Base16 Ocean Dark theme.
+### Profile & Settings
+Discord-style profile cards with colored banner, avatar, role badges, and power level management (Member/Mod/Admin presets + custom levels). Settings modal with sidebar navigation for account, sessions, and security. Password change, banner crop positioning, avatar management.
+
+### Authentication
+Username/password and SSO/OIDC with auto-detection and provider-specific buttons. Session persistence.
 
 ## Architecture
 
 ```
-fluxchat/
-├── crates/
-│   ├── core/               # Business logic — pure Rust, no UI deps
-│   │   └── src/
-│   │       ├── auth.rs     # Login (password + SSO), logout, session restore
-│   │       ├── timeline.rs # Timeline API: per-room + thread timeline management
-│   │       ├── devices.rs  # Device listing, rename, remote sign-out
-│   │       ├── gif.rs      # Giphy API search and download
-│   │       ├── messages.rs # Send, edit, delete, pin, reactions, server search
-│   │       ├── rooms.rs    # Room CRUD, spaces, DMs, invites, user/room search
-│   │       ├── media.rs    # Media download with 3-tier cache
-│   │       ├── sync.rs     # Sync loop (typing, room list, verification)
-│   │       ├── db.rs       # SQLite storage (sessions, media cache, settings)
-│   │       └── state.rs    # AppState with client, db, media cache, timelines
-│   └── app/                # Iced desktop frontend (native GPU-rendered)
-│       └── src/
-│           ├── main.rs     # Entry point, window config
-│           ├── state.rs    # FluxChat struct, enums
-│           ├── message.rs  # Message enum, SyncEvent
-│           ├── update.rs   # All state transitions
-│           ├── view.rs     # All rendering
-│           ├── html.rs     # Matrix HTML → Spans
-│           ├── commands.rs # Slash command registry
-│           └── theme.rs    # Colors
+crates/
+  core/   -- Pure business logic. Matrix ops, timeline, media, search, GIF, database.
+  app/    -- Iced desktop frontend. Elm architecture: Message -> update() -> view().
 ```
 
-**Pure Rust** — no JavaScript, no TypeScript, no Node.js, no WebView. Fully native GPU-rendered via wgpu.
+Both crates are pure Rust with zero JS/TS dependencies.
 
 ## Tech Stack
 
-- **UI:** [Iced](https://iced.rs/) 0.14 (native GPU-rendered via wgpu, Elm architecture)
-- **Matrix SDK:** [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk) 0.16
-- **Timeline:** [matrix-sdk-ui](https://github.com/matrix-org/matrix-rust-sdk) 0.16 (Timeline API)
-- **Storage:** [rusqlite](https://github.com/rusqlite/rusqlite) (app data) + SQLite (matrix-sdk crypto/sync/event cache)
-- **E2EE:** vodozemac (native Rust, same as Element X)
+| Component | Library |
+|-----------|---------|
+| UI | [Iced](https://iced.rs/) 0.14 (wgpu) |
+| Matrix | [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk) 0.16 |
+| Timeline | matrix-sdk-ui 0.16 |
+| Storage | rusqlite + matrix-sdk SQLite |
+| E2EE | vodozemac |
+| Syntax | syntect |
 
 ## Building
 
-### Prerequisites
-
-- Rust 1.77+
-- GPU support (wgpu)
-
-### Development
+Requires Rust 1.77+ and GPU support (wgpu).
 
 ```bash
-git clone https://github.com/phrac/fluxchat.git
-cd fluxchat
+# Development
 cargo run -p fluxchat
+
+# Release
+cargo build -p fluxchat --release
 ```
 
-### Production Build
+### macOS
+
+```bash
+./build-macos.sh
+# Creates FluxChat.app bundle in target/release/
+# Install: cp -r target/release/FluxChat.app /Applications/
+```
+
+### Linux
 
 ```bash
 cargo build -p fluxchat --release
+# Binary: target/release/fluxchat
 ```
 
 ## License

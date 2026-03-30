@@ -177,6 +177,8 @@ pub struct FluxChat {
     pub settings_avatar_handle: Option<iced::widget::image::Handle>,
     pub settings_banner_data: Option<Vec<u8>>,
     pub settings_banner_handle: Option<iced::widget::image::Handle>,
+    pub settings_banner_offset: f32, // vertical crop offset 0.0 (top) to 1.0 (bottom)
+    pub settings_banner_dimensions: Option<(u32, u32)>, // original width, height
     // Password change
     pub settings_old_password: String,
     pub settings_new_password: String,
@@ -349,6 +351,8 @@ impl FluxChat {
             settings_avatar_handle: None,
             settings_banner_data: None,
             settings_banner_handle: None,
+            settings_banner_offset: 0.5,
+            settings_banner_dimensions: None,
             settings_old_password: String::new(),
             settings_new_password: String::new(),
             settings_confirm_password: String::new(),

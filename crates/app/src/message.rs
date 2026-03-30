@@ -116,8 +116,11 @@ pub enum Message {
     },
     SettingsUploadAvatar,
     SettingsRemoveAvatar,
-    SettingsUploadBanner,
+    SettingsPickBanner,           // open file dialog, load into preview
+    SettingsBannerPicked(Vec<u8>), // raw image bytes from file picker
+    SettingsSaveBanner,            // crop + upload the banner
     SettingsRemoveBanner,
+    SettingsBannerOffsetChanged(f32),
     SettingsOldPasswordChanged(String),
     SettingsNewPasswordChanged(String),
     SettingsConfirmPasswordChanged(String),
@@ -219,6 +222,7 @@ pub enum Message {
 
     // --- Read receipts ---
     SendReadReceipt,
+    ReadReceiptsLoaded(String, Vec<fluxchat_core::ReadReceipt>), // room_id, receipts
 
     // --- Sidebar resize ---
     SidebarDragStart,
