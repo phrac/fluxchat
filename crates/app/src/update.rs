@@ -139,7 +139,19 @@ impl FluxChat {
                 // Load security state for status bar + resolve space/room avatars
                 let sec_task = self.update(Message::SecurityLoadState);
                 let avatar_task = self.resolve_avatars(mxc_uris);
-                return Task::batch([sec_task, avatar_task]);
+                // Check if LiveKit/calls are supported
+                let core_lk = self.core.clone();
+                let lk_check = Task::perform(
+                    async move {
+                        let client = core_lk.get_client().await.ok()?;
+                        Some(fluxchat_core::rtc::get_livekit_service_url(&client).await.is_ok())
+                    },
+                    |result| match result {
+                        Some(true) => Message::CallRoomsWithCallsUpdated(std::collections::HashSet::new()),
+                        _ => Message::Noop,
+                    },
+                );
+                return Task::batch([sec_task, avatar_task, lk_check]);
             }
             Message::TimelineLoaded {
                 room_id,

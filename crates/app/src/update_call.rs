@@ -33,6 +33,7 @@ impl FluxChat {
             Message::CallJoinResult(result) => {
                 match result {
                     Ok(info) => {
+                        self.calls_supported = true;
                         let msg_tx = self.call_event_tx.clone();
                         let info_clone = info.clone();
 
@@ -150,6 +151,7 @@ impl FluxChat {
                 Some(Task::none())
             }
             Message::CallRoomsWithCallsUpdated(rooms) => {
+                self.calls_supported = true;
                 self.rooms_with_calls = rooms;
                 Some(Task::none())
             }

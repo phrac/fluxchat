@@ -993,16 +993,16 @@ impl FluxChat {
                 .into()
             };
 
-            // Call button — start/join or hang up
+            // Call button — start/join or hang up (hidden if calls not supported)
             let selected_rid = self.selected_room_id.clone().unwrap_or_default();
             let in_call = self.call_room_id.as_deref() == Some(selected_rid.as_str())
                 && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
-            let call_msg = if in_call {
-                Message::CallLeave
-            } else {
-                Message::CallJoin(selected_rid)
-            };
-            let call_btn: Element<Message> = {
+            let call_btn: Element<Message> = if self.calls_supported || in_call {
+                let call_msg = if in_call {
+                    Message::CallLeave
+                } else {
+                    Message::CallJoin(selected_rid)
+                };
                 let handle = iced::widget::svg::Handle::from_memory(SVG_PHONE);
                 let icon_color = if in_call { theme::GREEN } else { Color::from_rgba(1.0, 1.0, 1.0, 0.4) };
                 button(
@@ -1017,6 +1017,16 @@ impl FluxChat {
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 })
+                .into()
+            } else {
+                // Dimmed/disabled phone icon when calls not supported
+                let handle = iced::widget::svg::Handle::from_memory(SVG_PHONE);
+                container(
+                    iced::widget::svg(handle)
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.15)) })
+                )
+                .padding([4, 6])
                 .into()
             };
 
@@ -1260,9 +1270,12 @@ impl FluxChat {
             }
 
             // --- Call banner / in-call panel ---
+            // Placed AFTER the scrollable (between messages and input) so removing it
+            // doesn't shift scroll position (scrollable expands downward instead of upward)
             let in_call_here = self.call_room_id.as_deref() == Some(room_id)
                 && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
             let room_has_call = self.rooms_with_calls.contains(room_id);
+            let mut call_widget: Option<Element<Message>> = None;
 
             if in_call_here {
                 // Compact single-row call bar
@@ -1348,7 +1361,7 @@ impl FluxChat {
                     ..Default::default()
                 });
 
-                content = content.push(call_panel);
+                call_widget = Some(call_panel.into());
             } else if room_has_call {
                 // Not in call but room has one: show join banner
                 let participant_count = self.call_participants.len();
@@ -1388,9 +1401,9 @@ impl FluxChat {
                     ..Default::default()
                 });
 
-                content = content.push(join_banner);
+                call_widget = Some(join_banner.into());
             } else if self.call_state == fluxchat_core::rtc::CallConnectionState::Connecting {
-                content = content.push(
+                call_widget = Some(
                     container(
                         text("Connecting to call...").font(MONO).size(13).color(theme::ACCENT),
                     )
@@ -1399,7 +1412,52 @@ impl FluxChat {
                     .style(|_: &Theme| container::Style {
                         background: Some(theme::BG_MID.into()),
                         ..Default::default()
-                    }),
+                    })
+                    .into(),
+                );
+            } else if let fluxchat_core::rtc::CallConnectionState::Failed(ref err) = self.call_state {
+                // Shorten verbose error messages
+                let short_err = if err.contains("M_FORBIDDEN") {
+                    "Not allowed to make calls in this room".to_string()
+                } else if err.contains("No LiveKit") || err.contains("rtc_foci") {
+                    "Calls not supported on this server".to_string()
+                } else if err.contains("401") || err.contains("no permissions") {
+                    "Call authentication failed".to_string()
+                } else {
+                    err.chars().take(80).collect::<String>()
+                };
+                call_widget = Some(
+                    container(
+                        row![
+                            text(format!("Call failed: {short_err}")).font(MONO).size(12).color(theme::RED),
+                            Space::new().width(Fill),
+                            button(
+                                iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_CLOSE))
+                                    .width(12).height(12)
+                                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) })
+                            )
+                                .on_press(Message::CallDisconnected("dismissed".into()))
+                                .padding(4)
+                                .style(|_, _| button::Style {
+                                    background: None,
+                                    ..Default::default()
+                                }),
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .padding([6, 12])
+                    .width(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(Color::from_rgba(0.8, 0.0, 0.0, 0.1).into()),
+                        border: iced::Border {
+                            color: theme::RED,
+                            width: 1.0,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .into(),
                 );
             }
 
@@ -1554,6 +1612,12 @@ impl FluxChat {
                 }
             } else {
                 content = content.push(msg_scrollable);
+            }
+
+            // Call bar — placed between messages and input so removing it
+            // doesn't shift the scroll position
+            if let Some(cw) = call_widget {
+                content = content.push(cw);
             }
 
             // Input area: typing indicator, reply/edit preview, GIF panel,
