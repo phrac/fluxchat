@@ -124,6 +124,7 @@ pub struct FluxChat {
     pub compact_mode: bool,
     pub show_joinpart: bool,
     pub zoom_level: u32,
+    pub msg_font_size: f32,
     pub giphy_api_key: String,
 
     // Status
@@ -311,6 +312,7 @@ impl FluxChat {
             compact_mode: false,
             show_joinpart: true,
             zoom_level: 100,
+            msg_font_size: 14.0,
             giphy_api_key: String::new(),
             sync_lag_ms: 0,
             sidebar_width: 220.0,

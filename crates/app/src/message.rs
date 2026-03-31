@@ -82,6 +82,7 @@ pub enum Message {
     ToggleCompactMode,
     ToggleJoinPart,
     SetZoomLevel(u32),
+    SetMsgFontSize(f32),
 
     // --- Room commands (async) ---
     JoinRoom(String),                           // room_id or alias

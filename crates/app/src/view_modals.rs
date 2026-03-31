@@ -78,6 +78,7 @@ impl FluxChat {
 
         let sidebar = column![
             make_tab_btn("Account".into(), "account".into(), &tab_owned),
+            make_tab_btn("Appearance".into(), "appearance".into(), &tab_owned),
             make_tab_btn("Sessions".into(), "sessions".into(), &tab_owned),
             make_tab_btn("Security".into(), "security".into(), &tab_owned),
         ]
@@ -458,6 +459,39 @@ impl FluxChat {
                     col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::TEXT_MUTED));
                 }
 
+                scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
+            }
+            "appearance" => {
+                let fs = self.msg_font_size;
+                let col = column![
+                    text("Appearance").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    rule::horizontal(1),
+                    text("MESSAGE FONT SIZE").font(MONO).size(11).color(theme::TEXT_DIM),
+                    row![
+                        iced::widget::slider(10.0..=24.0, fs, Message::SetMsgFontSize)
+                            .step(1.0)
+                            .width(200),
+                        text(format!("{:.0}px", fs)).font(MONO).size(13).color(theme::TEXT_NORMAL),
+                    ].spacing(12).align_y(iced::Alignment::Center),
+                    Space::new().height(8),
+                    // Preview
+                    text("PREVIEW").font(MONO).size(11).color(theme::TEXT_DIM),
+                    container(
+                        column![
+                            text("The quick brown fox jumps over the lazy dog.")
+                                .font(MONO).size(fs).color(theme::TEXT_NORMAL),
+                            text("**bold** *italic* `code` ~~strike~~")
+                                .font(MONO).size(fs).color(theme::TEXT_MUTED),
+                        ].spacing(4)
+                    )
+                    .padding([8, 12])
+                    .width(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::BG_MID.into()),
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                ].spacing(10);
                 scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
             }
             _ => text("Unknown tab")

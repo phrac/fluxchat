@@ -147,18 +147,39 @@ pub async fn get_event_media_bytes(
     let (source, mime) = match event.raw().deserialize().map_err(|e| AppError::Other(e.to_string()))? {
         AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) => {
             match msg.content.msgtype {
+                MessageType::Image(img) => {
+                    let mime = img.info.as_ref().and_then(|i| i.mimetype.clone()).unwrap_or_else(|| "image/png".into());
+                    (img.source, mime)
+                }
                 MessageType::Video(vid) => {
                     let mime = vid.info.as_ref().and_then(|i| i.mimetype.clone()).unwrap_or_else(|| "video/mp4".into());
                     (vid.source, mime)
                 }
-                _ => return Err(AppError::Other("Not a video message".into())),
+                MessageType::File(file) => {
+                    let mime = file.info.as_ref().and_then(|i| i.mimetype.clone()).unwrap_or_else(|| "application/octet-stream".into());
+                    (file.source, mime)
+                }
+                _ => return Err(AppError::Other("Not a media message".into())),
+            }
+        }
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::Sticker(SyncMessageLikeEvent::Original(sticker))) => {
+            let mime = sticker.content.info.mimetype.clone().unwrap_or_else(|| "image/png".into());
+            match sticker.content.source {
+                matrix_sdk::ruma::events::sticker::StickerMediaSource::Plain(uri) => {
+                    (matrix_sdk::ruma::events::room::MediaSource::Plain(uri), mime)
+                }
+                matrix_sdk::ruma::events::sticker::StickerMediaSource::Encrypted(enc) => {
+                    (matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc), mime)
+                }
+                _ => return Err(AppError::Other("Unknown sticker source".into())),
             }
         }
         _ => return Err(AppError::Other("Not a message event".into())),
     };
 
     let request = MediaRequestParameters { source, format: MediaFormat::File };
-    let data = client.media().get_media_content(&request, true).await
+    // Use false to skip SDK cache — ensures fresh decrypted download for encrypted media
+    let data = client.media().get_media_content(&request, false).await
         .map_err(|e| AppError::Other(format!("Failed to download: {e}")))?;
     Ok((data, mime))
 }

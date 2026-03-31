@@ -17,6 +17,7 @@ use crate::view::{
 impl FluxChat {
     /// Render a single message row: [time] [nick] | [body]
     pub(crate) fn view_message<'a>(&'a self, msg: &'a fluxchat_core::MessageInfo) -> Element<'a, Message> {
+        let fs = self.msg_font_size;
         // Timestamp
         let time_str = if self.timestamp_format == "off" {
             String::new()
@@ -64,7 +65,7 @@ impl FluxChat {
                     .width(Length::Fixed(50.0)),
                 text(format!("* {} {}", msg.sender_name, msg.body))
                     .font(MONO)
-                    .size(15)
+                    .size(fs)
                     .color(nick_col)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(Fill),
@@ -91,7 +92,7 @@ impl FluxChat {
         let nick = container(
             text(&msg.sender_name)
                 .font(MONO)
-                .size(15)
+                .size(fs)
                 .color(nick_col),
         )
         .align_x(iced::alignment::Horizontal::Right)
@@ -101,12 +102,12 @@ impl FluxChat {
         let msg_avatar: Element<'a, Message> = self.render_avatar(msg.avatar_url.as_deref(), 16.0);
 
         // Separator
-        let sep = text("|").font(MONO).size(15).color(theme::TEXT_DIM);
+        let sep = text("|").font(MONO).size(fs).color(theme::TEXT_DIM);
 
         // Poll messages
         if let Some(ref poll) = msg.poll {
             let mut poll_col = column![
-                text(&poll.question).font(MONO).size(15).color(theme::TEXT_BRIGHT),
+                text(&poll.question).font(MONO).size(fs).color(theme::TEXT_BRIGHT),
             ]
             .spacing(4);
 
@@ -186,24 +187,24 @@ impl FluxChat {
                     .into()
                 } else {
                     text(format!("[image: {}]", msg.body))
-                        .font(MONO).size(15).color(theme::TEXT_DIM)
+                        .font(MONO).size(fs).color(theme::TEXT_DIM)
                         .into()
                 }
             } else {
                 // Video messages
                 text(format!("[video: {}]", msg.body))
-                    .font(MONO).size(15).color(theme::PURPLE).width(Fill)
+                    .font(MONO).size(fs).color(theme::PURPLE).width(Fill)
                     .into()
             }
         } else if msg.is_video {
             text(format!("[video: {}]", msg.body))
-                .font(MONO).size(15).color(theme::PURPLE).width(Fill)
+                .font(MONO).size(fs).color(theme::PURPLE).width(Fill)
                 .into()
         } else if let Some(ref formatted) = msg.formatted_body {
             let spans = crate::html::html_to_spans(formatted);
             rich_text(spans)
                 .font(MONO)
-                .size(15)
+                .size(fs)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(Fill)
                 .on_link_click(Message::OpenUrl)
@@ -213,7 +214,7 @@ impl FluxChat {
             let spans = crate::html::plain_text_to_spans(&msg.body);
             rich_text(spans)
                 .font(MONO)
-                .size(15)
+                .size(fs)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(Fill)
                 .on_link_click(Message::OpenUrl)

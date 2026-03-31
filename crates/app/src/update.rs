@@ -395,7 +395,14 @@ impl FluxChat {
                     );
                     return Task::batch([load, focus, call_check]);
                 }
-                return Task::batch([focus, call_check]);
+                // Re-resolve images for already-cached messages (clear pending to allow retries)
+                self.image_cache_pending.clear();
+                let cached_msgs: Vec<fluxchat_core::MessageInfo> = self.messages_by_room
+                    .get(&room_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let image_task = self.resolve_images(&cached_msgs);
+                return Task::batch([focus, call_check, image_task]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -945,6 +952,10 @@ impl FluxChat {
                 self.zoom_level = level;
                 let _ = self.core.db.set_setting("zoom_level", &level.to_string());
             }
+            Message::SetMsgFontSize(size) => {
+                self.msg_font_size = size.clamp(10.0, 24.0);
+                let _ = self.core.db.set_setting("msg_font_size", &self.msg_font_size.to_string());
+            }
 
             // --- Room commands ---
             Message::JoinRoom(room_or_alias) => {
@@ -1132,6 +1143,8 @@ impl FluxChat {
             // --- Inline images ---
             Message::ImageResolved(mxc, data) => {
                 self.image_cache_pending.remove(&mxc);
+                let magic = if data.len() >= 4 { format!("{:02X} {:02X} {:02X} {:02X}", data[0], data[1], data[2], data[3]) } else { "too short".into() };
+                tracing::info!("ImageResolved: mxc={mxc} size={} magic={magic}", data.len());
                 // Persist to SQLite
                 use base64::Engine;
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
@@ -1886,16 +1899,35 @@ impl FluxChat {
 
     /// Spawn full-size image fetches for message images.
     fn resolve_images(&mut self, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
+        let img_count = messages.iter().filter(|m| m.image_mxc.is_some()).count();
+        if img_count > 0 {
+            tracing::info!("resolve_images called: {} messages, {} with images, {} cached, {} pending",
+                messages.len(), img_count, self.image_cache.len(), self.image_cache_pending.len());
+        }
         let mut tasks = Vec::new();
         for msg in messages {
             if let Some(ref mxc) = msg.image_mxc {
                 if self.image_cache.contains_key(mxc) || self.image_cache_pending.contains(mxc) {
                     continue;
                 }
+                tracing::info!("Queuing image resolve: mxc={mxc} event={}", msg.event_id);
                 // Check SQLite cache first
                 if let Some(b64) = self.core.db.get_cached_media(&format!("iced_img:{mxc}")) {
                     use base64::Engine;
                     if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                        // Validate it's actual image data (not garbage from a failed fetch)
+                        let is_valid = data.len() > 100 && (
+                            data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
+                            data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
+                            data.starts_with(b"GIF") ||                     // GIF
+                            data.starts_with(b"RIFF") ||                    // WebP
+                            (data.len() > 12 && &data[4..8] == b"ftyp")    // MP4/HEIF
+                        );
+                        if !is_valid {
+                            tracing::warn!("Cached image data for {mxc} is invalid ({} bytes), re-fetching", data.len());
+                            // Remove bad cache entry
+                            self.core.db.cache_media(&format!("iced_img:{mxc}"), "");
+                        } else {
                         let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
                         let handle = iced::widget::image::Handle::from_bytes(data.clone());
                         self.image_cache.insert(mxc.clone(), handle);
@@ -1913,23 +1945,49 @@ impl FluxChat {
                             ));
                         }
                         continue;
+                    } // is_valid
                     }
                 }
                 self.image_cache_pending.insert(mxc.clone());
                 let core = self.core.clone();
                 let mxc_clone = mxc.clone();
+                let event_id = msg.event_id.clone();
+                let room_id = self.selected_room_id.clone().unwrap_or_default();
                 tasks.push(Task::perform(
                     async move {
-                        use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
-                        use matrix_sdk::ruma::events::room::MediaSource;
-                        use matrix_sdk::ruma::MxcUri;
+                        tracing::info!("Resolving image: mxc={mxc_clone} event={event_id} room={room_id}");
                         let client = core.get_client().await.ok()?;
-                        let mxc_uri = <&MxcUri>::from(mxc_clone.as_str());
-                        let req = MediaRequestParameters {
-                            source: MediaSource::Plain(mxc_uri.to_owned()),
-                            format: MediaFormat::File,
+                        // Try event-based fetch first (handles encrypted media)
+                        let event_result = fluxchat_core::media::get_event_media_bytes(
+                            &client, &room_id, &event_id,
+                        ).await;
+                        let data = match event_result {
+                            Ok((bytes, mime)) => {
+                                tracing::info!("Image resolved via event fetch: {} bytes, mime={mime}", bytes.len());
+                                bytes
+                            }
+                            Err(ref e) => {
+                                tracing::warn!("Event-based image fetch failed: {e}, trying plain MXC");
+                                use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
+                                use matrix_sdk::ruma::events::room::MediaSource;
+                                use matrix_sdk::ruma::MxcUri;
+                                let mxc_uri = <&MxcUri>::from(mxc_clone.as_str());
+                                let req = MediaRequestParameters {
+                                    source: MediaSource::Plain(mxc_uri.to_owned()),
+                                    format: MediaFormat::File,
+                                };
+                                match client.media().get_media_content(&req, true).await {
+                                    Ok(data) => {
+                                        tracing::info!("Image resolved via plain MXC: {} bytes", data.len());
+                                        data
+                                    }
+                                    Err(e2) => {
+                                        tracing::warn!("Plain MXC fetch also failed: {e2}");
+                                        return None;
+                                    }
+                                }
+                            }
                         };
-                        let data = client.media().get_media_content(&req, true).await.ok()?;
                         Some((mxc_clone, data))
                     },
                     |result| match result {
@@ -2053,6 +2111,11 @@ impl FluxChat {
         if let Some(val) = self.core.db.get_setting("zoom_level") {
             if let Ok(level) = val.parse::<u32>() {
                 self.zoom_level = level;
+            }
+        }
+        if let Some(val) = self.core.db.get_setting("msg_font_size") {
+            if let Ok(size) = val.parse::<f32>() {
+                self.msg_font_size = size.clamp(10.0, 24.0);
             }
         }
         if let Some(key) = self.core.db.get_setting("giphy_api_key") {
