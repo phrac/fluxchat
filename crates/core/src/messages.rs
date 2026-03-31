@@ -144,18 +144,140 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
 
 /// Send a text message to a room.
 pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str) -> Result<String, AppError> {
-    let room_id = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    let content = RoomMessageEventContent::text_plain(body);
-    Ok(room.send(content).await?.event_id.to_string())
+    let room_id_parsed = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let content = build_message_content(&room, body).await;
+    let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
+    Ok(result.event_id.to_string())
+}
+
+/// Build message content with mention resolution and markdown formatting.
+async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
+    // Only attempt mention resolution if body contains @
+    let has_mentions = body.contains('@');
+    let has_markdown = body.contains("**") || body.contains('`') || body.contains("~~");
+
+    if !has_mentions && !has_markdown {
+        return RoomMessageEventContent::text_plain(body);
+    }
+
+    let mut html = body.to_string();
+    let mut changed = false;
+
+    // Resolve @mentions
+    if has_mentions {
+        // Use tokio timeout to prevent hanging
+        let members_result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            room.members(matrix_sdk::RoomMemberships::JOIN),
+        ).await;
+
+        if let Ok(Ok(members)) = members_result {
+            let mut member_names: Vec<(String, String)> = members.iter()
+                .map(|m| {
+                    let name = m.display_name().unwrap_or(m.user_id().localpart()).to_string();
+                    let user_id = m.user_id().to_string();
+                    (name, user_id)
+                })
+                .collect();
+            member_names.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+            for (display_name, user_id) in &member_names {
+                let mention = format!("@{display_name}");
+                if html.contains(&mention) {
+                    let encoded_uid = user_id.replace('@', "%40").replace(':', "%3A");
+                    let link = format!(
+                        "<a href=\"https://matrix.to/#/{encoded_uid}\">{display_name}</a>"
+                    );
+                    html = html.replace(&mention, &link);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    // Markdown
+    if has_markdown {
+        let before = html.clone();
+        html = simple_markdown(&html);
+        if html != before {
+            changed = true;
+        }
+    }
+
+    if changed {
+        let mut final_html = html;
+        if final_html.contains('\n') {
+            final_html = final_html.replace('\n', "<br>");
+        }
+        RoomMessageEventContent::text_html(body, &final_html)
+    } else {
+        RoomMessageEventContent::text_plain(body)
+    }
+}
+
+fn simple_markdown(text: &str) -> String {
+    let mut result = text.to_string();
+    // Code blocks (``` ... ```)
+    while let Some(start) = result.find("```") {
+        if let Some(end) = result[start + 3..].find("```") {
+            let code = &result[start + 3..start + 3 + end];
+            let replacement = format!("<pre><code>{code}</code></pre>");
+            result = format!("{}{}{}", &result[..start], replacement, &result[start + 6 + end..]);
+        } else {
+            break;
+        }
+    }
+    // Inline code (` ... `)
+    while let Some(start) = result.find('`') {
+        if let Some(end) = result[start + 1..].find('`') {
+            let code = &result[start + 1..start + 1 + end];
+            let replacement = format!("<code>{code}</code>");
+            result = format!("{}{}{}", &result[..start], replacement, &result[start + 2 + end..]);
+        } else {
+            break;
+        }
+    }
+    // Bold (**...**)
+    while let Some(start) = result.find("**") {
+        if let Some(end) = result[start + 2..].find("**") {
+            let bold = &result[start + 2..start + 2 + end];
+            let replacement = format!("<strong>{bold}</strong>");
+            result = format!("{}{}{}", &result[..start], replacement, &result[start + 4 + end..]);
+        } else {
+            break;
+        }
+    }
+    // Strikethrough (~~...~~)
+    while let Some(start) = result.find("~~") {
+        if let Some(end) = result[start + 2..].find("~~") {
+            let strike = &result[start + 2..start + 2 + end];
+            let replacement = format!("<del>{strike}</del>");
+            result = format!("{}{}{}", &result[..start], replacement, &result[start + 4 + end..]);
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 /// Reply to a specific message in a room.
 pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, reply_to_event_id: &str) -> Result<String, AppError> {
-    let room_id = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let room_id_parsed = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(reply_to_event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
-    let content = RoomMessageEventContentWithoutRelation::text_plain(body);
+    // Build content with mention/markdown support
+    let msg_content = build_message_content(&room, body).await;
+    let content = match msg_content.msgtype {
+        matrix_sdk::ruma::events::room::message::MessageType::Text(t) => {
+            if let Some(formatted) = t.formatted {
+                RoomMessageEventContentWithoutRelation::text_html(t.body, formatted.body)
+            } else {
+                RoomMessageEventContentWithoutRelation::text_plain(t.body)
+            }
+        }
+        _ => RoomMessageEventContentWithoutRelation::text_plain(body),
+    };
     let reply = Reply { event_id, enforce_thread: matrix_sdk::room::reply::EnforceThread::Unthreaded };
     let reply_content = room.make_reply_event(content, reply).await.map_err(|e| AppError::Other(format!("Failed to create reply: {e}")))?;
     Ok(room.send(reply_content).await?.event_id.to_string())

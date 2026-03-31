@@ -88,7 +88,22 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     };
 
     // Extract reply info (on TimelineItemContent)
-    let reply_to_id = content.in_reply_to().map(|r| r.event_id.to_string());
+    let reply_details = content.in_reply_to();
+    let reply_to_id = reply_details.as_ref().map(|r| r.event_id.to_string());
+    let (reply_to_sender, reply_to_body) = reply_details
+        .and_then(|r| {
+            if let matrix_sdk_ui::timeline::TimelineDetails::Ready(ref event) = r.event {
+                let sender = event.sender.localpart().to_string();
+                let body = event.content.as_message()
+                    .map(|m| m.body().to_string())
+                    .unwrap_or_default();
+                if body.is_empty() { None } else { Some((sender, body)) }
+            } else {
+                None
+            }
+        })
+        .map(|(s, b)| (Some(s), Some(b)))
+        .unwrap_or((None, None));
 
     match content {
         TimelineItemContent::MsgLike(msg_like) => {
@@ -154,7 +169,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 Some(MessageInfo {
                     event_id, sender, sender_name, body, formatted_body,
                     transformed_body: None, image_mxc, reactions, reply_to_id,
-                    reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width, image_height, poll: None,
                     is_emote, is_video,
                 })
@@ -170,7 +185,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 Some(MessageInfo {
                     event_id, sender, sender_name, body, formatted_body: None,
                     transformed_body: None, image_mxc: mxc, reactions, reply_to_id,
-                    reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: w, image_height: h, poll: None,
                     is_emote: false, is_video: false,
                 })
@@ -189,7 +204,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 Some(MessageInfo {
                     event_id, sender, sender_name, body, formatted_body: None,
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
-                    reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: None, image_height: None,
                     poll: Some(PollInfo {
                         question,
@@ -206,7 +221,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     event_id, sender, sender_name,
                     body: "[unsupported]".into(), formatted_body: None,
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
-                    reply_to_sender: None, reply_to_body: None, timestamp, avatar_url,
+                    reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: None, image_height: None, poll: None,
                     is_emote: false, is_video: false,
                 })

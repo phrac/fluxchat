@@ -155,11 +155,15 @@ fn parse_html(html: &str) -> Vec<Segment> {
                         // Extract href
                         let href = extract_attr(tag_content, "href");
                         let is_mention = href.as_ref()
-                            .is_some_and(|h| h.contains("matrix.to/#/@"));
+                            .is_some_and(|h| h.contains("matrix.to/#/@") || h.contains("matrix.to/#/%40"));
                         let user_id = if is_mention {
                             href.as_ref().and_then(|h| {
-                                h.find("/#/@").map(|i| {
-                                    let raw = &h[i + 3..]; // skip "/#/"
+                                let idx = h.find("/#/@")
+                                    .map(|i| i + 3) // skip "/#/"
+                                    .or_else(|| h.find("/#/%40").map(|i| i + 3));
+                                idx.map(|i| {
+                                    let raw = &h[i..];
+                                    let raw = raw.split('?').next().unwrap_or(raw); // strip query
                                     raw.replace("%3A", ":").replace("%40", "@")
                                 })
                             })
@@ -298,7 +302,12 @@ fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
                 }
             }
             Segment::LineBreak => {
-                spans.push(Span::new("\n"));
+                // Collapse consecutive line breaks — don't add if the last span is already a newline
+                let is_duplicate = spans.last()
+                    .is_some_and(|s: &Span<'static, String>| s.text.as_ref() == "\n");
+                if !is_duplicate {
+                    spans.push(Span::new("\n"));
+                }
             }
         }
     }
@@ -350,15 +359,28 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
         span.strikethrough = true;
     }
 
-    // Mention styling
+    // Mention pill styling
     if style.mention {
         let nick_text = span.text.to_string();
         let color = theme::nick_color(&nick_text);
+        // Prefix with @ symbol
+        span.text = format!("@{nick_text}").into();
         span.color = Some(color);
         span.font = Some(Font {
+            family: font::Family::Name("JetBrainsMono Nerd Font"),
             weight: font::Weight::Bold,
             ..Font::MONOSPACE
         });
+        span = span
+            .background(Color::from_rgba(color.r, color.g, color.b, 0.15))
+            .border(iced::Border { radius: 8.0.into(), ..Default::default() });
+        span.padding = iced::Padding::from([2, 6]);
+        span.underline = false;
+        // Make clickable — OpenUrl handler intercepts matrix.to links
+        if let Some(ref uid) = style.mention_user_id {
+            let encoded = uid.replace('@', "%40").replace(':', "%3A");
+            span.link = Some(format!("https://matrix.to/#/{encoded}"));
+        }
     }
 
     // Blockquote — dim + left border effect via background

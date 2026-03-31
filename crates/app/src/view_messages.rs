@@ -220,27 +220,42 @@ impl FluxChat {
                 .into()
         };
 
-        // Reply context
+        // Reply context — colored left bar with sender name + quoted text
         if let Some(ref reply_body) = msg.reply_to_body {
             let reply_sender = msg.reply_to_sender.as_deref().unwrap_or("?");
-            let reply_preview = container(
-                text(format!("{reply_sender}: {reply_body}"))
-                    .font(MONO)
-                    .size(13)
-                    .color(theme::TEXT_DIM),
-            )
-            .padding([2, 8])
-            .style(|_: &Theme| container::Style {
-                border: iced::Border {
-                    color: theme::TEXT_DIM,
-                    width: 1.0,
-                    radius: 2.0.into(),
-                },
-                ..Default::default()
-            });
+            let sender_color = theme::nick_color(reply_sender);
 
+            // Truncate long reply bodies
+            let preview_text = if reply_body.len() > 100 {
+                format!("{}...", &reply_body[..100])
+            } else {
+                reply_body.clone()
+            };
+
+            let reply_preview = row![
+                // Colored left bar
+                container(Space::new())
+                    .width(3)
+                    .height(Fill)
+                    .style(move |_: &Theme| container::Style {
+                        background: Some(sender_color.into()),
+                        ..Default::default()
+                    }),
+                column![
+                    text(reply_sender).font(MONO).size(12).color(sender_color),
+                    text(preview_text).font(MONO).size(12).color(theme::TEXT_DIM)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                ].spacing(1).padding([2, 6]),
+            ]
+            .spacing(0);
+
+            // Align reply context with message content (offset past timestamp + nick + avatar + separator)
+            let indent = time_width + 100.0 + 22.0 + 18.0;
             return column![
-                row![time.width(Length::Fixed(time_width + 100.0 + 22.0 + 18.0)), reply_preview].spacing(6).width(Fill),
+                row![
+                    Space::new().width(Length::Fixed(indent)),
+                    reply_preview,
+                ].spacing(6).width(Fill),
                 row![
                     Space::new().width(time_width),
                     nick,
