@@ -130,9 +130,6 @@ pub async fn get_livekit_jwt(
         "device_id": device_id,
     });
 
-    tracing::info!("Requesting LiveKit JWT from {url}");
-    tracing::info!("JWT request body: {body}");
-
     let http = reqwest::Client::new();
     let response = http
         .post(&url)
@@ -144,8 +141,6 @@ pub async fn get_livekit_jwt(
     let status = response.status();
     let body_text = response.text().await
         .map_err(|e| AppError::Other(format!("Failed to read JWT response: {e}")))?;
-
-    tracing::info!("JWT response status={status}, body={body_text}");
 
     if !status.is_success() {
         return Err(AppError::Other(format!("LiveKit JWT request failed ({status}): {body_text}")));

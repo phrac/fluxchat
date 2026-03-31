@@ -281,9 +281,7 @@ impl FluxChat {
             Message::SelectRoom(room_id) => {
                 let already_loaded = self.messages_by_room.contains_key(&room_id);
                 self.selected_room_id = Some(room_id.clone());
-                if !already_loaded {
-                    self.messages_at_bottom = true;
-                }
+                self.messages_at_bottom = true;
                 self.paginating = false;
                 self.paginate_msg_count = 0;
                 // Mark as read
@@ -402,7 +400,8 @@ impl FluxChat {
                     .cloned()
                     .unwrap_or_default();
                 let image_task = self.resolve_images(&cached_msgs);
-                return Task::batch([focus, call_check, image_task]);
+                let snap = iced::widget::operation::snap_to_end(crate::view::messages_scrollable_id());
+                return Task::batch([focus, call_check, image_task, snap]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -1143,8 +1142,6 @@ impl FluxChat {
             // --- Inline images ---
             Message::ImageResolved(mxc, data) => {
                 self.image_cache_pending.remove(&mxc);
-                let magic = if data.len() >= 4 { format!("{:02X} {:02X} {:02X} {:02X}", data[0], data[1], data[2], data[3]) } else { "too short".into() };
-                tracing::info!("ImageResolved: mxc={mxc} size={} magic={magic}", data.len());
                 // Persist to SQLite
                 use base64::Engine;
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
@@ -1899,18 +1896,12 @@ impl FluxChat {
 
     /// Spawn full-size image fetches for message images.
     fn resolve_images(&mut self, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
-        let img_count = messages.iter().filter(|m| m.image_mxc.is_some()).count();
-        if img_count > 0 {
-            tracing::info!("resolve_images called: {} messages, {} with images, {} cached, {} pending",
-                messages.len(), img_count, self.image_cache.len(), self.image_cache_pending.len());
-        }
         let mut tasks = Vec::new();
         for msg in messages {
             if let Some(ref mxc) = msg.image_mxc {
                 if self.image_cache.contains_key(mxc) || self.image_cache_pending.contains(mxc) {
                     continue;
                 }
-                tracing::info!("Queuing image resolve: mxc={mxc} event={}", msg.event_id);
                 // Check SQLite cache first
                 if let Some(b64) = self.core.db.get_cached_media(&format!("iced_img:{mxc}")) {
                     use base64::Engine;
@@ -1955,19 +1946,14 @@ impl FluxChat {
                 let room_id = self.selected_room_id.clone().unwrap_or_default();
                 tasks.push(Task::perform(
                     async move {
-                        tracing::info!("Resolving image: mxc={mxc_clone} event={event_id} room={room_id}");
                         let client = core.get_client().await.ok()?;
                         // Try event-based fetch first (handles encrypted media)
                         let event_result = fluxchat_core::media::get_event_media_bytes(
                             &client, &room_id, &event_id,
                         ).await;
                         let data = match event_result {
-                            Ok((bytes, mime)) => {
-                                tracing::info!("Image resolved via event fetch: {} bytes, mime={mime}", bytes.len());
-                                bytes
-                            }
-                            Err(ref e) => {
-                                tracing::warn!("Event-based image fetch failed: {e}, trying plain MXC");
+                            Ok((bytes, _mime)) => bytes,
+                            Err(_) => {
                                 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
                                 use matrix_sdk::ruma::events::room::MediaSource;
                                 use matrix_sdk::ruma::MxcUri;
@@ -1976,16 +1962,7 @@ impl FluxChat {
                                     source: MediaSource::Plain(mxc_uri.to_owned()),
                                     format: MediaFormat::File,
                                 };
-                                match client.media().get_media_content(&req, true).await {
-                                    Ok(data) => {
-                                        tracing::info!("Image resolved via plain MXC: {} bytes", data.len());
-                                        data
-                                    }
-                                    Err(e2) => {
-                                        tracing::warn!("Plain MXC fetch also failed: {e2}");
-                                        return None;
-                                    }
-                                }
+                                client.media().get_media_content(&req, true).await.ok()?
                             }
                         };
                         Some((mxc_clone, data))
