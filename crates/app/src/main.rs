@@ -7,7 +7,13 @@ mod message;
 mod state;
 mod theme;
 mod update;
+mod update_call;
+mod update_settings;
 mod view;
+mod view_input;
+mod view_members;
+mod view_messages;
+mod view_modals;
 
 use std::path::PathBuf;
 use std::sync::Arc;
