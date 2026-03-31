@@ -289,7 +289,7 @@ impl FluxChat {
         };
         let base_row: Element<'a, Message> = container(base_row)
             .width(Fill)
-            .padding([5, 0])
+            .padding([2, 0])
             .style(move |_: &Theme| container::Style {
                 background: Some(hover_bg.into()),
                 ..Default::default()
@@ -301,14 +301,14 @@ impl FluxChat {
                 let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
                 button(
                     iced::widget::svg(handle)
-                        .width(Length::Fixed(16.0)).height(Length::Fixed(16.0))
+                        .width(Length::Fixed(13.0)).height(Length::Fixed(13.0))
                         .content_fit(iced::ContentFit::Fill)
                         .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_MUTED) }),
                 )
                 .on_press(msg_action)
-                .padding(5)
-                .width(Length::Fixed(26.0))
-                .height(Length::Fixed(26.0))
+                .padding(3)
+                .width(Length::Fixed(20.0))
+                .height(Length::Fixed(20.0))
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
                         Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into())

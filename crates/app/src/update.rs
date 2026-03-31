@@ -303,6 +303,23 @@ impl FluxChat {
                 let needs_members = !self.members_by_room.contains_key(&room_id);
 
                 let focus = iced::widget::operation::focus(crate::view::input_id());
+                // Check for active calls in this room immediately
+                let call_check = {
+                    let core = self.core.clone();
+                    let rid = room_id.clone();
+                    Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            let participants = fluxchat_core::rtc::get_call_members(&client, &rid).await.ok()?;
+                            Some((rid, participants))
+                        },
+                        |result| match result {
+                            Some((rid, participants)) => Message::CallParticipantsUpdated(rid, participants),
+                            None => Message::Noop,
+                        },
+                    )
+                };
+
                 if needs_messages || needs_members {
                     let core = self.core.clone();
                     let rid = room_id.clone();
@@ -376,9 +393,9 @@ impl FluxChat {
                             None => Message::Noop,
                         },
                     );
-                    return Task::batch([load, focus]);
+                    return Task::batch([load, focus, call_check]);
                 }
-                return focus;
+                return Task::batch([focus, call_check]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
