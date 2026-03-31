@@ -1,0 +1,8 @@
+# Required for LiveKit's bundled libwebrtc on macOS.
+# Without -ObjC, Objective-C category methods on NSString are stripped
+# from the static library, causing runtime crashes.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]

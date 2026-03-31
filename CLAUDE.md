@@ -118,6 +118,19 @@ cargo run -p fluxchat
 - Status bar "verified"/"unverified" clickable → opens security tab
 - Clicking own profile anywhere opens Settings modal (Account tab) instead of profile modal
 
+## Voice Calls (MatrixRTC + LiveKit)
+- **Architecture:** MatrixRTC signaling (m.call.member state events) + LiveKit SFU for audio transport
+- **Token flow:** `.well-known` → `org.matrix.msc4143.rtc_foci` → `livekit_service_url` → OpenID token exchange → `POST /sfu/get` for LiveKit JWT
+- **Core modules:** `rtc.rs` (MatrixRTC signaling: join/leave, state events, JWT exchange), `rtc_audio.rs` (LiveKit connection, cpal audio capture/playback)
+- **Audio capture:** cpal input device → mpsc channel → tokio task → `NativeAudioSource` → LiveKit publish. Channel bridges sync cpal callback to async LiveKit API.
+- **Audio playback:** `NativeAudioStream` from remote tracks → tokio task → ring buffer → cpal output stream. Output stream leaked into tokio task, cleaned up when track ends.
+- **Call lifecycle:** `CallJoin` → get JWT → `CallSession::connect()` → publish mic (muted by default) → event loop drains `RoomEvent` → `CallEvent` → bridged to `Message` variants. `CallLeave` → `watch::channel` signal → `session.disconnect()` → `leave_call()` state event.
+- **Participant tracking:** LiveKit events are source of truth during connected calls. Tick handler only updates room indicators, not participants, when connected.
+- **UI:** In-call panel (participant tiles + controls) above messages, PIP in member list when viewing other rooms. Phone icon in tab bar action buttons. Join banner for rooms with active calls.
+- **State events:** `m.call.member` (MSC3401) sent with `room.send_state_event_raw()`. Custom event type `org.matrix.msc3401.call.member` with `memberships` array. Empty memberships = left call. Suppressed from timeline rendering.
+- **macOS:** Requires `-ObjC` linker flag for libwebrtc Objective-C categories (`.cargo/config.toml`).
+- **TLS:** `livekit` crate requires `native-tls` feature for WSS connections.
+
 ## Performance Notes
 - Member list lazy-loads: 30 initially, more on scroll. Avatars resolved in background batch.
 - Media cache capped at `MEDIA_CACHE_LIMIT` (500) entries with `MEDIA_CACHE_EVICT` (100) eviction.
@@ -141,7 +154,7 @@ Login (password + SSO/OIDC with provider detection), session persistence, rooms 
 - Desktop notifications
 - Virtual scrolling (for very large rooms)
 - Keyboard shortcuts (Ctrl+K room switcher)
-- Voice/Video calls (VoIP)
+- Video calls (camera capture + video tiles)
 - Voice messages
 - Location sharing (MSC3488)
 - Spaces hierarchy (deep recursive browsing)

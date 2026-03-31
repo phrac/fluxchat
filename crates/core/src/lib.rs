@@ -14,6 +14,8 @@ pub mod sync;
 pub mod sync_service;
 pub mod threads;
 pub mod timeline;
+pub mod rtc;
+pub mod rtc_audio;
 pub mod verification;
 
 pub use db::AppDb;

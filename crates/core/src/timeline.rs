@@ -268,6 +268,11 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 AnyOtherFullStateEventContent::RoomAvatar(_) => {
                     format!("{sender_name} changed the room avatar")
                 }
+                AnyOtherFullStateEventContent::_Custom { ref event_type }
+                    if event_type.contains("call") || event_type.contains("rtc") =>
+                {
+                    return None; // Suppress call/RTC state events
+                }
                 _ => format!("{sender_name} updated room settings"),
             };
             Some(MessageInfo {

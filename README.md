@@ -27,6 +27,9 @@ End-to-end encryption via matrix-sdk (vodozemac). SAS emoji verification, key ba
 ### Rooms & Spaces
 Room list grouped by space with collapsible sections. Room creation, settings, invitations, favourites. Room notifications (all/mentions/mute). Aliases, topic bar, upgrade detection.
 
+### Voice Calls (MatrixRTC)
+Voice calls via MatrixRTC + LiveKit. Join or start calls from any room. Microphone capture via cpal, audio playback of remote participants. In-call panel with participant avatars and mute/hangup controls. PIP widget in member list when viewing other rooms during a call. Defaults to muted mic on join. Requires a LiveKit SFU (discovered via `.well-known`).
+
 ### Search
 Server-side search with client-side fallback for encrypted rooms. Clickable results with scroll-to-highlight. User directory and public room directory.
 
@@ -67,6 +70,8 @@ Both crates are pure Rust with zero JS/TS dependencies.
 | Timeline | matrix-sdk-ui 0.16 |
 | Storage | rusqlite + matrix-sdk SQLite |
 | E2EE | vodozemac |
+| Voice | [LiveKit](https://livekit.io/) 0.7 (MatrixRTC) |
+| Audio | cpal 0.15 |
 | Syntax | syntect |
 
 ## Building

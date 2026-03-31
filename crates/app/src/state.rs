@@ -9,8 +9,16 @@ use fluxchat_core::{
 pub type TimelineUpdateTx = tokio::sync::mpsc::UnboundedSender<crate::message::Message>;
 pub type TimelineUpdateRx = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
 
+/// Channel for call events from LiveKit to the Iced event loop.
+pub type CallEventTx = tokio::sync::mpsc::UnboundedSender<crate::message::Message>;
+pub type CallEventRx = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
+
 /// Global channel receiver — taken by the Iced subscription on first call.
 pub static TIMELINE_RX: std::sync::OnceLock<std::sync::Mutex<Option<TimelineUpdateRx>>> =
+    std::sync::OnceLock::new();
+
+/// Global call event channel receiver.
+pub static CALL_RX: std::sync::OnceLock<std::sync::Mutex<Option<CallEventRx>>> =
     std::sync::OnceLock::new();
 
 /// Tab entry: (room_id, room_name, space_name, space_avatar_mxc)
@@ -232,6 +240,15 @@ pub struct FluxChat {
     pub security_state: Option<SecurityState>,
     pub security_recovery_key_input: String,
     pub security_shown_recovery_key: Option<String>,
+
+    // --- Call/RTC state ---
+    pub call_state: fluxchat_core::rtc::CallConnectionState,
+    pub call_room_id: Option<String>,
+    pub call_participants: Vec<fluxchat_core::rtc::CallParticipant>,
+    pub rooms_with_calls: HashSet<String>,
+    pub call_mic_muted: bool,
+    pub call_disconnect_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub call_event_tx: CallEventTx,
 }
 
 /// Encryption/backup state fetched from Matrix SDK.
@@ -247,6 +264,8 @@ impl FluxChat {
     pub fn new(core: Arc<AppState>) -> Self {
         let (timeline_tx, timeline_rx) = tokio::sync::mpsc::unbounded_channel();
         let _ = TIMELINE_RX.set(std::sync::Mutex::new(Some(timeline_rx)));
+        let (call_event_tx, call_event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = CALL_RX.set(std::sync::Mutex::new(Some(call_event_rx)));
         Self {
             core,
             screen: Screen::Login,
@@ -359,6 +378,13 @@ impl FluxChat {
             security_state: None,
             security_recovery_key_input: String::new(),
             security_shown_recovery_key: None,
+            call_state: fluxchat_core::rtc::CallConnectionState::Disconnected,
+            call_room_id: None,
+            call_participants: Vec::new(),
+            rooms_with_calls: HashSet::new(),
+            call_mic_muted: true,
+            call_disconnect_tx: None,
+            call_event_tx,
         }
     }
 }

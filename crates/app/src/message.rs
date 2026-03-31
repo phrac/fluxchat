@@ -233,6 +233,19 @@ pub enum Message {
     MessagesScrolled(iced::widget::scrollable::Viewport),
     ScrollToBottom,
 
+    // --- Calls/RTC ---
+    CallJoin(String),                                    // room_id
+    CallLeave,
+    CallJoinResult(Result<fluxchat_core::rtc::CallJoinInfo, String>),
+    CallConnected,
+    CallDisconnected(String),
+    CallError(String),
+    CallParticipantJoined(fluxchat_core::rtc::CallParticipant),
+    CallParticipantLeft(String),                         // identity
+    CallParticipantsUpdated(String, Vec<fluxchat_core::rtc::CallParticipant>),
+    CallToggleMic,
+    CallRoomsWithCallsUpdated(std::collections::HashSet<String>),
+
     // --- Misc ---
     PaginateBack(String),     // room_id
     PaginateBackDone,
