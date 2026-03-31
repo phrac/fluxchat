@@ -66,6 +66,11 @@ const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
     ..Font::MONOSPACE
 };
+const MONO_BOLD: Font = Font {
+    family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
+    weight: iced::font::Weight::Bold,
+    ..Font::MONOSPACE
+};
 const SANS: Font = Font::DEFAULT;
 const SANS_BOLD: Font = Font { weight: iced::font::Weight::Bold, ..Font::DEFAULT };
 
@@ -710,23 +715,34 @@ impl FluxChat {
         }
 
         header_row = header_row.push(
-            text(name_label).font(MONO).size(14).color(theme::TEXT_BRIGHT)
+            text(name_label).font(MONO_BOLD).size(11).color(theme::TEXT_DIM)
         );
         header_row = header_row.push(Space::new().width(Fill));
         header_row = header_row.push(
-            text(count.to_string()).font(MONO).size(12).color(theme::TEXT_MUTED)
+            text(count.to_string()).font(MONO).size(10).color(theme::TEXT_DIM)
         );
 
-        button(header_row)
-            .on_press(Message::ToggleSection(name_owned))
-            .padding([6, 10])
-            .width(Fill)
-            .style(|_, _| button::Style {
-                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.02).into()),
-                text_color: theme::TEXT_MUTED,
-                ..Default::default()
-            })
-            .into()
+        column![
+            container(rule::horizontal(1).style(|_: &Theme| rule::Style {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.06),
+                radius: 0.0.into(),
+                fill_mode: rule::FillMode::Full,
+                snap: true,
+            })).padding([0, 8]),
+            button(header_row)
+                .on_press(Message::ToggleSection(name_owned))
+                .padding([4, 10])
+                .width(Fill)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into())
+                    } else {
+                        None
+                    },
+                    text_color: theme::TEXT_DIM,
+                    ..Default::default()
+                }),
+        ].spacing(0).into()
     }
 
     /// Single room entry in the list.
@@ -782,7 +798,7 @@ impl FluxChat {
             room_icon,
             text(&room.name)
                 .font(MONO)
-                .size(15)
+                .size(13)
                 .color(name_color)
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
@@ -1250,110 +1266,83 @@ impl FluxChat {
             let room_has_call = self.rooms_with_calls.contains(room_id);
 
             if in_call_here {
-                // In-call: show participant tiles + controls
-                // Cross-reference with room members for avatars
+                // Compact single-row call bar
                 let room_members = self.members_by_room.get(room_id);
+                let mic_icon = if self.call_mic_muted { SVG_MIC_OFF } else { SVG_MIC };
+                let mic_color = if self.call_mic_muted { theme::RED } else { theme::GREEN };
 
-                let mut participants_row = row![].spacing(6);
-
-                // Add self first
+                // Stacked participant avatars (small, inline)
+                let mut avatars = row![].spacing(2);
                 let my_avatar_mxc = room_members
                     .and_then(|m| m.iter().find(|m| m.user_id == self.user_id))
                     .and_then(|m| m.avatar_url.as_deref());
                 let my_name = self.display_name.as_deref().unwrap_or(&self.user_id);
-                participants_row = participants_row.push(
-                    container(
-                        column![
-                            self.render_avatar_with_initial(my_avatar_mxc, my_name, 36.0),
-                            text(my_name).font(MONO).size(9).color(theme::GREEN),
-                        ]
-                        .spacing(2)
-                        .align_x(iced::Alignment::Center),
-                    ).width(56).height(56),
+                avatars = avatars.push(
+                    container(self.render_avatar_with_initial(my_avatar_mxc, my_name, 22.0))
+                        .width(22).height(22),
                 );
-
-                // Add remote participants
-                for p in &self.call_participants {
-                    if p.is_local { continue; }
-                    // Look up avatar from room members by matching user_id
+                for p in self.call_participants.iter().filter(|p| !p.is_local).take(4) {
                     let member_avatar = room_members
-                        .and_then(|members| {
-                            members.iter().find(|m| {
-                                // LiveKit identity is "user_id:device_id", match on user_id part
-                                p.user_id.starts_with(&m.user_id)
-                                    || m.user_id == p.user_id
-                            })
-                        })
+                        .and_then(|members| members.iter().find(|m| p.user_id.starts_with(&m.user_id) || m.user_id == p.user_id))
                         .and_then(|m| m.avatar_url.as_deref());
                     let avatar_mxc = p.avatar_url.as_deref().or(member_avatar);
-                    participants_row = participants_row.push(
-                        container(
-                            column![
-                                self.render_avatar_with_initial(avatar_mxc, &p.display_name, 36.0),
-                                text(&p.display_name).font(MONO).size(9).color(theme::TEXT_MUTED),
-                            ]
-                            .spacing(2)
-                            .align_x(iced::Alignment::Center),
-                        ).width(56).height(56),
+                    avatars = avatars.push(
+                        container(self.render_avatar_with_initial(avatar_mxc, &p.display_name, 22.0))
+                            .width(22).height(22),
                     );
                 }
 
-                let mic_icon = if self.call_mic_muted { SVG_MIC_OFF } else { SVG_MIC };
-                let mic_color = if self.call_mic_muted { theme::RED } else { theme::GREEN };
-                let mic_label = if self.call_mic_muted { "Unmute" } else { "Mute" };
+                let total = self.call_participants.len() + 1;
 
-                let controls = row![
+                let call_bar = row![
+                    // Green dot indicator
+                    container(Space::new())
+                        .width(8).height(8)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::GREEN.into()),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    avatars,
+                    text(format!("{total}")).font(MONO).size(11).color(theme::TEXT_DIM),
+                    Space::new().width(Fill),
+                    // Mic toggle (icon only, circular)
                     button(
-                        row![
-                            iced::widget::svg(iced::widget::svg::Handle::from_memory(mic_icon))
-                                .width(14).height(14)
-                                .style(move |_, _| iced::widget::svg::Style { color: Some(mic_color) }),
-                            text(mic_label).font(MONO).size(12).color(mic_color),
-                        ].spacing(4).align_y(iced::Alignment::Center)
+                        iced::widget::svg(iced::widget::svg::Handle::from_memory(mic_icon))
+                            .width(14).height(14)
+                            .style(move |_, _| iced::widget::svg::Style { color: Some(mic_color) })
                     )
                         .on_press(Message::CallToggleMic)
-                        .padding([4, 10])
+                        .padding(6)
                         .style(move |_, _| button::Style {
                             background: Some(theme::BG_LIGHT.into()),
-                            text_color: mic_color,
-                            border: iced::Border { radius: 16.0.into(), ..Default::default() },
+                            border: iced::Border { radius: 14.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
+                    // Hang up (icon only, circular, red)
                     button(
-                        row![
-                            iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE_OFF))
-                                .width(14).height(14)
-                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_BRIGHT) }),
-                            text("Hang Up").font(MONO).size(12).color(theme::TEXT_BRIGHT),
-                        ].spacing(4).align_y(iced::Alignment::Center)
+                        iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE_OFF))
+                            .width(14).height(14)
+                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_BRIGHT) })
                     )
                         .on_press(Message::CallLeave)
-                        .padding([4, 10])
+                        .padding(6)
                         .style(|_, _| button::Style {
                             background: Some(theme::RED.into()),
-                            text_color: theme::TEXT_BRIGHT,
-                            border: iced::Border { radius: 16.0.into(), ..Default::default() },
+                            border: iced::Border { radius: 14.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
-                    Space::new().width(Fill),
-                    text(format!("{} in call", self.call_participants.len() + 1))
-                        .font(MONO).size(11).color(theme::TEXT_DIM),
                 ]
                 .spacing(8)
-                .align_y(iced::Alignment::Center);
+                .align_y(iced::Alignment::Center)
+                .padding([6, 12]);
 
-                let call_panel = container(
-                    column![
-                        container(participants_row).padding([6, 12]),
-                        container(controls).padding([4, 12]),
-                    ]
-                    .spacing(2),
-                )
+                let call_panel = container(call_bar)
                 .width(Fill)
                 .style(|_: &Theme| container::Style {
-                    background: Some(theme::BG_DEEP.into()),
+                    background: Some(Color::from_rgba(0.0, 0.8, 0.0, 0.05).into()),
                     border: iced::Border {
-                        color: theme::BORDER,
+                        color: Color::from_rgba(0.0, 0.8, 0.0, 0.15),
                         width: 1.0,
                         ..Default::default()
                     },
