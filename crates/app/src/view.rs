@@ -25,9 +25,13 @@ pub(crate) const EMOJI_CELL_SIZE: f32 = 36.0;
 pub(crate) const EMOJI_FREQ_COUNT: usize = 24;
 
 /// Fixed ID for the message scrollable so we can snap to bottom.
+/// Returns the scrollable ID for the current room.
 pub fn messages_scrollable_id() -> iced::widget::Id {
     iced::widget::Id::new("messages_scroll")
 }
+
+/// No-op kept for compatibility
+pub fn set_scroll_room(_room_id: &str) {}
 
 use crate::icons::*;
 use crate::message::Message;
@@ -878,97 +882,16 @@ impl FluxChat {
     fn view_content(&self) -> Element<'_, Message> {
         let mut content = column![].width(Fill).height(Fill);
 
-        // Tab bar
-        if !self.open_tabs.is_empty() {
-            let mut tabs = row![].spacing(0);
-            for (i, (room_id, name, space_name, _)) in self.open_tabs.iter().enumerate() {
-                if i > 0 {
-                    tabs = tabs.push(
-                        container(Space::new())
-                            .width(1)
-                            .height(28)
-                            .style(|_: &Theme| container::Style {
-                                background: Some(theme::BORDER.into()),
-                                ..Default::default()
-                            }),
-                    );
+        // Room header bar (room name + action buttons)
+        if let Some(ref room_id) = self.selected_room_id {
+            let room = self.rooms.iter().find(|r| r.room_id == *room_id);
+            let room_name = room.map(|r| {
+                match r.space_name {
+                    Some(ref space) => format!("{space}/{}", r.name),
+                    None => r.name.clone(),
                 }
-                let is_active = self.selected_room_id.as_deref() == Some(room_id);
-                let tab_bg = if is_active {
-                    theme::BG_MID
-                } else {
-                    theme::BG_DARK
-                };
-                let tab_color = if is_active {
-                    theme::TEXT_BRIGHT
-                } else {
-                    theme::TEXT_MUTED
-                };
-                let bottom_color = if is_active {
-                    theme::ACCENT
-                } else {
-                    theme::BG_DARK
-                };
+            }).unwrap_or_else(|| room_id.clone());
 
-                let label = match space_name {
-                    Some(s) => format!("{s}/{name}"),
-                    None => name.clone(),
-                };
-
-                let room_id_close = room_id.clone();
-                let close_btn = button(
-                    text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM)
-                )
-                .on_press(Message::CloseTab(room_id_close))
-                .padding([0, 6])
-                .style(|_, status| button::Style {
-                    background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
-                    } else {
-                        None
-                    },
-                    text_color: theme::TEXT_DIM,
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                });
-
-                let tab_btn = button(
-                    row![
-                        container(
-                            text(label).font(MONO).size(14).color(tab_color)
-                                .wrapping(iced::widget::text::Wrapping::None)
-                        ).clip(true).width(Fill),
-                        close_btn,
-                    ]
-                    .spacing(4)
-                    .align_y(iced::Alignment::Center),
-                )
-                .on_press(Message::SwitchTab(i))
-                .padding([6, 8])
-                .width(Fill)
-                .style(move |_, _| button::Style {
-                    background: Some(tab_bg.into()),
-                    text_color: tab_color,
-                    ..Default::default()
-                });
-
-                // Tab with accent underline for active
-                let tab = column![
-                    tab_btn,
-                    container(Space::new())
-                        .width(Fill)
-                        .height(2)
-                        .style(move |_: &Theme| container::Style {
-                            background: Some(bottom_color.into()),
-                            ..Default::default()
-                        }),
-                ]
-                .width(Length::FillPortion(1));
-
-                tabs = tabs.push(tab);
-            }
-
-            // Action buttons in tab bar
             let make_action_btn = |svg_bytes: &'static [u8], msg: Message, active: bool| -> Element<Message> {
                 let icon_color = if active { theme::ACCENT } else { theme::TEXT_DIM };
                 let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
@@ -1040,13 +963,18 @@ impl FluxChat {
             .spacing(2)
             .align_y(iced::Alignment::Center);
 
-            let tab_row = row![
-                tabs,
+            let header_row = row![
+                text(room_name).font(MONO).size(14).color(theme::TEXT_BRIGHT)
+                    .wrapping(iced::widget::text::Wrapping::None),
+                Space::new().width(Fill),
                 actions,
-            ].width(Fill).align_y(iced::Alignment::Center);
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .padding([6, 12]);
 
             content = content.push(
-                container(tab_row)
+                container(header_row)
                     .width(Fill)
                     .style(|_: &Theme| container::Style {
                         background: Some(theme::BG_DARK.into()),
@@ -1461,6 +1389,7 @@ impl FluxChat {
                 );
             }
 
+            set_scroll_room(room_id);
             let messages = self.messages_by_room.get(room_id);
             let mut msg_col = column![].spacing(0).padding([2, 8]).width(Fill);
             let mut divider_shown = false;

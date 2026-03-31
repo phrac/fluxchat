@@ -294,19 +294,11 @@ impl FluxChat {
                 let already_loaded = self.messages_by_room.contains_key(&room_id);
                 self.selected_room_id = Some(room_id.clone());
                 self.messages_at_bottom = true;
+                crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
                 self.paginate_msg_count = 0;
                 // Mark as read
                 self.read_rooms.insert(room_id.clone());
-                // Add to tabs if not already present
-                if !self.open_tabs.iter().any(|(id, _, _, _)| id == &room_id) {
-                    let room = self.rooms.iter().find(|r| r.room_id == room_id);
-                    let name = room
-                        .map(|r| r.name.clone())
-                        .unwrap_or_else(|| room_id.clone());
-                    let space_name = room.and_then(|r| r.space_name.clone());
-                    self.open_tabs.push((room_id.clone(), name, space_name, None));
-                }
 
                 // Load timeline + members if not cached
                 let needs_messages = !self.messages_by_room.contains_key(&room_id);
@@ -412,24 +404,15 @@ impl FluxChat {
                     .cloned()
                     .unwrap_or_default();
                 let image_task = self.resolve_images(&cached_msgs);
-                let snap = iced::widget::operation::snap_to_end(crate::view::messages_scrollable_id());
-                return Task::batch([focus, call_check, image_task, snap]);
+                // Use ScrollToBottom message instead of direct snap_to_end —
+                // goes through the update loop, giving iced a frame to render first
+                return Task::batch([focus, call_check, image_task, Task::done(Message::ScrollToBottom)]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
             }
-            Message::CloseTab(room_id) => {
-                self.open_tabs.retain(|(id, _, _, _)| id != &room_id);
-                if self.selected_room_id.as_deref() == Some(&room_id) {
-                    self.selected_room_id = self.open_tabs.last().map(|(id, _, _, _)| id.clone());
-                }
-                self.messages_by_room.remove(&room_id);
-                self.members_by_room.remove(&room_id);
-            }
-            Message::SwitchTab(idx) => {
-                if let Some((id, _, _, _)) = self.open_tabs.get(idx) {
-                    self.selected_room_id = Some(id.clone());
-                }
+            Message::CloseTab(_) | Message::SwitchTab(_) => {
+                // Tabs removed — these are no-ops now
             }
             Message::ToggleSection(section) => {
                 if !self.collapsed_sections.remove(&section) {
@@ -1349,6 +1332,10 @@ impl FluxChat {
             Message::RoomSettingsSaveName => {
                 if let Some(room_id) = self.selected_room_id.clone() {
                     let name = self.room_settings_name.clone();
+                    // Update local state immediately
+                    if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+                        room.name = name.clone();
+                    }
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
@@ -1362,6 +1349,10 @@ impl FluxChat {
             Message::RoomSettingsSaveTopic => {
                 if let Some(room_id) = self.selected_room_id.clone() {
                     let topic = self.room_settings_topic.clone();
+                    // Update local state immediately
+                    if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+                        room.topic = if topic.is_empty() { None } else { Some(topic.clone()) };
+                    }
                     let core = self.core.clone();
                     return Task::perform(
                         async move {

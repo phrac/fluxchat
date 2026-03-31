@@ -14,7 +14,7 @@ A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI. U
 
 ## Key Design Decisions
 - Pure Rust — no JavaScript, TypeScript, or Node.js. Fully native GPU-rendered via wgpu.
-- IRC-inspired: right-aligned nicks with vertical separator, colored nicks, monospace fonts throughout, status bar with mode badges (@/+), channel tabs with Alt+1-9 switching
+- IRC-inspired: right-aligned nicks with vertical separator, colored nicks, monospace fonts throughout, status bar with mode badges (@/+), room header bar with space/room name
 - Timeline API for all message operations (not manual /messages API)
 - Modular slash command system in `commands.rs` — add new commands by adding entries to `all_commands()`
 - Thread tabs use synthetic room IDs (`thread::{room_id}::{event_id}`) stored in `messages_by_room`
@@ -33,7 +33,7 @@ A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI. U
 - Stickers: `m.sticker` events handled in timeline conversion + `get_event_media()`, rendered via InlineImage
 - Syntax highlighting: `syntect` crate with base16-ocean.dark theme, processes `<pre><code class="language-xxx">` blocks in `highlight_code_blocks()`, language tag detection in `simple_markdown_to_html()`
 - Security: `html_escape()` for user content in HTML, URL-encoding for matrix.to links
-- DRY: `parse_room_id()`/`parse_user_id()` helpers in rooms.rs, `extract_message_content()` shared helper, `HudPanel` reusable wrapper, index-based room list grouping, `TabEntry` type alias
+- DRY: `parse_room_id()`/`parse_user_id()` helpers in rooms.rs, `extract_message_content()` shared helper, `HudPanel` reusable wrapper, index-based room list grouping
 - GIF search: Giphy API via `crates/core/src/gif.rs`, `/gif` and `/giphy` commands open GifsHud above input bar, click sends GIF as image upload. API key persisted to SQLite via `/giphykey`, falls back to `GIPHY_API_KEY` env var. GifsHud renders above MessageInput (not top like other HUDs) with 50vh max-height, 3-column grid with 4:3 aspect ratio thumbnails.
 - Overflow menu: 3-dot menu in room actions for secondary actions (favourite, copy link, pins, threads, files, GIFs, notices), primary actions (search, members, info) stay visible
 - Room notifications: per-room mute/mentions/all via `client.notification_settings()`, `/mute` and `/unmute` commands, toggle in room settings
@@ -111,7 +111,8 @@ cargo run -p fluxchat
 - 48+ commands: /join /leave /part /invite /kick /ban /topic /op /deop /nick /me /msg /attach /forward /whois /query /ignore /unignore /users /directory /threads /notices /mute /unmute /status /highlight /unhighlight /timestamp /compact /joinpart /poll /pollend /gif /giphy /giphykey /slap /troutslap /shrug /tableflip /unflip /lenny /spoiler /settings /sessions /security /account /away /quit /clear /help
 
 ## Settings Modal
-- Sidebar tab navigation (vertical left sidebar, 120px) with Account/Sessions/Security tabs
+- Sidebar tab navigation (vertical left sidebar, 120px) with Account/Appearance/Sessions/Security tabs
+- Appearance: message font size slider (10-24px, persisted to SQLite) with live preview
 - Account: banner at top (150px, crop slider for tall images, pick-then-save upload flow), avatar with cached handles (no flicker), display name, password change (old/new/confirm), logout
 - Sessions: device list with SVG verification icons, last seen, remote sign-out with UIAA
 - Security: cross-signing status with SVG icons, key backup enable/recover, recovery key display

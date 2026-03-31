@@ -7,7 +7,7 @@ A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app wit
 ## Why fluxchat
 
 - **Pure Rust** -- no JavaScript, no Electron, no WebView. Native GPU rendering via wgpu.
-- **IRC meets modern chat** -- right-aligned colored nicks, monospace layout, channel tabs, but with inline images, reactions, threads, and encryption.
+- **IRC meets modern chat** -- right-aligned colored nicks, monospace layout, but with inline images, reactions, threads, encryption, and voice calls.
 - **Fast** -- native binary, GPU-accelerated UI, 3-tier media cache, lazy-loaded member lists.
 
 ## Features
