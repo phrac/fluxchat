@@ -142,9 +142,9 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 let body = message.body().to_string();
                 let is_emote = matches!(message.msgtype(), matrix_sdk::ruma::events::room::message::MessageType::Emote(_));
                 let is_video = matches!(message.msgtype(), matrix_sdk::ruma::events::room::message::MessageType::Video(_));
-                let (formatted_body, image_mxc, image_width, image_height) = match message.msgtype() {
+                let (formatted_body, image_mxc, image_width, image_height, geo_uri) = match message.msgtype() {
                     matrix_sdk::ruma::events::room::message::MessageType::Text(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None)
+                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None, None)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
                         let mxc = match &img.source {
@@ -153,13 +153,13 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                         };
                         let w = img.info.as_ref().and_then(|i| i.width).and_then(|v| u32::try_from(v).ok());
                         let h = img.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
-                        (None, mxc, w, h)
+                        (None, mxc, w, h, None)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Notice(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None)
+                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None, None)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Emote(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None)
+                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None, None)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Video(vid) => {
                         let mxc = match &vid.source {
@@ -168,7 +168,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                         };
                         let w = vid.info.as_ref().and_then(|i| i.width).and_then(|v| u32::try_from(v).ok());
                         let h = vid.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
-                        (None, mxc, w, h)
+                        (None, mxc, w, h, None)
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
                         // Show files with image MIME types as inline images (e.g. GIFs sent as files)
@@ -180,19 +180,22 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                                 matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
                                 matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
                             };
-                            (None, mxc, None, None)
+                            (None, mxc, None, None, None)
                         } else {
-                            (None, None, None, None)
+                            (None, None, None, None, None)
                         }
                     }
-                    _ => (None, None, None, None),
+                    matrix_sdk::ruma::events::room::message::MessageType::Location(loc) => {
+                        (None, None, None, None, Some(loc.geo_uri.clone()))
+                    }
+                    _ => (None, None, None, None, None),
                 };
 
                 Some(MessageInfo {
                     event_id, sender, sender_name, body, formatted_body,
                     transformed_body: None, image_mxc, reactions, reply_to_id,
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
-                    thread_root, thread_count, image_width, image_height, poll: None,
+                    thread_root, thread_count, image_width, image_height, poll: None, geo_uri,
                     is_emote, is_video,
                 })
             } else if let Some(sticker) = content.as_sticker() {
@@ -209,7 +212,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     transformed_body: None, image_mxc: mxc, reactions, reply_to_id,
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: w, image_height: h, poll: None,
-                    is_emote: false, is_video: false,
+                    geo_uri: None, is_emote: false, is_video: false,
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -236,7 +239,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                         total_votes,
                         my_vote: None,
                     }),
-                    is_emote: false, is_video: false,
+                    geo_uri: None, is_emote: false, is_video: false,
                 })
             } else {
                 Some(MessageInfo {
@@ -245,7 +248,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: None, image_height: None, poll: None,
-                    is_emote: false, is_video: false,
+                    geo_uri: None, is_emote: false, is_video: false,
                 })
             }
         }
@@ -272,7 +275,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
-                is_emote: false, is_video: false,
+                geo_uri: None, is_emote: false, is_video: false,
             })
         }
 
@@ -286,7 +289,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
-                is_emote: false, is_video: false,
+                geo_uri: None, is_emote: false, is_video: false,
             })
         }
 
@@ -319,7 +322,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
-                is_emote: false, is_video: false,
+                geo_uri: None, is_emote: false, is_video: false,
             })
         }
 

@@ -127,7 +127,7 @@ impl FluxChat {
             Message::SyncStarted => {
                 self.sync_running = true;
             }
-            Message::InitialRoomsLoaded(rooms, spaces, invited) => {
+            Message::InitialRoomsLoaded(rooms, spaces, invited, knocked) => {
                 let mut mxc_uris: Vec<String> = spaces.iter()
                     .filter_map(|s| s.avatar_url.clone())
                     .collect();
@@ -135,6 +135,7 @@ impl FluxChat {
                 self.rooms = rooms;
                 self.spaces = spaces;
                 self.invited_rooms = invited;
+                self.knocked_rooms = knocked;
                 self.sync_running = true;
                 // Load security state for status bar + resolve space/room avatars
                 let sec_task = self.update(Message::SecurityLoadState);
@@ -185,7 +186,7 @@ impl FluxChat {
 
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
-                SyncEvent::RoomListUpdate(rooms, spaces, invited) => {
+                SyncEvent::RoomListUpdate(rooms, spaces, invited, knocked) => {
                     // Zero unread for rooms we've marked as read or the currently selected room
                     let selected = self.selected_room_id.clone();
                     self.rooms = rooms
@@ -207,6 +208,7 @@ impl FluxChat {
                     mxc_uris.extend(self.rooms.iter().filter_map(|r| r.avatar_url.clone()));
                     self.spaces = spaces;
                     self.invited_rooms = invited;
+                    self.knocked_rooms = knocked;
                     if !mxc_uris.is_empty() {
                         return self.resolve_avatars(mxc_uris);
                     }
@@ -1574,6 +1576,83 @@ impl FluxChat {
                 );
             }
 
+            // --- Knocking ---
+            Message::KnockRoom(room_id_or_alias, reason) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::knock_room(&client, &room_id_or_alias, reason.as_deref()).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::CancelKnock(room_id) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::cancel_knock(&client, &room_id).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+
+            // --- Location ---
+            Message::ToggleLocationPicker => {
+                self.location_open = !self.location_open;
+                if self.location_open {
+                    self.location_lat.clear();
+                    self.location_lon.clear();
+                }
+            }
+            Message::LocationLatChanged(val) => {
+                // Detect pasted "lat, lon" pair and auto-split
+                if let Some((lat, lon)) = val.split_once(',') {
+                    let lat = lat.trim().to_string();
+                    let lon = lon.trim().to_string();
+                    if lat.parse::<f64>().is_ok() && lon.parse::<f64>().is_ok() {
+                        self.location_lat = lat;
+                        self.location_lon = lon;
+                        return Task::none();
+                    }
+                }
+                self.location_lat = val;
+            }
+            Message::LocationLonChanged(val) => {
+                self.location_lon = val;
+            }
+            Message::LocationSubmit => {
+                let lat = self.location_lat.trim().to_string();
+                let lon = self.location_lon.trim().to_string();
+                if lat.is_empty() || lon.is_empty() {
+                    return Task::none();
+                }
+                if lat.parse::<f64>().is_err() || lon.parse::<f64>().is_err() {
+                    return Task::none();
+                }
+                let geo_uri = format!("geo:{lat},{lon}");
+                self.location_open = false;
+                return self.update(Message::SendLocation(geo_uri));
+            }
+            Message::SendLocation(geo_uri) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let real_room = if room_id.starts_with("thread::") {
+                        room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                    } else {
+                        room_id
+                    };
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::messages::send_location(&client, &real_room, &geo_uri).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+
             // --- Panels data ---
             Message::PinsLoaded(msgs) => {
                 self.pinned_messages = msgs;
@@ -2402,9 +2481,9 @@ impl FluxChat {
                         {
                             let tx = tx.clone();
                             fluxchat_core::sync_service::spawn_room_list_watcher(
-                                &client, &sync_service, move |rooms, spaces, invited| {
+                                &client, &sync_service, move |rooms, spaces, invited, knocked| {
                                     let _ = tx.send(Message::SyncEvent(SyncEvent::RoomListUpdate(
-                                        rooms, spaces, invited,
+                                        rooms, spaces, invited, knocked,
                                     )));
                                 },
                             ).await;
@@ -2420,13 +2499,13 @@ impl FluxChat {
                 let rooms = fluxchat_core::rooms::get_rooms(&client).await.ok()?;
                 let spaces = fluxchat_core::rooms::get_spaces(&client).await.ok()?;
                 let invited = fluxchat_core::rooms::get_invited_rooms(&client).await.ok()?;
+                let knocked = fluxchat_core::rooms::get_knocked_rooms(&client).await.ok()?;
 
-                Some((rooms, spaces, invited))
+                Some((rooms, spaces, invited, knocked))
             },
             |result| match result {
-                Some((rooms, spaces, invited)) => {
-                    // We'll handle this with a batch: mark sync started + load rooms
-                    Message::InitialRoomsLoaded(rooms, spaces, invited)
+                Some((rooms, spaces, invited, knocked)) => {
+                    Message::InitialRoomsLoaded(rooms, spaces, invited, knocked)
                 }
                 None => Message::SyncStarted,
             },

@@ -174,6 +174,51 @@ impl FluxChat {
             );
         }
 
+        // Location picker panel
+        if self.location_open {
+            let loc_col = column![
+                row![
+                    text("SHARE LOCATION").font(MONO).size(12).color(theme::TEXT_DIM),
+                    Space::new().width(Fill),
+                    button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+                        .on_press(Message::ToggleLocationPicker)
+                        .padding([0, 6])
+                        .style(theme::button_transparent),
+                ].align_y(iced::Alignment::Center),
+                row![
+                    text("Lat").font(MONO).size(12).color(theme::TEXT_DIM),
+                    text_input("40.80, -96.75 or paste pair", &self.location_lat)
+                        .on_input(Message::LocationLatChanged)
+                        .on_submit(Message::LocationSubmit)
+                        .font(MONO).size(14).padding(4).width(Length::Fixed(200.0)),
+                    text("Lon").font(MONO).size(12).color(theme::TEXT_DIM),
+                    text_input("-96.75", &self.location_lon)
+                        .on_input(Message::LocationLonChanged)
+                        .on_submit(Message::LocationSubmit)
+                        .font(MONO).size(14).padding(4).width(Length::Fixed(120.0)),
+                    button(
+                        text("Send").font(MONO).size(13).color(Color::WHITE)
+                    )
+                    .on_press(Message::LocationSubmit)
+                    .padding([4, 12])
+                    .style(|_, status| button::Style {
+                        background: Some(if matches!(status, button::Status::Hovered) {
+                            Color::from_rgba(0.23, 0.51, 0.96, 0.9)
+                        } else {
+                            Color::from_rgba(0.23, 0.51, 0.96, 0.7)
+                        }.into()),
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                ].spacing(8).align_y(iced::Alignment::Center),
+            ].spacing(8);
+            elements.push(
+                container(loc_col).padding([8, 12]).width(Fill)
+                    .style(theme::container_panel)
+                    .into(),
+            );
+        }
+
         // Emoji picker panel
         if self.emoji_open {
             elements.push(self.view_emoji_picker());
@@ -461,10 +506,43 @@ impl FluxChat {
         .padding(6)
         .into();
 
+        let loc_color = if self.location_open { theme::ACCENT } else { theme::TEXT_DIM };
+        let loc_btn: Element<Message> = {
+            let handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_MAP_PIN);
+            iced::widget::tooltip(
+                button(
+                    iced::widget::svg(handle)
+                        .width(16).height(16)
+                        .style(move |_, _| iced::widget::svg::Style { color: Some(loc_color) }),
+                )
+                .on_press(Message::ToggleLocationPicker)
+                .padding([2, 6])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+                text("Location").font(MONO).size(12),
+                iced::widget::tooltip::Position::Top,
+            )
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_MID.into()),
+                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+            .padding(6)
+            .into()
+        };
+
         let input_row = row![
             attach_btn,
             prompt,
             input,
+            loc_btn,
             emoji_btn,
         ]
         .spacing(6)

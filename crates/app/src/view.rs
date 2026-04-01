@@ -623,6 +623,31 @@ impl FluxChat {
             }
         }
 
+        // Knocked (pending join requests)
+        if !self.knocked_rooms.is_empty() {
+            col = col.push(self.view_section_header("Pending", self.knocked_rooms.len()));
+            if !self.collapsed_sections.contains("Pending") {
+                for room in &self.knocked_rooms {
+                    let rid_cancel = room.room_id.clone();
+                    col = col.push(
+                        container(
+                            row![
+                                text(&room.name).font(MONO).size(13).color(theme::TEXT_DIM),
+                                Space::new().width(Fill),
+                                button(text("\u{2717}").font(MONO).size(14).color(theme::TEXT_DIM))
+                                    .on_press(Message::CancelKnock(rid_cancel))
+                                    .padding([2, 6])
+                                    .style(|_, _| button::Style { background: None, text_color: theme::TEXT_DIM, ..Default::default() }),
+                            ]
+                            .spacing(4)
+                            .align_y(iced::Alignment::Center),
+                        )
+                        .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
+                    );
+                }
+            }
+        }
+
         // Favourites
         if !favourites.is_empty() {
             col = col.push(self.view_section_header("Favourites", favourites.len()));

@@ -120,6 +120,53 @@ pub async fn get_invited_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
     Ok(rooms)
 }
 
+/// Get rooms the user has knocked on (pending join requests).
+pub async fn get_knocked_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, AppError> {
+    let mut rooms = Vec::new();
+    for room in client.rooms().into_iter().filter(|r| r.state() == matrix_sdk::RoomState::Knocked) {
+        let name = room.cached_display_name()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| room.room_id().to_string());
+        let avatar_url = room.avatar_url().map(|u| u.to_string());
+        let topic = room.topic();
+        rooms.push(RoomInfo {
+            room_id: room.room_id().to_string(),
+            name,
+            is_encrypted: false,
+            is_space: room.is_space(),
+            is_direct: false,
+            unread_count: 0,
+            highlight_count: 0,
+            avatar_url,
+            topic,
+            space_name: None,
+            space_id: None,
+            is_favourite: false,
+        });
+    }
+    Ok(rooms)
+}
+
+/// Knock on a room (request to join).
+pub async fn knock_room(client: &matrix_sdk::Client, room_id_or_alias: &str, reason: Option<&str>) -> Result<String, AppError> {
+    let id = matrix_sdk::ruma::RoomOrAliasId::parse(room_id_or_alias)
+        .map_err(|_| AppError::Other("Invalid room ID or alias".into()))?;
+    let room = client.knock(id.into(), reason.map(|s| s.to_string()), Vec::new())
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to knock: {e}")))?;
+    Ok(room.room_id().to_string())
+}
+
+/// Cancel a knock (leave a room in knocked state).
+pub async fn cancel_knock(client: &matrix_sdk::Client, room_id: &str) -> Result<(), AppError> {
+    let rid = matrix_sdk::ruma::RoomId::parse(room_id)
+        .map_err(|_| AppError::Other("Invalid room ID".into()))?;
+    let room = client.get_room(&rid)
+        .ok_or(AppError::Other("Room not found".into()))?;
+    room.leave().await.map_err(|e| AppError::Other(format!("Failed to cancel knock: {e}")))?;
+    Ok(())
+}
+
 /// Accept a room invitation.
 pub async fn accept_invite(client: &matrix_sdk::Client, room_id: &str) -> Result<(), AppError> {
     let rid = matrix_sdk::ruma::RoomId::parse(room_id)

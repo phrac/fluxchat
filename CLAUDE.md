@@ -166,10 +166,10 @@ Login (password + SSO/OIDC with provider detection), session persistence, rooms 
 - Keyboard shortcuts (Ctrl+K room switcher)
 - Video calls (camera capture + video tiles)
 - Voice messages
-- Location sharing (MSC3488)
 - Spaces hierarchy (deep recursive browsing)
 - Video playback (system player for now)
-- Room knocking (MSC2403)
+- Location map tiles (currently shows coordinate card, needs embedded OSM tile rendering or static map image fetch)
+- Notification click → navigate to room
 
 ## Known Issues
 - SDK v0.16 doesn't populate `thread_root` or `thread_summary` — we extract from raw event JSON and derive counts at render time

@@ -65,6 +65,8 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/compact", usage: "", description: "Toggle compact mode", needs_room: false },
         Command { name: "/joinpart", usage: "", description: "Toggle join/part messages", needs_room: false },
         Command { name: "/zoom", usage: "[50-200]", description: "Set UI zoom level", needs_room: false },
+        Command { name: "/knock", usage: "<room> [reason]", description: "Request to join a room", needs_room: false },
+        Command { name: "/location", usage: "<lat> <lon> [description]", description: "Share a location", needs_room: true },
         Command { name: "/quit", usage: "", description: "Log out", needs_room: false },
         Command { name: "/gif", usage: "<query>", description: "Search and send a GIF", needs_room: true },
         Command { name: "/giphy", usage: "<query>", description: "Search and send a GIF", needs_room: true },
@@ -186,6 +188,34 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 return CommandResult::Help("Usage: /join <room>".into());
             }
             CommandResult::Messages(vec![Message::JoinRoom(args.to_string())])
+        }
+        "/knock" => {
+            if args.is_empty() {
+                return CommandResult::Help("Usage: /knock <room> [reason]".into());
+            }
+            let mut parts = args.splitn(2, ' ');
+            let room = parts.next().unwrap().to_string();
+            let reason = parts.next().map(|s| s.to_string());
+            CommandResult::Messages(vec![Message::KnockRoom(room, reason)])
+        }
+        "/location" => {
+            if args.is_empty() {
+                return CommandResult::Help("Usage: /location <lat> <lon> [description]".into());
+            }
+            let parts: Vec<&str> = args.splitn(3, ' ').collect();
+            if parts.len() < 2 {
+                return CommandResult::Help("Usage: /location <lat> <lon> [description]".into());
+            }
+            let lat = match parts[0].parse::<f64>() {
+                Ok(v) => v,
+                Err(_) => return CommandResult::Help("Invalid latitude".into()),
+            };
+            let lon = match parts[1].parse::<f64>() {
+                Ok(v) => v,
+                Err(_) => return CommandResult::Help("Invalid longitude".into()),
+            };
+            let geo_uri = format!("geo:{lat},{lon}");
+            CommandResult::Messages(vec![Message::SendLocation(geo_uri)])
         }
         "/leave" | "/part" => {
             if let Some(room_id) = &state.selected_room_id {

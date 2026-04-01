@@ -26,7 +26,7 @@ pub async fn spawn_room_list_watcher<F>(
     sync_service: &SyncService,
     on_update: F,
 ) where
-    F: Fn(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>) + Send + 'static,
+    F: Fn(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>) + Send + 'static,
 {
     let room_list_service = sync_service.room_list_service();
     let client = client.clone();
@@ -50,7 +50,8 @@ pub async fn spawn_room_list_watcher<F>(
             let rooms = crate::rooms::get_rooms(&client).await.unwrap_or_default();
             let spaces = crate::rooms::get_spaces(&client).await.unwrap_or_default();
             let invited = crate::rooms::get_invited_rooms(&client).await.unwrap_or_default();
-            on_update(rooms, spaces, invited);
+            let knocked = crate::rooms::get_knocked_rooms(&client).await.unwrap_or_default();
+            on_update(rooms, spaces, invited, knocked);
         }
     });
 

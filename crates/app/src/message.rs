@@ -17,7 +17,7 @@ pub enum Message {
 
     // --- Post-login startup ---
     SyncStarted,
-    InitialRoomsLoaded(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>), // rooms, spaces, invited
+    InitialRoomsLoaded(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>), // rooms, spaces, invited, knocked
     TimelineLoaded {
         room_id: String,
         messages: Vec<MessageInfo>,
@@ -174,6 +174,13 @@ pub enum Message {
     // --- Invites ---
     AcceptInvite(String), // room_id
     RejectInvite(String), // room_id
+    KnockRoom(String, Option<String>), // room_id_or_alias, reason
+    CancelKnock(String), // room_id
+    SendLocation(String), // geo_uri (e.g. "geo:51.5074,-0.1278")
+    ToggleLocationPicker,
+    LocationLatChanged(String),
+    LocationLonChanged(String),
+    LocationSubmit,
 
     // --- Panels data ---
     PinsLoaded(Vec<fluxchat_core::MessageInfo>),
@@ -282,7 +289,7 @@ pub struct LoginSuccess {
 /// Events coming from the Matrix sync subscription.
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
-    RoomListUpdate(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>), // rooms, spaces, invited
+    RoomListUpdate(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>), // rooms, spaces, invited, knocked
     MessagesUpdated(String, Vec<MessageInfo>), // room_id, messages
     MembersUpdated(String, Vec<MemberInfo>),   // room_id, members
     TypingUpdate(String, Vec<String>),         // room_id, user_ids

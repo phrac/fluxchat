@@ -44,6 +44,7 @@ pub struct MessageInfo {
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
     pub poll: Option<PollInfo>,
+    pub geo_uri: Option<String>,
     #[serde(default)]
     pub is_emote: bool,
     #[serde(default)]

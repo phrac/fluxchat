@@ -149,7 +149,56 @@ impl FluxChat {
         }
 
         // Build the content element — image, video, or text
-        let body_element: Element<'a, Message> = if let Some(ref mxc) = msg.image_mxc {
+        let body_element: Element<'a, Message> = if let Some(ref geo) = msg.geo_uri {
+            // Location message — display as a location card
+            let coords = geo.strip_prefix("geo:").unwrap_or(geo);
+            let parts: Vec<&str> = coords.split(',').collect();
+            let (lat, lon) = if parts.len() >= 2 {
+                (parts[0].trim(), parts[1].split(';').next().unwrap_or("").trim())
+            } else {
+                (coords, "")
+            };
+            let map_url = format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=16/{lat}/{lon}");
+            let description = if msg.body.starts_with("Location:") {
+                None
+            } else {
+                Some(msg.body.clone())
+            };
+            let pin_handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_MAP_PIN);
+            let mut card_col = column![
+                row![
+                    iced::widget::svg(pin_handle).width(20).height(20)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::RED) }),
+                    text(format!("{lat}, {lon}")).font(MONO).size(fs).color(theme::TEXT_BRIGHT),
+                ].spacing(8).align_y(iced::Alignment::Center),
+            ].spacing(4);
+            if let Some(desc) = description {
+                card_col = card_col.push(
+                    text(desc).font(MONO).size(fs - 1.0).color(theme::TEXT_MUTED)
+                );
+            }
+            card_col = card_col.push(
+                text("Open in OpenStreetMap").font(MONO).size(12).color(theme::ACCENT)
+            );
+            button(
+                container(card_col)
+                    .padding([8, 12])
+                    .width(Length::Fixed(300.0))
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::BG_DARK.into()),
+                        border: iced::Border {
+                            color: theme::BORDER,
+                            width: 1.0,
+                            radius: 6.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::OpenUrl(map_url))
+            .padding(0)
+            .style(|_, _| button::Style { background: None, ..Default::default() })
+            .into()
+        } else if let Some(ref mxc) = msg.image_mxc {
             if !msg.is_video {
                 // Image messages
                 if let Some(frames) = self.gif_frames_cache.get(mxc) {
