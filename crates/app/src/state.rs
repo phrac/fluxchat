@@ -44,7 +44,10 @@ pub enum Modal {
     Lightbox { url: String },
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
     Invite,
+    Report { event_id: String, room_id: String },
 }
+
+
 
 /// What action selecting an emoji should perform.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +107,7 @@ pub struct FluxChat {
     pub voice_recording: bool,
     pub voice_record_start: Option<std::time::Instant>,
     pub voice_ready: Option<(Vec<u8>, u64)>, // encoded ogg bytes + duration_ms, waiting to send
+    pub report_reason: String,
     pub quick_switcher_open: bool,
     pub quick_switcher_query: String,
     pub quick_switcher_selected: usize,
@@ -327,6 +331,7 @@ impl FluxChat {
             voice_recording: false,
             voice_record_start: None,
             voice_ready: None,
+            report_reason: String::new(),
             quick_switcher_open: false,
             quick_switcher_query: String::new(),
             quick_switcher_selected: 0,

@@ -409,6 +409,108 @@ impl FluxChat {
                 ),
             );
         }
+        // Search modal overlay (same style as quick switcher)
+        if self.search_open {
+            let mut results_col = column![].spacing(0);
+            let selected_idx = self.search_selected;
+            for (i, result) in self.search_results.iter().take(20).enumerate() {
+                let local_secs = local_time_of_day(result.timestamp);
+                let h = local_secs / 3600;
+                let m = (local_secs % 3600) / 60;
+                let time_str = format!("{h:02}:{m:02}");
+                let nick_col = theme::nick_color(&result.sender_name);
+                let body_line = result.body.lines().next().unwrap_or("");
+                let body_trunc = if body_line.len() > 100 {
+                    format!("{}...", &body_line[..97])
+                } else {
+                    body_line.to_string()
+                };
+                let is_selected = selected_idx == Some(i);
+                let bg = if is_selected {
+                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
+                } else {
+                    None
+                };
+                results_col = results_col.push(
+                    button(
+                        row![
+                            text(time_str).font(MONO).size(12).color(theme::TEXT_DIM),
+                            text(&result.sender_name).font(MONO).size(13).color(nick_col)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                            text(body_trunc).font(MONO).size(13).color(theme::TEXT_NORMAL)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                        ].spacing(8).align_y(iced::Alignment::Center),
+                    )
+                    .on_press(Message::SearchSelectResult(i))
+                    .padding([6, 14])
+                    .width(Fill)
+                    .style(move |_, status| button::Style {
+                        background: if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        } else {
+                            bg
+                        },
+                        ..Default::default()
+                    }),
+                );
+            }
+
+            let search_card = container(
+                column![
+                    text_input("Search messages...", &self.search_query)
+                        .id(search_input_id())
+                        .on_input(Message::SearchQueryChanged)
+                        .on_submit(Message::SearchSubmit)
+                        .font(MONO)
+                        .size(16)
+                        .padding(10),
+                    scrollable(results_col)
+                        .height(Length::Shrink)
+                        .direction(iced::widget::scrollable::Direction::Vertical(
+                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                        ))
+                        .style(thin_scrollbar),
+                ].spacing(0),
+            )
+            .max_height(400.0)
+            .width(Length::Fixed(560.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_DARK.into()),
+                border: iced::Border {
+                    color: theme::ACCENT,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 20.0,
+                },
+                ..Default::default()
+            });
+
+            layers.push(
+                opaque(
+                    mouse_area(
+                        container(
+                            column![
+                                Space::new().height(80),
+                                search_card,
+                            ]
+                        )
+                        .width(Fill)
+                        .center_x(Fill)
+                        .height(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
+                            ..Default::default()
+                        }),
+                    )
+                    .on_press(Message::ToggleSearch),
+                ),
+            );
+        }
+
         // Quick switcher overlay
         if self.quick_switcher_open {
             let matches = self.quick_switcher_matches();
@@ -1314,45 +1416,7 @@ impl FluxChat {
             // are toggled on/off.
             let mut panels_col: iced::widget::Column<'_, Message> = column![].spacing(0);
 
-            // Search bar
-            if self.search_open {
-                let search_input =
-                    text_input("search messages...", &self.search_query)
-                        .id(search_input_id())
-                        .on_input(Message::SearchQueryChanged)
-                        .on_submit(Message::SearchSubmit)
-                        .font(MONO)
-                        .size(15)
-                        .padding(6);
-
-                let search_bar = row![
-                    search_input,
-                    button(text("x").font(MONO).size(13).color(theme::TEXT_DIM))
-                        .on_press(Message::ToggleSearch)
-                        .padding([4, 8])
-                        .style(|_, _| button::Style {
-                            background: None,
-                            ..Default::default()
-                        }),
-                ]
-                .spacing(4)
-                .align_y(iced::Alignment::Center);
-
-                panels_col = panels_col.push(
-                    container(search_bar)
-                        .width(Fill)
-                        .padding([4, 8])
-                        .style(|_: &Theme| container::Style {
-                            background: Some(theme::BG_DARK.into()),
-                            border: iced::Border {
-                                color: theme::ACCENT,
-                                width: 1.0,
-                                radius: 0.0.into(),
-                            },
-                            ..Default::default()
-                        }),
-                );
-            }
+            // Search is now rendered as a modal overlay (like quick switcher)
 
             // Panels (pinned messages, threads, files, notices)
             if self.pins_open {
@@ -1645,99 +1709,10 @@ impl FluxChat {
             )
             .on_exit(Message::HoverMessage(None));
 
-            // Build search results overlay if needed
-            let search_results_overlay: Option<Element<Message>> = if self.search_open && !self.search_results.is_empty() {
-                let mut results_col = column![].spacing(0);
-                let selected_idx = self.search_selected;
-                for (i, result) in self.search_results.iter().take(20).enumerate() {
-                    let local_secs = local_time_of_day(result.timestamp);
-                    let h = local_secs / 3600;
-                    let m = (local_secs % 3600) / 60;
-                    let time_str = format!("{h:02}:{m:02}");
-                    let nick_col = theme::nick_color(&result.sender_name);
-                    // Truncate body to single line
-                    let body_line = result.body.lines().next().unwrap_or("");
-                    let body_trunc = if body_line.len() > 120 {
-                        format!("{}...", &body_line[..117])
-                    } else {
-                        body_line.to_string()
-                    };
-                    let is_selected = selected_idx == Some(i);
-                    let bg = if is_selected {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
-                    } else {
-                        None
-                    };
-                    results_col = results_col.push(
-                        button(
-                            row![
-                                text(time_str)
-                                    .font(MONO)
-                                    .size(13)
-                                    .color(theme::TEXT_DIM),
-                                text(&result.sender_name)
-                                    .font(MONO)
-                                    .size(13)
-                                    .color(nick_col)
-                                    .wrapping(iced::widget::text::Wrapping::None),
-                                text(body_trunc)
-                                    .font(MONO)
-                                    .size(13)
-                                    .color(theme::TEXT_NORMAL)
-                                    .wrapping(iced::widget::text::Wrapping::None),
-                            ]
-                            .spacing(6)
-                            .align_y(iced::Alignment::Center),
-                        )
-                        .on_press(Message::SearchSelectResult(i))
-                        .padding([3, 8])
-                        .width(Fill)
-                        .style(move |_, status| button::Style {
-                            background: if matches!(status, button::Status::Hovered) {
-                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
-                            } else {
-                                bg
-                            },
-                            ..Default::default()
-                        }),
-                    );
-                }
-                Some(
-                    container(
-                        scrollable(results_col)
-                            .height(Length::Shrink)
-                            .direction(iced::widget::scrollable::Direction::Vertical(
-                                iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
-                            ))
-                            .style(thin_scrollbar),
-                    )
-                    .max_height(200.0)
-                    .width(Fill)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(theme::BG_DARK.into()),
-                        border: iced::Border {
-                            color: theme::BORDER,
-                            width: 1.0,
-                            radius: 0.0.into(),
-                        },
-                        ..Default::default()
-                    })
-                    .into(),
-                )
-            } else {
-                None
-            };
-
-            // Helper: wrap msg_scrollable in a stack with any overlays (search results, new-messages pill)
+            // Helper: wrap msg_scrollable in a stack with overlays (new-messages pill)
             let mut msg_stack = stack![
                 container(msg_scrollable).width(Fill).height(Fill),
             ].width(Fill).height(Fill);
-
-            if let Some(search_overlay) = search_results_overlay {
-                msg_stack = msg_stack.push(
-                    container(search_overlay).width(Fill).align_y(iced::alignment::Vertical::Top),
-                );
-            }
 
             // Floating "new messages" pill when scrolled up and new messages arrived
             if !self.messages_at_bottom {
@@ -1982,6 +1957,9 @@ impl FluxChat {
                     if let iced::keyboard::Key::Character(c) = key {
                         if c.as_str() == "k" || c.as_str() == "K" {
                             return Some(Message::ToggleQuickSwitcher);
+                        }
+                        if c.as_str() == "f" || c.as_str() == "F" {
+                            return Some(Message::ToggleSearch);
                         }
                     }
                 }

@@ -514,6 +514,10 @@ impl FluxChat {
                         if let Some((name, _)) = self.cmd_completions.get(self.cmd_completion_idx) {
                             self.input_text = format!("{name} ");
                             self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                            // Move cursor to end
+                            self.input_content.perform(iced::widget::text_editor::Action::Move(
+                                iced::widget::text_editor::Motion::DocumentEnd,
+                            ));
                         }
                     }
                     return iced::widget::operation::focus(crate::view::input_id());
@@ -526,6 +530,9 @@ impl FluxChat {
                             if let Some(at_pos) = self.input_text.rfind('@') {
                                 self.input_text = format!("{}{display_name} ", &self.input_text[..at_pos + 1]);
                                 self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                                self.input_content.perform(iced::widget::text_editor::Action::Move(
+                                    iced::widget::text_editor::Motion::DocumentEnd,
+                                ));
                             }
                         }
                     }
@@ -1211,6 +1218,9 @@ impl FluxChat {
                         .unwrap_or(0);
                     self.profile_power_input = power.to_string();
                     Task::none()
+                } else if matches!(&modal, crate::state::Modal::Report { .. }) {
+                    self.report_reason.clear();
+                    Task::none()
                 } else {
                     Task::none()
                 };
@@ -1799,6 +1809,24 @@ impl FluxChat {
                 }
             }
 
+            // --- Reporting ---
+            Message::ReportReasonChanged(reason) => {
+                self.report_reason = reason;
+            }
+            Message::SubmitReport => {
+                if let Some(crate::state::Modal::Report { event_id, room_id }) = self.modal.take() {
+                    let reason = std::mem::take(&mut self.report_reason);
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::messages::report_message(&client, &room_id, &event_id, &reason).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+
             // --- Quick switcher ---
             Message::ToggleQuickSwitcher => {
                 self.quick_switcher_open = !self.quick_switcher_open;
@@ -2359,6 +2387,11 @@ impl FluxChat {
                 // Priority: quick switcher > overflow > completions > modal > panels > reply/edit
                 if self.quick_switcher_open {
                     self.quick_switcher_open = false;
+                } else if self.search_open {
+                    self.search_open = false;
+                    self.search_results.clear();
+                    self.search_selected = None;
+                    self.highlight_event_id = None;
                 } else if self.overflow_menu_open {
                     self.overflow_menu_open = false;
                 } else if !self.cmd_completions.is_empty() {
@@ -2367,8 +2400,6 @@ impl FluxChat {
                     self.mention_completions.clear();
                 } else if self.modal.is_some() {
                     self.modal = None;
-                } else if self.search_open {
-                    self.search_open = false;
                 } else if self.pins_open {
                     self.pins_open = false;
                 } else if self.threads_open {

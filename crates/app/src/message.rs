@@ -188,6 +188,10 @@ pub enum Message {
     DiscardVoiceMessage,
     PreviewVoiceMessage,
 
+    // --- Reporting ---
+    ReportReasonChanged(String),
+    SubmitReport,
+
     // --- Quick switcher ---
     ToggleQuickSwitcher,
     QuickSwitcherQuery(String),

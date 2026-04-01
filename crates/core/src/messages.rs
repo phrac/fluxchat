@@ -174,6 +174,16 @@ pub async fn send_voice_message(client: &matrix_sdk::Client, room_id: &str, ogg_
     Ok(result.event_id.to_string())
 }
 
+/// Report a message to the homeserver.
+pub async fn report_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str, reason: &str) -> Result<(), AppError> {
+    use matrix_sdk::ruma::api::client::room::report_content;
+    let rid = parse_room_id(room_id)?;
+    let eid = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
+    let request = report_content::v3::Request::new(rid, eid, None, Some(reason.to_string()));
+    client.send(request).await.map_err(|e| AppError::Other(format!("Report failed: {e}")))?;
+    Ok(())
+}
+
 /// Send a location message (MSC3488).
 pub async fn send_location(client: &matrix_sdk::Client, room_id: &str, geo_uri: &str) -> Result<String, AppError> {
     use matrix_sdk::ruma::events::room::message::{LocationMessageEventContent, RoomMessageEventContent};

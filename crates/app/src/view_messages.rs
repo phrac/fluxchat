@@ -435,18 +435,22 @@ impl FluxChat {
             .into();
 
         let msg_row: Element<'a, Message> = if is_hovered {
-            let make_msg_action = |svg_bytes: &'static [u8], msg_action: Message| -> Element<'a, Message> {
+            // Size action buttons to fit within the message row height
+            let btn_size = (fs + 4.0).max(18.0);
+            let icon_sz = btn_size - 6.0;
+            let btn_pad = ((btn_size - icon_sz) / 2.0).floor() as u16;
+            let make_msg_action = move |svg_bytes: &'static [u8], msg_action: Message| -> Element<'a, Message> {
                 let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
                 button(
                     iced::widget::svg(handle)
-                        .width(Length::Fixed(13.0)).height(Length::Fixed(13.0))
+                        .width(Length::Fixed(icon_sz)).height(Length::Fixed(icon_sz))
                         .content_fit(iced::ContentFit::Fill)
                         .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_MUTED) }),
                 )
                 .on_press(msg_action)
-                .padding(3)
-                .width(Length::Fixed(20.0))
-                .height(Length::Fixed(20.0))
+                .padding(btn_pad)
+                .width(Length::Fixed(btn_size))
+                .height(Length::Fixed(btn_size))
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
                         Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into())
@@ -490,6 +494,17 @@ impl FluxChat {
                     msg.body.clone(),
                 )));
                 action_row = action_row.push(make_msg_action(SVG_DELETE, Message::DeleteMessage(event_id.clone())));
+            } else {
+                // Report button (other people's messages only)
+                let report_room = self.selected_room_id.clone().unwrap_or_default();
+                let report_room = if report_room.starts_with("thread::") {
+                    report_room.splitn(3, "::").nth(1).unwrap_or(&report_room).to_string()
+                } else {
+                    report_room
+                };
+                action_row = action_row.push(make_msg_action(SVG_FLAG, Message::OpenModal(
+                    crate::state::Modal::Report { event_id: event_id.clone(), room_id: report_room },
+                )));
             }
 
             let action_bar: Element<'a, Message> = container(

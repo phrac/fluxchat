@@ -26,6 +26,43 @@ impl FluxChat {
             crate::state::Modal::Forward { body, .. } => self.view_forward_modal(body),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
             crate::state::Modal::Invite => self.view_invite_modal(),
+            crate::state::Modal::Report { .. } => {
+                let col = column![
+                    text("Report Message").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    rule::horizontal(1),
+                    text("Why are you reporting this message?").font(MONO).size(13).color(theme::TEXT_DIM),
+                    text_input("Reason...", &self.report_reason)
+                        .on_input(Message::ReportReasonChanged)
+                        .on_submit(Message::SubmitReport)
+                        .font(MONO).size(14).padding(8),
+                    row![
+                        Space::new().width(Fill),
+                        button(text("Cancel").font(MONO).size(13).color(theme::TEXT_DIM))
+                            .on_press(Message::CloseModal)
+                            .padding([6, 14])
+                            .style(|_, status| button::Style {
+                                background: if matches!(status, button::Status::Hovered) {
+                                    Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                                } else { None },
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                        button(text("Report").font(MONO).size(13).color(iced::Color::WHITE))
+                            .on_press(Message::SubmitReport)
+                            .padding([6, 14])
+                            .style(|_, status| button::Style {
+                                background: Some(if matches!(status, button::Status::Hovered) {
+                                    iced::Color::from_rgba(0.9, 0.2, 0.2, 0.9)
+                                } else {
+                                    iced::Color::from_rgba(0.9, 0.2, 0.2, 0.7)
+                                }.into()),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    ].spacing(8),
+                ].spacing(12).width(350);
+                col.into()
+            }
         };
 
         let pad = if matches!(modal, crate::state::Modal::Profile { .. }) { 0 } else { 24 };

@@ -66,10 +66,10 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/joinpart", usage: "", description: "Toggle join/part messages", needs_room: false },
         Command { name: "/zoom", usage: "[50-200]", description: "Set UI zoom level", needs_room: false },
         Command { name: "/knock", usage: "<room> [reason]", description: "Request to join a room", needs_room: false },
+        Command { name: "/report", usage: "<event_id> [reason]", description: "Report a message", needs_room: true },
         Command { name: "/location", usage: "<lat> <lon> [description]", description: "Share a location", needs_room: true },
         Command { name: "/quit", usage: "", description: "Log out", needs_room: false },
         Command { name: "/gif", usage: "<query>", description: "Search and send a GIF", needs_room: true },
-        Command { name: "/giphy", usage: "<query>", description: "Search and send a GIF", needs_room: true },
         Command { name: "/giphykey", usage: "<key>", description: "Set Giphy API key", needs_room: false },
         Command { name: "/attach", usage: "", description: "Attach a file", needs_room: true },
         Command { name: "/forward", usage: "", description: "Forward a message", needs_room: true },
@@ -217,6 +217,17 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             let geo_uri = format!("geo:{lat},{lon}");
             CommandResult::Messages(vec![Message::SendLocation(geo_uri)])
         }
+        "/report" => {
+            if args.is_empty() {
+                return CommandResult::Help("Usage: /report <event_id> [reason]".into());
+            }
+            let mut parts = args.splitn(2, ' ');
+            let event_id = parts.next().unwrap().to_string();
+            let room_id = state.selected_room_id.clone().unwrap_or_default();
+            CommandResult::Messages(vec![Message::OpenModal(crate::state::Modal::Report {
+                event_id, room_id,
+            })])
+        }
         "/leave" | "/part" => {
             if let Some(room_id) = &state.selected_room_id {
                 CommandResult::Messages(vec![Message::LeaveRoom(room_id.clone())])
@@ -348,7 +359,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         }
 
         // --- GIF ---
-        "/gif" | "/giphy" => {
+        "/gif" => {
             if args.is_empty() {
                 CommandResult::Messages(vec![Message::ToggleGifs])
             } else {
