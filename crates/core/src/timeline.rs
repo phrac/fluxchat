@@ -111,9 +111,31 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 return None;
             }
 
-            // Extract thread info
-            let thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
+            // Extract thread info — SDK v0.16 doesn't populate thread_root,
+            // so extract from raw event JSON
+            let mut thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
             let thread_count = msg_like.thread_summary.as_ref().map(|s| s.num_replies);
+            if thread_root.is_none() {
+                // Try original_json first, then latest_json
+                let raw_json = ev.original_json().or_else(|| ev.latest_json());
+                if let Some(raw) = raw_json {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.json().get()) {
+                        if let Some(relates_to) = val.get("content").and_then(|c| c.get("m.relates_to")) {
+                            if relates_to.get("rel_type").and_then(|r| r.as_str()) == Some("m.thread") {
+                                if let Some(eid) = relates_to.get("event_id").and_then(|e| e.as_str()) {
+                                    thread_root = Some(eid.to_string());
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No raw JSON available — check content thread_root from SDK
+                    // which might be populated through different code path
+                    if let Some(tr) = content.thread_root() {
+                        thread_root = Some(tr.to_string());
+                    }
+                }
+            }
 
 
             if let Some(message) = content.as_message() {
@@ -323,10 +345,31 @@ pub async fn create_thread_timeline(
 }
 
 /// Batch convert timeline items to MessageInfo vec.
+/// Derives thread_count from thread_root references since the SDK
+/// doesn't populate thread_summary.
 pub fn timeline_items_to_messages(
     items: &[Arc<TimelineItem>],
 ) -> Vec<MessageInfo> {
-    items.iter()
+    let mut msgs: Vec<MessageInfo> = items.iter()
         .filter_map(|item| timeline_item_to_message_info(item))
-        .collect()
+        .collect();
+
+    // Count thread replies per root event_id
+    let mut thread_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for msg in &msgs {
+        if let Some(ref root) = msg.thread_root {
+            *thread_counts.entry(root.clone()).or_insert(0) += 1;
+        }
+    }
+    if !thread_counts.is_empty() {
+        tracing::info!("Derived thread counts: {:?}", thread_counts);
+    }
+    // Apply counts to root messages
+    for msg in &mut msgs {
+        if let Some(&count) = thread_counts.get(&msg.event_id) {
+            msg.thread_count = Some(count);
+        }
+    }
+
+    msgs
 }

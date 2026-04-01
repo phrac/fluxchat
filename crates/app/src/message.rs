@@ -60,6 +60,9 @@ pub enum Message {
     SearchArrowDown,
     SearchArrowUp,
 
+    // --- Threads ---
+    OpenThread(String, String), // room_id, thread_root_event_id
+
     // --- UI panels ---
     ToggleMemberList,
     ToggleSearch,

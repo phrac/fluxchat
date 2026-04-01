@@ -629,6 +629,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains("Favourites") {
                 for room in &favourites {
                     col = col.push(self.view_room_entry(room, false));
+                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
                 }
             }
         }
@@ -639,6 +640,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains("Channels") {
                 for room in &ungrouped {
                     col = col.push(self.view_room_entry(room, false));
+                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
                 }
             }
         }
@@ -653,6 +655,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains(space_name) {
                 for room in rooms {
                     col = col.push(self.view_room_entry(room, false));
+                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
                 }
             }
         }
@@ -663,6 +666,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains("Direct Messages") {
                 for room in &dms {
                     col = col.push(self.view_room_entry(room, true));
+                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
                 }
             }
         }
@@ -751,6 +755,44 @@ impl FluxChat {
                     ..Default::default()
                 }),
         ].spacing(0).into()
+    }
+
+    /// Thread entries indented below their parent room in the sidebar.
+    fn view_thread_entries(&self, room_id: &str) -> Vec<Element<Message>> {
+        let prefix = format!("thread::{room_id}::");
+        self.open_tabs.iter()
+            .filter(|(tid, _, _, _)| tid.starts_with(&prefix))
+            .map(|(tid, tname, _, _)| {
+                let is_selected = self.selected_room_id.as_deref() == Some(tid.as_str());
+                let name_color = if is_selected { theme::TEXT_BRIGHT } else { theme::TEXT_DIM };
+                let bg = if is_selected { theme::BG_LIGHT } else { Color::TRANSPARENT };
+                let tid_owned = tid.clone();
+                button(
+                    row![
+                        Space::new().width(Length::Fixed(20.0)),
+                        iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_THREAD))
+                            .width(12).height(12)
+                            .style(move |_, _| iced::widget::svg::Style { color: Some(name_color) }),
+                        text(tname).font(MONO).size(12).color(name_color)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ].spacing(4).align_y(iced::Alignment::Center),
+                )
+                .on_press(Message::SelectRoom(tid_owned))
+                .padding([3, 8])
+                .width(Fill)
+                .style(move |_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                    } else if bg != Color::TRANSPARENT {
+                        Some(bg.into())
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                })
+                .into()
+            })
+            .collect()
     }
 
     /// Single room entry in the list.
@@ -889,13 +931,23 @@ impl FluxChat {
 
         // Room header bar (room name + action buttons)
         if let Some(ref room_id) = self.selected_room_id {
-            let room = self.rooms.iter().find(|r| r.room_id == *room_id);
-            let room_name = room.map(|r| {
-                match r.space_name {
-                    Some(ref space) => format!("{space}/{}", r.name),
-                    None => r.name.clone(),
-                }
-            }).unwrap_or_else(|| room_id.clone());
+            // Thread tabs: derive name from parent room
+            let (_room, room_name) = if room_id.starts_with("thread::") {
+                let parts: Vec<&str> = room_id.splitn(3, "::").collect();
+                let parent_room_id = parts.get(1).unwrap_or(&"");
+                let parent = self.rooms.iter().find(|r| r.room_id == *parent_room_id);
+                let parent_name = parent.map(|r| r.name.as_str()).unwrap_or("room");
+                (parent, format!("Thread in {parent_name}"))
+            } else {
+                let room = self.rooms.iter().find(|r| r.room_id == *room_id);
+                let name = room.map(|r| {
+                    match r.space_name {
+                        Some(ref space) => format!("{space}/{}", r.name),
+                        None => r.name.clone(),
+                    }
+                }).unwrap_or_else(|| room_id.clone());
+                (room, name)
+            };
 
             let make_action_btn = |svg_bytes: &'static [u8], msg: Message, active: bool| -> Element<Message> {
                 let icon_color = if active { theme::ACCENT } else { theme::TEXT_DIM };
@@ -1024,6 +1076,31 @@ impl FluxChat {
                 }
             }
 
+            // Thread topic bar: show thread root message preview
+            if room_id.starts_with("thread::") {
+                if let Some((_, tname, _, _)) = self.open_tabs.iter().find(|(id, _, _, _)| id == room_id) {
+                    content = content.push(
+                        container(
+                            text(tname.as_str())
+                                .font(MONO)
+                                .size(13)
+                                .color(theme::TEXT_DIM),
+                        )
+                        .padding([3, 12])
+                        .width(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_DARK.into()),
+                            border: iced::Border {
+                                color: theme::BORDER,
+                                width: 1.0,
+                                radius: 0.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                    );
+                }
+            }
+
             // Collect all optional panels into a single column so the content
             // column always has the same number of children. This prevents Iced
             // from losing the messages scrollable's scroll state when panels
@@ -1099,7 +1176,7 @@ impl FluxChat {
             }
 
             if self.threads_open {
-                let panel_col = column![
+                let mut panel_col = column![
                     row![
                         text("THREADS").font(MONO).size(12).color(theme::TEXT_DIM),
                         Space::new().width(Fill),
@@ -1108,8 +1185,42 @@ impl FluxChat {
                             .padding([0, 6])
                             .style(theme::button_transparent),
                     ].align_y(iced::Alignment::Center),
-                    text("Thread view coming soon").font(MONO).size(13).color(theme::TEXT_DIM),
                 ].spacing(4);
+                if self.thread_messages.is_empty() {
+                    panel_col = panel_col.push(text("No threads").font(MONO).size(13).color(theme::TEXT_DIM));
+                } else {
+                    for tmsg in self.thread_messages.iter().take(50) {
+                        let nick_col = theme::nick_color(&tmsg.sender_name);
+                        let count = tmsg.thread_count.unwrap_or(0);
+                        let count_label = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
+                        let body_preview: String = tmsg.body.lines().next().unwrap_or("").chars().take(80).collect();
+                        let thread_room_id = self.selected_room_id.clone().unwrap_or_default();
+                        let thread_event_id = tmsg.event_id.clone();
+                        panel_col = panel_col.push(
+                            button(
+                                column![
+                                    row![
+                                        text(&tmsg.sender_name).font(MONO).size(13).color(nick_col),
+                                        text(count_label).font(MONO).size(12).color(theme::TEXT_DIM),
+                                    ].spacing(8).align_y(iced::Alignment::Center),
+                                    text(body_preview).font(MONO).size(13).color(theme::TEXT_MUTED)
+                                        .wrapping(iced::widget::text::Wrapping::None),
+                                ].spacing(2),
+                            )
+                            .on_press(Message::OpenThread(thread_room_id, thread_event_id))
+                            .padding([4, 6])
+                            .width(Fill)
+                            .style(|_, status| button::Style {
+                                background: if matches!(status, button::Status::Hovered) {
+                                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                                } else {
+                                    None
+                                },
+                                ..Default::default()
+                            }),
+                        );
+                    }
+                }
                 panels_col = panels_col.push(
                     container(panel_col).padding([8, 12]).width(Fill)
                         .style(theme::container_panel)
@@ -1195,8 +1306,25 @@ impl FluxChat {
                 let show_divider = last_read.as_ref().is_some_and(|lr| {
                     msgs.last().map(|m| &m.event_id) != Some(lr)
                 });
+                let is_thread_view = room_id.starts_with("thread::");
+                // Derive thread reply counts at render time (SDK v0.16 doesn't populate thread_root reliably)
+                let thread_counts: std::collections::HashMap<&str, u32> = if !is_thread_view {
+                    let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+                    for m in msgs.iter() {
+                        if let Some(ref root) = m.thread_root {
+                            *counts.entry(root.as_str()).or_insert(0) += 1;
+                        }
+                    }
+                    counts
+                } else {
+                    std::collections::HashMap::new()
+                };
                 for msg in msgs.iter() {
                     if self.ignored_users.contains(&msg.sender) {
+                        continue;
+                    }
+                    // Hide thread replies from the main room (they show in thread view)
+                    if !is_thread_view && msg.thread_root.is_some() {
                         continue;
                     }
                     // Skip empty/whitespace-only messages that aren't system/emote/image/video/poll
@@ -1253,6 +1381,39 @@ impl FluxChat {
                         }
                     }
                     msg_col = msg_col.push(self.view_message(msg));
+                    // Thread indicator from derived counts (not relying on msg.thread_count)
+                    if !is_thread_view {
+                        if let Some(&count) = thread_counts.get(msg.event_id.as_str()) {
+                            let label = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
+                            let handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_THREAD);
+                            let current_room = room_id.to_string();
+                            let eid = msg.event_id.clone();
+                            msg_col = msg_col.push(
+                                row![
+                                    Space::new().width(Length::Fixed(196.0)),
+                                    button(
+                                        row![
+                                            iced::widget::svg(handle)
+                                                .width(12).height(12)
+                                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::ACCENT) }),
+                                            text(label).font(MONO).size(12).color(theme::ACCENT),
+                                        ].spacing(4).align_y(iced::Alignment::Center),
+                                    )
+                                    .on_press(Message::OpenThread(current_room, eid))
+                                    .padding([2, 6])
+                                    .style(|_, status| button::Style {
+                                        background: if matches!(status, button::Status::Hovered) {
+                                            Some(Color::from_rgba(0.23, 0.51, 0.96, 0.1).into())
+                                        } else {
+                                            None
+                                        },
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                                ].spacing(0),
+                            );
+                        }
+                    }
                     // Read receipts for this message
                     if let Some(receipt_row) = self.view_read_receipts(&msg.event_id, room_receipts) {
                         msg_col = msg_col.push(receipt_row);

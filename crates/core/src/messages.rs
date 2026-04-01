@@ -283,6 +283,29 @@ pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, 
     Ok(room.send(reply_content).await?.event_id.to_string())
 }
 
+/// Send a message as a threaded reply (creates/continues a thread).
+pub async fn send_thread_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, thread_root_event_id: &str) -> Result<String, AppError> {
+    let room_id_parsed = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let event_id = matrix_sdk::ruma::EventId::parse(thread_root_event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
+    let msg_content = build_message_content(&room, body).await;
+    let content = match msg_content.msgtype {
+        matrix_sdk::ruma::events::room::message::MessageType::Text(t) => {
+            if let Some(formatted) = t.formatted {
+                RoomMessageEventContentWithoutRelation::text_html(t.body, formatted.body)
+            } else {
+                RoomMessageEventContentWithoutRelation::text_plain(t.body)
+            }
+        }
+        _ => RoomMessageEventContentWithoutRelation::text_plain(body),
+    };
+    let reply = Reply { event_id, enforce_thread: matrix_sdk::room::reply::EnforceThread::Threaded(
+        matrix_sdk::ruma::events::room::message::ReplyWithinThread::No,
+    ) };
+    let reply_content = room.make_reply_event(content, reply).await.map_err(|e| AppError::Other(format!("Failed to create reply: {e}")))?;
+    Ok(room.send(reply_content).await?.event_id.to_string())
+}
+
 /// Edit an existing message in a room.
 pub async fn edit_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str, new_body: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;

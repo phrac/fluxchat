@@ -332,6 +332,17 @@ impl FluxChat {
                 msg.sender_name.clone(),
                 msg.body.chars().take(80).collect(),
             )));
+            // Reply in thread
+            if let Some(room_id) = &self.selected_room_id {
+                if !room_id.starts_with("thread::") {
+                    // Use existing thread_root if this message is in a thread, otherwise start new thread on this message
+                    let thread_root = msg.thread_root.as_deref().unwrap_or(&msg.event_id);
+                    action_row = action_row.push(make_msg_action(SVG_THREAD, Message::OpenThread(
+                        room_id.clone(),
+                        thread_root.to_string(),
+                    )));
+                }
+            }
 
             if is_own {
                 action_row = action_row.push(make_msg_action(SVG_EDIT, Message::StartEdit(
@@ -511,6 +522,8 @@ impl FluxChat {
             col = col.push(el);
         }
         col = col.push(reactions_row);
+
+        // Thread indicator rendered in view.rs message loop (using derived counts)
 
         // Highlight searched-to message with a tinted background
         if self.highlight_event_id.as_deref() == Some(&msg.event_id) {

@@ -292,6 +292,10 @@ impl FluxChat {
             // --- Room navigation ---
             Message::SelectRoom(room_id) => {
                 let already_loaded = self.messages_by_room.contains_key(&room_id);
+                // When navigating to a non-thread room, remove thread tabs
+                if !room_id.starts_with("thread::") {
+                    self.open_tabs.retain(|(id, _, _, _)| !id.starts_with("thread::"));
+                }
                 self.selected_room_id = Some(room_id.clone());
                 self.messages_at_bottom = true;
                 crate::view::set_scroll_room(&room_id);
@@ -612,19 +616,48 @@ impl FluxChat {
                     let core = self.core.clone();
                     let reply_to = self.reply_to.take();
                     let edit = self.edit_event.take();
+                    let tx_thread = self.timeline_tx.clone();
+                    // Detect thread context: synthetic ID is thread::room_id::thread_root_id
+                    let thread_ctx = if room_id.starts_with("thread::") {
+                        let parts: Vec<&str> = room_id.splitn(3, "::").collect();
+                        if parts.len() == 3 {
+                            Some((parts[1].to_string(), parts[2].to_string()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     let send = Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             if let Some((event_id, _)) = edit {
+                                // Edit uses the real room_id
+                                let real_room = thread_ctx.as_ref().map(|(r, _)| r.as_str()).unwrap_or(&room_id);
                                 let _ = fluxchat_core::messages::edit_message(
-                                    &client, &room_id, &event_id, &body,
+                                    &client, real_room, &event_id, &body,
                                 )
                                 .await;
                             } else if let Some((event_id, _, _)) = reply_to {
+                                let real_room = thread_ctx.as_ref().map(|(r, _)| r.as_str()).unwrap_or(&room_id);
                                 let _ = fluxchat_core::messages::send_reply(
-                                    &client, &room_id, &body, &event_id,
+                                    &client, real_room, &body, &event_id,
                                 )
                                 .await;
+                            } else if let Some((real_room, thread_root)) = &thread_ctx {
+                                // In a thread tab — send as threaded reply
+                                let _ = fluxchat_core::messages::send_thread_reply(
+                                    &client, real_room, &body, thread_root,
+                                )
+                                .await;
+                                // Re-fetch thread messages after sending
+                                if let Ok(msgs) = fluxchat_core::threads::get_thread_messages(
+                                    &client, real_room, thread_root,
+                                ).await {
+                                    let _ = tx_thread.send(crate::message::Message::SyncEvent(
+                                        SyncEvent::MessagesUpdated(room_id.clone(), msgs),
+                                    ));
+                                }
                             } else {
                                 let _ =
                                     fluxchat_core::messages::send_message(&client, &room_id, &body)
@@ -850,6 +883,61 @@ impl FluxChat {
                 }
             }
 
+            // --- Threads ---
+            Message::OpenThread(room_id, thread_root_id) => {
+                let synthetic_id = format!("thread::{room_id}::{thread_root_id}");
+                self.threads_open = false;
+                self.overflow_menu_open = false;
+                // Track open thread in sidebar
+                if !self.open_tabs.iter().any(|(id, _, _, _)| id == &synthetic_id) {
+                    let parent_name = self.rooms.iter()
+                        .find(|r| r.room_id == room_id)
+                        .map(|r| r.name.clone())
+                        .unwrap_or_else(|| "thread".into());
+                    // Use first line of thread root message as thread name
+                    let thread_name = self.messages_by_room
+                        .get(&room_id)
+                        .and_then(|msgs| msgs.iter().find(|m| m.event_id == thread_root_id))
+                        .map(|m| {
+                            let preview: String = m.body.chars().take(100).collect();
+                            if m.body.chars().count() > 100 { format!("{preview}...") } else { preview }
+                        })
+                        .unwrap_or_else(|| "Thread".into());
+                    self.open_tabs.push((synthetic_id.clone(), thread_name, Some(parent_name), None));
+                }
+                // If already loaded, just select it
+                if self.messages_by_room.contains_key(&synthetic_id) {
+                    return self.update(Message::SelectRoom(synthetic_id));
+                }
+                // Load thread messages via relations API (SDK timeline thread_root is always None in v0.16)
+                let core = self.core.clone();
+                let sid = synthetic_id.clone();
+                let rid = room_id.clone();
+                let trid = thread_root_id.clone();
+                self.selected_room_id = Some(synthetic_id.clone());
+                self.messages_at_bottom = true;
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let msgs = fluxchat_core::threads::get_thread_messages(&client, &rid, &trid)
+                            .await
+                            .unwrap_or_else(|e| {
+                                tracing::warn!("Failed to load thread: {e}");
+                                Vec::new()
+                            });
+                        tracing::info!("Thread loaded: {} messages", msgs.len());
+                        let members = fluxchat_core::messages::get_room_members(&client, &rid).await.ok();
+                        Some((sid, msgs, members))
+                    },
+                    |result| match result {
+                        Some((room_id, msgs, members)) => {
+                            Message::TimelineLoaded { room_id, messages: msgs, members }
+                        }
+                        None => Message::Noop,
+                    },
+                );
+            }
+
             // --- UI panels ---
             Message::ToggleMemberList => {
                 self.show_member_list = !self.show_member_list;
@@ -887,6 +975,29 @@ impl FluxChat {
             Message::ToggleThreads => {
                 self.threads_open = !self.threads_open;
                 self.overflow_menu_open = false;
+                if self.threads_open {
+                    // Collect thread roots from loaded messages.
+                    // Find them two ways: messages with thread_count > 0, OR
+                    // messages referenced as thread_root by other messages.
+                    if let Some(room_id) = &self.selected_room_id {
+                        if let Some(msgs) = self.messages_by_room.get(room_id) {
+                            // Collect all referenced thread root IDs
+                            let mut root_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+                            for m in msgs {
+                                if let Some(ref root) = m.thread_root {
+                                    root_ids.insert(root.clone());
+                                }
+                                if m.thread_count.map(|c| c > 0).unwrap_or(false) {
+                                    root_ids.insert(m.event_id.clone());
+                                }
+                            }
+                            self.thread_messages = msgs.iter()
+                                .filter(|m| root_ids.contains(&m.event_id))
+                                .cloned()
+                                .collect();
+                        }
+                    }
+                }
             }
             Message::ToggleFiles => {
                 self.files_open = !self.files_open;
