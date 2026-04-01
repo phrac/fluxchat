@@ -81,6 +81,7 @@ fn spawn_audio_playback(audio_track: livekit::prelude::RemoteAudioTrack) {
     }
 
     // Store the output stream — drop it when the audio loop ends
+    #[allow(dead_code)]
     struct SendStream(*mut cpal::Stream);
     unsafe impl Send for SendStream {}
     let stream_holder = SendStream(Box::into_raw(Box::new(stream)));

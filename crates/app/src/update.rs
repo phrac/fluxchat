@@ -291,7 +291,7 @@ impl FluxChat {
 
             // --- Room navigation ---
             Message::SelectRoom(room_id) => {
-                let already_loaded = self.messages_by_room.contains_key(&room_id);
+                let _already_loaded = self.messages_by_room.contains_key(&room_id);
                 // When navigating to a non-thread room, remove thread tabs
                 if !room_id.starts_with("thread::") {
                     self.open_tabs.retain(|(id, _, _, _)| !id.starts_with("thread::"));
@@ -2006,26 +2006,8 @@ impl FluxChat {
                 if self.sync_running {
                     let mut tasks = Vec::new();
 
-                    // Periodic room list refresh
-                    let core = self.core.clone();
-                    tasks.push(Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            let rooms = fluxchat_core::rooms::get_rooms(&client).await.ok()?;
-                            let spaces = fluxchat_core::rooms::get_spaces(&client).await.ok()?;
-                            let invited =
-                                fluxchat_core::rooms::get_invited_rooms(&client).await.ok()?;
-                            Some((rooms, spaces, invited))
-                        },
-                        |result| match result {
-                            Some((rooms, spaces, invited)) => {
-                                Message::SyncEvent(SyncEvent::RoomListUpdate(
-                                    rooms, spaces, invited,
-                                ))
-                            }
-                            None => Message::Noop,
-                        },
-                    ));
+                    // Room list updates are now reactive via RoomListService watcher
+                    // Tick only handles read receipts and call presence polling
 
                     // Load read receipts for current room
                     if let Some(ref room_id) = self.selected_room_id {
@@ -2282,6 +2264,7 @@ impl FluxChat {
 
         // Start sync and load initial rooms
         let core = self.core.clone();
+        let tx = self.timeline_tx.clone();
         Task::perform(
             async move {
                 let client = match core.get_client().await {
@@ -2297,19 +2280,71 @@ impl FluxChat {
                 // Enable event cache
                 let _ = client.event_cache().subscribe();
 
-                // Start sync service
+                // Register typing handler — fires under sliding sync
+                {
+                    let tx = tx.clone();
+                    let own_user_id = client.user_id().map(|u| u.to_owned());
+                    client.add_event_handler(move |ev: matrix_sdk::ruma::events::typing::SyncTypingEvent, room: matrix_sdk::Room| {
+                        let tx = tx.clone();
+                        let own_id = own_user_id.clone();
+                        async move {
+                            let user_ids: Vec<String> = ev.content.user_ids.iter()
+                                .filter(|u| own_id.as_ref() != Some(*u))
+                                .map(|u| u.to_string())
+                                .collect();
+                            let _ = tx.send(Message::SyncEvent(SyncEvent::TypingUpdate(
+                                room.room_id().to_string(), user_ids,
+                            )));
+                        }
+                    });
+                }
+
+                // Register verification handler — fires under sliding sync
+                {
+                    let tx = tx.clone();
+                    let client_clone = client.clone();
+                    client.add_event_handler(move |ev: matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent| {
+                        let tx = tx.clone();
+                        let client = client_clone.clone();
+                        async move {
+                            let request = client.encryption()
+                                .get_verification_request(&ev.sender, &ev.content.transaction_id)
+                                .await;
+                            if let Some(request) = request {
+                                let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(
+                                    fluxchat_core::VerificationInfo {
+                                        flow_id: request.flow_id().to_string(),
+                                        other_user_id: request.other_user_id().to_string(),
+                                        is_self_verification: request.is_self_verification(),
+                                        state: "requested".into(),
+                                        emojis: None,
+                                    },
+                                )));
+                            }
+                        }
+                    });
+                }
+
+                // Start sync service (sliding sync)
                 match fluxchat_core::sync_service::create_sync_service(&client).await {
                     Ok(sync_service) => {
+                        // Spawn room list watcher for reactive updates
+                        {
+                            let tx = tx.clone();
+                            fluxchat_core::sync_service::spawn_room_list_watcher(
+                                &client, &sync_service, move |rooms, spaces, invited| {
+                                    let _ = tx.send(Message::SyncEvent(SyncEvent::RoomListUpdate(
+                                        rooms, spaces, invited,
+                                    )));
+                                },
+                            ).await;
+                        }
                         *core.sync_service.lock().await = Some(sync_service);
                     }
                     Err(e) => {
-                        tracing::warn!("SyncService failed ({e}), using basic sync");
+                        tracing::warn!("SyncService failed: {e}");
                     }
                 }
-
-                // Also start the legacy sync for typing/verification callbacks
-                // (using a no-op bridge since Iced subscription handles room list)
-                fluxchat_core::sync::spawn_sync(client.clone(), NoopSyncBridge);
 
                 // Load initial rooms
                 let rooms = fluxchat_core::rooms::get_rooms(&client).await.ok()?;
@@ -2388,20 +2423,6 @@ fn mime_from_extension(filename: &str) -> String {
         _ => "application/octet-stream",
     }
     .to_string()
-}
-
-/// No-op sync bridge — Iced subscription handles events directly.
-/// We only need spawn_sync running for typing/verification callbacks via the SDK.
-struct NoopSyncBridge;
-
-impl fluxchat_core::sync::SyncCallbacks for NoopSyncBridge {
-    fn on_message(&self, _: String, _: fluxchat_core::MessageInfo) {}
-    fn on_edit(&self, _: String, _: String, _: String, _: Option<String>) {}
-    fn on_reaction(&self, _: String, _: String, _: String, _: String) {}
-    fn on_typing(&self, _: String, _: Vec<String>) {}
-    fn on_membership_change(&self, _: String, _: fluxchat_core::MessageInfo) {}
-    fn on_room_list_update(&self) {}
-    fn on_verification_request(&self, _: fluxchat_core::VerificationInfo) {}
 }
 
 /// Extract URLs from message text (max 2 per message).
