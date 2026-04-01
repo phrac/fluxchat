@@ -322,28 +322,25 @@ impl FluxChat {
             }
             elements.push(
                 container(
-                    container(
-                        popup_col,
-                    )
-                    .max_height(300)
-                    .padding([4, 0])
-                    .style(|_: &Theme| container::Style {
-                        background: Some(theme::BG_DEEP.into()),
-                        border: iced::Border {
-                            color: theme::ACCENT,
-                            width: 2.0,
-                            radius: 6.0.into(),
-                        },
-                        shadow: iced::Shadow {
-                            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                            offset: iced::Vector::new(0.0, -2.0),
-                            blur_radius: 12.0,
-                        },
-                        ..Default::default()
-                    }),
+                    scrollable(popup_col)
+                        .height(Length::Shrink)
+                        .direction(iced::widget::scrollable::Direction::Vertical(
+                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                        ))
+                        .style(thin_scrollbar),
                 )
+                .max_height(350)
                 .width(Fill)
-                .padding([4, 8])
+                .padding([6, 0])
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_DEEP.into()),
+                    border: iced::Border {
+                        color: theme::BORDER,
+                        width: 1.0,
+                        radius: 0.0.into(),
+                    },
+                    ..Default::default()
+                })
                 .into(),
             );
         }

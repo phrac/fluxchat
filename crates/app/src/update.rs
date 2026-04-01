@@ -946,6 +946,11 @@ impl FluxChat {
                 if self.quick_switcher_open {
                     return self.update(Message::QuickSwitcherDown);
                 }
+                // Command completions navigation
+                if !self.cmd_completions.is_empty() {
+                    self.cmd_completion_idx = (self.cmd_completion_idx + 1) % self.cmd_completions.len().min(12);
+                    return Task::none();
+                }
                 let len = self.search_results.len().min(20);
                 if len > 0 {
                     self.search_selected = Some(
@@ -956,6 +961,11 @@ impl FluxChat {
             Message::SearchArrowUp => {
                 if self.quick_switcher_open {
                     return self.update(Message::QuickSwitcherUp);
+                }
+                if !self.cmd_completions.is_empty() {
+                    let len = self.cmd_completions.len().min(12);
+                    self.cmd_completion_idx = if self.cmd_completion_idx == 0 { len - 1 } else { self.cmd_completion_idx - 1 };
+                    return Task::none();
                 }
                 if !self.search_results.is_empty() {
                     self.search_selected = Some(
