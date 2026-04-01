@@ -151,7 +151,8 @@ pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str
     Ok(result.event_id.to_string())
 }
 
-/// Build message content with mention resolution and markdown formatting.
+/// Build message content with mention resolution, markdown formatting,
+/// and MSC3952 intentional mentions (m.mentions).
 async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
     // Only attempt mention resolution if body contains @
     let has_mentions = body.contains('@');
@@ -163,9 +164,17 @@ async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessa
 
     let mut html = body.to_string();
     let mut changed = false;
+    let mut mentioned_user_ids: std::collections::BTreeSet<matrix_sdk::ruma::OwnedUserId> =
+        std::collections::BTreeSet::new();
+    let mut mentions_room = false;
 
     // Resolve @mentions
     if has_mentions {
+        // Detect @room mention
+        if body.contains("@room") {
+            mentions_room = true;
+        }
+
         // Use tokio timeout to prevent hanging
         let members_result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
@@ -191,6 +200,10 @@ async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessa
                     );
                     html = html.replace(&mention, &link);
                     changed = true;
+                    // Track for m.mentions (MSC3952)
+                    if let Ok(uid) = matrix_sdk::ruma::UserId::parse(user_id) {
+                        mentioned_user_ids.insert(uid.into());
+                    }
                 }
             }
         }
@@ -205,7 +218,7 @@ async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessa
         }
     }
 
-    if changed {
+    let mut content = if changed {
         let mut final_html = html;
         if final_html.contains('\n') {
             final_html = final_html.replace('\n', "<br>");
@@ -213,7 +226,16 @@ async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessa
         RoomMessageEventContent::text_html(body, &final_html)
     } else {
         RoomMessageEventContent::text_plain(body)
+    };
+
+    // Set m.mentions (MSC3952 intentional mentions)
+    if !mentioned_user_ids.is_empty() || mentions_room {
+        let mut mentions = matrix_sdk::ruma::events::Mentions::with_user_ids(mentioned_user_ids);
+        mentions.room = mentions_room;
+        content.mentions = Some(mentions);
     }
+
+    content
 }
 
 fn simple_markdown(text: &str) -> String {
