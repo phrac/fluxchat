@@ -212,6 +212,53 @@ impl FluxChat {
                     }
                 }
                 SyncEvent::MessagesUpdated(room_id, new_messages) => {
+                    // Detect truly new messages for notifications
+                    let existing_ids: std::collections::HashSet<String> = self.messages_by_room
+                        .get(&room_id)
+                        .map(|msgs| msgs.iter().map(|m| m.event_id.clone()).collect())
+                        .unwrap_or_default();
+                    let brand_new: Vec<&fluxchat_core::MessageInfo> = new_messages.iter()
+                        .filter(|m| !existing_ids.contains(&m.event_id)
+                            && !m.event_id.starts_with("~")
+                            && m.sender != self.user_id)
+                        .collect();
+
+                    // Fire desktop notifications for new messages
+                    let is_active = self.selected_room_id.as_deref() == Some(&room_id);
+                    if self.notifications_enabled && !brand_new.is_empty()
+                        && (!is_active || !self.app_focused)
+                    {
+                        let room_name = self.rooms.iter()
+                            .find(|r| r.room_id == room_id)
+                            .map(|r| r.name.clone())
+                            .unwrap_or_else(|| room_id.clone());
+
+                        for msg in &brand_new {
+                            // Skip if mentions-only mode and not a mention
+                            if self.notify_mentions_only {
+                                let is_mention = msg.body.to_lowercase().contains(
+                                    &self.display_name.as_deref().unwrap_or("").to_lowercase()
+                                ) || msg.formatted_body.as_ref().is_some_and(|f|
+                                    f.contains(&self.user_id)
+                                );
+                                if !is_mention { continue; }
+                            }
+
+                            let title = format!("{} - {}", msg.sender_name, room_name);
+                            let body_text = if self.notify_show_preview {
+                                msg.body.chars().take(200).collect::<String>()
+                            } else {
+                                "New message".into()
+                            };
+
+                            let _ = notify_rust::Notification::new()
+                                .summary(&title)
+                                .body(&body_text)
+                                .timeout(5000)
+                                .show();
+                        }
+                    }
+
                     // Merge new messages with existing ones to preserve history
                     // that the SDK timeline may have trimmed from its buffer.
                     let merged = if let Some(existing) = self.messages_by_room.get(&room_id) {
@@ -219,15 +266,12 @@ impl FluxChat {
                             .iter()
                             .map(|m| m.event_id.as_str())
                             .collect();
-                        // Keep old messages not present in the new set (trimmed by SDK),
-                        // then append all new messages (which include updates to existing ones)
                         let mut merged: Vec<fluxchat_core::MessageInfo> = existing
                             .iter()
                             .filter(|m| !new_ids.contains(m.event_id.as_str()))
                             .cloned()
                             .collect();
                         merged.extend(new_messages);
-                        // Sort by timestamp to maintain chronological order
                         merged.sort_by_key(|m| m.timestamp);
                         merged
                     } else {
@@ -246,7 +290,6 @@ impl FluxChat {
                         .collect();
                     let preview_task = self.resolve_url_previews(&merged);
                     let image_task = self.resolve_images(&merged);
-                    let is_active = self.selected_room_id.as_deref() == Some(&room_id);
                     let new_count = merged.len();
                     self.messages_by_room.insert(room_id, merged);
                     // Clear paginating when messages arrive from diff stream
@@ -963,7 +1006,6 @@ impl FluxChat {
                                 tracing::warn!("Failed to load thread: {e}");
                                 Vec::new()
                             });
-                        tracing::info!("Thread loaded: {} messages", msgs.len());
                         let members = fluxchat_core::messages::get_room_members(&client, &rid).await.ok();
                         Some((sid, msgs, members))
                     },
@@ -1188,6 +1230,27 @@ impl FluxChat {
             Message::SetMsgFontSize(size) => {
                 self.msg_font_size = size.clamp(10.0, 24.0);
                 let _ = self.core.db.set_setting("msg_font_size", &self.msg_font_size.to_string());
+            }
+
+            // --- Notifications ---
+            Message::SetNotificationsEnabled(enabled) => {
+                self.notifications_enabled = enabled;
+                let _ = self.core.db.set_setting("notifications_enabled", if enabled { "true" } else { "false" });
+            }
+            Message::SetNotifyMentionsOnly(val) => {
+                self.notify_mentions_only = val;
+                let _ = self.core.db.set_setting("notify_mentions_only", if val { "true" } else { "false" });
+            }
+            Message::SetNotifyShowPreview(val) => {
+                self.notify_show_preview = val;
+                let _ = self.core.db.set_setting("notify_show_preview", if val { "true" } else { "false" });
+            }
+            Message::SetNotifySound(val) => {
+                self.notify_sound = val;
+                let _ = self.core.db.set_setting("notify_sound", if val { "true" } else { "false" });
+            }
+            Message::WindowFocusChanged(focused) => {
+                self.app_focused = focused;
             }
 
             // --- Room commands ---
@@ -2398,6 +2461,18 @@ impl FluxChat {
         }
         if let Some(key) = self.core.db.get_setting("giphy_api_key") {
             self.giphy_api_key = key;
+        }
+        if let Some(val) = self.core.db.get_setting("notifications_enabled") {
+            self.notifications_enabled = val != "false";
+        }
+        if let Some(val) = self.core.db.get_setting("notify_mentions_only") {
+            self.notify_mentions_only = val == "true";
+        }
+        if let Some(val) = self.core.db.get_setting("notify_show_preview") {
+            self.notify_show_preview = val != "false";
+        }
+        if let Some(val) = self.core.db.get_setting("notify_sound") {
+            self.notify_sound = val != "false";
         }
         if let Some(words) = self.core.db.get_setting("highlight_words") {
             self.highlight_words = serde_json::from_str(&words).unwrap_or_default();

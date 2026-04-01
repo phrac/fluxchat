@@ -22,7 +22,7 @@ Enable encryption on any room from room settings (one-way toggle). Full E2EE sup
 Full emoji picker with 9 categories, search, and frequently-used tracking. React to messages with any emoji. Pill-shaped reaction badges.
 
 ### Threads
-Thread indicators with reply counts. Open threads as dedicated tabs with live updates. Thread replies use proper `m.thread` relation for cross-client compatibility.
+Thread indicators with reply counts on root messages. Threads HUD lists all thread roots. Open threads from hover bar, HUD, or reply count — loads via relations API with sub-header showing root message. Thread entries in sidebar below parent room. Thread replies use proper `m.thread` relation. Replies hidden from main timeline.
 
 ### Encryption
 End-to-end encryption via matrix-sdk (vodozemac). SAS emoji verification, key backup and recovery, session management with remote sign-out, cross-signing status.
@@ -33,8 +33,11 @@ Room list grouped by space with collapsible sections. Room creation, settings, i
 ### Voice Calls (MatrixRTC)
 Voice calls via MatrixRTC + LiveKit. Join or start calls from any room. Microphone capture via cpal, audio playback of remote participants. In-call panel with participant avatars and mute/hangup controls. PIP widget in member list when viewing other rooms during a call. Defaults to muted mic on join. Requires a LiveKit SFU (discovered via `.well-known`).
 
+### Notifications
+Desktop notifications via `notify-rust`. Fires when messages arrive in non-active rooms or when the app is unfocused. Settings tab with toggles: enable/disable, mentions only, show message preview, notification sound. Per-room mute via `/mute` command.
+
 ### Search
-Server-side search with client-side fallback for encrypted rooms. Clickable results with scroll-to-highlight. User directory and public room directory.
+Server-side search with client-side fallback for encrypted rooms. Overlay dropdown with clickable results, arrow key navigation, scroll-to-highlight with blue tint. User directory and public room directory.
 
 ### Polls
 Create interactive polls with `/poll`, vote with progress bars, end with `/pollend`. MSC3381 compatible.
@@ -49,7 +52,7 @@ Syntax highlighting for 100+ languages via syntect. Base16 Ocean Dark theme.
 48+ commands with Tab-cycling autocomplete. Room management, messaging, user ops, discovery, polls, display toggles, text macros.
 
 ### Profile & Settings
-Discord-style profile cards with colored banner, avatar, role badges, and power level management (Member/Mod/Admin presets + custom levels). Settings modal with sidebar navigation for account, sessions, and security. Password change, banner crop positioning, avatar management.
+Discord-style profile cards with colored banner, avatar, role badges, and power level management (Member/Mod/Admin presets + custom levels). Settings modal with sidebar navigation for Account, Appearance, Notifications, Sessions, and Security. Password change, banner crop positioning, avatar management, font size control, notification preferences.
 
 ### Authentication
 Username/password and SSO/OIDC with auto-detection and provider-specific buttons. Session persistence.
@@ -75,6 +78,7 @@ Both crates are pure Rust with zero JS/TS dependencies.
 | E2EE | vodozemac |
 | Voice | [LiveKit](https://livekit.io/) 0.7 (MatrixRTC) |
 | Audio | cpal 0.15 |
+| Notifications | notify-rust |
 | Syntax | syntect |
 
 ## Building

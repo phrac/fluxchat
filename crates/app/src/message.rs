@@ -90,6 +90,13 @@ pub enum Message {
     SetZoomLevel(u32),
     SetMsgFontSize(f32),
 
+    // --- Notifications ---
+    SetNotificationsEnabled(bool),
+    SetNotifyMentionsOnly(bool),
+    SetNotifyShowPreview(bool),
+    SetNotifySound(bool),
+    WindowFocusChanged(bool),
+
     // --- Room commands (async) ---
     JoinRoom(String),                           // room_id or alias
     LeaveRoom(String),                          // room_id

@@ -128,6 +128,13 @@ pub struct FluxChat {
     pub msg_font_size: f32,
     pub giphy_api_key: String,
 
+    // Notifications
+    pub notifications_enabled: bool,
+    pub notify_mentions_only: bool,
+    pub notify_show_preview: bool,
+    pub notify_sound: bool,
+    pub app_focused: bool,
+
     // Status
     pub sync_lag_ms: u64,
     pub sidebar_width: f32,
@@ -320,6 +327,11 @@ impl FluxChat {
             zoom_level: 100,
             msg_font_size: 14.0,
             giphy_api_key: String::new(),
+            notifications_enabled: true,
+            notify_mentions_only: false,
+            notify_show_preview: true,
+            notify_sound: true,
+            app_focused: true,
             sync_lag_ms: 0,
             sidebar_width: 220.0,
             sidebar_dragging: false,

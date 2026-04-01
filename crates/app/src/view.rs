@@ -1817,11 +1817,17 @@ impl FluxChat {
             Message::Noop
         });
 
-        // File drag-drop + sidebar resize mouse tracking
+        // File drag-drop + sidebar resize mouse tracking + window focus
         let file_drop = iced::event::listen_with(|event, _status, _window| {
             match event {
                 iced::Event::Window(iced::window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(path))
+                }
+                iced::Event::Window(iced::window::Event::Focused) => {
+                    Some(Message::WindowFocusChanged(true))
+                }
+                iced::Event::Window(iced::window::Event::Unfocused) => {
+                    Some(Message::WindowFocusChanged(false))
                 }
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     Some(Message::SidebarDrag(position.x))

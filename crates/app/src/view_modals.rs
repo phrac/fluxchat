@@ -79,6 +79,7 @@ impl FluxChat {
         let sidebar = column![
             make_tab_btn("Account".into(), "account".into(), &tab_owned),
             make_tab_btn("Appearance".into(), "appearance".into(), &tab_owned),
+            make_tab_btn("Notifications".into(), "notifications".into(), &tab_owned),
             make_tab_btn("Sessions".into(), "sessions".into(), &tab_owned),
             make_tab_btn("Security".into(), "security".into(), &tab_owned),
         ]
@@ -492,6 +493,50 @@ impl FluxChat {
                         ..Default::default()
                     }),
                 ].spacing(10);
+                scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
+            }
+            "notifications" => {
+                let make_toggle = |label: &'static str, enabled: bool, msg: fn(bool) -> Message| -> Element<Message> {
+                    row![
+                        text(label).font(MONO).size(14).color(theme::TEXT_NORMAL),
+                        Space::new().width(Fill),
+                        iced::widget::toggler(enabled)
+                            .on_toggle(msg)
+                            .size(18)
+                            .style(|_: &Theme, status| {
+                                use iced::widget::toggler;
+                                let is_on = match status {
+                                    toggler::Status::Active { is_toggled } | toggler::Status::Hovered { is_toggled } | toggler::Status::Disabled { is_toggled } => is_toggled,
+                                };
+                                toggler::Style {
+                                    background: if is_on { theme::ACCENT.into() } else { theme::BG_LIGHT.into() },
+                                    foreground: iced::Color::WHITE.into(),
+                                    background_border_width: 1.0,
+                                    background_border_color: if is_on { theme::ACCENT } else { theme::BORDER },
+                                    foreground_border_width: 0.0,
+                                    foreground_border_color: iced::Color::TRANSPARENT,
+                                    text_color: None,
+                                    border_radius: None,
+                                    padding_ratio: 0.2,
+                                }
+                            }),
+                    ]
+                    .spacing(12)
+                    .align_y(iced::Alignment::Center)
+                    .padding([8, 0])
+                    .into()
+                };
+
+                let col = column![
+                    text("Notifications").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    rule::horizontal(1),
+                    make_toggle("Enable notifications", self.notifications_enabled, Message::SetNotificationsEnabled),
+                    make_toggle("Mentions only", self.notify_mentions_only, Message::SetNotifyMentionsOnly),
+                    make_toggle("Show message preview", self.notify_show_preview, Message::SetNotifyShowPreview),
+                    make_toggle("Notification sound", self.notify_sound, Message::SetNotifySound),
+                    Space::new().height(12),
+                    text("Per-room mute: use /mute and /unmute commands").font(MONO).size(12).color(theme::TEXT_DIM),
+                ].spacing(6);
                 scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
             }
             _ => text("Unknown tab")

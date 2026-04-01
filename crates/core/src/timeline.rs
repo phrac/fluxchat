@@ -361,9 +361,6 @@ pub fn timeline_items_to_messages(
             *thread_counts.entry(root.clone()).or_insert(0) += 1;
         }
     }
-    if !thread_counts.is_empty() {
-        tracing::info!("Derived thread counts: {:?}", thread_counts);
-    }
     // Apply counts to root messages
     for msg in &mut msgs {
         if let Some(&count) = thread_counts.get(&msg.event_id) {
