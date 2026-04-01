@@ -24,6 +24,11 @@ pub fn search_input_id() -> iced::widget::Id {
     iced::widget::Id::new("search_input")
 }
 
+/// Fixed ID for the quick switcher input.
+pub fn quick_switcher_id() -> iced::widget::Id {
+    iced::widget::Id::new("quick_switcher_input")
+}
+
 pub(crate) const EMOJI_GRID_COLUMNS: usize = 8;
 pub(crate) const EMOJI_PANEL_HEIGHT: f32 = 280.0;
 pub(crate) const EMOJI_CELL_SIZE: f32 = 36.0;
@@ -401,6 +406,125 @@ impl FluxChat {
                             }),
                     )
                     .on_press(Message::CloseModal),
+                ),
+            );
+        }
+        // Quick switcher overlay
+        if self.quick_switcher_open {
+            let matches = self.quick_switcher_matches();
+            let mut results_col = column![].spacing(0);
+            for (i, room_id) in matches.iter().enumerate() {
+                if let Some(room) = self.rooms.iter().find(|r| r.room_id == *room_id) {
+                    let is_selected = i == self.quick_switcher_selected;
+                    let bg = if is_selected {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
+                    } else {
+                        None
+                    };
+                    let space_prefix = room.space_name.as_ref()
+                        .map(|s| format!("{s}/"))
+                        .unwrap_or_default();
+                    let rid = room_id.clone();
+                    let avatar_el: Element<Message> = if let Some(handle) = room.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
+                        container(
+                            iced::widget::image(handle.clone())
+                                .width(20).height(20)
+                                .content_fit(iced::ContentFit::Cover),
+                        )
+                        .width(20).height(20).clip(true)
+                        .style(|_: &Theme| container::Style {
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        })
+                        .into()
+                    } else {
+                        let initial = room.name.chars().next().unwrap_or('#').to_uppercase().to_string();
+                        container(
+                            text(initial).font(MONO).size(11).color(theme::TEXT_DIM),
+                        )
+                        .width(20).height(20)
+                        .center_x(20).center_y(20)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BG_LIGHT.into()),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        })
+                        .into()
+                    };
+                    results_col = results_col.push(
+                        button(
+                            row![
+                                avatar_el,
+                                text(format!("{space_prefix}{}", room.name))
+                                    .font(MONO).size(14).color(theme::TEXT_NORMAL),
+                            ].spacing(10).align_y(iced::Alignment::Center),
+                        )
+                        .on_press(Message::SelectRoom(rid))
+                        .padding([8, 14])
+                        .width(Fill)
+                        .style(move |_, status| button::Style {
+                            background: if matches!(status, button::Status::Hovered) {
+                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                            } else {
+                                bg
+                            },
+                            ..Default::default()
+                        }),
+                    );
+                }
+            }
+            let switcher = container(
+                column![
+                    text_input("Switch to room...", &self.quick_switcher_query)
+                        .id(quick_switcher_id())
+                        .on_input(Message::QuickSwitcherQuery)
+                        .on_submit(Message::QuickSwitcherSelect)
+                        .font(MONO)
+                        .size(16)
+                        .padding(10),
+                    scrollable(results_col)
+                        .height(Length::Shrink)
+                        .direction(iced::widget::scrollable::Direction::Vertical(
+                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                        ))
+                        .style(thin_scrollbar),
+                ].spacing(0),
+            )
+            .max_height(400.0)
+            .width(Length::Fixed(500.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_DARK.into()),
+                border: iced::Border {
+                    color: theme::ACCENT,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 20.0,
+                },
+                ..Default::default()
+            });
+
+            layers.push(
+                opaque(
+                    mouse_area(
+                        container(
+                            column![
+                                Space::new().height(80),
+                                switcher,
+                            ]
+                        )
+                        .width(Fill)
+                        .center_x(Fill)
+                        .height(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
+                            ..Default::default()
+                        }),
+                    )
+                    .on_press(Message::ToggleQuickSwitcher),
                 ),
             );
         }
@@ -1849,8 +1973,24 @@ impl FluxChat {
             Message::Noop
         });
 
-        // File drag-drop + sidebar resize mouse tracking + window focus
+        // File drag-drop + sidebar resize mouse tracking + window focus + global shortcuts
         let file_drop = iced::event::listen_with(|event, _status, _window| {
+            // Intercept global shortcuts before widgets consume them
+            if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = &event {
+                // Ctrl/Cmd+K: quick switcher
+                if modifiers.command() || modifiers.control() {
+                    if let iced::keyboard::Key::Character(c) = key {
+                        if c.as_str() == "k" || c.as_str() == "K" {
+                            return Some(Message::ToggleQuickSwitcher);
+                        }
+                    }
+                }
+                // Escape while quick switcher is open — intercept before text_input consumes it
+                if *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) {
+                    // Always emit Escape — the handler will check quick_switcher_open
+                    return Some(Message::Escape);
+                }
+            }
             match event {
                 iced::Event::Window(iced::window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(path))

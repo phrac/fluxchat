@@ -187,6 +187,13 @@ pub enum Message {
     SendVoiceMessage,
     DiscardVoiceMessage,
     PreviewVoiceMessage,
+
+    // --- Quick switcher ---
+    ToggleQuickSwitcher,
+    QuickSwitcherQuery(String),
+    QuickSwitcherSelect,
+    QuickSwitcherUp,
+    QuickSwitcherDown,
     ToggleLocationPicker,
     LocationLatChanged(String),
     LocationLonChanged(String),

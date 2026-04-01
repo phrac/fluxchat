@@ -351,6 +351,7 @@ impl FluxChat {
             // --- Room navigation ---
             Message::SelectRoom(room_id) => {
                 let _already_loaded = self.messages_by_room.contains_key(&room_id);
+                self.quick_switcher_open = false;
                 // When navigating to a non-thread room, remove thread tabs
                 if !room_id.starts_with("thread::") {
                     self.open_tabs.retain(|(id, _, _, _)| !id.starts_with("thread::"));
@@ -934,6 +935,10 @@ impl FluxChat {
                 self.search_selected = None;
             }
             Message::SearchArrowDown => {
+                // Quick switcher takes priority
+                if self.quick_switcher_open {
+                    return self.update(Message::QuickSwitcherDown);
+                }
                 let len = self.search_results.len().min(20);
                 if len > 0 {
                     self.search_selected = Some(
@@ -942,6 +947,9 @@ impl FluxChat {
                 }
             }
             Message::SearchArrowUp => {
+                if self.quick_switcher_open {
+                    return self.update(Message::QuickSwitcherUp);
+                }
                 if !self.search_results.is_empty() {
                     self.search_selected = Some(
                         self.search_selected.map(|i| i.saturating_sub(1)).unwrap_or(0)
@@ -1791,6 +1799,43 @@ impl FluxChat {
                 }
             }
 
+            // --- Quick switcher ---
+            Message::ToggleQuickSwitcher => {
+                self.quick_switcher_open = !self.quick_switcher_open;
+                self.quick_switcher_query.clear();
+                self.quick_switcher_selected = 0;
+                if self.quick_switcher_open {
+                    return iced::widget::operation::focus(crate::view::quick_switcher_id());
+                }
+            }
+            Message::QuickSwitcherQuery(query) => {
+                self.quick_switcher_query = query;
+                self.quick_switcher_selected = 0;
+            }
+            Message::QuickSwitcherDown => {
+                if self.quick_switcher_open {
+                    let count = self.quick_switcher_matches().len();
+                    if count > 0 {
+                        self.quick_switcher_selected = (self.quick_switcher_selected + 1).min(count - 1);
+                    }
+                }
+            }
+            Message::QuickSwitcherUp => {
+                if self.quick_switcher_open {
+                    self.quick_switcher_selected = self.quick_switcher_selected.saturating_sub(1);
+                }
+            }
+            Message::QuickSwitcherSelect => {
+                if self.quick_switcher_open {
+                    let matches = self.quick_switcher_matches();
+                    if let Some(room_id) = matches.get(self.quick_switcher_selected).cloned() {
+                        self.quick_switcher_open = false;
+                        self.quick_switcher_query.clear();
+                        return self.update(Message::SelectRoom(room_id));
+                    }
+                }
+            }
+
             // --- Location ---
             Message::ToggleLocationPicker => {
                 self.location_open = !self.location_open;
@@ -2311,8 +2356,10 @@ impl FluxChat {
                 let _ = open::that(&url);
             }
             Message::Escape => {
-                // Priority: overflow > completions > modal > panels > reply/edit
-                if self.overflow_menu_open {
+                // Priority: quick switcher > overflow > completions > modal > panels > reply/edit
+                if self.quick_switcher_open {
+                    self.quick_switcher_open = false;
+                } else if self.overflow_menu_open {
                     self.overflow_menu_open = false;
                 } else if !self.cmd_completions.is_empty() {
                     self.cmd_completions.clear();
@@ -2423,6 +2470,26 @@ impl FluxChat {
         }
 
         Task::none()
+    }
+
+    /// Get room IDs matching the quick switcher query (fuzzy match on room name).
+    pub(crate) fn quick_switcher_matches(&self) -> Vec<String> {
+        let query = self.quick_switcher_query.to_lowercase();
+        if query.is_empty() {
+            // Show recent/all rooms when query is empty
+            return self.rooms.iter()
+                .take(10)
+                .map(|r| r.room_id.clone())
+                .collect();
+        }
+        self.rooms.iter()
+            .filter(|r| {
+                r.name.to_lowercase().contains(&query)
+                || r.space_name.as_ref().is_some_and(|s| s.to_lowercase().contains(&query))
+            })
+            .take(10)
+            .map(|r| r.room_id.clone())
+            .collect()
     }
 
     /// Spawn background avatar resolution for any uncached MXC URIs.

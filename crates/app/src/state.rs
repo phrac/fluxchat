@@ -104,6 +104,9 @@ pub struct FluxChat {
     pub voice_recording: bool,
     pub voice_record_start: Option<std::time::Instant>,
     pub voice_ready: Option<(Vec<u8>, u64)>, // encoded ogg bytes + duration_ms, waiting to send
+    pub quick_switcher_open: bool,
+    pub quick_switcher_query: String,
+    pub quick_switcher_selected: usize,
     pub audio_progress: f32,                // 0.0..1.0 playback progress
     pub audio_start_time: Option<std::time::Instant>, // when playback started
     pub audio_duration_ms: u64,             // duration of current audio
@@ -324,6 +327,9 @@ impl FluxChat {
             voice_recording: false,
             voice_record_start: None,
             voice_ready: None,
+            quick_switcher_open: false,
+            quick_switcher_query: String::new(),
+            quick_switcher_selected: 0,
             audio_progress: 0.0,
             audio_start_time: None,
             audio_duration_ms: 0,
