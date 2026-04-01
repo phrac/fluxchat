@@ -452,27 +452,57 @@ impl FluxChat {
                 Color::from_rgba(1.0, 1.0, 1.0, 0.06)
             };
 
-            reactions_row = reactions_row.push(
-                button(
-                    row![
-                        text(&reaction.emoji).size(16),
-                        text(reaction.count.to_string()).font(MONO).size(12).color(theme::TEXT_MUTED),
-                    ].spacing(4).align_y(iced::Alignment::Center)
-                )
-                    .on_press(Message::ToggleReaction(event_id, emoji))
-                    .padding([2, 8])
-                    .style(move |_, status| button::Style {
-                        background: Some(if matches!(status, button::Status::Hovered) {
-                            Color::from_rgba(1.0, 1.0, 1.0, 0.12)
-                        } else {
-                            bg
-                        }.into()),
-                        border: iced::Border {
-                            radius: 10.0.into(),
-                            ..Default::default()
-                        },
+            // Build tooltip with user names
+            let room_members = self.selected_room_id.as_ref()
+                .and_then(|rid| self.members_by_room.get(rid));
+            let tooltip_text: String = reaction.users.iter()
+                .map(|uid| {
+                    room_members
+                        .and_then(|m| m.iter().find(|m| m.user_id == *uid))
+                        .map(|m| m.display_name.as_str())
+                        .unwrap_or_else(|| uid.split(':').next().unwrap_or(uid).trim_start_matches('@'))
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let reaction_btn = button(
+                row![
+                    text(&reaction.emoji).size(16),
+                    text(reaction.count.to_string()).font(MONO).size(12).color(theme::TEXT_MUTED),
+                ].spacing(4).align_y(iced::Alignment::Center)
+            )
+                .on_press(Message::ToggleReaction(event_id, emoji))
+                .padding([2, 8])
+                .style(move |_, status| button::Style {
+                    background: Some(if matches!(status, button::Status::Hovered) {
+                        Color::from_rgba(1.0, 1.0, 1.0, 0.12)
+                    } else {
+                        bg
+                    }.into()),
+                    border: iced::Border {
+                        radius: 10.0.into(),
                         ..Default::default()
-                    }),
+                    },
+                    ..Default::default()
+                });
+
+            reactions_row = reactions_row.push(
+                iced::widget::tooltip(
+                    reaction_btn,
+                    text(tooltip_text).font(MONO).size(11),
+                    iced::widget::tooltip::Position::Top,
+                )
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_DARK.into()),
+                    border: iced::Border {
+                        color: theme::BORDER,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .padding(6),
             );
         }
 

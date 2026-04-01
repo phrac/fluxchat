@@ -496,6 +496,7 @@ impl FluxChat {
             }
             Message::InputAction(action) => {
                 self.input_content.perform(action);
+                self.help_text = None;
                 // Sync plain text mirror
                 let new_text = self.input_content.text();
                 // Trim trailing newline that Content always adds
@@ -697,6 +698,10 @@ impl FluxChat {
             }
             Message::DeleteMessage(event_id) => {
                 if let Some(room_id) = self.selected_room_id.clone() {
+                    // Remove from local state immediately
+                    if let Some(msgs) = self.messages_by_room.get_mut(&room_id) {
+                        msgs.retain(|m| m.event_id != event_id);
+                    }
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
@@ -1334,6 +1339,23 @@ impl FluxChat {
             Message::RoomSettingsTopicChanged(topic) => {
                 self.room_settings_topic = topic;
             }
+            Message::EnableEncryption(room_id) => {
+                // Update local state immediately
+                if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+                    room.is_encrypted = true;
+                }
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let rid = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                        let room = client.get_room(&rid)?;
+                        use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
+                        room.send_state_event(RoomEncryptionEventContent::with_recommended_defaults()).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
             Message::RoomSettingsSaveName => {
                 if let Some(room_id) = self.selected_room_id.clone() {
                     let name = self.room_settings_name.clone();
@@ -1546,6 +1568,7 @@ impl FluxChat {
             }
             Message::GifQueryChanged(query) => {
                 self.gif_query = query;
+                self.gif_searched = false;
             }
             Message::GifSearchSubmit => {
                 let query = self.gif_query.clone();
@@ -1564,6 +1587,7 @@ impl FluxChat {
             }
             Message::GifResultsLoaded(results) => {
                 self.gif_searching = false;
+                self.gif_searched = true;
                 // Fetch preview images
                 let mut tasks = Vec::new();
                 for gif in &results {

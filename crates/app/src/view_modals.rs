@@ -1133,13 +1133,32 @@ impl FluxChat {
                             text(&room.room_id).font(MONO).size(12).color(theme::TEXT_DIM),
                         ].spacing(8)
                     );
-                    info_col = info_col.push(
-                        row![
-                            text("Encrypted:").font(MONO).size(13).color(theme::TEXT_DIM),
-                            text(if room.is_encrypted { "Yes" } else { "No" }).font(MONO).size(14)
-                                .color(if room.is_encrypted { theme::GREEN } else { theme::TEXT_MUTED }),
-                        ].spacing(8)
-                    );
+                    if room.is_encrypted {
+                        info_col = info_col.push(
+                            row![
+                                text("Encrypted:").font(MONO).size(13).color(theme::TEXT_DIM),
+                                text("Yes").font(MONO).size(14).color(theme::GREEN),
+                            ].spacing(8)
+                        );
+                    } else {
+                        let rid = room.room_id.clone();
+                        info_col = info_col.push(
+                            row![
+                                text("Encrypted:").font(MONO).size(13).color(theme::TEXT_DIM),
+                                text("No").font(MONO).size(14).color(theme::TEXT_MUTED),
+                                Space::new().width(Fill),
+                                button(text("Enable Encryption").font(MONO).size(12).color(theme::ACCENT))
+                                    .on_press(Message::EnableEncryption(rid))
+                                    .padding([4, 10])
+                                    .style(|_, _| button::Style {
+                                        background: Some(theme::BG_LIGHT.into()),
+                                        text_color: theme::ACCENT,
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                            ].spacing(8).align_y(iced::Alignment::Center)
+                        );
+                    }
                     // Space membership
                     info_col = info_col.push(rule::horizontal(1));
                     info_col = info_col.push(

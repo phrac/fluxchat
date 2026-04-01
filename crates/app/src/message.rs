@@ -179,6 +179,7 @@ pub enum Message {
     RoomSettingsTopicChanged(String),
     RoomSettingsSaveName,
     RoomSettingsSaveTopic,
+    EnableEncryption(String), // room_id
     RoomSettingsUploadAvatar,
     RoomSettingsRemoveAvatar,
 

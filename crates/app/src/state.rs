@@ -107,6 +107,7 @@ pub struct FluxChat {
     pub overflow_menu_open: bool,
     pub hovered_message: Option<String>, // event_id of hovered message
     pub gif_query: String,
+    pub gif_searched: bool, // true after a search has completed
     pub help_text: Option<String>,
     pub modal: Option<Modal>,
 
@@ -303,6 +304,7 @@ impl FluxChat {
             emoji_category: 0,
             emoji_freq: std::collections::HashMap::new(),
             gif_query: String::new(),
+            gif_searched: false,
             help_text: None,
             modal: None,
             open_tabs: Vec::new(),

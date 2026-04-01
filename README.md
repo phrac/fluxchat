@@ -13,7 +13,10 @@ A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app wit
 ## Features
 
 ### Messaging
-Send and receive messages in real-time via the Matrix Timeline API. Local echo, back-pagination on scroll-up, markdown formatting (`**bold**`, `*italic*`, `` `code` ``, `~~~codeblocks~~~`), inline images with lightbox, message editing (up-arrow), deletion, and forwarding. Multiline input with Shift+Enter. Read receipt avatars displayed per message.
+Send and receive messages in real-time via the Matrix Timeline API. Local echo, back-pagination on scroll-up, markdown formatting (`**bold**`, `*italic*`, `` `code` ``, `~~~codeblocks~~~`), inline images with lightbox, message editing (up-arrow), deletion, and forwarding. Multiline input with Shift+Enter. Read receipt avatars displayed per message. Reply context with colored bar. Mention pills (@name) with profile popup on click. Reaction tooltips showing who reacted. URL preview cards with thumbnails (max 2 shown, expandable).
+
+### Encryption
+Enable encryption on any room from room settings (one-way toggle). Full E2EE support for messages, images, and media in encrypted rooms.
 
 ### Reactions & Emoji
 Full emoji picker with 9 categories, search, and frequently-used tracking. React to messages with any emoji. Pill-shaped reaction badges.

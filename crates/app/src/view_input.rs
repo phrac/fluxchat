@@ -119,7 +119,7 @@ impl FluxChat {
 
             if self.gif_searching {
                 gif_col = gif_col.push(text("Searching...").font(MONO).size(13).color(theme::TEXT_DIM));
-            } else if self.gif_results.is_empty() && !self.gif_query.is_empty() {
+            } else if self.gif_results.is_empty() && self.gif_searched {
                 gif_col = gif_col.push(text("No results").font(MONO).size(13).color(theme::TEXT_DIM));
             } else {
                 // Grid of GIF results (3 columns)

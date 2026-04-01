@@ -18,7 +18,12 @@ A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI. U
 - Timeline API for all message operations (not manual /messages API)
 - Modular slash command system in `commands.rs` — add new commands by adding entries to `all_commands()`
 - Thread tabs use synthetic room IDs (`thread::{room_id}::{event_id}`) stored in `messages_by_room`
-- Mention resolution: display names in outgoing messages converted to `matrix.to` HTML links at send time, with word-boundary checking to avoid mangling URLs
+- Mention resolution: `@displayname` in outgoing messages resolved to `matrix.to` HTML links at send time via room member lookup (3s timeout). Incoming mention links rendered as colored pills with `@` prefix, clickable to profile modal. Both `@` and `%40` URL-encoded forms detected.
+- Message deletion: removes from local state immediately, then sends redaction to server
+- Room encryption: enable via room settings (one-way toggle, sends `RoomEncryptionEventContent` state event)
+- Reaction tooltips: hover shows display names of who reacted (resolved from room members)
+- URL previews: max 2 shown per message with expandable "Show N more" / "Show less" toggle. Thumbnails on left. Up to 5 URLs extracted per message.
+- GIF search: "No results" only shown after search completes (not while typing). Help text auto-clears on typing.
 - Markdown formatting: `build_message_content()` converts `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, ``` ```codeblocks``` ``` to HTML at send time via `simple_markdown_to_html()`. Markdown processed before `\n` → `<br>` conversion; br conversion skips `<pre>` blocks.
 - File upload: native file dialog via `rfd` crate, with thumbnail generation for images.
 - Image thumbnails: `generate_thumbnail()` creates 320x240 PNG thumbnails on upload via `image` crate, passed in `AttachmentConfig`. Display always uses `get_event_media()` (handles encrypted media decryption), not server-side thumbnails.
@@ -66,7 +71,7 @@ cargo run -p fluxchat
 
 ## App Architecture (`crates/app/`)
 - **Elm architecture:** `FluxChat` state struct → `Message` enum → `update(&mut self, msg) -> Task<Message>` → `view(&self) -> Element<Message>`
-- **Files:** main.rs (entry), state.rs (FluxChat struct + enums), message.rs (Message/SyncEvent), update.rs (all state transitions), view.rs (all rendering), html.rs (Matrix HTML→Spans), commands.rs (slash commands), theme.rs (colors)
+- **Files:** main.rs (entry), state.rs (FluxChat struct + enums), message.rs (Message/SyncEvent), update.rs (core state transitions), update_settings.rs (settings/profile/security), update_call.rs (call/RTC), view.rs (layout/room list/content), view_messages.rs (message rendering), view_modals.rs (all modals), view_members.rs (member list + call widget), view_input.rs (input bar/autocomplete), html.rs (Matrix HTML→Spans), commands.rs (slash commands), theme.rs (colors)
 - **HTML rendering:** Custom parser converts Matrix HTML to `Vec<Span>` for `rich_text` widget. Handles bold/italic/strike/code/links/mentions/blockquotes. Syntax highlighting via syntect.
 - **Modals:** `stack` + `opaque` + `mouse_area` overlay pattern. Modal enum dispatches to Settings/CreateRoom/Profile/Verification/Lightbox/Forward.
 - **Commands:** 37 slash commands producing `CommandResult` (Messages/Rewrite/Help/Noop). Decoupled from UI — returns Message variants.
