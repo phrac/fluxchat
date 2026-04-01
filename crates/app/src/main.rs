@@ -44,6 +44,10 @@ fn main() -> iced::Result {
         )
         .init();
 
+    // Set macOS notification app identity to avoid "Where is use_default?" dialog
+    #[cfg(target_os = "macos")]
+    { let _ = notify_rust::set_application("com.apple.Terminal"); }
+
     let core = init_core();
 
     let core2 = core.clone();

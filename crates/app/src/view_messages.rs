@@ -101,8 +101,17 @@ impl FluxChat {
         // Avatar
         let msg_avatar: Element<'a, Message> = self.render_avatar(msg.avatar_url.as_deref(), 16.0);
 
-        // Separator
-        let sep = text("|").font(MONO).size(fs).color(theme::TEXT_DIM);
+        // Separator — vertical line spanning full message height
+        let make_sep = || -> Element<'a, Message> {
+            container(Space::new())
+                .width(1)
+                .height(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::TEXT_DIM.into()),
+                    ..Default::default()
+                })
+                .into()
+        };
 
         // Poll messages
         if let Some(ref poll) = msg.poll {
@@ -145,7 +154,7 @@ impl FluxChat {
                 );
             }
 
-            return row![time, nick, msg_avatar, sep, poll_col].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
+            return row![time, nick, msg_avatar, make_sep(), poll_col].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
         }
 
         // Build the content element — image, video, or text
@@ -398,7 +407,7 @@ impl FluxChat {
                     Space::new().width(time_width),
                     nick,
                     msg_avatar,
-                    sep,
+                    make_sep(),
                     body_element,
                 ]
                 .spacing(6)
@@ -416,7 +425,7 @@ impl FluxChat {
         let event_id = msg.event_id.clone();
         let eid_hover = msg.event_id.clone();
 
-        let base_row: Element<'a, Message> = row![time, nick, msg_avatar, sep, body_element]
+        let base_row: Element<'a, Message> = row![time, nick, msg_avatar, make_sep(), body_element]
             .spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
 
         // Wrap in container with hover highlight

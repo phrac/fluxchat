@@ -176,10 +176,16 @@ pub async fn get_call_members(
 
     let mut participants = Vec::new();
 
-    let raw_events = room
+    // Check multiple call member event types (MSC3401 unstable + stable)
+    let mut raw_events = room
         .get_state_events(StateEventType::from("org.matrix.msc3401.call.member"))
         .await
         .unwrap_or_default();
+    // Also check the stable event type
+    raw_events.extend(room
+        .get_state_events(StateEventType::from("m.call.member"))
+        .await
+        .unwrap_or_default());
 
     for raw_event in raw_events {
         // Extract the raw JSON from the enum
@@ -209,13 +215,61 @@ pub async fn get_call_members(
             None => continue,
         };
 
+        // Check both legacy "memberships" array and newer flat format
         let memberships: Vec<CallMembership> = content
-            .get("memberships")
+            .get("m.memberships")
+            .or_else(|| content.get("memberships"))
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        if memberships.is_empty() {
-            continue; // User has left the call
+        if !memberships.is_empty() {
+            // Legacy format: memberships array
+        } else if content.get("application").is_some() || content.get("call_id").is_some() {
+            // Newer flat format: each state event IS a membership
+            // expires is a duration in ms (not absolute timestamp) — if > 0, membership is active
+            let is_active = content.get("expires")
+                .and_then(|v| v.as_u64())
+                .map(|exp| exp > 0)
+                .unwrap_or(true);
+
+            if is_active {
+                let device_id = content.get("device_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                // Extract user_id from composite state key: _@user:server_deviceId_callType
+                let user_id_str = sender.split('_')
+                    .find(|s| s.starts_with('@'))
+                    .unwrap_or(&sender)
+                    .to_string();
+
+                let (display_name, avatar_url) =
+                    if let Ok(uid) = matrix_sdk::ruma::UserId::parse(&user_id_str) {
+                        if let Ok(Some(member)) = room.get_member_no_sync(&uid).await {
+                            (
+                                member.display_name().unwrap_or(uid.localpart()).to_string(),
+                                member.avatar_url().map(|u| u.to_string()),
+                            )
+                        } else {
+                            (user_id_str.trim_start_matches('@').split(':').next().unwrap_or(&user_id_str).to_string(), None)
+                        }
+                    } else {
+                        (user_id_str.clone(), None)
+                    };
+
+                participants.push(CallParticipant {
+                    user_id: user_id_str.clone(),
+                    device_id,
+                    display_name,
+                    avatar_url,
+                    is_local: user_id_str == my_user_id,
+                });
+                continue;
+            } else {
+                continue; // Expired membership
+            }
+        } else {
+            continue; // Empty content
         }
 
         for membership in memberships {
