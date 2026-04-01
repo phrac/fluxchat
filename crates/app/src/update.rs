@@ -186,11 +186,14 @@ impl FluxChat {
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
                 SyncEvent::RoomListUpdate(rooms, spaces, invited) => {
-                    // Zero unread for rooms we've marked as read
+                    // Zero unread for rooms we've marked as read or the currently selected room
+                    let selected = self.selected_room_id.clone();
                     self.rooms = rooms
                         .into_iter()
                         .map(|mut r| {
-                            if self.read_rooms.contains(&r.room_id) {
+                            if self.read_rooms.contains(&r.room_id)
+                                || selected.as_deref() == Some(&r.room_id)
+                            {
                                 r.unread_count = 0;
                                 r.highlight_count = 0;
                             }
@@ -267,6 +270,10 @@ impl FluxChat {
                         tasks.push(iced::widget::operation::snap_to_end(
                             crate::view::messages_scrollable_id(),
                         ));
+                    }
+                    // Send read receipt for active room when at bottom
+                    if is_active && self.messages_at_bottom {
+                        tasks.push(self.update(Message::SendReadReceipt));
                     }
                     return Task::batch(tasks);
                 }
