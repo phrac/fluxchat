@@ -177,6 +177,16 @@ pub enum Message {
     KnockRoom(String, Option<String>), // room_id_or_alias, reason
     CancelKnock(String), // room_id
     SendLocation(String), // geo_uri (e.g. "geo:51.5074,-0.1278")
+    PlayAudio(String, String), // event_id, room_id
+    StopAudio,
+    AudioFinished,
+    StartVoiceRecording,
+    StopVoiceRecording,
+    CancelVoiceRecording,
+    VoiceRecordingReady(Vec<u8>, u64), // ogg_bytes, duration_ms
+    SendVoiceMessage,
+    DiscardVoiceMessage,
+    PreviewVoiceMessage,
     ToggleLocationPicker,
     LocationLatChanged(String),
     LocationLonChanged(String),

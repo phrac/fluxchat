@@ -538,15 +538,140 @@ impl FluxChat {
             .into()
         };
 
-        let input_row = row![
-            attach_btn,
-            prompt,
-            input,
-            loc_btn,
-            emoji_btn,
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
+        // Mic button
+        let mic_color = if self.voice_recording { theme::RED } else { theme::TEXT_DIM };
+        let mic_btn: Element<Message> = {
+            let handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_MIC);
+            button(
+                iced::widget::svg(handle)
+                    .width(16).height(16)
+                    .style(move |_, _| iced::widget::svg::Style { color: Some(mic_color) }),
+            )
+            .on_press(if self.voice_recording { Message::StopVoiceRecording } else { Message::StartVoiceRecording })
+            .padding([2, 6])
+            .style(|_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                } else {
+                    None
+                },
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+        };
+
+        let input_row: Element<Message> = if let Some((_, duration_ms)) = &self.voice_ready {
+            // Review bar: play preview + duration + discard/send
+            let secs = duration_ms / 1000;
+            let duration_str = format!("{}:{:02}", secs / 60, secs % 60);
+            let play_handle = iced::widget::svg::Handle::from_memory(
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice(),
+            );
+            // Write to temp and play preview
+            row![
+                button(
+                    iced::widget::svg(play_handle).width(16).height(16)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::ACCENT) }),
+                )
+                .on_press(Message::PreviewVoiceMessage)
+                .padding([4, 6])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else { None },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+                text(duration_str).font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                text("Voice message ready").font(MONO).size(14).color(theme::TEXT_DIM),
+                Space::new().width(Fill),
+                button(text("Discard").font(MONO).size(13).color(theme::TEXT_DIM))
+                    .on_press(Message::DiscardVoiceMessage)
+                    .padding([4, 10])
+                    .style(|_, status| button::Style {
+                        background: if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        } else { None },
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                button(text("Send").font(MONO).size(13).color(Color::WHITE))
+                    .on_press(Message::SendVoiceMessage)
+                    .padding([4, 12])
+                    .style(|_, status| button::Style {
+                        background: Some(if matches!(status, button::Status::Hovered) {
+                            Color::from_rgba(0.23, 0.51, 0.96, 0.9)
+                        } else {
+                            Color::from_rgba(0.23, 0.51, 0.96, 0.7)
+                        }.into()),
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else if self.voice_recording {
+            // Recording bar: stop button + red dot + timer + cancel/send buttons
+            let elapsed = self.voice_record_start
+                .map(|s| s.elapsed().as_secs())
+                .unwrap_or(0);
+            let timer_str = format!("{}:{:02}", elapsed / 60, elapsed % 60);
+            let stop_icon = iced::widget::svg::Handle::from_memory(
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="4" width="14" height="16" rx="1"/></svg>"#.as_slice(),
+            );
+            row![
+                // Red recording dot
+                container(Space::new()).width(8).height(8)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::RED.into()),
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                text(timer_str).font(MONO).size(16).color(theme::RED),
+                text("Recording...").font(MONO).size(14).color(theme::TEXT_DIM),
+                Space::new().width(Fill),
+                button(text("Cancel").font(MONO).size(13).color(theme::TEXT_DIM))
+                    .on_press(Message::CancelVoiceRecording)
+                    .padding([4, 10])
+                    .style(|_, status| button::Style {
+                        background: if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        } else { None },
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                button(
+                    iced::widget::svg(stop_icon).width(18).height(18)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::RED) }),
+                )
+                .on_press(Message::StopVoiceRecording)
+                .padding([4, 6])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 0.0, 0.0, 0.15).into())
+                    } else { None },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
+            row![
+                attach_btn,
+                prompt,
+                input,
+                mic_btn,
+                loc_btn,
+                emoji_btn,
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center)
+            .into()
+        };
 
         // Formatting toolbar with SVG icons
         let make_fmt_btn = |svg_bytes: &'static [u8], prefix: &'static str, suffix: &'static str, title: &'static str| -> Element<Message> {

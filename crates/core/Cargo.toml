@@ -23,3 +23,5 @@ reqwest = { version = "0.12", features = ["json"] }
 livekit = { version = "0.7", features = ["native-tls"] }
 cpal = "0.15"
 uuid = { version = "1", features = ["v4"] }
+opus = "0.3.1"
+ogg = "0.9.2"

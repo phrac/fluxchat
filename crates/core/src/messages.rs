@@ -102,7 +102,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                     event_id: format!("~state-{}", member_ev.event_id), sender: String::new(), sender_name: String::new(),
                     body, formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                     reply_to_id: None, reply_to_sender: None, reply_to_body: None,
-                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, is_emote: false, is_video: false,
+                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
                 });
             }
         }
@@ -135,7 +135,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                 transformed_body: None, // Will be populated by UI if needed
                 image_mxc,
                 reactions, reply_to_id, reply_to_sender: None, reply_to_body: None,
-                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, is_emote: false, is_video: false,
+                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
             });
         }
     }
@@ -148,6 +148,29 @@ pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str
     let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let content = build_message_content(&room, body).await;
     let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
+    Ok(result.event_id.to_string())
+}
+
+/// Send a voice message as OGG Opus audio with MSC3245 voice marker.
+pub async fn send_voice_message(client: &matrix_sdk::Client, room_id: &str, ogg_bytes: Vec<u8>, duration_ms: u64) -> Result<String, AppError> {
+    use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo};
+
+    let room_id_parsed = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    let content_type: mime::Mime = "audio/ogg".parse().unwrap();
+    let size = ogg_bytes.len() as u64;
+
+    let config = AttachmentConfig::new()
+        .info(AttachmentInfo::Voice(BaseAudioInfo {
+            duration: Some(std::time::Duration::from_millis(duration_ms)),
+            size: size.try_into().ok(),
+            waveform: None,
+        }));
+
+    let result = room.send_attachment("Voice message", &content_type, ogg_bytes, config)
+        .await
+        .map_err(|e| AppError::Other(format!("Failed to send voice: {e}")))?;
     Ok(result.event_id.to_string())
 }
 
@@ -419,7 +442,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
                 reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),
-                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, is_emote: false, is_video: false,
+                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
             });
         }
     }

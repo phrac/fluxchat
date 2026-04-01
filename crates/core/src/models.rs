@@ -45,10 +45,14 @@ pub struct MessageInfo {
     pub image_height: Option<u32>,
     pub poll: Option<PollInfo>,
     pub geo_uri: Option<String>,
+    pub audio_mxc: Option<String>,
+    pub duration_ms: Option<u64>,
     #[serde(default)]
     pub is_emote: bool,
     #[serde(default)]
     pub is_video: bool,
+    #[serde(default)]
+    pub is_voice: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

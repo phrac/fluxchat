@@ -1810,6 +1810,13 @@ impl FluxChat {
     pub fn subscription(&self) -> Subscription<Message> {
         let tick = iced::time::every(std::time::Duration::from_secs(5)).map(|_| Message::Tick);
 
+        // Fast tick for audio progress bar / recording timer (100ms when active)
+        let audio_tick = if self.audio_playing.is_some() || self.voice_recording {
+            iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::Noop)
+        } else {
+            Subscription::none()
+        };
+
         let keys = iced::keyboard::listen().map(|event| {
             if let iced::keyboard::Event::KeyPressed {
                 key, modifiers, ..
@@ -1870,7 +1877,7 @@ impl FluxChat {
         // Call events from LiveKit session
         let call_sub = Subscription::run(call_event_stream);
 
-        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub])
+        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub, audio_tick])
     }
 
     /// Application theme — dark.

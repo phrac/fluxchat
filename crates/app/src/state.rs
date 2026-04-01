@@ -100,6 +100,14 @@ pub struct FluxChat {
     pub files_open: bool,
     pub notices_open: bool,
     pub gifs_open: bool,
+    pub audio_playing: Option<String>,      // event_id of currently playing audio
+    pub voice_recording: bool,
+    pub voice_record_start: Option<std::time::Instant>,
+    pub voice_ready: Option<(Vec<u8>, u64)>, // encoded ogg bytes + duration_ms, waiting to send
+    pub audio_progress: f32,                // 0.0..1.0 playback progress
+    pub audio_start_time: Option<std::time::Instant>, // when playback started
+    pub audio_duration_ms: u64,             // duration of current audio
+    pub audio_pid: Option<u32>,             // PID of audio player process
     pub location_open: bool,
     pub location_lat: String,
     pub location_lon: String,
@@ -312,6 +320,14 @@ impl FluxChat {
             overflow_menu_open: false,
             hovered_message: None,
             gifs_open: false,
+            audio_playing: None,
+            voice_recording: false,
+            voice_record_start: None,
+            voice_ready: None,
+            audio_progress: 0.0,
+            audio_start_time: None,
+            audio_duration_ms: 0,
+            audio_pid: None,
             location_open: false,
             location_lat: String::new(),
             location_lon: String::new(),

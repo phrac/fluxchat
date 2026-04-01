@@ -155,6 +155,10 @@ pub async fn get_event_media_bytes(
                     let mime = vid.info.as_ref().and_then(|i| i.mimetype.clone()).unwrap_or_else(|| "video/mp4".into());
                     (vid.source, mime)
                 }
+                MessageType::Audio(audio) => {
+                    let mime = audio.info.as_ref().and_then(|i| i.mimetype.clone()).unwrap_or_else(|| "audio/ogg".into());
+                    (audio.source, mime)
+                }
                 MessageType::File(file) => {
                     let mime = file.info.as_ref().and_then(|i| i.mimetype.clone()).unwrap_or_else(|| "application/octet-stream".into());
                     (file.source, mime)

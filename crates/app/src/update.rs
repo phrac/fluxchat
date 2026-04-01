@@ -3,6 +3,13 @@ use iced::Task;
 use crate::message::{LoginSuccess, Message, SyncEvent};
 use crate::state::{FluxChat, Screen};
 
+/// Global voice recording handle (cpal::Stream isn't Send, can't store in async state).
+/// Safety: only accessed from the main UI thread.
+struct SendHandle(Option<fluxchat_core::voice::RecordingHandle>);
+unsafe impl Send for SendHandle {}
+unsafe impl Sync for SendHandle {}
+static VOICE_HANDLE: std::sync::Mutex<SendHandle> = std::sync::Mutex::new(SendHandle(None));
+
 impl FluxChat {
     /// Create state and return an initial task (attempt session restore).
     pub fn new_with_init(
@@ -1596,6 +1603,192 @@ impl FluxChat {
                     },
                     |_| Message::Noop,
                 );
+            }
+
+            // --- Audio playback ---
+            Message::PlayAudio(event_id, room_id) => {
+                // If already playing this audio, stop it
+                if self.audio_playing.as_deref() == Some(&event_id) {
+                    return self.update(Message::StopAudio);
+                }
+                // Stop any current playback first
+                if self.audio_playing.is_some() {
+                    let _ = self.update(Message::StopAudio);
+                }
+                // Get duration from the message
+                let duration = self.messages_by_room
+                    .get(&room_id)
+                    .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                    .and_then(|m| m.duration_ms)
+                    .unwrap_or(5000);
+                self.audio_playing = Some(event_id.clone());
+                self.audio_start_time = Some(std::time::Instant::now());
+                self.audio_duration_ms = duration;
+                self.audio_progress = 0.0;
+
+                let core = self.core.clone();
+                let tx = self.timeline_tx.clone();
+                let real_room = if room_id.starts_with("thread::") {
+                    room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                } else {
+                    room_id
+                };
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let (bytes, _mime) = fluxchat_core::media::get_event_media_bytes(
+                            &client, &real_room, &event_id,
+                        ).await.ok()?;
+                        // Write to temp file and play with system audio player
+                        let ext = if _mime.contains("ogg") { "ogg" }
+                            else if _mime.contains("mp3") || _mime.contains("mpeg") { "mp3" }
+                            else if _mime.contains("wav") { "wav" }
+                            else if _mime.contains("mp4") || _mime.contains("m4a") { "m4a" }
+                            else { "ogg" };
+                        let path = std::env::temp_dir().join(format!("fluxchat_audio.{ext}"));
+                        std::fs::write(&path, &bytes).ok()?;
+
+                        let tx2 = tx.clone();
+                        std::thread::spawn(move || {
+                            #[cfg(target_os = "macos")]
+                            let mut child = {
+                                std::process::Command::new("ffplay")
+                                    .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
+                                    .arg(&path)
+                                    .spawn()
+                                    .or_else(|_| std::process::Command::new("afplay").arg(&path).spawn())
+                                    .or_else(|_| std::process::Command::new("mpv").arg("--no-video").arg(&path).spawn())
+                            };
+                            #[cfg(target_os = "linux")]
+                            let mut child = {
+                                std::process::Command::new("ffplay")
+                                    .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
+                                    .arg(&path)
+                                    .spawn()
+                                    .or_else(|_| std::process::Command::new("pw-play").arg(&path).spawn())
+                                    .or_else(|_| std::process::Command::new("paplay").arg(&path).spawn())
+                                    .or_else(|_| std::process::Command::new("mpv").arg("--no-video").arg(&path).spawn())
+                            };
+                            #[cfg(target_os = "windows")]
+                            let mut child = {
+                                std::process::Command::new("cmd")
+                                    .args(["/C", "start", "/wait", "", &path.to_string_lossy()])
+                                    .spawn()
+                            };
+                            if let Ok(ref mut c) = child {
+                                let _ = c.wait();
+                            }
+                            let _ = std::fs::remove_file(&path);
+                            let _ = tx2.send(Message::AudioFinished);
+                        });
+
+                        Some(())
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::StopAudio => {
+                // Kill audio player processes playing our temp file
+                #[cfg(unix)]
+                { let _ = std::process::Command::new("pkill").arg("-f").arg("fluxchat_audio").status(); }
+                #[cfg(windows)]
+                { let _ = std::process::Command::new("taskkill").args(["/IM", "cmd.exe", "/F"]).status(); }
+                self.audio_playing = None;
+                self.audio_progress = 0.0;
+                self.audio_start_time = None;
+                self.audio_pid = None;
+            }
+            Message::AudioFinished => {
+                self.audio_playing = None;
+                self.audio_progress = 0.0;
+                self.audio_start_time = None;
+            }
+
+            // --- Voice recording ---
+            Message::StartVoiceRecording => {
+                match fluxchat_core::voice::start_recording() {
+                    Ok(handle) => {
+                        self.voice_recording = true;
+                        self.voice_record_start = Some(std::time::Instant::now());
+                        // Store handle in a global — cpal::Stream isn't Send
+                        VOICE_HANDLE.lock().unwrap().0 = Some(handle);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to start recording: {e}");
+                    }
+                }
+            }
+            Message::StopVoiceRecording => {
+                self.voice_recording = false;
+                self.voice_record_start = None;
+                if let Some(handle) = VOICE_HANDLE.lock().unwrap().0.take() {
+                    // Encode on main thread (fast for short recordings)
+                    match handle.stop_and_encode() {
+                        Ok((bytes, duration)) => {
+                            return self.update(Message::VoiceRecordingReady(bytes, duration));
+                        }
+                        Err(e) => tracing::warn!("Voice encode failed: {e}"),
+                    }
+                }
+            }
+            Message::CancelVoiceRecording => {
+                self.voice_recording = false;
+                self.voice_record_start = None;
+                // Drop the handle to stop recording
+                let _ = VOICE_HANDLE.lock().unwrap().0.take();
+            }
+            Message::VoiceRecordingReady(bytes, duration_ms) => {
+                self.voice_ready = Some((bytes, duration_ms));
+            }
+            Message::SendVoiceMessage => {
+                if let Some((bytes, duration_ms)) = self.voice_ready.take() {
+                    if let Some(room_id) = self.selected_room_id.clone() {
+                        let real_room = if room_id.starts_with("thread::") {
+                            room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                        } else {
+                            room_id
+                        };
+                        let core = self.core.clone();
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                fluxchat_core::messages::send_voice_message(
+                                    &client, &real_room, bytes, duration_ms,
+                                ).await.ok()
+                            },
+                            |_| Message::Noop,
+                        );
+                    }
+                }
+            }
+            Message::DiscardVoiceMessage => {
+                self.voice_ready = None;
+            }
+            Message::PreviewVoiceMessage => {
+                if let Some((ref bytes, _)) = self.voice_ready {
+                    let bytes = bytes.clone();
+                    std::thread::spawn(move || {
+                        let path = std::env::temp_dir().join("fluxchat_voice_preview.ogg");
+                        if std::fs::write(&path, &bytes).is_ok() {
+                            #[cfg(target_os = "macos")]
+                            {
+                                let _ = std::process::Command::new("ffplay")
+                                    .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
+                                    .arg(&path).status()
+                                    .or_else(|_| std::process::Command::new("mpv").arg("--no-video").arg(&path).status());
+                            }
+                            #[cfg(target_os = "linux")]
+                            {
+                                let _ = std::process::Command::new("ffplay")
+                                    .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
+                                    .arg(&path).status()
+                                    .or_else(|_| std::process::Command::new("pw-play").arg(&path).status())
+                                    .or_else(|_| std::process::Command::new("mpv").arg("--no-video").arg(&path).status());
+                            }
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    });
+                }
             }
 
             // --- Location ---

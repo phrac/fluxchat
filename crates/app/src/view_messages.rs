@@ -198,6 +198,94 @@ impl FluxChat {
             .padding(0)
             .style(|_, _| button::Style { background: None, ..Default::default() })
             .into()
+        } else if msg.audio_mxc.is_some() {
+            // Audio/voice message — display as playback card
+            let total_ms = msg.duration_ms.unwrap_or(0);
+            let is_playing = self.audio_playing.as_deref() == Some(&msg.event_id);
+
+            // Compute progress from elapsed time
+            let progress = if is_playing {
+                if let Some(start) = self.audio_start_time {
+                    let elapsed = start.elapsed().as_millis() as f32;
+                    let total = self.audio_duration_ms.max(1) as f32;
+                    (elapsed / total).min(1.0)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            // Time display: elapsed if playing, total if not
+            let display_ms = if is_playing {
+                self.audio_start_time.map(|s| s.elapsed().as_millis() as u64).unwrap_or(0).min(total_ms)
+            } else {
+                total_ms
+            };
+            let display_secs = display_ms / 1000;
+            let duration_str = format!("{}:{:02}", display_secs / 60, display_secs % 60);
+
+            let label = if msg.is_voice || msg.body.contains("voice_message") { "Voice message" } else { &msg.body };
+
+            // Play/stop icon
+            let icon_svg = if is_playing {
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="4" width="14" height="16" rx="1"/></svg>"#.as_slice()
+            } else {
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice()
+            };
+            let icon_handle = iced::widget::svg::Handle::from_memory(icon_svg);
+
+            let bar_width = 120.0_f32;
+            let filled_width = (bar_width * progress).max(0.0);
+            let play_event_id = msg.event_id.clone();
+            let play_room_id = self.selected_room_id.clone().unwrap_or_default();
+            let icon_color = if is_playing { theme::RED } else { theme::ACCENT };
+            button(
+                container(
+                    row![
+                        iced::widget::svg(icon_handle).width(16).height(16)
+                            .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
+                        // Progress bar: filled portion + remaining
+                        container(
+                            row![
+                                container(Space::new())
+                                    .width(Length::Fixed(filled_width))
+                                    .height(4)
+                                    .style(|_: &Theme| container::Style {
+                                        background: Some(theme::ACCENT.into()),
+                                        border: iced::Border { radius: 2.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                                container(Space::new())
+                                    .width(Length::Fixed(bar_width - filled_width))
+                                    .height(4)
+                                    .style(|_: &Theme| container::Style {
+                                        background: Some(theme::BG_LIGHT.into()),
+                                        border: iced::Border { radius: 2.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                            ].spacing(0),
+                        ),
+                        text(duration_str).font(MONO).size(12).color(theme::TEXT_DIM),
+                        text(label).font(MONO).size(12).color(theme::TEXT_MUTED)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ].spacing(8).align_y(iced::Alignment::Center),
+                )
+                .padding([6, 10])
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_DARK.into()),
+                    border: iced::Border { color: theme::BORDER, width: 1.0, radius: 6.0.into() },
+                    ..Default::default()
+                }),
+            )
+            .on_press(if is_playing {
+                Message::StopAudio
+            } else {
+                Message::PlayAudio(play_event_id, play_room_id)
+            })
+            .padding(0)
+            .style(|_, _| button::Style { background: None, ..Default::default() })
+            .into()
         } else if let Some(ref mxc) = msg.image_mxc {
             if !msg.is_video {
                 // Image messages

@@ -142,61 +142,82 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 let body = message.body().to_string();
                 let is_emote = matches!(message.msgtype(), matrix_sdk::ruma::events::room::message::MessageType::Emote(_));
                 let is_video = matches!(message.msgtype(), matrix_sdk::ruma::events::room::message::MessageType::Video(_));
-                let (formatted_body, image_mxc, image_width, image_height, geo_uri) = match message.msgtype() {
+                // Extract type-specific fields
+                let mut formatted_body = None;
+                let mut image_mxc = None;
+                let mut image_width = None;
+                let mut image_height = None;
+                let mut geo_uri = None;
+                let mut audio_mxc = None;
+                let mut duration_ms = None;
+                let mut is_voice_msg = false;
+
+                match message.msgtype() {
                     matrix_sdk::ruma::events::room::message::MessageType::Text(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None, None)
+                        formatted_body = t.formatted.as_ref().map(|f| f.body.clone());
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Image(img) => {
-                        let mxc = match &img.source {
+                        image_mxc = match &img.source {
                             matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
                             matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
                         };
-                        let w = img.info.as_ref().and_then(|i| i.width).and_then(|v| u32::try_from(v).ok());
-                        let h = img.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
-                        (None, mxc, w, h, None)
+                        image_width = img.info.as_ref().and_then(|i| i.width).and_then(|v| u32::try_from(v).ok());
+                        image_height = img.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Notice(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None, None)
+                        formatted_body = t.formatted.as_ref().map(|f| f.body.clone());
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Emote(t) => {
-                        (t.formatted.as_ref().map(|f| f.body.clone()), None, None, None, None)
+                        formatted_body = t.formatted.as_ref().map(|f| f.body.clone());
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Video(vid) => {
-                        let mxc = match &vid.source {
+                        image_mxc = match &vid.source {
                             matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
                             matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
                         };
-                        let w = vid.info.as_ref().and_then(|i| i.width).and_then(|v| u32::try_from(v).ok());
-                        let h = vid.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
-                        (None, mxc, w, h, None)
+                        image_width = vid.info.as_ref().and_then(|i| i.width).and_then(|v| u32::try_from(v).ok());
+                        image_height = vid.info.as_ref().and_then(|i| i.height).and_then(|v| u32::try_from(v).ok());
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
-                        // Show files with image MIME types as inline images (e.g. GIFs sent as files)
                         let is_image = file.info.as_ref()
                             .and_then(|i| i.mimetype.as_ref())
                             .is_some_and(|m| m.starts_with("image/"));
                         if is_image {
-                            let mxc = match &file.source {
+                            image_mxc = match &file.source {
                                 matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
                                 matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
                             };
-                            (None, mxc, None, None, None)
-                        } else {
-                            (None, None, None, None, None)
+                        }
+                    }
+                    matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
+                        audio_mxc = match &audio.source {
+                            matrix_sdk::ruma::events::room::MediaSource::Plain(uri) => Some(uri.to_string()),
+                            matrix_sdk::ruma::events::room::MediaSource::Encrypted(enc) => Some(enc.url.to_string()),
+                        };
+                        duration_ms = audio.info.as_ref()
+                            .and_then(|i| i.duration)
+                            .map(|d| d.as_millis() as u64);
+                        // Check raw JSON for m.voice marker (MSC3245)
+                        if let Some(raw) = ev.original_json().or_else(|| ev.latest_json()) {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.json().get()) {
+                                if val.get("content").and_then(|c| c.get("org.matrix.msc3245.voice")).is_some() {
+                                    is_voice_msg = true;
+                                }
+                            }
                         }
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Location(loc) => {
-                        (None, None, None, None, Some(loc.geo_uri.clone()))
+                        geo_uri = Some(loc.geo_uri.clone());
                     }
-                    _ => (None, None, None, None, None),
-                };
+                    _ => {}
+                }
 
                 Some(MessageInfo {
                     event_id, sender, sender_name, body, formatted_body,
                     transformed_body: None, image_mxc, reactions, reply_to_id,
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width, image_height, poll: None, geo_uri,
-                    is_emote, is_video,
+                    audio_mxc, duration_ms, is_emote, is_video, is_voice: is_voice_msg,
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -212,7 +233,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     transformed_body: None, image_mxc: mxc, reactions, reply_to_id,
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: w, image_height: h, poll: None,
-                    geo_uri: None, is_emote: false, is_video: false,
+                    geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -239,7 +260,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                         total_votes,
                         my_vote: None,
                     }),
-                    geo_uri: None, is_emote: false, is_video: false,
+                    geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
                 })
             } else {
                 Some(MessageInfo {
@@ -248,7 +269,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: None, image_height: None, poll: None,
-                    geo_uri: None, is_emote: false, is_video: false,
+                    geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
                 })
             }
         }
@@ -275,7 +296,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
-                geo_uri: None, is_emote: false, is_video: false,
+                geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
             })
         }
 
@@ -289,7 +310,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
-                geo_uri: None, is_emote: false, is_video: false,
+                geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
             })
         }
 
@@ -322,7 +343,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reactions: Vec::new(), reply_to_id: None, reply_to_sender: None,
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
-                geo_uri: None, is_emote: false, is_video: false,
+                geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
             })
         }
 

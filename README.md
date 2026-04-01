@@ -42,8 +42,11 @@ Server-side search with client-side fallback for encrypted rooms. Overlay dropdo
 ### Polls
 Create interactive polls with `/poll`, vote with progress bars, end with `/pollend`. MSC3381 compatible.
 
+### Voice Messages
+Record voice messages with the mic button in the input bar. Captures audio via cpal, encodes to Opus in OGG container, with auto-normalization for consistent volume. Preview before sending. Plays received voice messages with progress bar and play/stop controls. MSC3245 compliant.
+
 ### Files & Media
-Upload via button, drag-drop, paste, or `/attach`. Thumbnail generation for images. GIF search via Giphy API. Sticker display. URL previews with og:image.
+Upload via button, drag-drop, paste, or `/attach`. Thumbnail generation for images. GIF search via Giphy API. Sticker display. URL previews with og:image. Location sharing via `/location` command with coordinate picker and OpenStreetMap links.
 
 ### Code Highlighting
 Syntax highlighting for 100+ languages via syntect. Base16 Ocean Dark theme.
@@ -79,6 +82,7 @@ Both crates are pure Rust with zero JS/TS dependencies.
 | Voice | [LiveKit](https://livekit.io/) 0.7 (MatrixRTC) |
 | Audio | cpal 0.15 |
 | Notifications | notify-rust |
+| Voice codec | opus (libopus) + ogg |
 | Syntax | syntect |
 
 ## Building
