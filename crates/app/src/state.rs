@@ -160,6 +160,8 @@ pub struct FluxChat {
     // Search
     pub search_query: String,
     pub search_results: Vec<fluxchat_core::messages::SearchResult>,
+    pub search_selected: Option<usize>,
+    pub highlight_event_id: Option<String>,
 
     // Sync state
     pub sync_running: bool,
@@ -332,6 +334,8 @@ impl FluxChat {
             collapsed_sections: HashSet::new(),
             search_query: String::new(),
             search_results: Vec::new(),
+            search_selected: None,
+            highlight_event_id: None,
             timeline_tx,
             sync_running: false,
             input_content: iced::widget::text_editor::Content::new(),

@@ -743,34 +743,111 @@ impl FluxChat {
             // --- Search ---
             Message::SearchQueryChanged(query) => {
                 self.search_query = query;
+                self.search_selected = None;
+                self.highlight_event_id = None;
             }
             Message::SearchSubmit => {
+                // If a result is selected, navigate to it on Enter
+                if let Some(idx) = self.search_selected {
+                    return self.update(Message::SearchSelectResult(idx));
+                }
                 let query = self.search_query.clone();
                 if query.trim().is_empty() {
                     return Task::none();
                 }
                 if let Some(room_id) = self.selected_room_id.clone() {
+                    // Strip synthetic thread:: prefix for search
+                    let search_room_id = if room_id.starts_with("thread::") {
+                        room_id.split("::").nth(1).unwrap_or(&room_id).to_string()
+                    } else {
+                        room_id.clone()
+                    };
                     let core = self.core.clone();
+                    // Grab local messages for client-side fallback
+                    let local_msgs: Vec<fluxchat_core::MessageInfo> = self.messages_by_room
+                        .get(&room_id)
+                        .cloned()
+                        .unwrap_or_default();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            let (results, _next) =
-                                fluxchat_core::messages::search_messages(
-                                    &client, &room_id, &query, None,
+                            // Try server-side search first
+                            if let Some(client) = core.get_client().await.ok() {
+                                match fluxchat_core::messages::search_messages(
+                                    &client, &search_room_id, &query, None,
                                 )
                                 .await
-                                .ok()?;
-                            Some(results)
+                                {
+                                    Ok((results, _next)) if !results.is_empty() => {
+                                        return results;
+                                    }
+                                    Ok(_) => {
+                                        tracing::info!("Server search returned 0 results, trying client-side");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Server search failed: {e}, trying client-side");
+                                    }
+                                }
+                            }
+                            // Client-side fallback: search loaded messages
+                            let query_lower = query.to_lowercase();
+                            local_msgs.iter()
+                                .filter(|m| m.body.to_lowercase().contains(&query_lower))
+                                .map(|m| fluxchat_core::messages::SearchResult {
+                                    event_id: m.event_id.clone(),
+                                    sender: m.sender.clone(),
+                                    sender_name: m.sender_name.clone(),
+                                    body: m.body.clone(),
+                                    timestamp: m.timestamp,
+                                    room_id: search_room_id.clone(),
+                                })
+                                .collect()
                         },
-                        |result| match result {
-                            Some(results) => Message::SearchResults(results),
-                            None => Message::SearchResults(Vec::new()),
-                        },
+                        Message::SearchResults,
                     );
                 }
             }
             Message::SearchResults(results) => {
                 self.search_results = results;
+                self.search_selected = None;
+            }
+            Message::SearchArrowDown => {
+                let len = self.search_results.len().min(20);
+                if len > 0 {
+                    self.search_selected = Some(
+                        self.search_selected.map(|i| (i + 1).min(len - 1)).unwrap_or(0)
+                    );
+                }
+            }
+            Message::SearchArrowUp => {
+                if !self.search_results.is_empty() {
+                    self.search_selected = Some(
+                        self.search_selected.map(|i| i.saturating_sub(1)).unwrap_or(0)
+                    );
+                }
+            }
+            Message::SearchSelectResult(index) => {
+                if let Some(result) = self.search_results.get(index) {
+                    let event_id = result.event_id.clone();
+                    self.highlight_event_id = Some(event_id.clone());
+                    // Close search UI
+                    self.search_open = false;
+                    self.search_results.clear();
+                    self.search_query.clear();
+                    self.search_selected = None;
+                    // Scroll to the message if it exists in loaded messages
+                    if let Some(room_id) = &self.selected_room_id {
+                        if let Some(msgs) = self.messages_by_room.get(room_id) {
+                            if let Some(pos) = msgs.iter().position(|m| m.event_id == event_id) {
+                                // Estimate scroll offset: each message ~40px
+                                let offset = (pos as f32) * 40.0;
+                                return iced::widget::operation::scroll_to(
+                                    crate::view::messages_scrollable_id(),
+                                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: offset },
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             // --- UI panels ---
@@ -779,6 +856,14 @@ impl FluxChat {
             }
             Message::ToggleSearch => {
                 self.search_open = !self.search_open;
+                if !self.search_open {
+                    self.search_results.clear();
+                    self.search_selected = None;
+                    self.highlight_event_id = None;
+                }
+                if self.search_open {
+                    return iced::widget::operation::focus(crate::view::search_input_id());
+                }
             }
             Message::TogglePins => {
                 self.pins_open = !self.pins_open;

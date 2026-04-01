@@ -56,6 +56,9 @@ pub enum Message {
     SearchQueryChanged(String),
     SearchSubmit,
     SearchResults(Vec<fluxchat_core::messages::SearchResult>),
+    SearchSelectResult(usize),
+    SearchArrowDown,
+    SearchArrowUp,
 
     // --- UI panels ---
     ToggleMemberList,

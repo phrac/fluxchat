@@ -511,7 +511,19 @@ impl FluxChat {
             col = col.push(el);
         }
         col = col.push(reactions_row);
-        col.into()
+
+        // Highlight searched-to message with a tinted background
+        if self.highlight_event_id.as_deref() == Some(&msg.event_id) {
+            container(col)
+                .width(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(Color::from_rgba(0.23, 0.51, 0.96, 0.15).into()),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            col.into()
+        }
     }
 
     /// Render the emoji picker panel.

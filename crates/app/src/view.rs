@@ -19,6 +19,11 @@ pub fn emoji_search_id() -> iced::widget::Id {
     iced::widget::Id::new("emoji_search_input")
 }
 
+/// Fixed ID for the search input.
+pub fn search_input_id() -> iced::widget::Id {
+    iced::widget::Id::new("search_input")
+}
+
 pub(crate) const EMOJI_GRID_COLUMNS: usize = 8;
 pub(crate) const EMOJI_PANEL_HEIGHT: f32 = 280.0;
 pub(crate) const EMOJI_CELL_SIZE: f32 = 36.0;
@@ -1019,10 +1024,17 @@ impl FluxChat {
                 }
             }
 
+            // Collect all optional panels into a single column so the content
+            // column always has the same number of children. This prevents Iced
+            // from losing the messages scrollable's scroll state when panels
+            // are toggled on/off.
+            let mut panels_col: iced::widget::Column<'_, Message> = column![].spacing(0);
+
             // Search bar
             if self.search_open {
                 let search_input =
                     text_input("search messages...", &self.search_query)
+                        .id(search_input_id())
                         .on_input(Message::SearchQueryChanged)
                         .on_submit(Message::SearchSubmit)
                         .font(MONO)
@@ -1042,7 +1054,7 @@ impl FluxChat {
                 .spacing(4)
                 .align_y(iced::Alignment::Center);
 
-                content = content.push(
+                panels_col = panels_col.push(
                     container(search_bar)
                         .width(Fill)
                         .padding([4, 8])
@@ -1056,51 +1068,6 @@ impl FluxChat {
                             ..Default::default()
                         }),
                 );
-
-                // Search results
-                if !self.search_results.is_empty() {
-                    let mut results_col = column![].spacing(1);
-                    for result in self.search_results.iter().take(20) {
-                        let local_secs = local_time_of_day(result.timestamp);
-                        let h = local_secs / 3600;
-                        let m = (local_secs % 3600) / 60;
-                        let time_str = format!("{h:02}:{m:02}");
-                        let nick_col = theme::nick_color(&result.sender_name);
-                        results_col = results_col.push(
-                            container(
-                                row![
-                                    text(time_str)
-                                        .font(MONO)
-                                        .size(13)
-                                        .color(theme::TEXT_DIM),
-                                    text(&result.sender_name)
-                                        .font(MONO)
-                                        .size(14)
-                                        .color(nick_col),
-                                    text(&result.body)
-                                        .font(MONO)
-                                        .size(14)
-                                        .color(theme::TEXT_NORMAL),
-                                ]
-                                .spacing(6),
-                            )
-                            .padding([2, 8]),
-                        );
-                    }
-                    content = content.push(
-                        container(scrollable(results_col).height(Length::Fixed(200.0)).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
-                            .width(Fill)
-                            .style(|_: &Theme| container::Style {
-                                background: Some(theme::BG_DARK.into()),
-                                border: iced::Border {
-                                    color: theme::BORDER,
-                                    width: 1.0,
-                                    radius: 0.0.into(),
-                                },
-                                ..Default::default()
-                            }),
-                    );
-                }
             }
 
             // Panels (pinned messages, threads, files, notices)
@@ -1125,7 +1092,7 @@ impl FluxChat {
                         );
                     }
                 }
-                content = content.push(
+                panels_col = panels_col.push(
                     container(panel_col).padding([8, 12]).width(Fill)
                         .style(theme::container_panel)
                 );
@@ -1143,7 +1110,7 @@ impl FluxChat {
                     ].align_y(iced::Alignment::Center),
                     text("Thread view coming soon").font(MONO).size(13).color(theme::TEXT_DIM),
                 ].spacing(4);
-                content = content.push(
+                panels_col = panels_col.push(
                     container(panel_col).padding([8, 12]).width(Fill)
                         .style(theme::container_panel)
                 );
@@ -1173,7 +1140,7 @@ impl FluxChat {
                         }
                     }
                 }
-                content = content.push(
+                panels_col = panels_col.push(
                     container(panel_col).padding([8, 12]).width(Fill)
                         .style(theme::container_panel)
                 );
@@ -1191,11 +1158,14 @@ impl FluxChat {
                     ].align_y(iced::Alignment::Center),
                     text("No server notices").font(MONO).size(13).color(theme::TEXT_DIM),
                 ].spacing(4);
-                content = content.push(
+                panels_col = panels_col.push(
                     container(panel_col).padding([8, 12]).width(Fill)
                         .style(theme::container_panel)
                 );
             }
+
+            // Always push the panels column — empty when no panels are open
+            content = content.push(panels_col.width(Fill));
 
             set_scroll_room(room_id);
             let messages = self.messages_by_room.get(room_id);
@@ -1307,6 +1277,100 @@ impl FluxChat {
             )
             .on_exit(Message::HoverMessage(None));
 
+            // Build search results overlay if needed
+            let search_results_overlay: Option<Element<Message>> = if self.search_open && !self.search_results.is_empty() {
+                let mut results_col = column![].spacing(0);
+                let selected_idx = self.search_selected;
+                for (i, result) in self.search_results.iter().take(20).enumerate() {
+                    let local_secs = local_time_of_day(result.timestamp);
+                    let h = local_secs / 3600;
+                    let m = (local_secs % 3600) / 60;
+                    let time_str = format!("{h:02}:{m:02}");
+                    let nick_col = theme::nick_color(&result.sender_name);
+                    // Truncate body to single line
+                    let body_line = result.body.lines().next().unwrap_or("");
+                    let body_trunc = if body_line.len() > 120 {
+                        format!("{}...", &body_line[..117])
+                    } else {
+                        body_line.to_string()
+                    };
+                    let is_selected = selected_idx == Some(i);
+                    let bg = if is_selected {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
+                    } else {
+                        None
+                    };
+                    results_col = results_col.push(
+                        button(
+                            row![
+                                text(time_str)
+                                    .font(MONO)
+                                    .size(13)
+                                    .color(theme::TEXT_DIM),
+                                text(&result.sender_name)
+                                    .font(MONO)
+                                    .size(13)
+                                    .color(nick_col)
+                                    .wrapping(iced::widget::text::Wrapping::None),
+                                text(body_trunc)
+                                    .font(MONO)
+                                    .size(13)
+                                    .color(theme::TEXT_NORMAL)
+                                    .wrapping(iced::widget::text::Wrapping::None),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::Alignment::Center),
+                        )
+                        .on_press(Message::SearchSelectResult(i))
+                        .padding([3, 8])
+                        .width(Fill)
+                        .style(move |_, status| button::Style {
+                            background: if matches!(status, button::Status::Hovered) {
+                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                            } else {
+                                bg
+                            },
+                            ..Default::default()
+                        }),
+                    );
+                }
+                Some(
+                    container(
+                        scrollable(results_col)
+                            .height(Length::Shrink)
+                            .direction(iced::widget::scrollable::Direction::Vertical(
+                                iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                            ))
+                            .style(thin_scrollbar),
+                    )
+                    .max_height(200.0)
+                    .width(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::BG_DARK.into()),
+                        border: iced::Border {
+                            color: theme::BORDER,
+                            width: 1.0,
+                            radius: 0.0.into(),
+                        },
+                        ..Default::default()
+                    })
+                    .into(),
+                )
+            } else {
+                None
+            };
+
+            // Helper: wrap msg_scrollable in a stack with any overlays (search results, new-messages pill)
+            let mut msg_stack = stack![
+                container(msg_scrollable).width(Fill).height(Fill),
+            ].width(Fill).height(Fill);
+
+            if let Some(search_overlay) = search_results_overlay {
+                msg_stack = msg_stack.push(
+                    container(search_overlay).width(Fill).align_y(iced::alignment::Vertical::Top),
+                );
+            }
+
             // Floating "new messages" pill when scrolled up and new messages arrived
             if !self.messages_at_bottom {
                 let unread = self.rooms.iter()
@@ -1333,23 +1397,16 @@ impl FluxChat {
                         border: iced::Border { radius: 12.0.into(), ..Default::default() },
                         ..Default::default()
                     });
-                    let overlay = container(pill)
-                        .width(Fill)
-                        .center_x(Fill)
-                        .padding(8.0);
-                    content = content.push(
-                        stack![
-                            container(msg_scrollable).width(Fill).height(Fill),
-                            container(Space::new()).width(Fill).height(Fill), // spacer
-                            container(overlay).width(Fill).align_y(iced::alignment::Vertical::Bottom),
-                        ].width(Fill).height(Fill)
+                    msg_stack = msg_stack.push(
+                        container(container(pill).width(Fill).center_x(Fill).padding(8.0))
+                            .width(Fill)
+                            .height(Fill)
+                            .align_y(iced::alignment::Vertical::Bottom),
                     );
-                } else {
-                    content = content.push(msg_scrollable);
                 }
-            } else {
-                content = content.push(msg_scrollable);
             }
+
+            content = content.push(msg_stack);
 
             // Input area: typing indicator, reply/edit preview, GIF panel,
             // emoji picker, upload preview, help text, autocomplete, input bar
@@ -1377,88 +1434,89 @@ impl FluxChat {
             })
             .into();
 
-        if !self.overflow_menu_open {
-            return base;
-        }
-
-        // Overflow menu as floating overlay
-        let make_menu_item = |svg_bytes: &'static [u8], label: &'static str, msg: Message| -> Element<Message> {
-            let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
-            button(
-                row![
-                    iced::widget::svg(handle)
-                        .width(14).height(14)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
-                    text(label).font(MONO).size(14).color(theme::TEXT_NORMAL),
-                ]
-                .spacing(10)
-                .align_y(iced::Alignment::Center),
-            )
-            .on_press(msg)
-            .padding([6, 14])
-            .width(Fill)
-            .style(|_, status| button::Style {
-                background: if matches!(status, button::Status::Hovered) {
-                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                } else {
-                    None
-                },
-                text_color: theme::TEXT_NORMAL,
-                ..Default::default()
-            })
-            .into()
-        };
-
-        let menu = container(
-            column![
-                make_menu_item(SVG_STAR, "Favourite", Message::ToggleFavourite),
-                make_menu_item(SVG_COPY, "Copy link", Message::CopyRoomLink),
-                container(Space::new()).width(Fill).height(1)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(theme::BORDER.into()),
-                        ..Default::default()
-                    }),
-                make_menu_item(SVG_PIN, "Pinned messages", Message::TogglePins),
-                make_menu_item(SVG_THREAD, "Threads", Message::ToggleThreads),
-                make_menu_item(SVG_FILE, "Files", Message::ToggleFiles),
-                make_menu_item(SVG_GIF, "GIFs", Message::ToggleGifs),
-                make_menu_item(SVG_BELL, "Notices", Message::ToggleNotices),
-            ]
-            .spacing(0)
-        )
-        .width(180)
-        .padding([6, 0])
-        .style(|_: &Theme| container::Style {
-            background: Some(theme::BG_MID.into()),
-            border: iced::Border {
-                color: theme::BORDER,
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-            shadow: iced::Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 16.0,
-            },
-            ..Default::default()
-        });
-
-        let overlay: Element<Message> = mouse_area(
-            container(
-                column![
+        // Always return a stack so the root widget type is stable.
+        // When the overflow menu is closed, the overlay is an empty spacer.
+        let overlay: Element<Message> = if self.overflow_menu_open {
+            let make_menu_item = |svg_bytes: &'static [u8], label: &'static str, msg: Message| -> Element<Message> {
+                let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+                button(
                     row![
-                        Space::new().width(Fill),
-                        menu,
-                    ],
-                    Space::new().height(Fill),
+                        iced::widget::svg(handle)
+                            .width(14).height(14)
+                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                        text(label).font(MONO).size(14).color(theme::TEXT_NORMAL),
+                    ]
+                    .spacing(10)
+                    .align_y(iced::Alignment::Center),
+                )
+                .on_press(msg)
+                .padding([6, 14])
+                .width(Fill)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                    } else {
+                        None
+                    },
+                    text_color: theme::TEXT_NORMAL,
+                    ..Default::default()
+                })
+                .into()
+            };
+
+            let menu = container(
+                column![
+                    make_menu_item(SVG_STAR, "Favourite", Message::ToggleFavourite),
+                    make_menu_item(SVG_COPY, "Copy link", Message::CopyRoomLink),
+                    container(Space::new()).width(Fill).height(1)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::BORDER.into()),
+                            ..Default::default()
+                        }),
+                    make_menu_item(SVG_PIN, "Pinned messages", Message::TogglePins),
+                    make_menu_item(SVG_THREAD, "Threads", Message::ToggleThreads),
+                    make_menu_item(SVG_FILE, "Files", Message::ToggleFiles),
+                    make_menu_item(SVG_BELL, "Notices", Message::ToggleNotices),
                 ]
+                .spacing(0)
             )
-            .width(Fill)
-            .height(Fill)
-            .padding(iced::Padding { top: 32.0, right: 8.0, bottom: 0.0, left: 0.0 })
-        )
-        .on_press(Message::ToggleOverflowMenu)
-        .into();
+            .width(180)
+            .padding([6, 0])
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::BG_MID.into()),
+                border: iced::Border {
+                    color: theme::BORDER,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                    offset: iced::Vector::new(0.0, 4.0),
+                    blur_radius: 16.0,
+                },
+                ..Default::default()
+            });
+
+            mouse_area(
+                container(
+                    column![
+                        row![
+                            Space::new().width(Fill),
+                            menu,
+                        ],
+                        Space::new().height(Fill),
+                    ]
+                )
+                .width(Fill)
+                .height(Fill)
+                .padding(iced::Padding { top: 32.0, right: 8.0, bottom: 0.0, left: 0.0 })
+            )
+            .on_press(Message::ToggleOverflowMenu)
+            .into()
+        } else {
+            // Invisible zero-size spacer keeps the stack child count stable
+            Space::new().width(0).height(0).into()
+        };
 
         stack![base, overlay].width(Fill).height(Fill).into()
     }
@@ -1606,6 +1664,14 @@ impl FluxChat {
                             }
                         }
                     }
+                }
+
+                // Arrow keys for search results navigation
+                if key == iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) && !modifiers.alt() {
+                    return Message::SearchArrowDown;
+                }
+                if key == iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) && !modifiers.alt() {
+                    return Message::SearchArrowUp;
                 }
 
                 // Escape: close modals/panels/completions
