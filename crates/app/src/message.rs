@@ -149,6 +149,7 @@ pub enum Message {
 
     // --- Message hover ---
     HoverMessage(Option<String>), // event_id or None
+    TogglePreviewExpand(String),  // event_id
 
     // --- Formatting ---
     InsertFormat(&'static str, &'static str), // (prefix, suffix) e.g. ("**", "**")

@@ -78,34 +78,36 @@ impl FluxChat {
 
         let member_scroll = scrollable(col).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar);
 
-        // PIP: show when in a call but viewing a different room
-        let show_pip = self.call_room_id.is_some()
-            && self.call_room_id.as_deref() != Some(room_id)
-            && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
-
         let mut panel = column![member_scroll].height(Fill);
 
-        if show_pip {
+        // Call widget — always at bottom of member list
+        let is_connected = self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
+        let is_connecting = self.call_state == fluxchat_core::rtc::CallConnectionState::Connecting;
+        let is_failed = matches!(self.call_state, fluxchat_core::rtc::CallConnectionState::Failed(_));
+        let selected_has_call = self.rooms_with_calls.contains(room_id);
+
+        if is_connected {
+            // In a call — show room name, participants, controls
             let call_room_name = self.call_room_id.as_ref()
                 .and_then(|rid| self.rooms.iter().find(|r| r.room_id == *rid))
-                .map(|r| r.name.as_str())
-                .unwrap_or("Call");
+                .map(|r| {
+                    match r.space_name {
+                        Some(ref s) => format!("{s}/{}", r.name),
+                        None => r.name.clone(),
+                    }
+                })
+                .unwrap_or_else(|| "Call".into());
 
-            // Cross-reference with call room members for avatars
             let call_room_members = self.call_room_id.as_ref()
                 .and_then(|rid| self.members_by_room.get(rid));
 
             let mut pip_participants = row![].spacing(3).align_y(iced::Alignment::Center);
-
-            // Add self
             let my_avatar_mxc = call_room_members
                 .and_then(|m| m.iter().find(|m| m.user_id == self.user_id))
                 .and_then(|m| m.avatar_url.as_deref());
             pip_participants = pip_participants.push(
                 container(self.render_avatar(my_avatar_mxc, 18.0)).width(18).height(18),
             );
-
-            // Add remote participants
             for p in self.call_participants.iter().filter(|p| !p.is_local).take(3) {
                 let member_avatar = call_room_members
                     .and_then(|members| members.iter().find(|m| p.user_id.starts_with(&m.user_id) || m.user_id == p.user_id))
@@ -115,18 +117,12 @@ impl FluxChat {
                     container(self.render_avatar(avatar_mxc, 18.0)).width(18).height(18),
                 );
             }
-            let total = self.call_participants.len() + 1;
-            if total > 4 {
-                pip_participants = pip_participants.push(
-                    text(format!("+{}", total - 4)).font(MONO).size(9).color(theme::TEXT_DIM),
-                );
-            }
 
             let mic_icon = if self.call_mic_muted { SVG_MIC_OFF } else { SVG_MIC };
             let mic_color = if self.call_mic_muted { theme::RED } else { theme::GREEN };
             let call_rid = self.call_room_id.clone().unwrap_or_default();
 
-            let pip_panel = container(
+            panel = panel.push(container(
                 column![
                     button(
                         row![
@@ -173,15 +169,65 @@ impl FluxChat {
             .width(Fill)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::BG_MID.into()),
-                border: iced::Border {
-                    color: theme::GREEN,
-                    width: 1.0,
-                    ..Default::default()
-                },
+                border: iced::Border { color: theme::GREEN, width: 1.0, ..Default::default() },
                 ..Default::default()
-            });
-
-            panel = panel.push(pip_panel);
+            }));
+        } else if is_connecting {
+            panel = panel.push(container(
+                text("Connecting...").font(MONO).size(11).color(theme::ACCENT),
+            ).padding([8, 10]).width(Fill).style(|_: &Theme| container::Style {
+                background: Some(theme::BG_MID.into()),
+                ..Default::default()
+            }));
+        } else if is_failed {
+            let err_msg = if let fluxchat_core::rtc::CallConnectionState::Failed(ref e) = self.call_state {
+                if e.contains("M_FORBIDDEN") { "Not allowed" }
+                else if e.contains("No LiveKit") || e.contains("rtc_foci") { "Not supported" }
+                else { "Call failed" }
+            } else { "Error" };
+            panel = panel.push(container(
+                row![
+                    text(err_msg).font(MONO).size(11).color(theme::RED),
+                    Space::new().width(Fill),
+                    button(
+                        iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_CLOSE))
+                            .width(10).height(10)
+                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) })
+                    )
+                    .on_press(Message::CallDisconnected("dismissed".into()))
+                    .padding(2)
+                    .style(|_, _| button::Style { background: None, ..Default::default() }),
+                ].spacing(4).align_y(iced::Alignment::Center),
+            ).padding([6, 10]).width(Fill).style(|_: &Theme| container::Style {
+                background: Some(Color::from_rgba(0.8, 0.0, 0.0, 0.1).into()),
+                border: iced::Border { color: theme::RED, width: 1.0, ..Default::default() },
+                ..Default::default()
+            }));
+        } else if selected_has_call {
+            // Room has an active call we can join
+            let rid = room_id.to_string();
+            panel = panel.push(container(
+                row![
+                    iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
+                        .width(12).height(12)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::GREEN) }),
+                    text("Call active").font(MONO).size(11).color(theme::TEXT_NORMAL),
+                    Space::new().width(Fill),
+                    button(text("Join").font(MONO).size(11).color(theme::BG_DEEP))
+                        .on_press(Message::CallJoin(rid))
+                        .padding([3, 10])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::GREEN.into()),
+                            text_color: theme::BG_DEEP,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                ].spacing(6).align_y(iced::Alignment::Center),
+            ).padding([6, 10]).width(Fill).style(|_: &Theme| container::Style {
+                background: Some(theme::BG_MID.into()),
+                border: iced::Border { color: theme::GREEN, width: 1.0, ..Default::default() },
+                ..Default::default()
+            }));
         }
 
         container(panel)

@@ -381,14 +381,49 @@ impl FluxChat {
                 .into()
         };
 
-        // URL preview cards
+        // URL preview cards (max 2 unless expanded)
         let indent = time_width + 100.0 + 22.0 + 18.0;
         let urls = extract_urls(&msg.body);
-        let preview_elements: Vec<Element<'a, Message>> = urls
+        let all_previews: Vec<&fluxchat_core::UrlPreview> = urls
             .iter()
             .filter_map(|url| self.url_previews.get(url))
+            .collect();
+        let is_expanded = self.expanded_previews.contains(&msg.event_id);
+        let max_show = if is_expanded { all_previews.len() } else { 2 };
+        let extra_count = all_previews.len().saturating_sub(max_show);
+        let mut preview_elements: Vec<Element<'a, Message>> = all_previews
+            .into_iter()
+            .take(max_show)
             .map(|preview| self.view_url_preview(preview, indent))
             .collect();
+        if extra_count > 0 {
+            let eid = msg.event_id.clone();
+            preview_elements.push(
+                row![
+                    Space::new().width(Length::Fixed(indent)),
+                    button(
+                        text(format!("Show {extra_count} more preview{}", if extra_count == 1 { "" } else { "s" }))
+                            .font(MONO).size(11).color(theme::ACCENT)
+                    )
+                    .on_press(Message::TogglePreviewExpand(eid))
+                    .padding([2, 0])
+                    .style(|_, _| button::Style { background: None, text_color: theme::ACCENT, ..Default::default() }),
+                ].into()
+            );
+        } else if is_expanded {
+            let eid = msg.event_id.clone();
+            preview_elements.push(
+                row![
+                    Space::new().width(Length::Fixed(indent)),
+                    button(
+                        text("Show less").font(MONO).size(11).color(theme::TEXT_DIM)
+                    )
+                    .on_press(Message::TogglePreviewExpand(eid))
+                    .padding([2, 0])
+                    .style(|_, _| button::Style { background: None, text_color: theme::TEXT_DIM, ..Default::default() }),
+                ].into()
+            );
+        }
 
         // Reactions
         if msg.reactions.is_empty() && preview_elements.is_empty() {
@@ -630,9 +665,9 @@ impl FluxChat {
             );
         }
 
-        let mut card_row = row![container(content_col).width(Fill).clip(true)].spacing(8);
+        let mut card_row = row![].spacing(8);
 
-        // OG image thumbnail
+        // OG image thumbnail (on the left)
         if let Some(ref image_url) = preview.image_url {
             if let Some(handle) = self.url_preview_images.get(image_url) {
                 card_row = card_row.push(
@@ -652,6 +687,8 @@ impl FluxChat {
                 );
             }
         }
+
+        card_row = card_row.push(container(content_col).width(Fill).clip(true));
 
         let url = preview.url.clone();
         let card = button(

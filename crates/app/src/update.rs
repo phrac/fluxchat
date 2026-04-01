@@ -1213,6 +1213,11 @@ impl FluxChat {
             Message::HoverMessage(id) => {
                 self.hovered_message = id;
             }
+            Message::TogglePreviewExpand(event_id) => {
+                if !self.expanded_previews.remove(&event_id) {
+                    self.expanded_previews.insert(event_id);
+                }
+            }
 
             // --- Formatting ---
             Message::InsertFormat(prefix, suffix) => {
@@ -2153,7 +2158,7 @@ pub(crate) fn extract_urls(text: &str) -> Vec<String> {
     text.split_whitespace()
         .map(|w| w.trim_matches(|c: char| c == '`' || c == '<' || c == '>' || c == '"' || c == '\''))
         .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
-        .take(2)
+        .take(5)
         .map(|w| w.trim_end_matches(['.', ',', ')', ']']).to_string())
         .collect()
 }

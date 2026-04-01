@@ -243,6 +243,7 @@ pub struct FluxChat {
     pub security_shown_recovery_key: Option<String>,
 
     // --- Call/RTC state ---
+    pub expanded_previews: HashSet<String>, // event_ids with all URL previews shown
     pub calls_supported: bool, // true if homeserver has LiveKit configured
     pub call_state: fluxchat_core::rtc::CallConnectionState,
     pub call_room_id: Option<String>,
@@ -381,6 +382,7 @@ impl FluxChat {
             security_state: None,
             security_recovery_key_input: String::new(),
             security_shown_recovery_key: None,
+            expanded_previews: HashSet::new(),
             calls_supported: false,
             call_state: fluxchat_core::rtc::CallConnectionState::Disconnected,
             call_room_id: None,
