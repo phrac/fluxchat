@@ -298,11 +298,31 @@ impl FluxChat {
                 }
                 self.selected_room_id = Some(room_id.clone());
                 self.messages_at_bottom = true;
+                self.pinned_messages.clear();
                 crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
                 self.paginate_msg_count = 0;
                 // Mark as read
                 self.read_rooms.insert(room_id.clone());
+                // Load pins in background for pin icon state
+                let pin_load = {
+                    let core = self.core.clone();
+                    let rid = if room_id.starts_with("thread::") {
+                        room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                    } else {
+                        room_id.clone()
+                    };
+                    Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::messages::get_pinned_messages(&client, &rid).await.ok()
+                        },
+                        |result| match result {
+                            Some(pins) => Message::PinsLoaded(pins),
+                            None => Message::PinsLoaded(Vec::new()),
+                        },
+                    )
+                };
 
                 // Load timeline + members if not cached
                 let needs_messages = !self.messages_by_room.contains_key(&room_id);
@@ -399,7 +419,7 @@ impl FluxChat {
                             None => Message::Noop,
                         },
                     );
-                    return Task::batch([load, focus, call_check]);
+                    return Task::batch([load, focus, call_check, pin_load]);
                 }
                 // Re-resolve images for already-cached messages (clear pending to allow retries)
                 self.image_cache_pending.clear();
@@ -410,7 +430,7 @@ impl FluxChat {
                 let image_task = self.resolve_images(&cached_msgs);
                 // Use ScrollToBottom message instead of direct snap_to_end —
                 // goes through the update loop, giving iced a frame to render first
-                return Task::batch([focus, call_check, image_task, Task::done(Message::ScrollToBottom)]);
+                return Task::batch([focus, call_check, image_task, Task::done(Message::ScrollToBottom), pin_load]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -751,17 +771,28 @@ impl FluxChat {
             }
             Message::PinMessage(event_id) => {
                 if let Some(room_id) = self.selected_room_id.clone() {
+                    // Strip thread prefix for pin operations
+                    let real_room = if room_id.starts_with("thread::") {
+                        room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                    } else {
+                        room_id.clone()
+                    };
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             let _ = fluxchat_core::messages::pin_message(
-                                &client, &room_id, &event_id,
+                                &client, &real_room, &event_id,
                             )
                             .await;
-                            Some(())
+                            // Re-fetch pins so the icon updates
+                            let pins = fluxchat_core::messages::get_pinned_messages(&client, &real_room).await.ok();
+                            Some(pins.unwrap_or_default())
                         },
-                        |_| Message::Noop,
+                        |result| match result {
+                            Some(pins) => Message::PinsLoaded(pins),
+                            None => Message::Noop,
+                        },
                     );
                 }
             }

@@ -344,6 +344,9 @@ impl FluxChat {
                 }
             }
 
+            // Pin/unpin
+            action_row = action_row.push(make_msg_action(SVG_PIN, Message::PinMessage(event_id.clone())));
+
             if is_own {
                 action_row = action_row.push(make_msg_action(SVG_EDIT, Message::StartEdit(
                     event_id.clone(),
