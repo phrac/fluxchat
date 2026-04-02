@@ -254,8 +254,15 @@ impl FluxChat {
                             && m.sender != self.user_id)
                         .collect();
 
-                    // Track new messages arriving while scrolled up
+                    // Re-mark room as unread if new messages arrive while not viewing it
                     let is_active = self.selected_room_id.as_deref() == Some(&room_id);
+                    if !brand_new.is_empty() && (!is_active || !self.app_focused) {
+                        if self.read_rooms.remove(&room_id) {
+                            self.save_read_rooms();
+                        }
+                    }
+
+                    // Track new messages arriving while scrolled up
                     if is_active && !brand_new.is_empty() && !self.messages_at_bottom {
                         self.new_messages_below = true;
                     }
@@ -395,6 +402,7 @@ impl FluxChat {
                 self.paginate_msg_count = 0;
                 // Mark as read
                 self.read_rooms.insert(room_id.clone());
+                self.save_read_rooms();
                 // Load pins in background for pin icon state
                 let pin_load = {
                     let core = self.core.clone();
@@ -2911,6 +2919,14 @@ impl FluxChat {
                 None => Message::SyncStarted,
             },
         )
+    }
+
+    /// Persist read_rooms to SQLite.
+    fn save_read_rooms(&self) {
+        let ids: Vec<&str> = self.read_rooms.iter().map(|s| s.as_str()).collect();
+        if let Ok(json) = serde_json::to_string(&ids) {
+            let _ = self.core.db.set_setting("read_rooms", &json);
+        }
     }
 
     /// Load persisted settings from SQLite into state.

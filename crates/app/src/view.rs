@@ -831,19 +831,29 @@ impl FluxChat {
                             row![
                                 text(&room.name).font(MONO).size(13).color(theme::TEXT_NORMAL),
                                 Space::new().width(Fill),
-                                button(text("\u{2713}").font(MONO).size(14).color(theme::GREEN))
+                                button(text("Join").font(MONO).size(11).color(theme::BG_DEEP))
                                     .on_press(Message::AcceptInvite(rid_accept))
-                                    .padding([2, 6])
-                                    .style(|_, _| button::Style { background: None, text_color: theme::GREEN, ..Default::default() }),
-                                button(text("\u{2717}").font(MONO).size(14).color(theme::RED))
+                                    .padding([3, 10])
+                                    .style(|_, _| button::Style {
+                                        background: Some(theme::GREEN.into()),
+                                        text_color: theme::BG_DEEP,
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                                button(text("Reject").font(MONO).size(11).color(theme::BG_DEEP))
                                     .on_press(Message::RejectInvite(rid_reject))
-                                    .padding([2, 6])
-                                    .style(|_, _| button::Style { background: None, text_color: theme::RED, ..Default::default() }),
+                                    .padding([3, 10])
+                                    .style(|_, _| button::Style {
+                                        background: Some(theme::RED.into()),
+                                        text_color: theme::BG_DEEP,
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
                             ]
-                            .spacing(4)
+                            .spacing(6)
                             .align_y(iced::Alignment::Center),
                         )
-                        .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
+                        .padding(iced::Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 12.0 })
                     );
                 }
             }
