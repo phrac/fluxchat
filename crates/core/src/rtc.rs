@@ -226,11 +226,19 @@ pub async fn get_call_members(
             // Legacy format: memberships array
         } else if content.get("application").is_some() || content.get("call_id").is_some() {
             // Newer flat format: each state event IS a membership
-            // expires is a duration in ms (not absolute timestamp) — if > 0, membership is active
-            let is_active = content.get("expires")
-                .and_then(|v| v.as_u64())
-                .map(|exp| exp > 0)
-                .unwrap_or(true);
+            // expires is a duration in ms from the event's origin_server_ts
+            let origin_ts = json.get("origin_server_ts").and_then(|v| v.as_u64()).unwrap_or(0);
+            let expires_ms = content.get("expires").and_then(|v| v.as_u64()).unwrap_or(0);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let is_active = if expires_ms > 0 && origin_ts > 0 {
+                origin_ts + expires_ms > now_ms
+            } else {
+                // No expiry info — check if content has active fields
+                content.get("application").is_some()
+            };
 
             if is_active {
                 let device_id = content.get("device_id")

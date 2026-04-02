@@ -332,7 +332,8 @@ impl FluxChat {
                     .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
                     .into()
                 } else {
-                    text(format!("[image: {}]", msg.body))
+                    let label = if msg.body.trim().is_empty() { "Loading image..." } else { &msg.body };
+                    text(format!("[image: {label}]"))
                         .font(MONO).size(fs).color(theme::TEXT_DIM)
                         .into()
                 }

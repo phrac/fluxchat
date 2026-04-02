@@ -327,6 +327,10 @@ impl FluxChat {
                     if is_active && self.messages_at_bottom {
                         tasks.push(self.update(Message::SendReadReceipt));
                     }
+                    // Refocus input bar (new messages can steal focus)
+                    if is_active {
+                        tasks.push(iced::widget::operation::focus(crate::view::input_id()));
+                    }
                     return Task::batch(tasks);
                 }
                 SyncEvent::MembersUpdated(room_id, members) => {
@@ -2464,6 +2468,25 @@ impl FluxChat {
                         }
                     }
 
+                    // Refresh member list for active room
+                    if let Some(ref room_id) = self.selected_room_id {
+                        if !room_id.starts_with("thread::") {
+                            let core_m = self.core.clone();
+                            let rid_m = room_id.clone();
+                            tasks.push(Task::perform(
+                                async move {
+                                    let client = core_m.get_client().await.ok()?;
+                                    let members = fluxchat_core::messages::get_room_members(&client, &rid_m).await.ok()?;
+                                    Some((rid_m, members))
+                                },
+                                |result| match result {
+                                    Some((rid, members)) => Message::SyncEvent(SyncEvent::MembersUpdated(rid, members)),
+                                    None => Message::Noop,
+                                },
+                            ));
+                        }
+                    }
+
                     // Scan selected room for active calls (for join banner)
                     if let Some(ref room_id) = self.selected_room_id {
                         let core3 = self.core.clone();
@@ -2635,16 +2658,25 @@ impl FluxChat {
                 let mxc_clone = mxc.clone();
                 let event_id = msg.event_id.clone();
                 let room_id = self.selected_room_id.clone().unwrap_or_default();
+                let real_room = if room_id.starts_with("thread::") {
+                    room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                } else {
+                    room_id
+                };
                 tasks.push(Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
                         // Try event-based fetch first (handles encrypted media)
                         let event_result = fluxchat_core::media::get_event_media_bytes(
-                            &client, &room_id, &event_id,
+                            &client, &real_room, &event_id,
                         ).await;
                         let data = match event_result {
-                            Ok((bytes, _mime)) => bytes,
-                            Err(_) => {
+                            Ok((bytes, _mime)) => {
+                                tracing::info!("Image fetched via event: {} bytes for {}", bytes.len(), mxc_clone);
+                                bytes
+                            }
+                            Err(e) => {
+                                tracing::warn!("Event fetch failed for {}: {}, trying MXC direct", mxc_clone, e);
                                 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
                                 use matrix_sdk::ruma::events::room::MediaSource;
                                 use matrix_sdk::ruma::MxcUri;
