@@ -214,6 +214,28 @@ impl FluxChat {
                         .collect();
                     mxc_uris.extend(self.rooms.iter().filter_map(|r| r.avatar_url.clone()));
                     self.spaces = spaces;
+
+                    // Detect new invites and notify
+                    let old_invite_ids: std::collections::HashSet<&str> = self.invited_rooms
+                        .iter().map(|r| r.room_id.as_str()).collect();
+                    let new_invites: Vec<&fluxchat_core::models::RoomInfo> = invited.iter()
+                        .filter(|r| !old_invite_ids.contains(r.room_id.as_str()))
+                        .collect();
+                    if !new_invites.is_empty() {
+                        // Auto-expand the Invites section
+                        self.collapsed_sections.remove("Invites");
+                        // Fire desktop notifications for new invites
+                        if self.notifications_enabled {
+                            for invite in &new_invites {
+                                let _ = notify_rust::Notification::new()
+                                    .summary("Room Invite")
+                                    .body(&format!("You've been invited to {}", invite.name))
+                                    .timeout(5000)
+                                    .show();
+                            }
+                        }
+                    }
+
                     self.invited_rooms = invited;
                     self.knocked_rooms = knocked;
                     if !mxc_uris.is_empty() {
@@ -1600,21 +1622,39 @@ impl FluxChat {
 
             // --- Invites ---
             Message::AcceptInvite(room_id) => {
+                // Remove from invite list immediately for snappy UI
+                self.invited_rooms.retain(|r| r.room_id != room_id);
                 let core = self.core.clone();
+                let rid = room_id.clone();
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::accept_invite(&client, &room_id).await.ok()
+                        match fluxchat_core::rooms::accept_invite(&client, &rid).await {
+                            Ok(()) => Some(rid),
+                            Err(e) => {
+                                tracing::warn!("Failed to accept invite for {rid}: {e}");
+                                None
+                            }
+                        }
                     },
-                    |_| Message::Noop,
+                    |result| match result {
+                        Some(room_id) => Message::SelectRoom(room_id),
+                        None => Message::Noop,
+                    },
                 );
             }
             Message::RejectInvite(room_id) => {
+                // Remove from invite list immediately for snappy UI
+                self.invited_rooms.retain(|r| r.room_id != room_id);
                 let core = self.core.clone();
+                let rid = room_id.clone();
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::reject_invite(&client, &room_id).await.ok()
+                        if let Err(e) = fluxchat_core::rooms::reject_invite(&client, &rid).await {
+                            tracing::warn!("Failed to reject invite for {rid}: {e}");
+                        }
+                        Some(())
                     },
                     |_| Message::Noop,
                 );

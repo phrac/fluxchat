@@ -821,7 +821,7 @@ impl FluxChat {
 
         // Invites
         if !self.invited_rooms.is_empty() {
-            col = col.push(self.view_section_header("Invites", self.invited_rooms.len()));
+            col = col.push(self.view_invite_section_header(self.invited_rooms.len()));
             if !self.collapsed_sections.contains("Invites") {
                 for room in &self.invited_rooms {
                     let rid_accept = room.room_id.clone();
@@ -1003,6 +1003,64 @@ impl FluxChat {
                         None
                     },
                     text_color: theme::TEXT_DIM,
+                    ..Default::default()
+                }),
+        ].spacing(0).into()
+    }
+
+    /// Invite section header with bell icon and red badge.
+    fn view_invite_section_header(&self, count: usize) -> Element<'_, Message> {
+        let collapsed = self.collapsed_sections.contains("Invites");
+        let arrow = if collapsed { "\u{25b8}" } else { "\u{25be}" };
+
+        let bell_handle = iced::widget::svg::Handle::from_memory(SVG_BELL);
+        let header_row = row![
+            text(arrow).font(MONO).size(14).color(theme::RED),
+            iced::widget::svg(bell_handle)
+                .width(14)
+                .height(14)
+                .style(|_, _| iced::widget::svg::Style {
+                    color: Some(theme::RED),
+                }),
+            text("INVITES").font(MONO_BOLD).size(11).color(theme::RED),
+            Space::new().width(Fill),
+            container(
+                text(count.to_string())
+                    .font(MONO)
+                    .size(10)
+                    .color(theme::TEXT_BRIGHT),
+            )
+            .padding([1, 5])
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::RED.into()),
+                border: iced::Border {
+                    radius: 8.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        ]
+        .spacing(5)
+        .align_y(iced::Alignment::Center);
+
+        column![
+            container(rule::horizontal(1).style(|_: &Theme| rule::Style {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.06),
+                radius: 0.0.into(),
+                fill_mode: rule::FillMode::Full,
+                snap: true,
+            })).padding([0, 8]),
+            button(header_row)
+                .on_press(Message::ToggleSection("Invites".to_string()))
+                .padding([4, 10])
+                .width(Fill)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into())
+                    } else {
+                        None
+                    },
+                    text_color: theme::RED,
                     ..Default::default()
                 }),
         ].spacing(0).into()
