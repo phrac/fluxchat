@@ -232,8 +232,13 @@ impl FluxChat {
                             && m.sender != self.user_id)
                         .collect();
 
-                    // Fire desktop notifications for new messages
+                    // Track new messages arriving while scrolled up
                     let is_active = self.selected_room_id.as_deref() == Some(&room_id);
+                    if is_active && !brand_new.is_empty() && !self.messages_at_bottom {
+                        self.new_messages_below = true;
+                    }
+
+                    // Fire desktop notifications for new messages
                     if self.notifications_enabled && !brand_new.is_empty()
                         && (!is_active || !self.app_focused)
                     {
@@ -1823,6 +1828,13 @@ impl FluxChat {
                 }
             }
 
+            // --- Code blocks ---
+            Message::ToggleCodeBlock(event_id) => {
+                if !self.expanded_code_blocks.remove(&event_id) {
+                    self.expanded_code_blocks.insert(event_id);
+                }
+            }
+
             // --- Reporting ---
             Message::ReportReasonChanged(reason) => {
                 self.report_reason = reason;
@@ -2351,6 +2363,7 @@ impl FluxChat {
             }
             Message::ScrollToBottom => {
                 self.messages_at_bottom = true;
+                self.new_messages_below = false;
                 return iced::widget::operation::snap_to_end(
                     crate::view::messages_scrollable_id(),
                 );
@@ -2365,6 +2378,9 @@ impl FluxChat {
                 let near_top = offset < 100.0;
                 let near_bottom = (max_scroll - offset) < 50.0;
                 self.messages_at_bottom = near_bottom;
+                if near_bottom {
+                    self.new_messages_below = false;
+                }
                 // Clear paginating once scroll correction has settled
                 if self.paginating && !near_top {
                     self.paginating = false;

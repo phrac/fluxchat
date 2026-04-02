@@ -188,6 +188,9 @@ pub enum Message {
     DiscardVoiceMessage,
     PreviewVoiceMessage,
 
+    // --- Code blocks ---
+    ToggleCodeBlock(String), // event_id
+
     // --- Reporting ---
     ReportReasonChanged(String),
     SubmitReport,

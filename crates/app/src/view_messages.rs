@@ -348,14 +348,43 @@ impl FluxChat {
                 .font(MONO).size(fs).color(theme::PURPLE).width(Fill)
                 .into()
         } else if let Some(ref formatted) = msg.formatted_body {
-            let spans = crate::html::html_to_spans(formatted);
-            rich_text(spans)
+            let has_code_block = formatted.contains("<pre>");
+            let is_expanded = self.expanded_code_blocks.contains(&msg.event_id);
+
+            // Collapse code blocks: truncate <pre> content to ~5 lines if not expanded
+            let display_html = if has_code_block && !is_expanded {
+                collapse_code_blocks(formatted, 5)
+            } else {
+                formatted.clone()
+            };
+
+            let spans = crate::html::html_to_spans(&display_html);
+            let body_el: Element<'a, Message> = rich_text(spans)
                 .font(MONO)
                 .size(fs)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(Fill)
                 .on_link_click(Message::OpenUrl)
-                .into()
+                .into();
+
+            if has_code_block {
+                let eid = msg.event_id.clone();
+                let label = if is_expanded { "Show less" } else { "Show more" };
+                column![
+                    body_el,
+                    button(text(label).font(MONO).size(11).color(theme::ACCENT))
+                        .on_press(Message::ToggleCodeBlock(eid))
+                        .padding([2, 8])
+                        .style(|_, status| button::Style {
+                            background: if matches!(status, button::Status::Hovered) {
+                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                            } else { None },
+                            ..Default::default()
+                        }),
+                ].spacing(2).width(Fill).into()
+            } else {
+                body_el
+            }
         } else {
             // Parse basic markdown in plain text bodies
             let spans = crate::html::plain_text_to_spans(&msg.body);
@@ -937,4 +966,54 @@ impl FluxChat {
             card,
         ].spacing(6).width(Fill).into()
     }
+}
+
+/// Truncate code inside `<pre>` blocks to `max_lines` lines.
+fn collapse_code_blocks(html: &str, max_lines: usize) -> String {
+    let mut result = String::new();
+    let mut remaining = html;
+
+    while let Some(pre_start) = remaining.find("<pre>").or_else(|| remaining.find("<pre><code")) {
+        // Copy everything before <pre>
+        result.push_str(&remaining[..pre_start]);
+
+        // Find the opening tag end
+        let tag_and_rest = &remaining[pre_start..];
+        let content_start = tag_and_rest.find('>').map(|i| i + 1).unwrap_or(0);
+
+        // Handle nested <code> tag
+        let after_pre = &tag_and_rest[content_start..];
+        let (code_start_offset, end_marker) = if after_pre.starts_with("<code") {
+            let inner_end = after_pre.find('>').map(|i| i + 1).unwrap_or(0);
+            (content_start + inner_end, "</code></pre>")
+        } else {
+            (content_start, "</pre>")
+        };
+
+        let code_region = &tag_and_rest[code_start_offset..];
+        if let Some(end_pos) = code_region.find(end_marker) {
+            let full_code = &code_region[..end_pos];
+            let lines: Vec<&str> = full_code.split('\n').collect();
+
+            // Copy the opening tags
+            result.push_str(&tag_and_rest[..code_start_offset]);
+
+            if lines.len() > max_lines {
+                // Truncate
+                result.push_str(&lines[..max_lines].join("\n"));
+                result.push_str(&format!("\n... ({} more lines)", lines.len() - max_lines));
+            } else {
+                result.push_str(full_code);
+            }
+
+            result.push_str(end_marker);
+            remaining = &code_region[end_pos + end_marker.len()..];
+        } else {
+            // No closing tag found, copy as-is
+            result.push_str(tag_and_rest);
+            break;
+        }
+    }
+    result.push_str(remaining);
+    result
 }

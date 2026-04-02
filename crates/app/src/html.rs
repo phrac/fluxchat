@@ -259,6 +259,11 @@ fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
                 let syntax = language
                     .as_deref()
                     .and_then(|l| SS.find_syntax_by_token(l))
+                    .or_else(|| {
+                        // Auto-detect language from first line if no tag
+                        let first_line = code.lines().next().unwrap_or("");
+                        SS.find_syntax_by_first_line(first_line)
+                    })
                     .unwrap_or_else(|| SS.find_syntax_plain_text());
                 let theme = &TS.themes["base16-ocean.dark"];
 

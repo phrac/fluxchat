@@ -1714,19 +1714,11 @@ impl FluxChat {
                 container(msg_scrollable).width(Fill).height(Fill),
             ].width(Fill).height(Fill);
 
-            // Floating "new messages" pill when scrolled up and new messages arrived
-            if !self.messages_at_bottom {
-                let unread = self.rooms.iter()
-                    .find(|r| Some(&r.room_id) == self.selected_room_id.as_ref())
-                    .map(|r| r.unread_count)
-                    .unwrap_or(0);
-                if unread > 0 || divider_shown {
+            // Floating "new messages" pill when new messages arrived while scrolled up
+            if !self.messages_at_bottom && self.new_messages_below {
+                {
                     let pill = button(
-                        text(if unread > 0 {
-                            format!("\u{2193} {unread} new message{}", if unread == 1 { "" } else { "s" })
-                        } else {
-                            "\u{2193} New messages".to_string()
-                        })
+                        text("\u{2193} New messages")
                         .font(MONO).size(12).color(Color::WHITE)
                     )
                     .on_press(Message::ScrollToBottom)
