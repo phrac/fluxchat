@@ -556,6 +556,28 @@ pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
             '>' => html.push_str("&gt;"),
             '&' => html.push_str("&amp;"),
             '\n' => html.push_str("<br>"),
+            'h' => {
+                // Detect http:// or https:// URLs
+                let mut url = String::from('h');
+                let prefix_rest: String = chars.clone().take(7).collect();
+                if prefix_rest.starts_with("ttps://") || prefix_rest.starts_with("ttp://") {
+                    // Consume the URL
+                    for ch in chars.by_ref() {
+                        if ch.is_whitespace() || ch == '<' || ch == '>' {
+                            break;
+                        }
+                        url.push(ch);
+                    }
+                    // Trim trailing punctuation
+                    let trimmed = url.trim_end_matches(|c: char| c == '.' || c == ',' || c == ')' || c == ']' || c == ';');
+                    let trailing = &url[trimmed.len()..];
+                    let escaped = html_escape(trimmed);
+                    html.push_str(&format!("<a href=\"{escaped}\">{escaped}</a>"));
+                    html.push_str(&html_escape(trailing));
+                } else {
+                    html.push('h');
+                }
+            }
             _ => html.push(c),
         }
     }
