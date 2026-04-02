@@ -89,7 +89,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
 
     // Extract reply info (on TimelineItemContent)
     let reply_details = content.in_reply_to();
-    let reply_to_id = reply_details.as_ref().map(|r| r.event_id.to_string());
+    let mut reply_to_id = reply_details.as_ref().map(|r| r.event_id.to_string());
     let (reply_to_sender, reply_to_body) = reply_details
         .and_then(|r| {
             if let matrix_sdk_ui::timeline::TimelineDetails::Ready(ref event) = r.event {
@@ -104,6 +104,35 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
         })
         .map(|(s, b)| (Some(s), Some(b)))
         .unwrap_or((None, None));
+
+    // Fallback: extract reply from raw event JSON if SDK didn't populate it
+    if reply_to_id.is_none() {
+        let raw_json = ev.original_json().or_else(|| ev.latest_json());
+        if let Some(raw) = raw_json {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.json().get()) {
+                if let Some(relates_to) = val.get("content").and_then(|c| c.get("m.relates_to")) {
+                    // Check m.in_reply_to (standard reply)
+                    if let Some(in_reply) = relates_to.get("m.in_reply_to") {
+                        if let Some(eid) = in_reply.get("event_id").and_then(|e| e.as_str()) {
+                            reply_to_id = Some(eid.to_string());
+                        }
+                    }
+                    // Also check thread relation — thread replies have in_reply_to inside the thread relation
+                    if reply_to_id.is_none() {
+                        if let Some(eid) = relates_to.get("m.in_reply_to")
+                            .or_else(|| val.get("content")
+                                .and_then(|c| c.get("m.relates_to"))
+                                .and_then(|r| r.get("m.in_reply_to")))
+                            .and_then(|r| r.get("event_id"))
+                            .and_then(|e| e.as_str())
+                        {
+                            reply_to_id = Some(eid.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     match content {
         TimelineItemContent::MsgLike(msg_like) => {

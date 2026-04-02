@@ -1828,6 +1828,22 @@ impl FluxChat {
                 }
             }
 
+            // --- Navigation ---
+            Message::JumpToEvent(event_id) => {
+                self.highlight_event_id = Some(event_id.clone());
+                if let Some(room_id) = &self.selected_room_id {
+                    if let Some(msgs) = self.messages_by_room.get(room_id) {
+                        if let Some(pos) = msgs.iter().position(|m| m.event_id == event_id) {
+                            let offset = (pos as f32) * 40.0;
+                            return iced::widget::operation::scroll_to(
+                                crate::view::messages_scrollable_id(),
+                                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: offset },
+                            );
+                        }
+                    }
+                }
+            }
+
             // --- Code blocks ---
             Message::ToggleCodeBlock(event_id) => {
                 if !self.expanded_code_blocks.remove(&event_id) {
@@ -2687,12 +2703,8 @@ impl FluxChat {
                             &client, &real_room, &event_id,
                         ).await;
                         let data = match event_result {
-                            Ok((bytes, _mime)) => {
-                                tracing::info!("Image fetched via event: {} bytes for {}", bytes.len(), mxc_clone);
-                                bytes
-                            }
-                            Err(e) => {
-                                tracing::warn!("Event fetch failed for {}: {}, trying MXC direct", mxc_clone, e);
+                            Ok((bytes, _mime)) => bytes,
+                            Err(_) => {
                                 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
                                 use matrix_sdk::ruma::events::room::MediaSource;
                                 use matrix_sdk::ruma::MxcUri;

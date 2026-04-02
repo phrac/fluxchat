@@ -188,6 +188,9 @@ pub enum Message {
     DiscardVoiceMessage,
     PreviewVoiceMessage,
 
+    // --- Navigation ---
+    JumpToEvent(String), // event_id — scroll to and highlight
+
     // --- Code blocks ---
     ToggleCodeBlock(String), // event_id
 

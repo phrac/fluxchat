@@ -158,7 +158,7 @@ impl FluxChat {
         }
 
         // Build the content element — image, video, or text
-        let body_element: Element<'a, Message> = if let Some(ref geo) = msg.geo_uri {
+        let mut body_element: Element<'a, Message> = if let Some(ref geo) = msg.geo_uri {
             // Location message — display as a location card
             let coords = geo.strip_prefix("geo:").unwrap_or(geo);
             let parts: Vec<&str> = coords.split(',').collect();
@@ -398,55 +398,66 @@ impl FluxChat {
         };
 
         // Reply context — colored left bar with sender name + quoted text
-        if let Some(ref reply_body) = msg.reply_to_body {
-            let reply_sender = msg.reply_to_sender.as_deref().unwrap_or("?");
-            let sender_color = theme::nick_color(reply_sender);
+        // If SDK didn't resolve the reply, try local message cache
+        let (resolved_reply_sender, resolved_reply_body) = if msg.reply_to_body.is_some() {
+            (msg.reply_to_sender.clone(), msg.reply_to_body.clone())
+        } else if let Some(ref reply_id) = msg.reply_to_id {
+            // Look up in local messages
+            let room_id = self.selected_room_id.as_deref().unwrap_or("");
+            let found = self.messages_by_room.get(room_id)
+                .and_then(|msgs| msgs.iter().find(|m| m.event_id == *reply_id));
+            if let Some(original) = found {
+                (Some(original.sender_name.clone()), Some(original.body.chars().take(120).collect()))
+            } else {
+                (Some("...".into()), Some("Reply".into()))
+            }
+        } else {
+            (None, None)
+        };
+
+        if let Some(reply_body) = resolved_reply_body {
+            let reply_sender: String = resolved_reply_sender.unwrap_or_else(|| "?".into());
+            let sender_color = theme::nick_color(&reply_sender);
 
             // Truncate long reply bodies
             let preview_text = if reply_body.len() > 100 {
                 format!("{}...", &reply_body[..100])
             } else {
-                reply_body.clone()
+                reply_body
             };
 
-            let reply_preview = row![
-                // Colored left bar
-                container(Space::new())
-                    .width(3)
-                    .height(Fill)
-                    .style(move |_: &Theme| container::Style {
-                        background: Some(sender_color.into()),
-                        ..Default::default()
-                    }),
-                column![
-                    text(reply_sender).font(MONO).size(12).color(sender_color),
-                    text(preview_text).font(MONO).size(12).color(theme::TEXT_DIM)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                ].spacing(1).padding([2, 6]),
-            ]
-            .spacing(0);
-
-            // Align reply context with message content (offset past timestamp + nick + avatar + separator)
-            let indent = time_width + 100.0 + 22.0 + 18.0;
-            return column![
-                row![
-                    Space::new().width(Length::Fixed(indent)),
-                    reply_preview,
-                ].spacing(6).width(Fill),
-                row![
-                    Space::new().width(time_width),
-                    nick,
-                    msg_avatar,
-                    make_sep(),
-                    body_element,
-                ]
-                .spacing(6)
-                .width(Fill)
-                .align_y(iced::Alignment::Start),
-            ]
-            .spacing(2)
-            .width(Fill)
+            let jump_to_id = msg.reply_to_id.clone().unwrap_or_default();
+            let reply_preview: Element<'a, Message> = button(
+                container(
+                    row![
+                        text("\u{2503}").size(20).color(sender_color), // vertical bar character
+                        column![
+                            text(reply_sender).font(MONO).size(12).color(sender_color),
+                            text(preview_text).font(MONO).size(12).color(theme::TEXT_DIM)
+                                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                        ].spacing(1),
+                    ].spacing(4).align_y(iced::Alignment::Center)
+                )
+                .padding([2, 6])
+                .style(|_: &Theme| container::Style {
+                    background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into()),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+            )
+            .on_press(Message::JumpToEvent(jump_to_id))
+            .padding(0)
+            .style(|_, _| button::Style { background: None, ..Default::default() })
             .into();
+
+            // Combine reply preview + body into the message body area
+            let combined_body: Element<'a, Message> = column![
+                reply_preview,
+                body_element,
+            ].spacing(4).width(Fill).into();
+
+            // Replace body_element with combined version — fall through to normal rendering
+            body_element = combined_body;
         }
 
         // Build message row + reactions + action buttons
