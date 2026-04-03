@@ -1219,7 +1219,9 @@ impl FluxChat {
         if self.rooms_with_calls.contains(&room.room_id) {
             row_content = row_content.push(Space::new().width(Fill));
             row_content = row_content.push(
-                text("\u{260E}").font(MONO).size(12).color(theme::GREEN),
+                iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
+                    .width(12).height(12)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::GREEN) }),
             );
         }
 

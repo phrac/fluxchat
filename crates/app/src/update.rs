@@ -147,15 +147,25 @@ impl FluxChat {
                 // Load security state for status bar + resolve space/room avatars
                 let sec_task = self.update(Message::SecurityLoadState);
                 let avatar_task = self.resolve_avatars(mxc_uris);
-                // Check if LiveKit/calls are supported
+                // Check if LiveKit/calls are supported + scan all rooms for active calls
                 let core_lk = self.core.clone();
+                let room_ids: Vec<String> = self.rooms.iter().map(|r| r.room_id.clone()).collect();
                 let lk_check = Task::perform(
                     async move {
                         let client = core_lk.get_client().await.ok()?;
-                        Some(fluxchat_core::rtc::get_livekit_service_url(&client).await.is_ok())
+                        if fluxchat_core::rtc::get_livekit_service_url(&client).await.is_err() {
+                            return None;
+                        }
+                        let mut rooms_with_calls = std::collections::HashSet::new();
+                        for rid in &room_ids {
+                            if fluxchat_core::rtc::has_active_call(&client, &rid).await {
+                                rooms_with_calls.insert(rid.clone());
+                            }
+                        }
+                        Some(rooms_with_calls)
                     },
                     |result| match result {
-                        Some(true) => Message::CallRoomsWithCallsUpdated(std::collections::HashSet::new()),
+                        Some(rooms) => Message::CallRoomsWithCallsUpdated(rooms),
                         _ => Message::Noop,
                     },
                 );
@@ -2567,33 +2577,46 @@ impl FluxChat {
                         }
                     }
 
-                    // Scan selected room for active calls (for join banner)
-                    if let Some(ref room_id) = self.selected_room_id {
+                    // Scan all rooms for active calls (sidebar indicators)
+                    {
                         let core3 = self.core.clone();
-                        let rid = room_id.clone();
-                        let is_connected = self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
+                        let room_ids: Vec<String> = self.rooms.iter().map(|r| r.room_id.clone()).collect();
                         tasks.push(Task::perform(
                             async move {
                                 let client = core3.get_client().await.ok()?;
-                                let participants = fluxchat_core::rtc::get_call_members(&client, &rid).await.ok()?;
-                                Some((rid, participants, is_connected))
-                            },
-                            |result| match result {
-                                Some((rid, participants, is_connected)) => {
-                                    if is_connected {
-                                        // Don't overwrite participants when connected — just update room indicator
-                                        let mut rooms = std::collections::HashSet::new();
-                                        if !participants.is_empty() {
-                                            rooms.insert(rid);
-                                        }
-                                        Message::CallRoomsWithCallsUpdated(rooms)
-                                    } else {
-                                        Message::CallParticipantsUpdated(rid, participants)
+                                let mut rooms_with_calls = std::collections::HashSet::new();
+                                for rid in &room_ids {
+                                    if fluxchat_core::rtc::has_active_call(&client, rid).await {
+                                        rooms_with_calls.insert(rid.clone());
                                     }
                                 }
+                                Some(rooms_with_calls)
+                            },
+                            |result| match result {
+                                Some(rooms) => Message::CallRoomsWithCallsUpdated(rooms),
                                 None => Message::Noop,
                             },
                         ));
+                    }
+
+                    // Load participants for selected room (join banner)
+                    if let Some(ref room_id) = self.selected_room_id {
+                        let core4 = self.core.clone();
+                        let rid = room_id.clone();
+                        let is_connected = self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
+                        if !is_connected {
+                            tasks.push(Task::perform(
+                                async move {
+                                    let client = core4.get_client().await.ok()?;
+                                    let participants = fluxchat_core::rtc::get_call_members(&client, &rid).await.ok()?;
+                                    Some((rid, participants))
+                                },
+                                |result| match result {
+                                    Some((rid, participants)) => Message::CallParticipantsUpdated(rid, participants),
+                                    None => Message::Noop,
+                                },
+                            ));
+                        }
                     }
 
                     return Task::batch(tasks);

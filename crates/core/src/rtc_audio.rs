@@ -26,48 +26,83 @@ fn spawn_audio_playback(audio_track: livekit::prelude::RemoteAudioTrack) {
 
     #[cfg(target_os = "linux")]
     {
+        use libpulse_binding::def::BufferAttr;
         use libpulse_binding::sample::{Format, Spec};
         use libpulse_binding::stream::Direction;
         use libpulse_simple_binding::Simple;
 
-        let spec = Spec {
-            format: Format::S16le,
-            channels: 2,
-            rate: 48000,
-        };
-
-        let pulse = match Simple::new(
-            None,
-            "FluxChat",
-            Direction::Playback,
-            None,
-            "Call Audio",
-            &spec,
-            None,
-            None,
-        ) {
-            Ok(s) => Arc::new(s),
-            Err(e) => {
-                tracing::warn!("Failed to open PulseAudio playback: {e}");
-                return;
-            }
-        };
-
-        tracing::info!("Audio output: PulseAudio, S16LE 48000Hz 2ch");
-
+        // Read first frame to get actual format from LiveKit/WebRTC,
+        // then configure PulseAudio to match exactly (avoids resampling artifacts).
         tokio::spawn(async move {
-            let pulse = pulse;
             let mut native_stream = NativeAudioStream::new(rtc_track, 48000, 2);
+            let first_frame = match native_stream.next().await {
+                Some(f) => f,
+                None => {
+                    tracing::warn!("Remote audio stream ended before first frame");
+                    return;
+                }
+            };
+
+            let sample_rate = first_frame.sample_rate;
+            let channels = first_frame.num_channels;
+            tracing::info!("Audio output: PulseAudio, S16LE {sample_rate}Hz {channels}ch (from stream)");
+
+            let spec = Spec {
+                format: Format::S16le,
+                channels: channels as u8,
+                rate: sample_rate,
+            };
+
+            let bytes_per_ms = sample_rate * channels * 2 / 1000; // 2 bytes per i16
+            let buf_attr = BufferAttr {
+                maxlength: u32::MAX,
+                tlength: bytes_per_ms * 50,
+                prebuf: bytes_per_ms * 20,
+                minreq: bytes_per_ms * 10,
+                fragsize: u32::MAX,
+            };
+
+            let pulse = match Simple::new(
+                None,
+                "FluxChat",
+                Direction::Playback,
+                None,
+                "Call Audio",
+                &spec,
+                None,
+                Some(&buf_attr),
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("Failed to open PulseAudio playback: {e}");
+                    return;
+                }
+            };
+
+            // Channel bridges async frames to dedicated playback thread
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<i16>>(20);
+
+            std::thread::spawn(move || {
+                while let Ok(samples) = rx.recv() {
+                    let bytes: &[u8] = unsafe {
+                        std::slice::from_raw_parts(
+                            samples.as_ptr() as *const u8,
+                            samples.len() * 2,
+                        )
+                    };
+                    if let Err(e) = pulse.write(bytes) {
+                        tracing::warn!("PulseAudio write error: {e}");
+                        break;
+                    }
+                }
+                tracing::info!("Playback thread ended");
+            });
+
+            // Write the first frame we already read
+            let _ = tx.send(first_frame.data.to_vec());
+
             while let Some(frame) = native_stream.next().await {
-                // Convert i16 samples to byte slice for PulseAudio
-                let bytes: &[u8] = unsafe {
-                    std::slice::from_raw_parts(
-                        frame.data.as_ptr() as *const u8,
-                        frame.data.len() * 2,
-                    )
-                };
-                if let Err(e) = pulse.write(bytes) {
-                    tracing::warn!("PulseAudio write error: {e}");
+                if tx.send(frame.data.to_vec()).is_err() {
                     break;
                 }
             }
@@ -302,7 +337,11 @@ impl CallSession {
         }
 
         let audio_source = NativeAudioSource::new(
-            AudioSourceOptions::default(),
+            AudioSourceOptions {
+                echo_cancellation: true,
+                noise_suppression: true,
+                auto_gain_control: true,
+            },
             sample_rate,
             channels,
             1000,
