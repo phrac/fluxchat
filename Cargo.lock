@@ -2303,7 +2303,6 @@ dependencies = [
  "iced_gif",
  "image 0.25.10",
  "matrix-sdk",
- "matrix-sdk-ui",
  "notify-rust",
  "open",
  "rfd",

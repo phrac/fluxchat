@@ -1,8 +1,10 @@
 use iced::widget::{
-    button, column, container, mouse_area, rich_text, row, scrollable, stack,
+    button, column, container, mouse_area, row, scrollable, stack,
     text, text_input, Space,
 };
 use iced::{Color, Element, Fill, Length, Theme};
+
+use crate::selectable_text::selectable_rich_text;
 
 use crate::icons::*;
 use crate::message::Message;
@@ -359,7 +361,7 @@ impl FluxChat {
             };
 
             let spans = crate::html::html_to_spans(&display_html);
-            let body_el: Element<'a, Message> = rich_text(spans)
+            let body_el: Element<'a, Message> = selectable_rich_text(spans)
                 .font(MONO)
                 .size(fs)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
@@ -388,7 +390,7 @@ impl FluxChat {
         } else {
             // Parse basic markdown in plain text bodies
             let spans = crate::html::plain_text_to_spans(&msg.body);
-            rich_text(spans)
+            selectable_rich_text(spans)
                 .font(MONO)
                 .size(fs)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
