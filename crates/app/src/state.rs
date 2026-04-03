@@ -280,6 +280,8 @@ pub struct FluxChat {
     pub call_room_id: Option<String>,
     pub call_participants: Vec<fluxchat_core::rtc::CallParticipant>,
     pub rooms_with_calls: HashSet<String>,
+    /// room_id → display name lookup for rendering matrix.to room pills
+    pub room_names: std::collections::HashMap<String, String>,
     pub call_mic_muted: bool,
     pub call_disconnect_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub call_event_tx: CallEventTx,
@@ -445,6 +447,7 @@ impl FluxChat {
             call_room_id: None,
             call_participants: Vec::new(),
             rooms_with_calls: HashSet::new(),
+            room_names: std::collections::HashMap::new(),
             call_mic_muted: true,
             call_disconnect_tx: None,
             call_event_tx,

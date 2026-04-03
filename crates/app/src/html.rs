@@ -41,8 +41,13 @@ struct Style {
 /// Returns a Vec of Spans suitable for `rich_text!` or `Rich::from_iter()`.
 /// The `Link` type parameter is `String` (URL for clickable links).
 pub fn html_to_spans(html: &str) -> Vec<Span<'static, String>> {
+    html_to_spans_with_rooms(html, &std::collections::HashMap::new())
+}
+
+/// Parse Matrix HTML into Iced Spans, resolving matrix.to room links to pills.
+pub fn html_to_spans_with_rooms(html: &str, room_names: &std::collections::HashMap<String, String>) -> Vec<Span<'static, String>> {
     let segments = parse_html(html);
-    segments_to_spans(segments)
+    segments_to_spans_with_rooms(segments, room_names)
 }
 
 /// Parse HTML string into intermediate Segments.
@@ -237,6 +242,10 @@ fn parse_html(html: &str) -> Vec<Segment> {
 
 /// Convert Segments into Iced Spans.
 fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
+    segments_to_spans_with_rooms(segments, &std::collections::HashMap::new())
+}
+
+fn segments_to_spans_with_rooms(segments: Vec<Segment>, room_names: &std::collections::HashMap<String, String>) -> Vec<Span<'static, String>> {
     let mut spans = Vec::new();
 
     for segment in segments {
@@ -245,11 +254,16 @@ fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
                 spans.push(styled_span(text, &style));
             }
             Segment::Link { text, url, style } => {
-                let mut span = styled_span(text, &style);
-                span.color = Some(theme::ACCENT);
-                span.underline = true;
-                span.link = Some(url);
-                spans.push(span);
+                // Check if this is a matrix.to room link
+                if let Some(pill) = try_room_pill(&url, room_names) {
+                    spans.push(pill);
+                } else {
+                    let mut span = styled_span(text, &style);
+                    span.color = Some(theme::ACCENT);
+                    span.underline = true;
+                    span.link = Some(url);
+                    spans.push(span);
+                }
             }
             Segment::CodeBlock { code, language } => {
                 // Newline before code block
@@ -399,6 +413,50 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
     }
 
     span
+}
+
+/// Try to convert a matrix.to room link into a pill span.
+/// Handles both room IDs (`!roomid:server`) and aliases (`#alias:server`).
+fn try_room_pill(url: &str, room_names: &std::collections::HashMap<String, String>) -> Option<Span<'static, String>> {
+    // Extract room ID or alias from matrix.to URL
+    let room_id = if let Some(rest) = url.strip_prefix("https://matrix.to/#/") {
+        let decoded = rest.replace("%3A", ":").replace("%23", "#");
+        // Strip query params (?via=...)
+        decoded.split('?').next().unwrap_or(&decoded).to_string()
+    } else {
+        return None;
+    };
+
+    // Must start with ! (room ID) or # (alias)
+    if !room_id.starts_with('!') && !room_id.starts_with('#') {
+        return None;
+    }
+
+    // Look up display name; fall back to alias or shortened room ID
+    let display = if let Some(name) = room_names.get(&room_id) {
+        format!("#{name}")
+    } else if room_id.starts_with('#') {
+        room_id.clone()
+    } else {
+        // Unknown room ID — show shortened form
+        let short = room_id.split(':').next().unwrap_or(&room_id);
+        format!("{short}:...")
+    };
+
+    let color = theme::ACCENT;
+    let mut span = Span::new(display);
+    span.color = Some(color);
+    span.font = Some(Font {
+        family: font::Family::Name("JetBrainsMono Nerd Font"),
+        weight: font::Weight::Bold,
+        ..Font::MONOSPACE
+    });
+    span = span
+        .background(Color::from_rgba(color.r, color.g, color.b, 0.15))
+        .border(iced::Border { radius: 8.0.into(), ..Default::default() });
+    span.padding = iced::Padding::from([2, 6]);
+    span.link = Some(url.to_string());
+    Some(span)
 }
 
 // --- Helpers ---

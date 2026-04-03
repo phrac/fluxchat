@@ -173,6 +173,7 @@ Login (password + SSO/OIDC with provider detection), session persistence, rooms 
 - Notification click → navigate to room
 - In-process audio decoder for voice playback (currently uses system player: ffplay/afplay/mpv)
 - Voice message waveform visualization (MSC3246)
+- Cross-message text selection (currently single-message only; needs lifted selection state in FluxChat + coordinated mouse events across widget instances)
 
 ## Known Issues
 - SDK v0.16 doesn't populate `thread_root` or `thread_summary` — we extract from raw event JSON and derive counts at render time

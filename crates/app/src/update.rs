@@ -140,6 +140,7 @@ impl FluxChat {
                     .collect();
                 mxc_uris.extend(rooms.iter().filter_map(|r| r.avatar_url.clone()));
                 self.rooms = rooms;
+                self.room_names = self.rooms.iter().map(|r| (r.room_id.clone(), r.name.clone())).collect();
                 self.spaces = spaces;
                 self.invited_rooms = invited;
                 self.knocked_rooms = knocked;
@@ -218,6 +219,7 @@ impl FluxChat {
                             r
                         })
                         .collect();
+                    self.room_names = self.rooms.iter().map(|r| (r.room_id.clone(), r.name.clone())).collect();
                     // Resolve space and room avatars
                     let mut mxc_uris: Vec<String> = spaces.iter()
                         .filter_map(|s| s.avatar_url.clone())
@@ -2485,6 +2487,27 @@ impl FluxChat {
                 }
             }
             Message::OpenUrl(url) => {
+                // Handle matrix.to room links by navigating to the room
+                if let Some(rest) = url.strip_prefix("https://matrix.to/#/") {
+                    let decoded = rest.replace("%3A", ":").replace("%23", "#");
+                    let id = decoded.split('?').next().unwrap_or(&decoded);
+                    if id.starts_with('!') {
+                        // Room ID — navigate directly
+                        return self.update(Message::SelectRoom(id.to_string()));
+                    } else if id.starts_with('#') {
+                        // Room alias — find matching room by alias-like name
+                        if let Some(room) = self.rooms.iter().find(|r| {
+                            // Check if any part of the alias matches the room name
+                            let alias_name = id.split(':').next().unwrap_or(id).trim_start_matches('#');
+                            r.name.eq_ignore_ascii_case(alias_name)
+                        }) {
+                            return self.update(Message::SelectRoom(room.room_id.clone()));
+                        }
+                    } else if id.starts_with('@') {
+                        // User mention — open profile modal
+                        return self.update(Message::OpenModal(crate::state::Modal::Profile { user_id: id.to_string() }));
+                    }
+                }
                 let _ = open::that(&url);
             }
             Message::Escape => {
