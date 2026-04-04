@@ -49,6 +49,7 @@ Both crates are pure Rust with zero JS/TS dependencies.
 | Voice | [LiveKit](https://livekit.io/) 0.7 (MatrixRTC) |
 | Audio | cpal 0.15 |
 | Voice codec | opus (libopus) + ogg |
+| HTML parsing | html5ever |
 | Notifications | notify-rust |
 | Syntax | syntect |
 
