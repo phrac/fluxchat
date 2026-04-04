@@ -146,6 +146,8 @@ pub struct FluxChat {
     // Unread tracking
     pub read_rooms: HashSet<String>,
     pub last_read_event: HashMap<String, String>,
+    pub last_seen_timestamp: HashMap<String, u64>, // room_id → newest message timestamp we've processed
+    pub thread_counts: HashMap<String, HashMap<String, u32>>, // room_id → { thread_root → reply_count }
 
     // User prefs (persisted to SQLite)
     pub ignored_users: HashSet<String>,
@@ -293,8 +295,6 @@ pub struct FluxChat {
     pub call_room_id: Option<String>,
     pub call_participants: Vec<fluxchat_core::rtc::CallParticipant>,
     pub rooms_with_calls: HashSet<String>,
-    /// room_id → display name lookup for rendering matrix.to room pills
-    pub room_names: std::collections::HashMap<String, String>,
     pub call_mic_muted: bool,
     pub call_disconnect_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub call_event_tx: CallEventTx,
@@ -374,6 +374,8 @@ impl FluxChat {
             open_tabs: Vec::new(),
             read_rooms: HashSet::new(),
             last_read_event: HashMap::new(),
+            last_seen_timestamp: HashMap::new(),
+            thread_counts: HashMap::new(),
             ignored_users: HashSet::new(),
             highlight_words: Vec::new(),
             timestamp_format: "short".into(),
@@ -464,7 +466,6 @@ impl FluxChat {
             call_room_id: None,
             call_participants: Vec::new(),
             rooms_with_calls: HashSet::new(),
-            room_names: std::collections::HashMap::new(),
             call_mic_muted: true,
             call_disconnect_tx: None,
             call_event_tx,

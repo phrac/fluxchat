@@ -360,7 +360,7 @@ impl FluxChat {
                 formatted.clone()
             };
 
-            let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.room_names);
+            let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms);
             let body_el: Element<'a, Message> = selectable_rich_text(spans)
                 .font(MONO)
                 .size(fs)

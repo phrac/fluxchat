@@ -140,7 +140,6 @@ impl FluxChat {
                     .collect();
                 mxc_uris.extend(rooms.iter().filter_map(|r| r.avatar_url.clone()));
                 self.rooms = rooms;
-                self.room_names = self.rooms.iter().map(|r| (r.room_id.clone(), r.name.clone())).collect();
                 self.spaces = spaces;
                 self.invited_rooms = invited;
                 self.knocked_rooms = knocked;
@@ -219,8 +218,7 @@ impl FluxChat {
                             r
                         })
                         .collect();
-                    self.room_names = self.rooms.iter().map(|r| (r.room_id.clone(), r.name.clone())).collect();
-                    // Resolve space and room avatars
+                        // Resolve space and room avatars
                     let mut mxc_uris: Vec<String> = spaces.iter()
                         .filter_map(|s| s.avatar_url.clone())
                         .collect();
@@ -256,15 +254,17 @@ impl FluxChat {
                 }
                 SyncEvent::MessagesUpdated(room_id, new_messages) => {
                     // Detect truly new messages for notifications
-                    let existing_ids: std::collections::HashSet<String> = self.messages_by_room
-                        .get(&room_id)
-                        .map(|msgs| msgs.iter().map(|m| m.event_id.clone()).collect())
-                        .unwrap_or_default();
+                    // Detect new messages by comparing against the last seen timestamp
+                    let last_ts = self.last_seen_timestamp.get(&room_id).copied().unwrap_or(0);
                     let brand_new: Vec<&fluxchat_core::MessageInfo> = new_messages.iter()
-                        .filter(|m| !existing_ids.contains(&m.event_id)
+                        .filter(|m| m.timestamp > last_ts
                             && !m.event_id.starts_with("~")
                             && m.sender != self.user_id)
                         .collect();
+                    // Update last seen timestamp
+                    if let Some(max_ts) = new_messages.iter().map(|m| m.timestamp).max() {
+                        self.last_seen_timestamp.insert(room_id.clone(), max_ts);
+                    }
 
                     // Re-mark room as unread if new messages arrive while not viewing it
                     let is_active = self.selected_room_id.as_deref() == Some(&room_id);
@@ -314,7 +314,39 @@ impl FluxChat {
 
                     // Use the SDK's timeline directly — it has edits applied,
                     // correct ordering, and the authoritative message set.
-                    let merged = new_messages;
+                    // Filter out empty messages upfront instead of per-render.
+                    let merged: Vec<fluxchat_core::MessageInfo> = new_messages.into_iter()
+                        .filter(|m| {
+                            // Always keep system events, emotes, images, videos, polls
+                            if m.event_id.starts_with("~") || m.is_emote || m.image_mxc.is_some()
+                                || m.is_video || m.poll.is_some() {
+                                return true;
+                            }
+                            // Check body
+                            if !m.body.trim().is_empty() {
+                                return true;
+                            }
+                            // Check formatted body — strip HTML tags
+                            if let Some(ref f) = m.formatted_body {
+                                let text_only: String = f.split('<')
+                                    .flat_map(|s| s.split('>').skip(1))
+                                    .collect();
+                                if !text_only.trim().is_empty() {
+                                    return true;
+                                }
+                            }
+                            false
+                        })
+                        .collect();
+
+                    // Compute thread reply counts once here instead of per-render
+                    let mut tc: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+                    for m in &merged {
+                        if let Some(ref root) = m.thread_root {
+                            *tc.entry(root.clone()).or_insert(0) += 1;
+                        }
+                    }
+                    self.thread_counts.insert(room_id.clone(), tc);
                     // Advance last_read_event if this is the active room
                     if self.selected_room_id.as_deref() == Some(&room_id) {
                         if let Some(last) = merged.last() {

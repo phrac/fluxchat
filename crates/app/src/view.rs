@@ -1837,17 +1837,12 @@ impl FluxChat {
                     msgs.last().map(|m| &m.event_id) != Some(lr)
                 });
                 let is_thread_view = room_id.starts_with("thread::");
-                // Derive thread reply counts at render time (SDK v0.16 doesn't populate thread_root reliably)
-                let thread_counts: std::collections::HashMap<&str, u32> = if !is_thread_view {
-                    let mut counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-                    for m in msgs.iter() {
-                        if let Some(ref root) = m.thread_root {
-                            *counts.entry(root.as_str()).or_insert(0) += 1;
-                        }
-                    }
-                    counts
+                // Thread counts precomputed in update.rs
+                let empty_tc = std::collections::HashMap::new();
+                let thread_counts = if !is_thread_view {
+                    self.thread_counts.get(room_id).unwrap_or(&empty_tc)
                 } else {
-                    std::collections::HashMap::new()
+                    &empty_tc
                 };
                 for msg in msgs.iter() {
                     if self.ignored_users.contains(&msg.sender) {
@@ -1855,26 +1850,6 @@ impl FluxChat {
                     }
                     // Hide thread replies from the main room (they show in thread view)
                     if !is_thread_view && msg.thread_root.is_some() {
-                        continue;
-                    }
-                    // Skip empty/whitespace-only messages that aren't system/emote/image/video/poll
-                    let has_content = !msg.body.trim().is_empty()
-                        || msg.formatted_body.as_ref().is_some_and(|f| {
-                            // Strip HTML tags and check if any text content remains
-                            let stripped = f.replace(|c: char| c == '\n' || c == '\r', "");
-                            let text_only = stripped
-                                .split('<')
-                                .flat_map(|s| s.split('>').skip(1))
-                                .collect::<String>();
-                            !text_only.trim().is_empty()
-                        });
-                    if !has_content
-                        && !msg.event_id.starts_with("~")
-                        && !msg.is_emote
-                        && msg.image_mxc.is_none()
-                        && !msg.is_video
-                        && msg.poll.is_none()
-                    {
                         continue;
                     }
                     // Unread divider: show after the last-read message

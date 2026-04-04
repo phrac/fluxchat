@@ -41,13 +41,13 @@ struct Style {
 /// Returns a Vec of Spans suitable for `rich_text!` or `Rich::from_iter()`.
 /// The `Link` type parameter is `String` (URL for clickable links).
 pub fn html_to_spans(html: &str) -> Vec<Span<'static, String>> {
-    html_to_spans_with_rooms(html, &std::collections::HashMap::new())
+    html_to_spans_with_rooms(html, &[])
 }
 
 /// Parse Matrix HTML into Iced Spans, resolving matrix.to room links to pills.
-pub fn html_to_spans_with_rooms(html: &str, room_names: &std::collections::HashMap<String, String>) -> Vec<Span<'static, String>> {
+pub fn html_to_spans_with_rooms(html: &str, rooms: &[fluxchat_core::RoomInfo]) -> Vec<Span<'static, String>> {
     let segments = parse_html(html);
-    segments_to_spans_with_rooms(segments, room_names)
+    segments_to_spans_with_rooms(segments, rooms)
 }
 
 /// Parse HTML string into intermediate Segments.
@@ -242,10 +242,10 @@ fn parse_html(html: &str) -> Vec<Segment> {
 
 /// Convert Segments into Iced Spans.
 fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
-    segments_to_spans_with_rooms(segments, &std::collections::HashMap::new())
+    segments_to_spans_with_rooms(segments, &[])
 }
 
-fn segments_to_spans_with_rooms(segments: Vec<Segment>, room_names: &std::collections::HashMap<String, String>) -> Vec<Span<'static, String>> {
+fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo]) -> Vec<Span<'static, String>> {
     let mut spans = Vec::new();
 
     for segment in segments {
@@ -255,7 +255,7 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, room_names: &std::collec
             }
             Segment::Link { text, url, style } => {
                 // Check if this is a matrix.to room link
-                if let Some(pill) = try_room_pill(&url, room_names) {
+                if let Some(pill) = try_room_pill(&url, rooms) {
                     spans.push(pill);
                 } else {
                     let mut span = styled_span(text, &style);
@@ -417,7 +417,7 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
 
 /// Try to convert a matrix.to room link into a pill span.
 /// Handles both room IDs (`!roomid:server`) and aliases (`#alias:server`).
-fn try_room_pill(url: &str, room_names: &std::collections::HashMap<String, String>) -> Option<Span<'static, String>> {
+fn try_room_pill(url: &str, rooms: &[fluxchat_core::RoomInfo]) -> Option<Span<'static, String>> {
     // Extract room ID or alias from matrix.to URL
     let room_id = if let Some(rest) = url.strip_prefix("https://matrix.to/#/") {
         let decoded = rest.replace("%3A", ":").replace("%23", "#");
@@ -433,7 +433,8 @@ fn try_room_pill(url: &str, room_names: &std::collections::HashMap<String, Strin
     }
 
     // Look up display name; fall back to alias or shortened room ID
-    let display = if let Some(name) = room_names.get(&room_id) {
+    let display = if let Some(r) = rooms.iter().find(|r| r.room_id == room_id) {
+        let name = &r.name;
         format!("#{name}")
     } else if room_id.starts_with('#') {
         room_id.clone()

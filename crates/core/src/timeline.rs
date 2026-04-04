@@ -105,28 +105,25 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
         .map(|(s, b)| (Some(s), Some(b)))
         .unwrap_or((None, None));
 
-    // Fallback: extract reply from raw event JSON if SDK didn't populate it
+    // SDK v0.16 doesn't populate thread_root or reply_to reliably.
+    // Parse raw event JSON once for both reply and thread info as fallback.
+    let mut thread_root_from_json: Option<String> = None;
     if reply_to_id.is_none() {
         let raw_json = ev.original_json().or_else(|| ev.latest_json());
         if let Some(raw) = raw_json {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.json().get()) {
                 if let Some(relates_to) = val.get("content").and_then(|c| c.get("m.relates_to")) {
-                    // Check m.in_reply_to (standard reply)
-                    if let Some(in_reply) = relates_to.get("m.in_reply_to") {
-                        if let Some(eid) = in_reply.get("event_id").and_then(|e| e.as_str()) {
-                            reply_to_id = Some(eid.to_string());
-                        }
+                    // Reply: m.in_reply_to.event_id
+                    if let Some(eid) = relates_to.get("m.in_reply_to")
+                        .and_then(|r| r.get("event_id"))
+                        .and_then(|e| e.as_str())
+                    {
+                        reply_to_id = Some(eid.to_string());
                     }
-                    // Also check thread relation — thread replies have in_reply_to inside the thread relation
-                    if reply_to_id.is_none() {
-                        if let Some(eid) = relates_to.get("m.in_reply_to")
-                            .or_else(|| val.get("content")
-                                .and_then(|c| c.get("m.relates_to"))
-                                .and_then(|r| r.get("m.in_reply_to")))
-                            .and_then(|r| r.get("event_id"))
-                            .and_then(|e| e.as_str())
-                        {
-                            reply_to_id = Some(eid.to_string());
+                    // Thread: rel_type == m.thread
+                    if relates_to.get("rel_type").and_then(|r| r.as_str()) == Some("m.thread") {
+                        if let Some(eid) = relates_to.get("event_id").and_then(|e| e.as_str()) {
+                            thread_root_from_json = Some(eid.to_string());
                         }
                     }
                 }
@@ -140,30 +137,11 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 return None;
             }
 
-            // Extract thread info — SDK v0.16 doesn't populate thread_root,
-            // so extract from raw event JSON
             let mut thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
             let thread_count = msg_like.thread_summary.as_ref().map(|s| s.num_replies);
             if thread_root.is_none() {
-                // Try original_json first, then latest_json
-                let raw_json = ev.original_json().or_else(|| ev.latest_json());
-                if let Some(raw) = raw_json {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.json().get()) {
-                        if let Some(relates_to) = val.get("content").and_then(|c| c.get("m.relates_to")) {
-                            if relates_to.get("rel_type").and_then(|r| r.as_str()) == Some("m.thread") {
-                                if let Some(eid) = relates_to.get("event_id").and_then(|e| e.as_str()) {
-                                    thread_root = Some(eid.to_string());
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // No raw JSON available — check content thread_root from SDK
-                    // which might be populated through different code path
-                    if let Some(tr) = content.thread_root() {
-                        thread_root = Some(tr.to_string());
-                    }
-                }
+                thread_root = thread_root_from_json
+                    .or_else(|| content.thread_root().map(|tr| tr.to_string()));
             }
 
 
