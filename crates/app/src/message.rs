@@ -77,6 +77,9 @@ pub enum Message {
     EmojiCategoryChanged(u8),
     EmojiSelect(String),           // emoji character
     ToggleOverflowMenu,
+    OpenContextMenu(super::state::ContextMenu),
+    CloseContextMenu,
+    ContextMenuAction(String, String), // action, target_id (room_id or space_id)
     SetRightPanel(Option<super::state::RightPanel>),
 
     // --- Modals ---
@@ -101,6 +104,8 @@ pub enum Message {
     JoinRoom(String),                           // room_id or alias
     LeaveRoom(String),                          // room_id
     InviteUser(String, String),                 // room_id, user_id
+    SpaceInvite(String),                        // space_id — opens invite modal targeting space
+    SpaceDetailsLoaded(Vec<fluxchat_core::RoomInfo>, Vec<fluxchat_core::MemberInfo>),
     KickUser(String, String, Option<String>),   // room_id, user_id, reason
     BanUser(String, String, Option<String>),    // room_id, user_id, reason
     SetTopic(String, String),                   // room_id, topic

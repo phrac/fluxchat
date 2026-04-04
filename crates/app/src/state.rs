@@ -33,8 +33,14 @@ pub enum RightPanel {
     Invites,
 }
 
+#[derive(Debug, Clone)]
+pub enum ContextMenu {
+    Room { room_id: String, is_dm: bool },
+    Space { space_id: String },
+}
+
 /// Which modal is currently open.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Modal {
     Settings { tab: String },
     CreateRoom,
@@ -45,6 +51,7 @@ pub enum Modal {
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
     Invite,
     Report { event_id: String, room_id: String },
+    SpaceDetails { space_id: String },
 }
 
 
@@ -126,6 +133,7 @@ pub struct FluxChat {
     pub emoji_category: u8, // 0=frequent, 1-9=emojis::Group
     pub emoji_freq: std::collections::HashMap<String, u32>,
     pub overflow_menu_open: bool,
+    pub context_menu: Option<ContextMenu>,
     pub hovered_message: Option<String>, // event_id of hovered message
     pub gif_query: String,
     pub gif_searched: bool, // true after a search has completed
@@ -244,6 +252,11 @@ pub struct FluxChat {
     // Invite modal state
     pub invite_search: String,
     pub invite_results: Vec<fluxchat_core::rooms::UserSearchResult>,
+    pub invite_target_id: Option<String>, // override room_id for space invites
+
+    // Space details modal state
+    pub space_detail_rooms: Vec<fluxchat_core::RoomInfo>,
+    pub space_detail_members: Vec<fluxchat_core::MemberInfo>,
 
     // Scroll tracking — true when messages scrollable is at/near bottom
     pub messages_at_bottom: bool,
@@ -329,6 +342,7 @@ impl FluxChat {
             files_open: false,
             notices_open: false,
             overflow_menu_open: false,
+            context_menu: None,
             hovered_message: None,
             gifs_open: false,
             audio_playing: None,
@@ -418,6 +432,9 @@ impl FluxChat {
             forward_search: String::new(),
             invite_search: String::new(),
             invite_results: Vec::new(),
+            invite_target_id: None,
+            space_detail_rooms: Vec::new(),
+            space_detail_members: Vec::new(),
             messages_at_bottom: true,
             paginating: false,
             paginate_msg_count: 0,

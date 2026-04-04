@@ -26,6 +26,7 @@ impl FluxChat {
             crate::state::Modal::Forward { body, .. } => self.view_forward_modal(body),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
             crate::state::Modal::Invite => self.view_invite_modal(),
+            crate::state::Modal::SpaceDetails { space_id } => self.view_space_details_modal(space_id),
             crate::state::Modal::Report { .. } => {
                 let col = column![
                     text("Report Message").font(MONO).size(16).color(theme::TEXT_BRIGHT),
@@ -733,15 +734,36 @@ impl FluxChat {
             _ => theme::TEXT_NORMAL,
         };
 
-        // --- Colored banner strip ---
+        // --- Colored banner strip with close button ---
         let banner_color = iced::Color { a: 0.5, ..nick_col };
-        let banner = container(Space::new())
-            .width(Fill)
-            .height(60)
-            .style(move |_: &Theme| container::Style {
-                background: Some(banner_color.into()),
-                ..Default::default()
-            });
+        let close_handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_CLOSE);
+        let banner = container(
+            row![
+                Space::new().width(Fill),
+                button(
+                    iced::widget::svg(close_handle)
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.7)) }),
+                )
+                .on_press(Message::CloseModal)
+                .padding([4, 6])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(0.0, 0.0, 0.0, 0.3).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            ].padding([4, 6]),
+        )
+        .width(Fill)
+        .height(60)
+        .style(move |_: &Theme| container::Style {
+            background: Some(banner_color.into()),
+            ..Default::default()
+        });
 
         // --- Avatar + name row ---
         let avatar_el: Element<Message> = self.render_avatar_with_initial(
@@ -750,21 +772,12 @@ impl FluxChat {
             48.0,
         );
 
-        // --- Header: avatar + name + close ---
         let header = row![
             avatar_el,
             column![
                 text(display_name).font(MONO).size(16).color(nick_col),
                 text(user_id).font(MONO).size(11).color(theme::TEXT_MUTED),
             ].spacing(2),
-            Space::new().width(Fill),
-            button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
-                .on_press(Message::CloseModal)
-                .padding([2, 6])
-                .style(|_, _| button::Style {
-                    background: None,
-                    ..Default::default()
-                }),
         ]
         .spacing(10)
         .padding([12, 16])
@@ -1470,5 +1483,195 @@ impl FluxChat {
                 ..Default::default()
             })
             .into()
+    }
+
+    fn view_space_details_modal<'a>(&'a self, space_id: &'a str) -> Element<'a, Message> {
+        let space = self.spaces.iter().find(|s| s.room_id == space_id);
+        let space_name = space.map(|s| s.name.as_str()).unwrap_or("Unknown Space");
+        let topic = space.and_then(|s| s.topic.as_deref()).unwrap_or("");
+
+        // Extract homeserver from space_id (!xxx:server.org)
+        let homeserver = space_id.split(':').nth(1).unwrap_or("unknown");
+
+        // Close button
+        let close_handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_CLOSE);
+
+        let mut content = column![
+            // Header
+            row![
+                text(space_name).font(MONO).size(18).color(theme::TEXT_BRIGHT),
+                Space::new().width(Fill),
+                button(
+                    iced::widget::svg(close_handle)
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                )
+                .on_press(Message::CloseModal)
+                .padding([4, 6])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            ].align_y(iced::Alignment::Center),
+
+            // Space ID + homeserver
+            text(space_id).font(MONO).size(11).color(theme::TEXT_DIM),
+            row![
+                text("Homeserver: ").font(MONO).size(12).color(theme::TEXT_DIM),
+                text(homeserver).font(MONO).size(12).color(theme::ACCENT),
+            ],
+        ].spacing(4);
+
+        // Topic
+        if !topic.is_empty() {
+            content = content.push(Space::new().height(4));
+            content = content.push(
+                container(
+                    text(topic).font(MONO).size(13).color(theme::TEXT_NORMAL)
+                )
+                .padding([8, 12])
+                .width(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_MID.into()),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        content = content.push(Space::new().height(8));
+
+        // Rooms section
+        content = content.push(
+            text(format!("ROOMS \u{2014} {}", self.space_detail_rooms.len()))
+                .font(MONO).size(11).color(theme::TEXT_DIM)
+        );
+
+        if self.space_detail_rooms.is_empty() {
+            content = content.push(
+                text("Loading...").font(MONO).size(12).color(theme::TEXT_MUTED)
+            );
+        } else {
+            let mut rooms_col = column![].spacing(2);
+            for room in &self.space_detail_rooms {
+                let rid = room.room_id.clone();
+                let icon = if room.is_encrypted {
+                    crate::icons::SVG_LOCK
+                } else {
+                    crate::icons::SVG_HASH
+                };
+                let handle = iced::widget::svg::Handle::from_memory(icon);
+                rooms_col = rooms_col.push(
+                    button(
+                        row![
+                            iced::widget::svg(handle)
+                                .width(14).height(14)
+                                .style(|_, _| iced::widget::svg::Style {
+                                    color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3))
+                                }),
+                            text(&room.name).font(MONO).size(13).color(theme::TEXT_NORMAL),
+                        ].spacing(6).align_y(iced::Alignment::Center),
+                    )
+                    .on_press(Message::SelectRoom(rid))
+                    .padding([4, 8])
+                    .width(Fill)
+                    .style(|_, status| button::Style {
+                        background: if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        } else {
+                            None
+                        },
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                );
+            }
+            content = content.push(
+                container(
+                    scrollable(rooms_col)
+                        .height(Length::Shrink)
+                        .direction(iced::widget::scrollable::Direction::Vertical(
+                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                        ))
+                        .style(thin_scrollbar)
+                )
+                .max_height(200.0)
+                .width(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_MID.into()),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        content = content.push(Space::new().height(8));
+
+        // Members section
+        content = content.push(
+            text(format!("MEMBERS \u{2014} {}", self.space_detail_members.len()))
+                .font(MONO).size(11).color(theme::TEXT_DIM)
+        );
+
+        if self.space_detail_members.is_empty() {
+            content = content.push(
+                text("Loading...").font(MONO).size(12).color(theme::TEXT_MUTED)
+            );
+        } else {
+            let mut members_col = column![].spacing(1);
+            for member in self.space_detail_members.iter().take(50) {
+                let nick_col = theme::nick_color(&member.display_name);
+                let uid = member.user_id.clone();
+                members_col = members_col.push(
+                    button(
+                        row![
+                            text(&member.display_name).font(MONO).size(13).color(nick_col),
+                        ].align_y(iced::Alignment::Center),
+                    )
+                    .on_press(Message::OpenModal(crate::state::Modal::Profile { user_id: uid }))
+                    .padding([3, 8])
+                    .width(Fill)
+                    .style(|_, status| button::Style {
+                        background: if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        } else {
+                            None
+                        },
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                );
+            }
+            if self.space_detail_members.len() > 50 {
+                members_col = members_col.push(
+                    text(format!("...and {} more", self.space_detail_members.len() - 50))
+                        .font(MONO).size(11).color(theme::TEXT_DIM)
+                );
+            }
+            content = content.push(
+                container(
+                    scrollable(members_col)
+                        .height(Length::Shrink)
+                        .direction(iced::widget::scrollable::Direction::Vertical(
+                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                        ))
+                        .style(thin_scrollbar)
+                )
+                .max_height(200.0)
+                .width(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_MID.into()),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        content.width(420).into()
     }
 }

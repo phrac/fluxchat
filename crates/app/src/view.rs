@@ -181,7 +181,7 @@ impl FluxChat {
                 text(initial).font(MONO).size(size * 0.45).color(theme::TEXT_MUTED)
             )
             .width(size).height(size)
-            .center_x(Fill).center_y(Fill)
+            .center_x(size).center_y(size)
             .style(move |_: &Theme| container::Style {
                 background: Some(theme::BG_LIGHT.into()),
                 border: iced::Border { radius: (size / 2.0).into(), ..Default::default() },
@@ -630,7 +630,151 @@ impl FluxChat {
                 ),
             );
         }
+        // Context menu overlay
+        if let Some(ref ctx) = self.context_menu {
+            let menu_items = self.view_context_menu(ctx);
+            layers.push(
+                opaque(
+                    mouse_area(
+                        container(
+                            container(menu_items)
+                                .padding([4, 0])
+                                .style(|_: &Theme| container::Style {
+                                    background: Some(theme::BG_DARK.into()),
+                                    border: iced::Border {
+                                        color: theme::BORDER,
+                                        width: 1.0,
+                                        radius: 6.0.into(),
+                                    },
+                                    shadow: iced::Shadow {
+                                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                                        offset: iced::Vector::new(0.0, 2.0),
+                                        blur_radius: 12.0,
+                                    },
+                                    ..Default::default()
+                                }),
+                        )
+                        .padding(iced::Padding { top: 100.0, left: 70.0, ..Default::default() })
+                        .width(Fill)
+                        .height(Fill),
+                    )
+                    .on_press(Message::CloseContextMenu),
+                ),
+            );
+        }
+
         stack(layers).into()
+    }
+
+    /// Context menu items for rooms or spaces.
+    fn view_context_menu(&self, ctx: &crate::state::ContextMenu) -> Element<'_, Message> {
+        let mut col = column![].spacing(0).width(180);
+
+        match ctx {
+            crate::state::ContextMenu::Room { room_id, is_dm } => {
+                let rid = room_id.clone();
+                let is_fav = self.rooms.iter()
+                    .find(|r| r.room_id == *room_id)
+                    .map(|r| r.is_favourite)
+                    .unwrap_or(false);
+                let fav_label = if is_fav { "Unfavourite" } else { "Favourite" };
+
+                col = col.push(self.context_menu_item(
+                    "Mark as Read", SVG_CHECK, rid.clone(), "mark_read",
+                ));
+                col = col.push(self.context_menu_item(
+                    fav_label, SVG_STAR, rid.clone(), "favourite",
+                ));
+                if !is_dm {
+                    col = col.push(self.context_menu_item(
+                        "Invite", SVG_USER_PLUS, rid.clone(), "invite",
+                    ));
+                    col = col.push(self.context_menu_item(
+                        "Room Settings", SVG_SETTINGS, rid.clone(), "settings",
+                    ));
+                }
+                col = col.push(self.context_menu_divider());
+                col = col.push(self.context_menu_item_danger(
+                    "Leave", SVG_CLOSE, rid, "leave",
+                ));
+            }
+            crate::state::ContextMenu::Space { space_id } => {
+                let sid = space_id.clone();
+                col = col.push(self.context_menu_item(
+                    "Space Details", SVG_INFO, sid.clone(), "space_details",
+                ));
+                col = col.push(self.context_menu_item(
+                    "Invite to Space", SVG_USER_PLUS, sid.clone(), "space_invite",
+                ));
+                col = col.push(self.context_menu_divider());
+                col = col.push(self.context_menu_item_danger(
+                    "Leave Space", SVG_CLOSE, sid, "leave",
+                ));
+            }
+        }
+
+        col.into()
+    }
+
+    fn context_menu_item<'a>(&self, label: &'a str, icon: &'static [u8], target: String, action: &str) -> Element<'a, Message> {
+        let action = action.to_string();
+        let handle = iced::widget::svg::Handle::from_memory(icon);
+        button(
+            row![
+                iced::widget::svg(handle)
+                    .width(14).height(14)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                text(label).font(MONO).size(13).color(theme::TEXT_NORMAL),
+            ].spacing(8).align_y(iced::Alignment::Center),
+        )
+        .on_press(Message::ContextMenuAction(action, target))
+        .padding([6, 12])
+        .width(Fill)
+        .style(|_, status| button::Style {
+            background: if matches!(status, button::Status::Hovered) {
+                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+            } else {
+                None
+            },
+            ..Default::default()
+        })
+        .into()
+    }
+
+    fn context_menu_item_danger<'a>(&self, label: &'a str, icon: &'static [u8], target: String, action: &str) -> Element<'a, Message> {
+        let action = action.to_string();
+        let handle = iced::widget::svg::Handle::from_memory(icon);
+        button(
+            row![
+                iced::widget::svg(handle)
+                    .width(14).height(14)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::RED) }),
+                text(label).font(MONO).size(13).color(theme::RED),
+            ].spacing(8).align_y(iced::Alignment::Center),
+        )
+        .on_press(Message::ContextMenuAction(action, target))
+        .padding([6, 12])
+        .width(Fill)
+        .style(|_, status| button::Style {
+            background: if matches!(status, button::Status::Hovered) {
+                Some(Color::from_rgba(1.0, 0.2, 0.2, 0.1).into())
+            } else {
+                None
+            },
+            ..Default::default()
+        })
+        .into()
+    }
+
+    fn context_menu_divider(&self) -> Element<'_, Message> {
+        container(rule::horizontal(1).style(|_: &Theme| rule::Style {
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+            radius: 0.0.into(),
+            fill_mode: rule::FillMode::Full,
+            snap: true,
+        }))
+        .padding([2, 8])
+        .into()
     }
 
     /// Left space sidebar (icons).
@@ -672,24 +816,31 @@ impl FluxChat {
             let space_id = space.room_id.clone();
             let is_selected = self.selected_space_id.as_deref() == Some(&space.room_id);
             let radius = if is_selected { 12.0 } else { 20.0 };
-            let border_color = if is_selected { theme::ACCENT } else { Color::TRANSPARENT };
             let opacity = if is_selected { 1.0 } else { 0.7 };
+            let glow = if is_selected {
+                iced::Shadow {
+                    color: Color::from_rgba(0.35, 0.55, 0.9, 0.6),
+                    offset: iced::Vector::ZERO,
+                    blur_radius: 10.0,
+                }
+            } else {
+                iced::Shadow::default()
+            };
 
             let icon_content: Element<Message> = if let Some(handle) = space.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
                 container(
                     iced::widget::image(handle.clone())
-                        .width(36).height(36)
+                        .width(40).height(40)
                         .content_fit(iced::ContentFit::Cover),
                 )
                 .width(40).height(40)
-                .center(Fill)
                 .clip(true)
                 .style(move |_: &Theme| container::Style {
                     border: iced::Border {
-                        color: border_color,
-                        width: 2.0,
                         radius: radius.into(),
+                        ..Default::default()
                     },
+                    shadow: glow,
                     ..Default::default()
                 })
                 .into()
@@ -707,29 +858,35 @@ impl FluxChat {
                 .style(move |_: &Theme| container::Style {
                     background: Some(theme::BG_MID.into()),
                     border: iced::Border {
-                        color: border_color,
-                        width: 2.0,
                         radius: radius.into(),
+                        ..Default::default()
                     },
+                    shadow: glow,
                     ..Default::default()
                 })
                 .into()
             };
 
-            let btn = iced::widget::tooltip(
-                button(icon_content)
-                    .on_press(Message::SelectSpace(Some(space_id)))
-                    .padding(0)
-                    .style(theme::button_transparent),
-                text(&space.name).font(MONO).size(12),
-                iced::widget::tooltip::Position::Right,
+            let ctx_space_id = space.room_id.clone();
+            let btn = mouse_area(
+                iced::widget::tooltip(
+                    button(icon_content)
+                        .on_press(Message::SelectSpace(Some(space_id)))
+                        .padding(0)
+                        .style(theme::button_transparent),
+                    text(&space.name).font(MONO).size(12),
+                    iced::widget::tooltip::Position::Right,
+                )
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_MID.into()),
+                    border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
+                    ..Default::default()
+                })
+                .padding(6)
             )
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::BG_MID.into()),
-                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 4.0.into() },
-                ..Default::default()
-            })
-            .padding(6);
+            .on_right_press(Message::OpenContextMenu(
+                crate::state::ContextMenu::Space { space_id: ctx_space_id },
+            ));
 
             col = col.push(btn);
         }
@@ -788,24 +945,51 @@ impl FluxChat {
             .as_deref()
             .unwrap_or("fluxchat")
             .to_string();
-        let header = container(
-            row![
-                text(header_text)
-                    .font(MONO)
-                    .size(14)
-                    .color(theme::TEXT_BRIGHT),
-                Space::new().width(Fill),
-                button(text("+").font(MONO).size(16).color(theme::TEXT_DIM))
-                    .on_press(Message::OpenModal(crate::state::Modal::CreateRoom))
-                    .padding([0, 4])
-                    .style(|_, _| button::Style {
-                        background: None,
-                        text_color: theme::TEXT_DIM,
-                        ..Default::default()
-                    }),
-            ]
-            .align_y(iced::Alignment::Center),
-        )
+        let mut header_row = row![
+            text(header_text)
+                .font(MONO)
+                .size(14)
+                .color(theme::TEXT_BRIGHT),
+            Space::new().width(Fill),
+        ]
+        .align_y(iced::Alignment::Center);
+
+        // Invite button for spaces
+        if let Some(space_id) = &self.selected_space_id {
+            let sid = space_id.clone();
+            let invite_handle = iced::widget::svg::Handle::from_memory(SVG_USER_PLUS);
+            header_row = header_row.push(
+                button(
+                    iced::widget::svg(invite_handle)
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                )
+                .on_press(Message::SpaceInvite(sid))
+                .padding([2, 4])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        header_row = header_row.push(
+            button(text("+").font(MONO).size(16).color(theme::TEXT_DIM))
+                .on_press(Message::OpenModal(crate::state::Modal::CreateRoom))
+                .padding([0, 4])
+                .style(|_, _| button::Style {
+                    background: None,
+                    text_color: theme::TEXT_DIM,
+                    ..Default::default()
+                }),
+        );
+
+        let header = container(header_row)
         .padding([8, 12])
         .width(Fill)
         .style(|_: &Theme| container::Style {
@@ -1226,23 +1410,28 @@ impl FluxChat {
         }
 
         let room_id = room.room_id.clone();
-        container(
-            button(
-                container(row_content)
-                    .width(Fill)
-                    .clip(true)
+        let ctx_room_id = room.room_id.clone();
+        let ctx_menu = crate::state::ContextMenu::Room { room_id: ctx_room_id, is_dm };
+        mouse_area(
+            container(
+                button(
+                    container(row_content)
+                        .width(Fill)
+                        .clip(true)
+                )
+                .on_press(Message::SelectRoom(room_id))
+                .padding([5, 8])
+                .width(Fill)
+                .style(move |_, _| button::Style {
+                    background: Some(bg.into()),
+                    text_color: name_color,
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
             )
-            .on_press(Message::SelectRoom(room_id))
-            .padding([5, 8])
-            .width(Fill)
-            .style(move |_, _| button::Style {
-                background: Some(bg.into()),
-                text_color: name_color,
-                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            })
+            .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
         )
-        .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
+        .on_right_press(Message::OpenContextMenu(ctx_menu))
         .into()
     }
 

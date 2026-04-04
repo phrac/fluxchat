@@ -269,9 +269,7 @@ impl FluxChat {
                     // Re-mark room as unread if new messages arrive while not viewing it
                     let is_active = self.selected_room_id.as_deref() == Some(&room_id);
                     if !brand_new.is_empty() && (!is_active || !self.app_focused) {
-                        if self.read_rooms.remove(&room_id) {
-                            self.save_read_rooms();
-                        }
+                        self.read_rooms.remove(&room_id);
                     }
 
                     // Track new messages arriving while scrolled up
@@ -314,24 +312,9 @@ impl FluxChat {
                         }
                     }
 
-                    // Merge new messages with existing ones to preserve history
-                    // that the SDK timeline may have trimmed from its buffer.
-                    let merged = if let Some(existing) = self.messages_by_room.get(&room_id) {
-                        let new_ids: std::collections::HashSet<&str> = new_messages
-                            .iter()
-                            .map(|m| m.event_id.as_str())
-                            .collect();
-                        let mut merged: Vec<fluxchat_core::MessageInfo> = existing
-                            .iter()
-                            .filter(|m| !new_ids.contains(m.event_id.as_str()))
-                            .cloned()
-                            .collect();
-                        merged.extend(new_messages);
-                        merged.sort_by_key(|m| m.timestamp);
-                        merged
-                    } else {
-                        new_messages
-                    };
+                    // Use the SDK's timeline directly — it has edits applied,
+                    // correct ordering, and the authoritative message set.
+                    let merged = new_messages;
                     // Advance last_read_event if this is the active room
                     if self.selected_room_id.as_deref() == Some(&room_id) {
                         if let Some(last) = merged.last() {
@@ -412,9 +395,8 @@ impl FluxChat {
                 crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
                 self.paginate_msg_count = 0;
-                // Mark as read
+                // Mark as read (session-only, SDK handles server-side)
                 self.read_rooms.insert(room_id.clone());
-                self.save_read_rooms();
                 // Load pins in background for pin icon state
                 let pin_load = {
                     let core = self.core.clone();
@@ -1228,6 +1210,82 @@ impl FluxChat {
             Message::ToggleOverflowMenu => {
                 self.overflow_menu_open = !self.overflow_menu_open;
             }
+            Message::OpenContextMenu(menu) => {
+                self.context_menu = Some(menu);
+            }
+            Message::CloseContextMenu => {
+                self.context_menu = None;
+            }
+            Message::ContextMenuAction(action, target_id) => {
+                self.context_menu = None;
+                match action.as_str() {
+                    "settings" => {
+                        // Select the room first, then open room settings via OpenModal path
+                        self.selected_room_id = Some(target_id);
+                        if let Some(room) = self.selected_room_id.as_ref()
+                            .and_then(|rid| self.rooms.iter().find(|r| r.room_id == *rid))
+                        {
+                            self.room_settings_name = room.name.clone();
+                            self.room_settings_topic = room.topic.clone().unwrap_or_default();
+                        }
+                        self.modal = Some(crate::state::Modal::RoomSettings);
+                    }
+                    "invite" => {
+                        self.invite_target_id = Some(target_id);
+                        self.modal = Some(crate::state::Modal::Invite);
+                    }
+                    "favourite" => {
+                        let core = self.core.clone();
+                        let rid = target_id;
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                let is_fav = fluxchat_core::rooms::is_room_favourite(&client, &rid).await.ok()?;
+                                fluxchat_core::rooms::set_room_favourite(&client, &rid, !is_fav).await.ok()
+                            },
+                            |_| Message::Noop,
+                        );
+                    }
+                    "leave" => {
+                        let core = self.core.clone();
+                        let rid = target_id;
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                fluxchat_core::rooms::leave_room(&client, &rid).await.ok()
+                            },
+                            |_| Message::Noop,
+                        );
+                    }
+                    "mark_read" => {
+                        self.read_rooms.insert(target_id);
+                    }
+                    "space_invite" => {
+                        self.invite_target_id = Some(target_id);
+                        self.modal = Some(crate::state::Modal::Invite);
+                    }
+                    "space_details" => {
+                        self.space_detail_rooms.clear();
+                        self.space_detail_members.clear();
+                        self.modal = Some(crate::state::Modal::SpaceDetails { space_id: target_id.clone() });
+                        let core = self.core.clone();
+                        let sid = target_id;
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                let rooms = fluxchat_core::rooms::get_space_rooms(&client, &sid).await.unwrap_or_default();
+                                let members = fluxchat_core::messages::get_room_members(&client, &sid).await.unwrap_or_default();
+                                Some((rooms, members))
+                            },
+                            |result| match result {
+                                Some((rooms, members)) => Message::SpaceDetailsLoaded(rooms, members),
+                                None => Message::Noop,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+            }
             Message::SetRightPanel(panel) => {
                 self.right_panel = panel;
             }
@@ -1371,6 +1429,14 @@ impl FluxChat {
                     },
                     |_| Message::Noop,
                 );
+            }
+            Message::SpaceInvite(space_id) => {
+                self.invite_target_id = Some(space_id);
+                self.modal = Some(crate::state::Modal::Invite);
+            }
+            Message::SpaceDetailsLoaded(rooms, members) => {
+                self.space_detail_rooms = rooms;
+                self.space_detail_members = members;
             }
             Message::InviteUser(room_id, user_id) => {
                 let core = self.core.clone();
@@ -2215,7 +2281,7 @@ impl FluxChat {
                 self.invite_results = results;
             }
             Message::InviteUserFromModal(user_id) => {
-                if let Some(room_id) = self.selected_room_id.clone() {
+                if let Some(room_id) = self.invite_target_id.take().or_else(|| self.selected_room_id.clone()) {
                     let core = self.core.clone();
                     self.modal = None;
                     self.invite_search.clear();
@@ -2519,6 +2585,8 @@ impl FluxChat {
                     self.search_results.clear();
                     self.search_selected = None;
                     self.highlight_event_id = None;
+                } else if self.context_menu.is_some() {
+                    self.context_menu = None;
                 } else if self.overflow_menu_open {
                     self.overflow_menu_open = false;
                 } else if !self.cmd_completions.is_empty() {
@@ -2967,21 +3035,9 @@ impl FluxChat {
         )
     }
 
-    /// Persist read_rooms to SQLite.
-    fn save_read_rooms(&self) {
-        let ids: Vec<&str> = self.read_rooms.iter().map(|s| s.as_str()).collect();
-        if let Ok(json) = serde_json::to_string(&ids) {
-            let _ = self.core.db.set_setting("read_rooms", &json);
-        }
-    }
-
     /// Load persisted settings from SQLite into state.
     fn load_persisted_settings(&mut self) {
-        if let Some(json) = self.core.db.get_setting("read_rooms") {
-            if let Ok(ids) = serde_json::from_str::<Vec<String>>(&json) {
-                self.read_rooms = ids.into_iter().collect();
-            }
-        }
+        // read_rooms is session-only — SDK notification_count is authoritative on startup
         if let Some(val) = self.core.db.get_setting("timestamp_format") {
             self.timestamp_format = val;
         }
