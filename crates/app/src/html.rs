@@ -2,11 +2,19 @@
 //!
 //! Handles: bold, italic, strikethrough, code, pre/code blocks,
 //! links, Matrix mention pills, blockquotes, and plain text.
+//!
+//! Uses html5ever for proper HTML parsing with a minimal arena-based DOM.
 
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::sync::LazyLock;
 
+use html5ever::tendril::TendrilSink;
+use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
+use html5ever::{Attribute, ExpandedName, QualName};
 use iced::widget::text::Span;
 use iced::{Color, Font, font};
+use markup5ever::{local_name, ns};
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 
@@ -64,216 +72,564 @@ pub fn html_to_parts(html: &str, rooms: &[fluxchat_core::RoomInfo]) -> Vec<Messa
     segments_to_parts(segments, rooms)
 }
 
-/// Parse HTML string into intermediate Segments.
-fn parse_html(html: &str) -> Vec<Segment> {
-    let mut segments = Vec::new();
-    let mut style_stack: Vec<Style> = vec![Style::default()];
-    let mut remaining = html;
+// ---------------------------------------------------------------------------
+// Minimal arena-based DOM for html5ever TreeSink
+// ---------------------------------------------------------------------------
 
-    while !remaining.is_empty() {
-        if remaining.starts_with('<') {
-            // Find end of tag
-            let tag_end = remaining.find('>').unwrap_or(remaining.len());
-            let tag_content = &remaining[1..tag_end];
-            remaining = &remaining[tag_end.saturating_add(1).min(remaining.len())..];
+type NodeId = usize;
 
-            let is_closing = tag_content.starts_with('/');
-            let tag_name = if is_closing {
-                tag_content[1..].split_whitespace().next().unwrap_or("")
-            } else {
-                tag_content.split_whitespace().next().unwrap_or("")
-                    .split('/').next().unwrap_or("") // handle self-closing
-            };
-            let tag_lower = tag_name.to_lowercase();
+#[derive(Debug)]
+enum NodeData {
+    Document,
+    Text(String),
+    Element {
+        name: QualName,
+        attrs: Vec<Attribute>,
+    },
+    Comment,
+}
 
-            match tag_lower.as_str() {
-                "br" | "br/" => {
-                    segments.push(Segment::LineBreak);
-                }
-                "b" | "strong" => {
-                    if is_closing {
-                        pop_style(&mut style_stack);
-                    } else {
-                        let mut s = current_style(&style_stack).clone();
-                        s.bold = true;
-                        style_stack.push(s);
-                    }
-                }
-                "i" | "em" => {
-                    if is_closing {
-                        pop_style(&mut style_stack);
-                    } else {
-                        let mut s = current_style(&style_stack).clone();
-                        s.italic = true;
-                        style_stack.push(s);
-                    }
-                }
-                "del" | "s" | "strike" => {
-                    if is_closing {
-                        pop_style(&mut style_stack);
-                    } else {
-                        let mut s = current_style(&style_stack).clone();
-                        s.strikethrough = true;
-                        style_stack.push(s);
-                    }
-                }
-                "code" => {
-                    if is_closing {
-                        pop_style(&mut style_stack);
-                    } else {
-                        let mut s = current_style(&style_stack).clone();
-                        s.code = true;
-                        style_stack.push(s);
-                    }
-                }
-                "pre" => {
-                    if is_closing {
-                        // Don't pop — we handle pre+code together
-                    } else {
-                        // Look for <code> inside <pre>, extract until </code></pre>
-                        let language = extract_code_language(remaining);
-                        // Skip past the inner <code...> tag if present
-                        let code_start = if remaining.starts_with("<code") {
-                            remaining.find('>').map(|i| i + 1).unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        let code_content = &remaining[code_start..];
-                        let end_marker = if code_start > 0 {
-                            "</code></pre>"
-                        } else {
-                            "</pre>"
-                        };
-                        if let Some(end_pos) = code_content.find(end_marker) {
-                            let raw_code = &code_content[..end_pos];
-                            // Order matters: restore markdown chars from formatting tags,
-                            // replace <br> with newlines, strip remaining HTML tags,
-                            // THEN unescape entities (so &gt; &lt; aren't eaten by strip_tags)
-                            let code = raw_code
-                                .replace("<br>", "\n")
-                                .replace("<br/>", "\n")
-                                .replace("<br />", "\n")
-                                .replace("<em>", "*").replace("</em>", "*")
-                                .replace("<strong>", "**").replace("</strong>", "**")
-                                .replace("<del>", "~~").replace("</del>", "~~");
-                            let code = strip_tags(&code);
-                            let code = unescape_html(&code);
-                            // Collapse double newlines caused by \n<br>\n in source
-                            let mut collapsed = String::with_capacity(code.len());
-                            let mut prev_newline = false;
-                            for ch in code.chars() {
-                                if ch == '\n' {
-                                    if !prev_newline {
-                                        collapsed.push('\n');
-                                    }
-                                    prev_newline = true;
-                                } else {
-                                    prev_newline = false;
-                                    collapsed.push(ch);
-                                }
-                            }
-                            segments.push(Segment::CodeBlock {
-                                code: collapsed.trim_matches('\n').to_string(),
-                                language,
-                            });
-                            remaining = &code_content[end_pos + end_marker.len()..];
-                        }
-                    }
-                }
-                "blockquote" => {
-                    if is_closing {
-                        pop_style(&mut style_stack);
-                    } else {
-                        let mut s = current_style(&style_stack).clone();
-                        s.blockquote = true;
-                        style_stack.push(s);
-                    }
-                }
-                "a" => {
-                    if is_closing {
-                        pop_style(&mut style_stack);
-                    } else {
-                        // Extract href
-                        let href = extract_attr(tag_content, "href");
-                        let is_mention = href.as_ref()
-                            .is_some_and(|h| h.contains("matrix.to/#/@") || h.contains("matrix.to/#/%40"));
-                        let user_id = if is_mention {
-                            href.as_ref().and_then(|h| {
-                                let idx = h.find("/#/@")
-                                    .map(|i| i + 3) // skip "/#/"
-                                    .or_else(|| h.find("/#/%40").map(|i| i + 3));
-                                idx.map(|i| {
-                                    let raw = &h[i..];
-                                    let raw = raw.split('?').next().unwrap_or(raw); // strip query
-                                    raw.replace("%3A", ":").replace("%40", "@")
-                                })
-                            })
-                        } else {
-                            None
-                        };
+#[derive(Debug)]
+struct Node {
+    data: NodeData,
+    parent: Option<NodeId>,
+    children: Vec<NodeId>,
+}
 
-                        let mut s = current_style(&style_stack).clone();
-                        s.mention = is_mention;
-                        s.mention_user_id = user_id;
-                        style_stack.push(s);
+struct Arena {
+    nodes: RefCell<Vec<Node>>,
+    document: NodeId,
+    errors: RefCell<Vec<String>>,
+    quirks_mode: Cell<QuirksMode>,
+}
 
-                        // For non-mention links, we'll collect text and emit a Link segment
-                        // when we hit </a>. For mentions, we style inline.
-                        if !is_mention {
-                            if let Some(url) = href {
-                                // Collect link text
-                                let link_text = collect_until_close(remaining, "a");
-                                let text = unescape_html(&strip_tags(&link_text.0));
-                                remaining = link_text.1;
-                                pop_style(&mut style_stack);
-                                segments.push(Segment::Link {
-                                    text,
-                                    url,
-                                    style: current_style(&style_stack).clone(),
-                                });
-                                continue;
-                            }
-                        }
-                    }
-                }
-                "p" | "div" => {
-                    if is_closing {
-                        segments.push(Segment::LineBreak);
-                    }
-                }
-                "span" => {
-                    if is_closing {
-                        pop_style(&mut style_stack);
-                    } else {
-                        // Just push current style (span is mostly used for mention pills)
-                        style_stack.push(current_style(&style_stack).clone());
-                    }
-                }
-                "mx-reply" => {
-                    if !is_closing {
-                        // Skip the entire mx-reply block (Matrix reply fallback)
-                        if let Some(end) = remaining.find("</mx-reply>") {
-                            remaining = &remaining[end + "</mx-reply>".len()..];
-                        }
-                    }
-                }
-                _ => {
-                    // Unknown tag — ignore
-                }
-            }
-        } else {
-            // Plain text until next tag
-            let text_end = remaining.find('<').unwrap_or(remaining.len());
-            let text = &remaining[..text_end];
-            if !text.is_empty() {
-                let unescaped = unescape_html(text);
-                segments.push(Segment::Text(unescaped, current_style(&style_stack).clone()));
-            }
-            remaining = &remaining[text_end..];
+impl Arena {
+    fn new() -> Self {
+        let doc = Node { data: NodeData::Document, parent: None, children: Vec::new() };
+        Arena {
+            nodes: RefCell::new(vec![doc]),
+            document: 0,
+            errors: RefCell::new(Vec::new()),
+            quirks_mode: Cell::new(QuirksMode::NoQuirks),
         }
     }
 
-    segments
+    fn new_node(&self, data: NodeData) -> NodeId {
+        let mut nodes = self.nodes.borrow_mut();
+        let id = nodes.len();
+        nodes.push(Node { data, parent: None, children: Vec::new() });
+        id
+    }
+
+    fn append_child(&self, parent: NodeId, child: NodeId) {
+        let mut nodes = self.nodes.borrow_mut();
+        nodes[child].parent = Some(parent);
+        nodes[parent].children.push(child);
+    }
+
+    fn detach(&self, target: NodeId) {
+        let mut nodes = self.nodes.borrow_mut();
+        if let Some(parent_id) = nodes[target].parent {
+            nodes[parent_id].children.retain(|&c| c != target);
+            nodes[target].parent = None;
+        }
+    }
+}
+
+impl TreeSink for &Arena {
+    type Handle = NodeId;
+    type Output = ();
+    type ElemName<'a> = ExpandedName<'a> where Self: 'a;
+
+    fn finish(self) {}
+
+    fn parse_error(&self, msg: Cow<'static, str>) {
+        self.errors.borrow_mut().push(msg.into_owned());
+    }
+
+    fn get_document(&self) -> NodeId {
+        self.document
+    }
+
+    fn elem_name(&self, target: &NodeId) -> ExpandedName<'_> {
+        let nodes = self.nodes.borrow();
+        match &nodes[*target].data {
+            NodeData::Element { name, .. } => {
+                // SAFETY: Atom values (Namespace/LocalName) are interned in a global
+                // table, so the references in ExpandedName remain valid beyond the
+                // RefCell borrow guard's lifetime.
+                let expanded = name.expanded();
+                unsafe { std::mem::transmute::<ExpandedName<'_>, ExpandedName<'_>>(expanded) }
+            }
+            _ => panic!("elem_name called on non-element"),
+        }
+    }
+
+    fn create_element(&self, name: QualName, attrs: Vec<Attribute>, _flags: ElementFlags) -> NodeId {
+        self.new_node(NodeData::Element { name, attrs })
+    }
+
+    fn create_comment(&self, _text: html5ever::tendril::StrTendril) -> NodeId {
+        self.new_node(NodeData::Comment)
+    }
+
+    fn create_pi(&self, _target: html5ever::tendril::StrTendril, _data: html5ever::tendril::StrTendril) -> NodeId {
+        self.new_node(NodeData::Comment)
+    }
+
+    fn append(&self, parent: &NodeId, child: NodeOrText<NodeId>) {
+        match child {
+            NodeOrText::AppendNode(id) => self.append_child(*parent, id),
+            NodeOrText::AppendText(text) => {
+                // Merge with previous text node if possible
+                let nodes = self.nodes.borrow();
+                if let Some(&last_child_id) = nodes[*parent].children.last() {
+                    if let NodeData::Text(ref _existing) = nodes[last_child_id].data {
+                        drop(nodes);
+                        let mut nodes = self.nodes.borrow_mut();
+                        if let NodeData::Text(ref mut existing) = nodes[last_child_id].data {
+                            existing.push_str(&text);
+                        }
+                        return;
+                    }
+                }
+                drop(nodes);
+                let id = self.new_node(NodeData::Text(text.to_string()));
+                self.append_child(*parent, id);
+            }
+        }
+    }
+
+    fn append_based_on_parent_node(
+        &self,
+        element: &NodeId,
+        prev_element: &NodeId,
+        child: NodeOrText<NodeId>,
+    ) {
+        let has_parent = self.nodes.borrow()[*element].parent.is_some();
+        if has_parent {
+            self.append_before_sibling(element, child);
+        } else {
+            self.append(prev_element, child);
+        }
+    }
+
+    fn append_doctype_to_document(
+        &self,
+        _name: html5ever::tendril::StrTendril,
+        _public_id: html5ever::tendril::StrTendril,
+        _system_id: html5ever::tendril::StrTendril,
+    ) {}
+
+    fn get_template_contents(&self, target: &NodeId) -> NodeId {
+        *target
+    }
+
+    fn same_node(&self, x: &NodeId, y: &NodeId) -> bool {
+        *x == *y
+    }
+
+    fn set_quirks_mode(&self, mode: QuirksMode) {
+        self.quirks_mode.set(mode);
+    }
+
+    fn append_before_sibling(&self, sibling: &NodeId, new_node: NodeOrText<NodeId>) {
+        let parent_id = self.nodes.borrow()[*sibling].parent.unwrap_or(self.document);
+        match new_node {
+            NodeOrText::AppendNode(id) => {
+                self.detach(id);
+                let mut nodes = self.nodes.borrow_mut();
+                nodes[id].parent = Some(parent_id);
+                let children = &mut nodes[parent_id].children;
+                let pos = children.iter().position(|&c| c == *sibling).unwrap_or(children.len());
+                children.insert(pos, id);
+            }
+            NodeOrText::AppendText(text) => {
+                let id = self.new_node(NodeData::Text(text.to_string()));
+                let mut nodes = self.nodes.borrow_mut();
+                nodes[id].parent = Some(parent_id);
+                let children = &mut nodes[parent_id].children;
+                let pos = children.iter().position(|&c| c == *sibling).unwrap_or(children.len());
+                children.insert(pos, id);
+            }
+        }
+    }
+
+    fn add_attrs_if_missing(&self, target: &NodeId, new_attrs: Vec<Attribute>) {
+        let mut nodes = self.nodes.borrow_mut();
+        if let NodeData::Element { ref mut attrs, .. } = nodes[*target].data {
+            for attr in new_attrs {
+                if !attrs.iter().any(|a| a.name == attr.name) {
+                    attrs.push(attr);
+                }
+            }
+        }
+    }
+
+    fn remove_from_parent(&self, target: &NodeId) {
+        self.detach(*target);
+    }
+
+    fn reparent_children(&self, node: &NodeId, new_parent: &NodeId) {
+        let children: Vec<NodeId> = {
+            let mut nodes = self.nodes.borrow_mut();
+            let children = std::mem::take(&mut nodes[*node].children);
+            for &child_id in &children {
+                nodes[child_id].parent = Some(*new_parent);
+            }
+            children
+        };
+        let mut nodes = self.nodes.borrow_mut();
+        nodes[*new_parent].children.extend(children);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DOM tree walker -> Segments
+// ---------------------------------------------------------------------------
+
+/// Context passed through the tree walk.
+struct WalkCtx<'a> {
+    nodes: &'a [Node],
+    segments: Vec<Segment>,
+}
+
+impl<'a> WalkCtx<'a> {
+    /// Check if a node is an element with the given local name.
+    fn is_element(&self, id: NodeId, name: &str) -> bool {
+        match &self.nodes[id].data {
+            NodeData::Element { name: qn, .. } => &*qn.local == name,
+            _ => false,
+        }
+    }
+
+    /// Get attribute value from an element node.
+    fn get_attr(&self, id: NodeId, attr_name: &str) -> Option<String> {
+        match &self.nodes[id].data {
+            NodeData::Element { attrs, .. } => {
+                attrs.iter().find(|a| &*a.name.local == attr_name).map(|a| a.value.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the local element name, lowercased.
+    fn element_name(&self, id: NodeId) -> Option<&str> {
+        match &self.nodes[id].data {
+            NodeData::Element { name, .. } => Some(&*name.local),
+            _ => None,
+        }
+    }
+
+    /// Collect all text content from a subtree (stripping tags).
+    fn collect_text(&self, id: NodeId) -> String {
+        let mut out = String::new();
+        self.collect_text_inner(id, &mut out);
+        out
+    }
+
+    fn collect_text_inner(&self, id: NodeId, out: &mut String) {
+        match &self.nodes[id].data {
+            NodeData::Text(t) => out.push_str(t),
+            _ => {
+                for &child in &self.nodes[id].children {
+                    self.collect_text_inner(child, out);
+                }
+            }
+        }
+    }
+
+    /// Check if any ancestor (inclusive) has a given element name.
+    fn has_ancestor(&self, id: NodeId, name: &str) -> bool {
+        let mut cur = Some(id);
+        while let Some(nid) = cur {
+            if self.is_element(nid, name) {
+                return true;
+            }
+            cur = self.nodes[nid].parent;
+        }
+        false
+    }
+
+    /// Check if this node is inside a `<li>` (for suppressing p/div line breaks).
+    fn inside_li(&self, id: NodeId) -> bool {
+        let mut cur = self.nodes[id].parent;
+        while let Some(pid) = cur {
+            if self.is_element(pid, "li") {
+                return true;
+            }
+            cur = self.nodes[pid].parent;
+        }
+        false
+    }
+
+    /// Walk a node and its children, accumulating Segments.
+    fn walk(&mut self, id: NodeId, style: &Style) {
+        match &self.nodes[id].data {
+            NodeData::Document => {
+                let children: Vec<NodeId> = self.nodes[id].children.clone();
+                for child in children {
+                    self.walk(child, style);
+                }
+            }
+            NodeData::Text(text) => {
+                if text.is_empty() {
+                    return;
+                }
+                // Skip whitespace-only text nodes between block elements
+                if text.trim().is_empty() {
+                    return;
+                }
+                self.segments.push(Segment::Text(text.clone(), style.clone()));
+            }
+            NodeData::Comment => {}
+            NodeData::Element { name, attrs } => {
+                let tag = &*name.local;
+                match tag {
+                    // Skip mx-reply blocks entirely
+                    "mx-reply" => return,
+
+                    "br" => {
+                        self.segments.push(Segment::LineBreak);
+                        return;
+                    }
+
+                    // Headings: render as bold text + line break
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                        let mut s = style.clone();
+                        s.bold = true;
+                        let children: Vec<NodeId> = self.nodes[id].children.clone();
+                        for child in children {
+                            self.walk(child, &s);
+                        }
+                        self.segments.push(Segment::LineBreak);
+                        return;
+                    }
+
+                    // Pre/code blocks
+                    "pre" => {
+                        self.emit_code_block(id);
+                        return;
+                    }
+
+                    // Anchor tags
+                    "a" => {
+                        let href = attrs.iter()
+                            .find(|a| &*a.name.local == "href")
+                            .map(|a| a.value.to_string());
+                        let is_mention = href.as_ref()
+                            .is_some_and(|h| h.contains("matrix.to/#/@") || h.contains("matrix.to/#/%40"));
+
+                        if is_mention {
+                            let user_id = href.as_ref().and_then(|h| {
+                                let idx = h.find("/#/@")
+                                    .map(|i| i + 3)
+                                    .or_else(|| h.find("/#/%40").map(|i| i + 3));
+                                idx.map(|i| {
+                                    let raw = &h[i..];
+                                    let raw = raw.split('?').next().unwrap_or(raw);
+                                    raw.replace("%3A", ":").replace("%40", "@")
+                                })
+                            });
+                            let mut s = style.clone();
+                            s.mention = true;
+                            s.mention_user_id = user_id;
+                            let children: Vec<NodeId> = self.nodes[id].children.clone();
+                            for child in children {
+                                self.walk(child, &s);
+                            }
+                        } else if let Some(url) = href {
+                            let text = self.collect_text(id);
+                            self.segments.push(Segment::Link {
+                                text,
+                                url,
+                                style: style.clone(),
+                            });
+                        } else {
+                            // No href — just render children normally
+                            let children: Vec<NodeId> = self.nodes[id].children.clone();
+                            for child in children {
+                                self.walk(child, style);
+                            }
+                        }
+                        return;
+                    }
+
+                    _ => {}
+                }
+
+                // Compute updated style for inline elements
+                let mut s = style.clone();
+                match tag {
+                    "b" | "strong" => s.bold = true,
+                    "i" | "em" => s.italic = true,
+                    "del" | "s" | "strike" => s.strikethrough = true,
+                    "code" => s.code = true,
+                    "blockquote" => s.blockquote = true,
+                    _ => {}
+                }
+
+                let children: Vec<NodeId> = self.nodes[id].children.clone();
+
+                match tag {
+                    "p" | "div" => {
+                        // Inside <li>, don't add extra line breaks for <p>
+                        if self.inside_li(id) {
+                            for child in children {
+                                self.walk(child, &s);
+                            }
+                        } else {
+                            for child in children {
+                                self.walk(child, &s);
+                            }
+                            self.segments.push(Segment::LineBreak);
+                        }
+                    }
+                    "ol" | "ul" => {
+                        let mut li_count = 0u32;
+                        for child in children.iter() {
+                            if self.is_element(*child, "li") {
+                                li_count += 1;
+                                if tag == "ol" {
+                                    // Numbered list
+                                    let num = format!("{li_count}. ");
+                                    self.segments.push(Segment::Text(num, s.clone()));
+                                } else {
+                                    // Bullet list
+                                    self.segments.push(Segment::Text("\u{2022} ".to_string(), s.clone()));
+                                }
+                                // Walk li children
+                                let li_children: Vec<NodeId> = self.nodes[*child].children.clone();
+                                for li_child in li_children {
+                                    self.walk(li_child, &s);
+                                }
+                                self.segments.push(Segment::LineBreak);
+                            } else {
+                                self.walk(*child, &s);
+                            }
+                        }
+                    }
+                    "li" => {
+                        // li handled by parent ol/ul — but if we get here directly, just walk children
+                        for child in children {
+                            self.walk(child, &s);
+                        }
+                    }
+                    "blockquote" => {
+                        for child in children {
+                            self.walk(child, &s);
+                        }
+                    }
+                    _ => {
+                        for child in children {
+                            self.walk(child, &s);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extract and emit a code block from a <pre> element.
+    fn emit_code_block(&mut self, pre_id: NodeId) {
+        // Look for a <code> child to extract language tag
+        let children: Vec<NodeId> = self.nodes[pre_id].children.clone();
+
+        let (language, code_root) = if let Some(&code_id) = children.iter().find(|&&c| self.is_element(c, "code")) {
+            let lang = self.get_attr(code_id, "class")
+                .and_then(|cls| {
+                    cls.split_whitespace()
+                        .find(|c| c.starts_with("language-"))
+                        .map(|c| c.strip_prefix("language-").unwrap_or(c).to_string())
+                });
+            (lang, code_id)
+        } else {
+            (None, pre_id)
+        };
+
+        // Collect all text from the code subtree
+        let code = self.collect_code_text(code_root);
+
+        // Collapse consecutive newlines
+        let mut collapsed = String::with_capacity(code.len());
+        let mut prev_newline = false;
+        for ch in code.chars() {
+            if ch == '\n' {
+                if !prev_newline {
+                    collapsed.push('\n');
+                }
+                prev_newline = true;
+            } else {
+                prev_newline = false;
+                collapsed.push(ch);
+            }
+        }
+
+        self.segments.push(Segment::CodeBlock {
+            code: collapsed.trim_matches('\n').to_string(),
+            language,
+        });
+    }
+
+    /// Collect text from a code block, converting <br> to newlines.
+    fn collect_code_text(&self, id: NodeId) -> String {
+        let mut out = String::new();
+        self.collect_code_text_inner(id, &mut out);
+        out
+    }
+
+    fn collect_code_text_inner(&self, id: NodeId, out: &mut String) {
+        match &self.nodes[id].data {
+            NodeData::Text(t) => out.push_str(t),
+            NodeData::Element { name, .. } => {
+                let tag = &*name.local;
+                if tag == "br" {
+                    out.push('\n');
+                    return;
+                }
+                for &child in &self.nodes[id].children {
+                    self.collect_code_text_inner(child, out);
+                }
+            }
+            _ => {
+                for &child in &self.nodes[id].children {
+                    self.collect_code_text_inner(child, out);
+                }
+            }
+        }
+    }
+}
+
+/// Parse HTML string into intermediate Segments using html5ever.
+fn parse_html(html: &str) -> Vec<Segment> {
+    let arena = Arena::new();
+
+    // Parse as an HTML fragment (body context)
+    let context_name = QualName::new(None, ns!(html), local_name!("body"));
+    let context_attrs = vec![];
+    html5ever::parse_fragment(
+        &arena,
+        html5ever::ParseOpts::default(),
+        context_name,
+        context_attrs,
+        false,
+    )
+    .one(html);
+
+    // Walk the DOM tree to produce Segments
+    let nodes = arena.nodes.into_inner();
+    let mut ctx = WalkCtx {
+        nodes: &nodes,
+        segments: Vec::new(),
+    };
+
+    let doc_children: Vec<NodeId> = nodes[arena.document].children.clone();
+    let style = Style::default();
+    for child in doc_children {
+        ctx.walk(child, &style);
+    }
+
+    ctx.segments
 }
 
 /// Convert Segments into Iced Spans.
@@ -612,73 +968,6 @@ fn try_room_pill(url: &str, rooms: &[fluxchat_core::RoomInfo]) -> Option<Span<'s
     Some(span)
 }
 
-// --- Helpers ---
-
-fn current_style(stack: &[Style]) -> &Style {
-    stack.last().unwrap_or(&Style {
-        bold: false,
-        italic: false,
-        strikethrough: false,
-        code: false,
-        mention: false,
-        mention_user_id: None,
-        blockquote: false,
-    })
-}
-
-fn pop_style(stack: &mut Vec<Style>) {
-    if stack.len() > 1 {
-        stack.pop();
-    }
-}
-
-/// Extract an attribute value from a tag string.
-/// e.g. extract_attr(r#"a href="https://example.com" class="x""#, "href") -> Some("https://example.com")
-fn extract_attr(tag: &str, attr_name: &str) -> Option<String> {
-    let pattern = format!("{attr_name}=\"");
-    let start = tag.find(&pattern)? + pattern.len();
-    let rest = &tag[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-/// Extract the language from a `<code class="language-xxx">` tag.
-fn extract_code_language(s: &str) -> Option<String> {
-    if s.starts_with("<code class=\"language-") {
-        let start = "<code class=\"language-".len();
-        let rest = &s[start..];
-        rest.find('"').map(|end| rest[..end].to_string())
-    } else {
-        None
-    }
-}
-
-/// Collect text content until a closing tag, returning (content, remaining).
-fn collect_until_close<'a>(s: &'a str, tag: &str) -> (String, &'a str) {
-    let close = format!("</{tag}>");
-    if let Some(pos) = s.find(&close) {
-        (s[..pos].to_string(), &s[pos + close.len()..])
-    } else {
-        (s.to_string(), "")
-    }
-}
-
-/// Strip all HTML tags from a string, leaving only text content.
-fn strip_tags(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut in_tag = false;
-    for c in s.chars() {
-        if c == '<' {
-            in_tag = true;
-        } else if c == '>' {
-            in_tag = false;
-        } else if !in_tag {
-            result.push(c);
-        }
-    }
-    result
-}
-
 /// Convert plain text with basic markdown to Spans.
 /// Handles **bold**, *italic*, ~~strike~~, `code`, and ```codeblocks```.
 pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
@@ -780,7 +1069,7 @@ pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
                         url.push(ch);
                     }
                     // Trim trailing punctuation
-                    let trimmed = url.trim_end_matches(|c: char| c == '.' || c == ',' || c == ')' || c == ']' || c == ';');
+                    let trimmed = url.trim_end_matches(['.', ',', ')', ']', ';']);
                     let trailing = &url[trimmed.len()..];
                     let escaped = html_escape(trimmed);
                     html.push_str(&format!("<a href=\"{escaped}\">{escaped}</a>"));
@@ -803,12 +1092,3 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Unescape common HTML entities.
-fn unescape_html(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
-}
