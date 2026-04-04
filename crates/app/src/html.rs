@@ -380,7 +380,8 @@ impl<'a> WalkCtx<'a> {
                 if text.trim().is_empty() {
                     return;
                 }
-                self.segments.push(Segment::Text(text.clone(), style.clone()));
+                let text = convert_inline_latex(text);
+                self.segments.push(Segment::Text(text, style.clone()));
             }
             NodeData::Comment => {}
             NodeData::Element { name, attrs } => {
@@ -479,14 +480,10 @@ impl<'a> WalkCtx<'a> {
                                 self.walk(child, &s);
                             }
                         } else {
-                            // Add blank line before <p> for paragraph spacing
-                            // (only if we already have content)
-                            if !self.segments.is_empty() {
-                                self.segments.push(Segment::LineBreak);
-                            }
                             for child in children {
                                 self.walk(child, &s);
                             }
+                            self.segments.push(Segment::LineBreak);
                             self.segments.push(Segment::LineBreak);
                         }
                     }
@@ -732,10 +729,14 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                 }
             }
             Segment::LineBreak => {
-                // Allow up to 2 consecutive newlines (paragraph spacing), collapse beyond that
+                // Allow up to 2 consecutive newlines (paragraph spacing)
                 let trailing_newlines = spans.iter().rev()
-                    .take_while(|s: &&Span<'static, String>| s.text.as_ref() == "\n")
-                    .count();
+                    .take_while(|s: &&Span<'static, String>| {
+                        let t = s.text.as_ref();
+                        t == "\n" || t == "\n\n"
+                    })
+                    .map(|s| s.text.as_ref().matches('\n').count())
+                    .sum::<usize>();
                 if trailing_newlines < 2 {
                     spans.push(Span::new("\n"));
                 }
@@ -978,6 +979,8 @@ fn try_room_pill(url: &str, rooms: &[fluxchat_core::RoomInfo]) -> Option<Span<'s
 /// Convert plain text with basic markdown to Spans.
 /// Handles **bold**, *italic*, ~~strike~~, `code`, and ```codeblocks```.
 pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
+    // Convert inline LaTeX before markdown processing
+    let input = convert_inline_latex(input);
     // Convert basic markdown to HTML, then use the HTML parser
     let mut html = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -1097,5 +1100,54 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Convert inline LaTeX math ($...$) to Unicode via unicodeit.
+/// Leaves non-math text unchanged.
+fn convert_inline_latex(text: &str) -> String {
+    if !text.contains('$') {
+        return text.to_string();
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(start) = remaining.find('$') {
+        result.push_str(&remaining[..start]);
+        let after_dollar = &remaining[start + 1..];
+        // Don't match $$ (display math) — just skip the dollar
+        if after_dollar.starts_with('$') {
+            result.push('$');
+            remaining = after_dollar;
+            continue;
+        }
+        if let Some(end) = after_dollar.find('$') {
+            let latex = &after_dollar[..end];
+            // Strip \text{...}, \mathrm{...}, \mathbf{...} etc. to just their content
+            let mut cleaned = latex.to_string();
+            for cmd in &["\\text", "\\mathrm", "\\mathbf", "\\mathit", "\\textbf", "\\textit", "\\operatorname"] {
+                while let Some(pos) = cleaned.find(cmd) {
+                    let after_cmd = &cleaned[pos + cmd.len()..];
+                    if let Some(brace_start) = after_cmd.find('{') {
+                        let inner_start = pos + cmd.len() + brace_start + 1;
+                        if let Some(brace_end) = cleaned[inner_start..].find('}') {
+                            let inner = cleaned[inner_start..inner_start + brace_end].to_string();
+                            cleaned = format!("{}{}{}", &cleaned[..pos], inner, &cleaned[inner_start + brace_end + 1..]);
+                            continue;
+                        }
+                    }
+                    break;
+                }
+            }
+            // Convert remaining LaTeX to Unicode
+            let unicode = unicodeit::replace(&cleaned);
+            result.push_str(&unicode);
+            remaining = &after_dollar[end + 1..];
+        } else {
+            // No closing $ — keep the dollar literal
+            result.push('$');
+            remaining = after_dollar;
+        }
+    }
+    result.push_str(remaining);
+    result
 }
 

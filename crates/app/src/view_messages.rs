@@ -360,11 +360,12 @@ impl FluxChat {
                 formatted.clone()
             };
 
-            // Convert markdown-style bullets to HTML list if no <ul>/<ol> present
-            // (some bots send * bullet markers in formatted_body instead of proper HTML lists)
+            // Convert markdown-style bullets and headings to HTML
+            // (some bots send * bullets and ### headings in formatted_body)
             if !display_html.contains("<ul>") && !display_html.contains("<ol>") {
                 display_html = convert_markdown_bullets(&display_html);
             }
+            display_html = convert_markdown_headings(&display_html);
 
             if has_code_block {
                 // Use structured parts to render code blocks in containers
@@ -1067,6 +1068,35 @@ fn convert_markdown_bullets(html: &str) -> String {
     }
     if in_list {
         result.push_str("</ul>");
+    }
+    result
+}
+
+/// Convert markdown-style headings (### text) to HTML <h3> tags.
+fn convert_markdown_headings(html: &str) -> String {
+    if !html.contains("###") && !html.contains("####") {
+        return html.to_string();
+    }
+    let mut result = String::with_capacity(html.len());
+    for part in html.split("<br>").flat_map(|s| s.split("<br/>")).flat_map(|s| s.split('\n')) {
+        let trimmed = part.trim();
+        let (level, rest) = if let Some(r) = trimmed.strip_prefix("#### ") {
+            (4, r)
+        } else if let Some(r) = trimmed.strip_prefix("### ") {
+            (3, r)
+        } else if let Some(r) = trimmed.strip_prefix("## ") {
+            (2, r)
+        } else {
+            if !result.is_empty() {
+                result.push_str("<br>");
+            }
+            result.push_str(part);
+            continue;
+        };
+        if !result.is_empty() {
+            result.push_str("<br>");
+        }
+        result.push_str(&format!("<h{level}>{rest}</h{level}>"));
     }
     result
 }
