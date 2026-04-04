@@ -2,63 +2,30 @@
 
 A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app with an IRC-inspired interface.
 
-![fluxchat screenshot](assets/screenshot-iced.png)
+![fluxchat screenshot](assets/screenshot-v2.png)
 
 ## Why fluxchat
 
 - **Pure Rust** -- no JavaScript, no Electron, no WebView. Native GPU rendering via wgpu.
 - **IRC meets modern chat** -- right-aligned colored nicks, monospace layout, but with inline images, reactions, threads, encryption, and voice calls.
-- **Fast** -- native binary, GPU-accelerated UI, 3-tier media cache, lazy-loaded member lists.
+- **Fast** -- native binary, GPU-accelerated UI, lazy-loaded member lists, no per-frame overhead.
 
 ## Features
 
-### Messaging
-Send and receive messages in real-time via the Matrix Timeline API. Local echo, back-pagination on scroll-up, markdown formatting (`**bold**`, `*italic*`, `` `code` ``, `~~~codeblocks~~~`), inline images with lightbox, message editing (up-arrow), deletion, and forwarding. Multiline input with Shift+Enter. Read receipt avatars displayed per message. Reply context with colored bar. Mention pills (@name) with profile popup on click. Reaction tooltips showing who reacted. URL preview cards with thumbnails (max 2 shown, expandable).
-
-### Encryption
-Enable encryption on any room from room settings (one-way toggle). Full E2EE support for messages, images, and media in encrypted rooms.
-
-### Reactions & Emoji
-Full emoji picker with 9 categories, search, and frequently-used tracking. React to messages with any emoji. Pill-shaped reaction badges.
-
-### Threads
-Thread indicators with reply counts on root messages. Threads HUD lists all thread roots. Open threads from hover bar, HUD, or reply count — loads via relations API with sub-header showing root message. Thread entries in sidebar below parent room. Thread replies use proper `m.thread` relation. Replies hidden from main timeline.
-
-### Encryption
-End-to-end encryption via matrix-sdk (vodozemac). SAS emoji verification, key backup and recovery, session management with remote sign-out, cross-signing status.
-
-### Rooms & Spaces
-Room list grouped by space with collapsible sections. Room creation, settings, invitations, favourites. Room notifications (all/mentions/mute). Aliases, topic bar, upgrade detection.
-
-### Voice Calls (MatrixRTC)
-Voice calls via MatrixRTC + LiveKit. Join or start calls from any room. Microphone capture via cpal, audio playback of remote participants. In-call panel with participant avatars and mute/hangup controls. PIP widget in member list when viewing other rooms during a call. Defaults to muted mic on join. Requires a LiveKit SFU (discovered via `.well-known`).
-
-### Notifications
-Desktop notifications via `notify-rust`. Fires when messages arrive in non-active rooms or when the app is unfocused. Settings tab with toggles: enable/disable, mentions only, show message preview, notification sound. Per-room mute via `/mute` command.
-
-### Search
-Server-side search with client-side fallback for encrypted rooms. Overlay dropdown with clickable results, arrow key navigation, scroll-to-highlight with blue tint. User directory and public room directory.
-
-### Polls
-Create interactive polls with `/poll`, vote with progress bars, end with `/pollend`. MSC3381 compatible.
-
-### Voice Messages
-Record voice messages with the mic button in the input bar. Captures audio via cpal, encodes to Opus in OGG container, with auto-normalization for consistent volume. Preview before sending. Plays received voice messages with progress bar and play/stop controls. MSC3245 compliant.
-
-### Files & Media
-Upload via button, drag-drop, paste, or `/attach`. Thumbnail generation for images. GIF search via Giphy API. Sticker display. URL previews with og:image. Location sharing via `/location` command with coordinate picker and OpenStreetMap links.
-
-### Code Highlighting
-Syntax highlighting for 100+ languages via syntect. Base16 Ocean Dark theme.
-
-### Slash Commands
-48+ commands with Tab-cycling autocomplete. Room management, messaging, user ops, discovery, polls, display toggles, text macros.
-
-### Profile & Settings
-Discord-style profile cards with colored banner, avatar, role badges, and power level management (Member/Mod/Admin presets + custom levels). Settings modal with sidebar navigation for Account, Appearance, Notifications, Sessions, and Security. Password change, banner crop positioning, avatar management, font size control, notification preferences.
-
-### Authentication
-Username/password and SSO/OIDC with auto-detection and provider-specific buttons. Session persistence.
+- **Messaging** -- real-time via Matrix Timeline API with local echo, markdown formatting, inline images with lightbox, editing, deletion, forwarding, replies with context, mention pills, reactions, URL previews, read receipts, selectable text with copy support
+- **Encryption** -- E2EE via vodozemac, SAS emoji verification, key backup/recovery, cross-signing, session management
+- **Voice calls** -- MatrixRTC + LiveKit SFU, mic capture via cpal, in-call panel with participant tiles, PIP widget, mute/hangup
+- **Voice messages** -- record with mic button, Opus/OGG encoding, auto-normalization, preview before send, playback with progress bar
+- **Threads** -- indicators with reply counts, dedicated thread view, thread entries in sidebar
+- **Rooms & spaces** -- grouped room list, room creation, settings, invitations, favourites, notifications (all/mentions/mute), aliases, space details modal with room list and members, right-click context menus
+- **Search** -- server-side with client-side fallback, overlay with arrow key navigation, scroll-to-highlight
+- **Polls** -- create/vote/end with progress bars (MSC3381)
+- **Files & media** -- upload via button/drag-drop/paste, thumbnails, GIF search via Giphy, stickers, location sharing
+- **Code highlighting** -- 100+ languages via syntect, base16 Ocean Dark theme, collapsible code blocks
+- **Notifications** -- desktop notifications via notify-rust, per-room mute, mentions-only mode, invite notifications
+- **Profile & settings** -- Discord-style profile cards, power level management, banner/avatar editing, appearance/notification/security settings
+- **Slash commands** -- 48+ commands with Tab-cycling autocomplete
+- **Auth** -- password and SSO/OIDC with provider auto-detection, session persistence
 
 ## Architecture
 
@@ -76,13 +43,13 @@ Both crates are pure Rust with zero JS/TS dependencies.
 |-----------|---------|
 | UI | [Iced](https://iced.rs/) 0.14 (wgpu) |
 | Matrix | [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk) 0.16 |
-| Timeline | matrix-sdk-ui 0.16 |
+| Timeline | matrix-sdk-ui 0.16 (sliding sync) |
 | Storage | rusqlite + matrix-sdk SQLite |
 | E2EE | vodozemac |
 | Voice | [LiveKit](https://livekit.io/) 0.7 (MatrixRTC) |
 | Audio | cpal 0.15 |
-| Notifications | notify-rust |
 | Voice codec | opus (libopus) + ogg |
+| Notifications | notify-rust |
 | Syntax | syntect |
 
 ## Building
@@ -90,19 +57,14 @@ Both crates are pure Rust with zero JS/TS dependencies.
 Requires Rust 1.77+ and GPU support (wgpu).
 
 ```bash
-# Development
 cargo run -p fluxchat
-
-# Release
-cargo build -p fluxchat --release
 ```
 
 ### macOS
 
 ```bash
 ./build-macos.sh
-# Creates FluxChat.app bundle in target/release/
-# Install: cp -r target/release/FluxChat.app /Applications/
+cp -r target/release/FluxChat.app /Applications/
 ```
 
 ### Linux

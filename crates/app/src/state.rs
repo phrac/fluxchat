@@ -93,7 +93,7 @@ pub struct FluxChat {
     // Messages & members
     pub messages_by_room: HashMap<String, Vec<MessageInfo>>,
     pub members_by_room: HashMap<String, Vec<MemberInfo>>,
-    pub typing_by_room: HashMap<String, Vec<String>>,
+    pub typing_by_room: HashMap<String, (Vec<String>, std::time::Instant)>, // (user_ids, last_updated)
     pub receipts_by_room: HashMap<String, Vec<ReadReceipt>>,
 
     // Message actions

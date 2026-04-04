@@ -102,6 +102,7 @@ pub enum Message {
 
     // --- Room commands (async) ---
     JoinRoom(String),                           // room_id or alias
+    RoomCreated(String, String, bool, Option<String>), // room_id, name, encrypted, space_id
     LeaveRoom(String),                          // room_id
     InviteUser(String, String),                 // room_id, user_id
     SpaceInvite(String),                        // space_id — opens invite modal targeting space

@@ -403,7 +403,11 @@ impl FluxChat {
                     return self.resolve_avatars(mxc_uris);
                 }
                 SyncEvent::TypingUpdate(room_id, user_ids) => {
-                    self.typing_by_room.insert(room_id, user_ids);
+                    if user_ids.is_empty() {
+                        self.typing_by_room.remove(&room_id);
+                    } else {
+                        self.typing_by_room.insert(room_id, (user_ids, std::time::Instant::now()));
+                    }
                 }
                 SyncEvent::VerificationRequest(info) => {
                     self.modal = Some(crate::state::Modal::Verification { info });
@@ -2165,13 +2169,36 @@ impl FluxChat {
                         let room_id = fluxchat_core::rooms::create_room(
                             &client, &name, topic.as_deref(), is_public, encrypted, &[], space_id.as_deref(),
                         ).await.ok()?;
-                        Some(room_id)
+                        Some((room_id, name, encrypted, space_id))
                     },
                     |result| match result {
-                        Some(room_id) => Message::SelectRoom(room_id),
+                        Some((room_id, name, encrypted, space_id)) => Message::RoomCreated(room_id, name, encrypted, space_id),
                         None => Message::Noop,
                     },
                 );
+            }
+            Message::RoomCreated(room_id, name, encrypted, space_id) => {
+                // Add to local room list immediately so sidebar updates
+                let space_name = space_id.as_ref().and_then(|sid|
+                    self.spaces.iter().find(|s| s.room_id == *sid).map(|s| s.name.clone())
+                );
+                if !self.rooms.iter().any(|r| r.room_id == room_id) {
+                    self.rooms.push(fluxchat_core::RoomInfo {
+                        room_id: room_id.clone(),
+                        name,
+                        is_encrypted: encrypted,
+                        is_space: false,
+                        is_direct: false,
+                        unread_count: 0,
+                        highlight_count: 0,
+                        avatar_url: None,
+                        topic: None,
+                        space_name,
+                        space_id,
+                        is_favourite: false,
+                    });
+                }
+                return self.update(Message::SelectRoom(room_id));
             }
 
             // --- Room settings ---
@@ -2655,6 +2682,9 @@ impl FluxChat {
 
                     // Room list updates are now reactive via RoomListService watcher
                     // Tick only handles read receipts and call presence polling
+
+                    // Clear stale typing indicators (timeout after 10s)
+                    self.typing_by_room.retain(|_, (_, updated)| updated.elapsed().as_secs() < 10);
 
                     // Load read receipts for current room
                     if let Some(ref room_id) = self.selected_room_id {

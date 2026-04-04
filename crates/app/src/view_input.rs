@@ -15,7 +15,7 @@ impl FluxChat {
         let mut elements: Vec<Element<Message>> = Vec::new();
 
         // Typing indicator
-        if let Some(typers) = self.typing_by_room.get(room_id) {
+        if let Some((typers, _)) = self.typing_by_room.get(room_id) {
             if !typers.is_empty() {
                 let typing_text = if typers.len() == 1 {
                     format!("{} is typing...", typers[0])
