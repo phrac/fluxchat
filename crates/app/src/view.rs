@@ -1588,7 +1588,38 @@ impl FluxChat {
             .spacing(2)
             .align_y(iced::Alignment::Center);
 
+            // Room avatar for header
+            let header_avatar: Element<Message> = if let Some(handle) = current_room
+                .and_then(|r| r.avatar_url.as_ref())
+                .and_then(|mxc| self.avatar_cache.get(mxc))
+            {
+                container(
+                    iced::widget::image(handle.clone())
+                        .width(22).height(22)
+                        .content_fit(iced::ContentFit::Cover),
+                )
+                .width(22).height(22).clip(true)
+                .style(|_: &Theme| container::Style {
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into()
+            } else {
+                let icon = if current_room.is_some_and(|r| r.is_direct) {
+                    SVG_PERSON
+                } else if current_room.is_some_and(|r| r.is_encrypted) {
+                    SVG_LOCK
+                } else {
+                    SVG_HASH
+                };
+                iced::widget::svg(iced::widget::svg::Handle::from_memory(icon))
+                    .width(16).height(16)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) })
+                    .into()
+            };
+
             let header_row = row![
+                header_avatar,
                 text(room_name).font(MONO).size(14).color(theme::TEXT_BRIGHT)
                     .wrapping(iced::widget::text::Wrapping::None),
                 Space::new().width(Fill),

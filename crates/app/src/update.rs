@@ -218,7 +218,15 @@ impl FluxChat {
                             r
                         })
                         .collect();
-                        // Resolve space and room avatars
+                    // Clean up selected room / tabs if room was removed (left/pruned)
+                    if let Some(ref sel) = self.selected_room_id {
+                        if !self.rooms.iter().any(|r| r.room_id == *sel) {
+                            self.open_tabs.retain(|(id, _, _, _)| self.rooms.iter().any(|r| r.room_id == *id));
+                            self.selected_room_id = self.open_tabs.last().map(|(id, _, _, _)| id.clone());
+                        }
+                    }
+
+                    // Resolve space and room avatars
                     let mut mxc_uris: Vec<String> = spaces.iter()
                         .filter_map(|s| s.avatar_url.clone())
                         .collect();
@@ -1455,8 +1463,11 @@ impl FluxChat {
                 if self.selected_room_id.as_deref() == Some(&room_id) {
                     self.selected_room_id = self.open_tabs.last().map(|(id, _, _, _)| id.clone());
                 }
+                // Remove from sidebar immediately
+                self.rooms.retain(|r| r.room_id != room_id);
                 self.messages_by_room.remove(&room_id);
                 self.members_by_room.remove(&room_id);
+                self.thread_counts.remove(&room_id);
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
@@ -2276,10 +2287,28 @@ impl FluxChat {
                                 else if name.ends_with(".webp") { "image/webp" }
                                 else { "image/jpeg" };
                             let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::upload_room_avatar(&client, &room_id, mime, data.to_vec()).await.ok()
+                            fluxchat_core::rooms::upload_room_avatar(&client, &room_id, mime, data.to_vec()).await.ok()?;
+                            // Return the new avatar URL so we can update local state
+                            let rid = matrix_sdk::ruma::RoomId::parse(&room_id).ok()?;
+                            let room = client.get_room(&rid)?;
+                            let mxc = room.avatar_url().map(|u| u.to_string());
+                            Some((room_id, mxc))
                         },
-                        |_| Message::Noop,
+                        |result| match result {
+                            Some((room_id, mxc)) => Message::RoomAvatarUpdated(room_id, mxc),
+                            None => Message::Noop,
+                        },
                     );
+                }
+            }
+            Message::RoomAvatarUpdated(room_id, mxc) => {
+                // Update avatar_url in local room list
+                if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+                    room.avatar_url = mxc.clone();
+                }
+                // Resolve into avatar cache
+                if let Some(mxc) = mxc {
+                    return self.resolve_avatars(vec![mxc]);
                 }
             }
             Message::RoomSettingsRemoveAvatar => {
@@ -2288,9 +2317,13 @@ impl FluxChat {
                     return Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::remove_room_avatar(&client, &room_id).await.ok()
+                            fluxchat_core::rooms::remove_room_avatar(&client, &room_id).await.ok()?;
+                            Some(room_id)
                         },
-                        |_| Message::Noop,
+                        |result| match result {
+                            Some(room_id) => Message::RoomAvatarUpdated(room_id, None),
+                            None => Message::Noop,
+                        },
                     );
                 }
             }

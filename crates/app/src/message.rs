@@ -237,6 +237,7 @@ pub enum Message {
     EnableEncryption(String), // room_id
     RoomSettingsUploadAvatar,
     RoomSettingsRemoveAvatar,
+    RoomAvatarUpdated(String, Option<String>), // room_id, new mxc url
 
     // --- Forward ---
     ForwardSearchChanged(String),

@@ -254,7 +254,8 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 .map(|(u, r)| (u, Some(r.to_string())))
                 .unwrap_or((args, None));
             if let Some(room_id) = &state.selected_room_id {
-                CommandResult::Messages(vec![Message::KickUser(room_id.clone(), user.to_string(), reason)])
+                let user_id = resolve_user_id(user, room_id, state);
+                CommandResult::Messages(vec![Message::KickUser(room_id.clone(), user_id, reason)])
             } else {
                 CommandResult::Help("No room selected".into())
             }
@@ -267,7 +268,8 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 .map(|(u, r)| (u, Some(r.to_string())))
                 .unwrap_or((args, None));
             if let Some(room_id) = &state.selected_room_id {
-                CommandResult::Messages(vec![Message::BanUser(room_id.clone(), user.to_string(), reason)])
+                let user_id = resolve_user_id(user, room_id, state);
+                CommandResult::Messages(vec![Message::BanUser(room_id.clone(), user_id, reason)])
             } else {
                 CommandResult::Help("No room selected".into())
             }

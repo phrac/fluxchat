@@ -479,6 +479,11 @@ impl<'a> WalkCtx<'a> {
                                 self.walk(child, &s);
                             }
                         } else {
+                            // Add blank line before <p> for paragraph spacing
+                            // (only if we already have content)
+                            if !self.segments.is_empty() {
+                                self.segments.push(Segment::LineBreak);
+                            }
                             for child in children {
                                 self.walk(child, &s);
                             }
@@ -727,10 +732,11 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                 }
             }
             Segment::LineBreak => {
-                // Collapse consecutive line breaks — don't add if the last span is already a newline
-                let is_duplicate = spans.last()
-                    .is_some_and(|s: &Span<'static, String>| s.text.as_ref() == "\n");
-                if !is_duplicate {
+                // Allow up to 2 consecutive newlines (paragraph spacing), collapse beyond that
+                let trailing_newlines = spans.iter().rev()
+                    .take_while(|s: &&Span<'static, String>| s.text.as_ref() == "\n")
+                    .count();
+                if trailing_newlines < 2 {
                     spans.push(Span::new("\n"));
                 }
             }
@@ -770,9 +776,10 @@ fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo]) 
                 parts.push(MessagePart::CodeBlock(highlight_code_block(&code, language.as_deref())));
             }
             Segment::LineBreak => {
-                let is_duplicate = current_spans.last()
-                    .is_some_and(|s: &Span<'static, String>| s.text.as_ref() == "\n");
-                if !is_duplicate {
+                let trailing_newlines = current_spans.iter().rev()
+                    .take_while(|s: &&Span<'static, String>| s.text.as_ref() == "\n")
+                    .count();
+                if trailing_newlines < 2 {
                     current_spans.push(Span::new("\n"));
                 }
             }

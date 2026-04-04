@@ -354,11 +354,17 @@ impl FluxChat {
             let is_expanded = self.expanded_code_blocks.contains(&msg.event_id);
 
             // Collapse code blocks: truncate <pre> content to ~5 lines if not expanded
-            let display_html = if has_code_block && !is_expanded {
+            let mut display_html = if has_code_block && !is_expanded {
                 collapse_code_blocks(formatted, 5)
             } else {
                 formatted.clone()
             };
+
+            // Convert markdown-style bullets to HTML list if no <ul>/<ol> present
+            // (some bots send * bullet markers in formatted_body instead of proper HTML lists)
+            if !display_html.contains("<ul>") && !display_html.contains("<ol>") {
+                display_html = convert_markdown_bullets(&display_html);
+            }
 
             if has_code_block {
                 // Use structured parts to render code blocks in containers
@@ -1018,6 +1024,51 @@ impl FluxChat {
             card,
         ].spacing(6).width(Fill).into()
     }
+}
+
+/// Convert markdown-style bullet lines (`* text` or `- text`) into `<ul><li>` HTML.
+fn convert_markdown_bullets(html: &str) -> String {
+    // Split on <br> variants and newlines, preserving separators as empty entries
+    let lines: Vec<&str> = html.split("<br>")
+        .flat_map(|s| s.split("<br/>"))
+        .flat_map(|s| s.split("<br />"))
+        .flat_map(|s| s.split('\n'))
+        .collect();
+    // Quick check: any bullet lines at all?
+    if !lines.iter().any(|l| {
+        let t = l.trim();
+        t.starts_with("* ") || t.starts_with("- ")
+    }) {
+        return html.to_string();
+    }
+    let mut result = String::new();
+    let mut in_list = false;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("* ").or_else(|| trimmed.strip_prefix("- ")) {
+            if !in_list {
+                result.push_str("<ul>");
+                in_list = true;
+            }
+            result.push_str("<li>");
+            result.push_str(rest);
+            result.push_str("</li>");
+        } else {
+            if in_list {
+                result.push_str("</ul>");
+                in_list = false;
+            }
+            // Preserve line breaks between non-bullet lines
+            if i > 0 {
+                result.push_str("<br>");
+            }
+            result.push_str(line);
+        }
+    }
+    if in_list {
+        result.push_str("</ul>");
+    }
+    result
 }
 
 /// Truncate code inside `<pre>` blocks to `max_lines` lines.
