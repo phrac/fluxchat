@@ -50,6 +50,8 @@ struct CallMembership {
     expires: u64,
     #[serde(default)]
     foci_active: Vec<serde_json::Value>,
+    #[serde(default)]
+    foci_preferred: Vec<serde_json::Value>,
     #[serde(default, rename = "membershipID")]
     membership_id: String,
 }
@@ -392,13 +394,23 @@ pub async fn send_call_member_event(
             "application": "m.call",
             "call_id": "",
             "device_id": device_id.as_str(),
-            "expires": 3600000,
+            "expires": 14400000,
+            "membershipID": membership_id,
+            // Legacy field — older clients (pre-MSC4143)
             "foci_active": [{
                 "type": "livekit",
                 "livekit_alias": room_id,
                 "livekit_service_url": livekit_service_url,
             }],
-            "membershipID": membership_id,
+            // Current fields — Element and newer clients
+            "foci_preferred": [{
+                "type": "livekit",
+                "livekit_service_url": livekit_service_url,
+            }],
+            "focus_active": {
+                "type": "livekit",
+                "focus_selection": "oldest_membership",
+            },
         }]
     });
 

@@ -124,7 +124,7 @@ impl FluxChat {
             } else {
                 // Grid of GIF results (3 columns)
                 let mut grid = column![].spacing(4);
-                for chunk in self.gif_results.chunks(3) {
+                for chunk in self.gif_results.chunks(5) {
                     let mut row_items = row![].spacing(4);
                     for gif in chunk {
                         let url = gif.url.clone();
@@ -132,7 +132,8 @@ impl FluxChat {
                         let content: Element<Message> = if let Some(frames) = self.gif_preview_cache.get(&gif.preview_url) {
                             iced_gif::gif(frames.as_ref())
                                 .width(Fill)
-                                .content_fit(iced::ContentFit::ScaleDown)
+                                .height(120)
+                                .content_fit(iced::ContentFit::Cover)
                                 .into()
                         } else {
                             text(&gif.description)
@@ -159,7 +160,7 @@ impl FluxChat {
                 }
                 gif_col = gif_col.push(
                     scrollable(grid)
-                        .height(Length::Fixed(200.0))
+                        .height(Length::Fixed(260.0))
                         .direction(iced::widget::scrollable::Direction::Vertical(
                             iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
                         ))
