@@ -2,7 +2,7 @@
 
 A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app with an IRC-inspired interface.
 
-![fluxchat screenshot](assets/screenshot-v2.png)
+![fluxchat screenshot](assets/screenshot-iced.png)
 
 ## Why fluxchat
 
