@@ -147,6 +147,8 @@ pub enum Message {
     SettingsChangePassword,
 
     // --- Security ---
+    RotateRoomKeys(String), // room_id — discard outbound megolm session to force reshare
+    RotateRoomKeysResult(Result<String, String>), // room_id or error
     SecurityLoadState,
     SecurityStateLoaded(crate::state::SecurityState),
     SecurityEnableBackup,

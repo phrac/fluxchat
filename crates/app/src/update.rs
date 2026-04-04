@@ -1606,6 +1606,7 @@ impl FluxChat {
                 | Message::SettingsBannerOffsetChanged(_)
                 | Message::SettingsOldPasswordChanged(_) | Message::SettingsNewPasswordChanged(_)
                 | Message::SettingsConfirmPasswordChanged(_) | Message::SettingsChangePassword
+                | Message::RotateRoomKeys(_) | Message::RotateRoomKeysResult(_)
                 | Message::SecurityLoadState | Message::SecurityStateLoaded(_)
                 | Message::SecurityEnableBackup | Message::SecurityBackupEnabled(_)
                 | Message::SecurityRecoveryKeyInputChanged(_) | Message::SecurityRecover

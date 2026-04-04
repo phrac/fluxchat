@@ -36,6 +36,14 @@ struct Style {
     blockquote: bool,
 }
 
+/// A part of a rendered message — either text spans or a code block.
+pub enum MessagePart {
+    /// Normal text (may include inline code, links, mentions, etc.)
+    Text(Vec<Span<'static, String>>),
+    /// A syntax-highlighted code block with line numbers.
+    CodeBlock(Vec<Span<'static, String>>),
+}
+
 /// Parse Matrix HTML into a list of Iced Spans.
 ///
 /// Returns a Vec of Spans suitable for `rich_text!` or `Rich::from_iter()`.
@@ -48,6 +56,12 @@ pub fn html_to_spans(html: &str) -> Vec<Span<'static, String>> {
 pub fn html_to_spans_with_rooms(html: &str, rooms: &[fluxchat_core::RoomInfo]) -> Vec<Span<'static, String>> {
     let segments = parse_html(html);
     segments_to_spans_with_rooms(segments, rooms)
+}
+
+/// Parse Matrix HTML into structured parts (text + code blocks as separate elements).
+pub fn html_to_parts(html: &str, rooms: &[fluxchat_core::RoomInfo]) -> Vec<MessagePart> {
+    let segments = parse_html(html);
+    segments_to_parts(segments, rooms)
 }
 
 /// Parse HTML string into intermediate Segments.
@@ -132,12 +146,34 @@ fn parse_html(html: &str) -> Vec<Segment> {
                         };
                         if let Some(end_pos) = code_content.find(end_marker) {
                             let raw_code = &code_content[..end_pos];
-                            let code = unescape_html(raw_code)
+                            // Order matters: restore markdown chars from formatting tags,
+                            // replace <br> with newlines, strip remaining HTML tags,
+                            // THEN unescape entities (so &gt; &lt; aren't eaten by strip_tags)
+                            let code = raw_code
                                 .replace("<br>", "\n")
                                 .replace("<br/>", "\n")
-                                .replace("<br />", "\n");
+                                .replace("<br />", "\n")
+                                .replace("<em>", "*").replace("</em>", "*")
+                                .replace("<strong>", "**").replace("</strong>", "**")
+                                .replace("<del>", "~~").replace("</del>", "~~");
+                            let code = strip_tags(&code);
+                            let code = unescape_html(&code);
+                            // Collapse double newlines caused by \n<br>\n in source
+                            let mut collapsed = String::with_capacity(code.len());
+                            let mut prev_newline = false;
+                            for ch in code.chars() {
+                                if ch == '\n' {
+                                    if !prev_newline {
+                                        collapsed.push('\n');
+                                    }
+                                    prev_newline = true;
+                                } else {
+                                    prev_newline = false;
+                                    collapsed.push(ch);
+                                }
+                            }
                             segments.push(Segment::CodeBlock {
-                                code: code.trim_matches('\n').to_string(),
+                                code: collapsed.trim_matches('\n').to_string(),
                                 language,
                             });
                             remaining = &code_content[end_pos + end_marker.len()..];
@@ -289,8 +325,22 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                 let mut parse_state = syntect::parsing::ParseState::new(syntax);
 
                 let code_bg = Color::from_rgba(0.0, 0.0, 0.0, 0.3);
+                let line_num_color = Color::from_rgba(1.0, 1.0, 1.0, 0.25);
+                let code_size = 13;
+                let line_count = code.lines().count();
+                let num_width = if line_count >= 100 { 4 } else if line_count >= 10 { 3 } else { 2 };
 
-                for line in code.lines() {
+                for (i, line) in code.lines().enumerate() {
+                    // Line number
+                    let line_num = format!("{:>width$} ", i + 1, width = num_width);
+                    spans.push(
+                        Span::new(line_num)
+                            .font(Font::MONOSPACE)
+                            .size(code_size)
+                            .color(line_num_color)
+                            .background(code_bg),
+                    );
+
                     let ops = parse_state.parse_line(line, &SS).unwrap_or_default();
                     let regions = syntect::highlighting::HighlightIterator::new(
                         &mut highlight_state,
@@ -307,7 +357,7 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                         spans.push(
                             Span::new(text.to_string())
                                 .font(Font::MONOSPACE)
-                                .size(15)
+                                .size(code_size)
                                 .color(color)
                                 .background(code_bg),
                         );
@@ -315,7 +365,7 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                     spans.push(
                         Span::new("\n")
                             .font(Font::MONOSPACE)
-                            .size(15)
+                            .size(code_size)
                             .background(code_bg),
                     );
                 }
@@ -333,6 +383,108 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
 
     spans
 }
+
+/// Convert Segments into structured MessageParts, separating code blocks from text.
+fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo]) -> Vec<MessagePart> {
+    let mut parts = Vec::new();
+    let mut current_spans: Vec<Span<'static, String>> = Vec::new();
+
+    for segment in segments {
+        match segment {
+            Segment::Text(text, style) => {
+                current_spans.push(styled_span(text, &style));
+            }
+            Segment::Link { text, url, style } => {
+                if let Some(pill) = try_room_pill(&url, rooms) {
+                    current_spans.push(pill);
+                } else {
+                    let mut span = styled_span(text, &style);
+                    span.color = Some(theme::ACCENT);
+                    span.underline = true;
+                    span.link = Some(url);
+                    current_spans.push(span);
+                }
+            }
+            Segment::CodeBlock { code, language } => {
+                // Flush any accumulated text spans
+                if !current_spans.is_empty() {
+                    parts.push(MessagePart::Text(std::mem::take(&mut current_spans)));
+                }
+                // Build code block spans
+                parts.push(MessagePart::CodeBlock(highlight_code_block(&code, language.as_deref())));
+            }
+            Segment::LineBreak => {
+                let is_duplicate = current_spans.last()
+                    .is_some_and(|s: &Span<'static, String>| s.text.as_ref() == "\n");
+                if !is_duplicate {
+                    current_spans.push(Span::new("\n"));
+                }
+            }
+        }
+    }
+
+    // Flush remaining text
+    if !current_spans.is_empty() {
+        parts.push(MessagePart::Text(current_spans));
+    }
+
+    parts
+}
+
+/// Syntax-highlight a code block into spans with line numbers.
+fn highlight_code_block(code: &str, language: Option<&str>) -> Vec<Span<'static, String>> {
+    use syntect::easy::HighlightLines;
+
+    let syntax = language
+        .and_then(|l| SS.find_syntax_by_token(l))
+        .or_else(|| {
+            let first_line = code.lines().next().unwrap_or("");
+            SS.find_syntax_by_first_line(first_line)
+        })
+        .unwrap_or_else(|| SS.find_syntax_plain_text());
+    let theme = &TS.themes["base16-ocean.dark"];
+    let mut h = HighlightLines::new(syntax, theme);
+
+    let line_num_color = Color::from_rgba(1.0, 1.0, 1.0, 0.25);
+    let line_count = code.lines().count();
+    let num_width = if line_count >= 100 { 4 } else if line_count >= 10 { 3 } else { 2 };
+
+    let mut spans = Vec::new();
+    for (i, line) in code.lines().enumerate() {
+        let line_num = format!("{:>width$} ", i + 1, width = num_width);
+        spans.push(
+            Span::new(line_num)
+                .font(Font::MONOSPACE)
+                .color(line_num_color),
+        );
+
+        // HighlightLines expects lines WITH newline terminators
+        let line_with_nl = format!("{line}\n");
+        let regions = h.highlight_line(&line_with_nl, &SS).unwrap_or_default();
+        for (style, text) in regions {
+            // Skip the trailing newline we added
+            let text = text.trim_end_matches('\n');
+            if text.is_empty() { continue; }
+            let color = Color::from_rgb(
+                style.foreground.r as f32 / 255.0,
+                style.foreground.g as f32 / 255.0,
+                style.foreground.b as f32 / 255.0,
+            );
+            spans.push(
+                Span::new(text.to_string())
+                    .font(Font::MONOSPACE)
+                    .color(color),
+            );
+        }
+        // Add newline except after last line
+        if i < line_count - 1 {
+            spans.push(Span::new("\n").font(Font::MONOSPACE));
+        }
+    }
+
+    spans
+}
+
 
 /// Create a styled Span from text and accumulated style.
 fn styled_span(text: String, style: &Style) -> Span<'static, String> {

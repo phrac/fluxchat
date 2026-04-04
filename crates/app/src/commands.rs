@@ -87,6 +87,7 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/poll", usage: "<question> | <opt1> | <opt2>...", description: "Create a poll", needs_room: true },
         Command { name: "/pollend", usage: "", description: "End the current poll", needs_room: true },
         Command { name: "/away", usage: "[message]", description: "Set away status", needs_room: false },
+        Command { name: "/rotatekeys", usage: "", description: "Rotate encryption keys for this room", needs_room: true },
     ]
 }
 
@@ -428,6 +429,15 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 CommandResult::Help("Status cleared".into())
             } else {
                 CommandResult::Help(format!("Status: {args}"))
+            }
+        }
+
+        // --- Encryption ---
+        "/rotatekeys" => {
+            if let Some(ref room_id) = state.selected_room_id {
+                CommandResult::Messages(vec![Message::RotateRoomKeys(room_id.clone())])
+            } else {
+                CommandResult::Help("No room selected".into())
             }
         }
 

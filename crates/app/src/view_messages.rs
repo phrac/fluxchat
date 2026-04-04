@@ -360,32 +360,71 @@ impl FluxChat {
                 formatted.clone()
             };
 
-            let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms);
-            let body_el: Element<'a, Message> = selectable_rich_text(spans)
-                .font(MONO)
-                .size(fs)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                .width(Fill)
-                .on_link_click(Message::OpenUrl)
-                .into();
-
             if has_code_block {
-                let eid = msg.event_id.clone();
-                let label = if is_expanded { "Show less" } else { "Show more" };
-                column![
-                    body_el,
-                    button(text(label).font(MONO).size(11).color(theme::ACCENT))
-                        .on_press(Message::ToggleCodeBlock(eid))
-                        .padding([2, 8])
-                        .style(|_, status| button::Style {
-                            background: if matches!(status, button::Status::Hovered) {
-                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                            } else { None },
-                            ..Default::default()
-                        }),
-                ].spacing(2).width(Fill).into()
+                // Use structured parts to render code blocks in containers
+                let parts = crate::html::html_to_parts(&display_html, &self.rooms);
+                let mut body_col = column![].spacing(4).width(Fill);
+
+                for part in parts {
+                    match part {
+                        crate::html::MessagePart::Text(spans) => {
+                            if spans.iter().all(|s| s.text.as_ref().trim().is_empty()) {
+                                continue;
+                            }
+                            body_col = body_col.push(
+                                selectable_rich_text(spans)
+                                    .font(MONO)
+                                    .size(fs)
+                                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                                    .width(Fill)
+                                    .on_link_click(Message::OpenUrl),
+                            );
+                        }
+                        crate::html::MessagePart::CodeBlock(spans) => {
+                            let eid = msg.event_id.clone();
+                            let label = if is_expanded { "Show less" } else { "Show more" };
+                            let code_col = column![
+                                selectable_rich_text(spans)
+                                    .font(MONO)
+                                    .size(fs)
+                                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                                    .width(Fill)
+                                    .on_link_click(Message::OpenUrl),
+                                button(text(label).font(MONO).size(11).color(theme::ACCENT))
+                                    .on_press(Message::ToggleCodeBlock(eid))
+                                    .padding([2, 8])
+                                    .style(|_, status| button::Style {
+                                        background: if matches!(status, button::Status::Hovered) {
+                                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                                        } else { None },
+                                        ..Default::default()
+                                    }),
+                            ].spacing(4).width(Fill);
+
+                            body_col = body_col.push(
+                                container(code_col)
+                                    .padding([8, 12])
+                                    .width(Fill)
+                                    .style(|_| container::Style {
+                                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.35).into()),
+                                        border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                            );
+                        }
+                    }
+                }
+
+                body_col.into()
             } else {
-                body_el
+                let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms);
+                selectable_rich_text(spans)
+                    .font(MONO)
+                    .size(fs)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .width(Fill)
+                    .on_link_click(Message::OpenUrl)
+                    .into()
             }
         } else {
             // Parse basic markdown in plain text bodies

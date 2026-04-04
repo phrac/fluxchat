@@ -298,6 +298,39 @@ impl FluxChat {
                 ))
             }
 
+            // --- Encryption key rotation ---
+            Message::RotateRoomKeys(room_id) => {
+                let core = self.core.clone();
+                let rid = room_id.clone();
+                Some(Task::perform(
+                    async move {
+                        let client = core.get_client().await
+                            .map_err(|e| format!("{e}"))?;
+                        let room_id_parsed = matrix_sdk::ruma::RoomId::parse(&rid)
+                            .map_err(|e| format!("Invalid room ID: {e}"))?;
+                        let room = client.get_room(&room_id_parsed)
+                            .ok_or_else(|| format!("Room not found: {rid}"))?;
+                        room.discard_room_key().await
+                            .map_err(|e| format!("Failed to rotate keys: {e}"))?;
+                        Ok(rid)
+                    },
+                    Message::RotateRoomKeysResult,
+                ))
+            }
+            Message::RotateRoomKeysResult(result) => {
+                match result {
+                    Ok(room_id) => {
+                        tracing::info!("Rotated encryption keys for room {room_id}");
+                        self.help_text = Some("Encryption keys rotated. Next message will use a new session.".into());
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to rotate keys: {e}");
+                        self.help_text = Some(format!("Failed to rotate keys: {e}"));
+                    }
+                }
+                None
+            }
+
             // --- Security ---
             Message::SecurityLoadState => {
                 self.security_state = None;

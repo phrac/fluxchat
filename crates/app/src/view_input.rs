@@ -156,6 +156,10 @@ impl FluxChat {
                                 }),
                         );
                     }
+                    // Pad incomplete rows with empty spacers so items don't stretch
+                    for _ in 0..(5 - chunk.len()) {
+                        row_items = row_items.push(container("").width(Length::FillPortion(1)));
+                    }
                     grid = grid.push(row_items);
                 }
                 gif_col = gif_col.push(
