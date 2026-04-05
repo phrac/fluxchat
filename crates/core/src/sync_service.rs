@@ -2,8 +2,11 @@ use matrix_sdk::Client;
 use matrix_sdk_ui::sync_service::SyncService;
 use tracing::info;
 
+use std::collections::HashMap;
+
 use crate::error::AppError;
 use crate::models::RoomInfo;
+use crate::rooms::SpaceNode;
 
 /// Create and start the SyncService (uses Sliding Sync).
 pub async fn create_sync_service(client: &Client) -> Result<SyncService, AppError> {
@@ -26,7 +29,7 @@ pub async fn spawn_room_list_watcher<F>(
     sync_service: &SyncService,
     on_update: F,
 ) where
-    F: Fn(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>) + Send + 'static,
+    F: Fn(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<SpaceNode>, HashMap<String, Vec<String>>) + Send + 'static,
 {
     let room_list_service = sync_service.room_list_service();
     let client = client.clone();
@@ -51,7 +54,8 @@ pub async fn spawn_room_list_watcher<F>(
             let spaces = crate::rooms::get_spaces(&client).await.unwrap_or_default();
             let invited = crate::rooms::get_invited_rooms(&client).await.unwrap_or_default();
             let knocked = crate::rooms::get_knocked_rooms(&client).await.unwrap_or_default();
-            on_update(rooms, spaces, invited, knocked);
+            let (space_tree, space_descendants) = crate::rooms::get_space_tree(&client).await;
+            on_update(rooms, spaces, invited, knocked, space_tree, space_descendants);
         }
     });
 

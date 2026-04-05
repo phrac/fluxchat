@@ -134,13 +134,15 @@ impl FluxChat {
             Message::SyncStarted => {
                 self.sync_running = true;
             }
-            Message::InitialRoomsLoaded(rooms, spaces, invited, knocked) => {
+            Message::InitialRoomsLoaded(rooms, spaces, invited, knocked, space_tree, space_descendants) => {
                 let mut mxc_uris: Vec<String> = spaces.iter()
                     .filter_map(|s| s.avatar_url.clone())
                     .collect();
                 mxc_uris.extend(rooms.iter().filter_map(|r| r.avatar_url.clone()));
                 self.rooms = rooms;
                 self.spaces = spaces;
+                self.space_tree = space_tree;
+                self.space_descendants = space_descendants;
                 self.invited_rooms = invited;
                 self.knocked_rooms = knocked;
                 self.sync_running = true;
@@ -203,7 +205,7 @@ impl FluxChat {
 
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
-                SyncEvent::RoomListUpdate(rooms, spaces, invited, knocked) => {
+                SyncEvent::RoomListUpdate(rooms, spaces, invited, knocked, space_tree, space_descendants) => {
                     // Zero unread for rooms we've marked as read or the currently selected room
                     let selected = self.selected_room_id.clone();
                     self.rooms = rooms
@@ -232,6 +234,8 @@ impl FluxChat {
                         .collect();
                     mxc_uris.extend(self.rooms.iter().filter_map(|r| r.avatar_url.clone()));
                     self.spaces = spaces;
+                    self.space_tree = space_tree;
+                    self.space_descendants = space_descendants;
 
                     // Detect new invites and notify
                     let old_invite_ids: std::collections::HashSet<&str> = self.invited_rooms
@@ -3127,9 +3131,9 @@ impl FluxChat {
                         {
                             let tx = tx.clone();
                             fluxchat_core::sync_service::spawn_room_list_watcher(
-                                &client, &sync_service, move |rooms, spaces, invited, knocked| {
+                                &client, &sync_service, move |rooms, spaces, invited, knocked, space_tree, space_descendants| {
                                     let _ = tx.send(Message::SyncEvent(SyncEvent::RoomListUpdate(
-                                        rooms, spaces, invited, knocked,
+                                        rooms, spaces, invited, knocked, space_tree, space_descendants,
                                     )));
                                 },
                             ).await;
@@ -3146,12 +3150,13 @@ impl FluxChat {
                 let spaces = fluxchat_core::rooms::get_spaces(&client).await.ok()?;
                 let invited = fluxchat_core::rooms::get_invited_rooms(&client).await.ok()?;
                 let knocked = fluxchat_core::rooms::get_knocked_rooms(&client).await.ok()?;
+                let (space_tree, space_descendants) = fluxchat_core::rooms::get_space_tree(&client).await;
 
-                Some((rooms, spaces, invited, knocked))
+                Some((rooms, spaces, invited, knocked, space_tree, space_descendants))
             },
             |result| match result {
-                Some((rooms, spaces, invited, knocked)) => {
-                    Message::InitialRoomsLoaded(rooms, spaces, invited, knocked)
+                Some((rooms, spaces, invited, knocked, space_tree, space_descendants)) => {
+                    Message::InitialRoomsLoaded(rooms, spaces, invited, knocked, space_tree, space_descendants)
                 }
                 None => Message::SyncStarted,
             },

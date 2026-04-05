@@ -85,6 +85,8 @@ pub struct FluxChat {
     // Rooms
     pub rooms: Vec<RoomInfo>,
     pub spaces: Vec<RoomInfo>,
+    pub space_tree: Vec<fluxchat_core::rooms::SpaceNode>,
+    pub space_descendants: HashMap<String, Vec<String>>,
     pub invited_rooms: Vec<RoomInfo>,
     pub knocked_rooms: Vec<RoomInfo>,
     pub selected_room_id: Option<String>,
@@ -323,6 +325,8 @@ impl FluxChat {
             display_name: None,
             rooms: Vec::new(),
             spaces: Vec::new(),
+            space_tree: Vec::new(),
+            space_descendants: HashMap::new(),
             invited_rooms: Vec::new(),
             knocked_rooms: Vec::new(),
             selected_room_id: None,

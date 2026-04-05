@@ -3,7 +3,7 @@ use matrix_sdk::ruma::{
     events::space::child::SpaceChildEventContent,
     Int, RoomOrAliasId,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::AppError;
 use crate::models::RoomInfo;
@@ -91,6 +91,111 @@ pub async fn get_spaces(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, Ap
     }
     spaces.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(spaces)
+}
+
+/// A space with its depth in the hierarchy (0 = top-level).
+#[derive(Debug, Clone)]
+pub struct SpaceNode {
+    pub info: RoomInfo,
+    pub depth: usize,
+}
+
+/// Build a hierarchical list of spaces (depth-annotated, pre-order DFS)
+/// and a map from each space_id to all its descendant space IDs (including itself).
+pub async fn get_space_tree(client: &matrix_sdk::Client)
+    -> (Vec<SpaceNode>, HashMap<String, Vec<String>>)
+{
+    // Collect all joined spaces into a map
+    let mut all_spaces: HashMap<String, RoomInfo> = HashMap::new();
+    for room in client.joined_rooms() {
+        if room.is_space() {
+            let info = room_to_info(&room, None).await;
+            all_spaces.insert(info.room_id.clone(), info);
+        }
+    }
+
+    // Build parent->children map (only space children that are themselves spaces)
+    let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut is_child: HashSet<String> = HashSet::new();
+
+    for room in client.joined_rooms() {
+        if !room.is_space() { continue; }
+        let parent_id = room.room_id().to_string();
+        let child_events = match room
+            .get_state_events_static::<SpaceChildEventContent>().await
+        {
+            Ok(events) => events,
+            Err(_) => continue,
+        };
+        for event in child_events {
+            if let Ok(ev) = event.deserialize() {
+                let child_id = ev.state_key().to_string();
+                // Only track children that are themselves joined spaces
+                if all_spaces.contains_key(&child_id) && child_id != parent_id {
+                    children_map.entry(parent_id.clone()).or_default().push(child_id.clone());
+                    is_child.insert(child_id);
+                }
+            }
+        }
+    }
+
+    // Find top-level spaces (not a child of any other space)
+    let mut top_level: Vec<&str> = all_spaces.keys()
+        .filter(|id| !is_child.contains(id.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+    top_level.sort_by(|a, b| {
+        let na = all_spaces.get(*a).map(|s| s.name.to_lowercase()).unwrap_or_default();
+        let nb = all_spaces.get(*b).map(|s| s.name.to_lowercase()).unwrap_or_default();
+        na.cmp(&nb)
+    });
+
+    // DFS traversal
+    let mut result: Vec<SpaceNode> = Vec::new();
+    let mut descendants: HashMap<String, Vec<String>> = HashMap::new();
+    let mut visited: HashSet<String> = HashSet::new();
+
+    fn dfs(
+        space_id: &str,
+        depth: usize,
+        all_spaces: &HashMap<String, RoomInfo>,
+        children_map: &HashMap<String, Vec<String>>,
+        visited: &mut HashSet<String>,
+        result: &mut Vec<SpaceNode>,
+        descendants: &mut HashMap<String, Vec<String>>,
+    ) {
+        if !visited.insert(space_id.to_string()) {
+            return; // cycle detected
+        }
+        if let Some(info) = all_spaces.get(space_id) {
+            result.push(SpaceNode { info: info.clone(), depth });
+        }
+        // This space is its own descendant (for room filtering)
+        let mut desc = vec![space_id.to_string()];
+
+        if let Some(children) = children_map.get(space_id) {
+            let mut sorted = children.clone();
+            sorted.sort_by(|a, b| {
+                let na = all_spaces.get(a).map(|s| s.name.to_lowercase()).unwrap_or_default();
+                let nb = all_spaces.get(b).map(|s| s.name.to_lowercase()).unwrap_or_default();
+                na.cmp(&nb)
+            });
+            for child in &sorted {
+                dfs(child, depth + 1, all_spaces, children_map, visited, result, descendants);
+                // Collect child's descendants
+                if let Some(child_desc) = descendants.get(child) {
+                    desc.extend(child_desc.iter().cloned());
+                }
+            }
+        }
+        descendants.insert(space_id.to_string(), desc);
+    }
+
+    for &root in &top_level {
+        dfs(root, 0, &all_spaces, &children_map, &mut visited, &mut result, &mut descendants);
+    }
+
+    (result, descendants)
 }
 
 /// Get rooms the user has been invited to.

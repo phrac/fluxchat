@@ -812,7 +812,9 @@ impl FluxChat {
                 })
         );
 
-        for space in &self.spaces {
+        for node in &self.space_tree {
+            let space = &node.info;
+            let depth = node.depth;
             let space_id = space.room_id.clone();
             let is_selected = self.selected_space_id.as_deref() == Some(&space.room_id);
             let radius = if is_selected { 12.0 } else { 20.0 };
@@ -827,13 +829,18 @@ impl FluxChat {
                 iced::Shadow::default()
             };
 
+            // Scale icon size down for sub-spaces
+            let icon_size: u32 = if depth == 0 { 40 } else { 32 };
+            let font_size: u32 = if depth == 0 { 13 } else { 11 };
+            let indent: u32 = (depth as u32).min(3) * 4;
+
             let icon_content: Element<Message> = if let Some(handle) = space.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
                 container(
                     iced::widget::image(handle.clone())
-                        .width(40).height(40)
+                        .width(icon_size).height(icon_size)
                         .content_fit(iced::ContentFit::Cover),
                 )
-                .width(40).height(40)
+                .width(icon_size).height(icon_size)
                 .clip(true)
                 .style(move |_: &Theme| container::Style {
                     border: iced::Border {
@@ -851,9 +858,9 @@ impl FluxChat {
                     .collect::<String>()
                     .to_uppercase();
                 container(
-                    text(initials).font(MONO).size(13).color(Color { a: opacity, ..theme::TEXT_MUTED }),
+                    text(initials).font(MONO).size(font_size).color(Color { a: opacity, ..theme::TEXT_MUTED }),
                 )
-                .width(40).height(40)
+                .width(icon_size).height(icon_size)
                 .center(Fill)
                 .style(move |_: &Theme| container::Style {
                     background: Some(theme::BG_MID.into()),
@@ -888,7 +895,13 @@ impl FluxChat {
                 crate::state::ContextMenu::Space { space_id: ctx_space_id },
             ));
 
-            col = col.push(btn);
+            let btn_el: Element<Message> = if indent > 0 {
+                row![Space::new().width(indent), btn].into()
+            } else {
+                btn.into()
+            };
+
+            col = col.push(btn_el);
         }
 
         container(scrollable(col).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
@@ -922,9 +935,11 @@ impl FluxChat {
         let mut dms: Vec<&fluxchat_core::RoomInfo> = Vec::new();
 
         for room in &self.rooms {
-            // Filter by selected space
-            if let Some(ref filter) = selected_space_name {
-                if room.space_name.as_deref() != Some(filter) {
+            // Filter by selected space (includes rooms from descendant sub-spaces)
+            if let Some(ref selected_sid) = self.selected_space_id {
+                let dominated = self.space_descendants.get(selected_sid.as_str())
+                    .map_or(false, |desc| room.space_id.as_ref().map_or(false, |rid| desc.contains(rid)));
+                if !dominated {
                     continue;
                 }
             }

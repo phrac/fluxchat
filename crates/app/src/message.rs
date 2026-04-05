@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use fluxchat_core::{MemberInfo, MessageInfo, RoomInfo, VerificationInfo};
 use fluxchat_core::auth::LoginCapabilities;
+use fluxchat_core::rooms::SpaceNode;
 
 /// Top-level message enum for the Iced Elm architecture.
 #[derive(Debug, Clone)]
@@ -17,7 +19,7 @@ pub enum Message {
 
     // --- Post-login startup ---
     SyncStarted,
-    InitialRoomsLoaded(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>), // rooms, spaces, invited, knocked
+    InitialRoomsLoaded(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<SpaceNode>, HashMap<String, Vec<String>>), // rooms, spaces, invited, knocked, space_tree, space_descendants
     TimelineLoaded {
         room_id: String,
         messages: Vec<MessageInfo>,
@@ -325,7 +327,7 @@ pub struct LoginSuccess {
 /// Events coming from the Matrix sync subscription.
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
-    RoomListUpdate(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>), // rooms, spaces, invited, knocked
+    RoomListUpdate(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<SpaceNode>, HashMap<String, Vec<String>>), // rooms, spaces, invited, knocked, space_tree, space_descendants
     MessagesUpdated(String, Vec<MessageInfo>), // room_id, messages
     MembersUpdated(String, Vec<MemberInfo>),   // room_id, members
     TypingUpdate(String, Vec<String>),         // room_id, user_ids
