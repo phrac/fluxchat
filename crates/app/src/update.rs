@@ -1478,6 +1478,54 @@ impl FluxChat {
                 self.modal = Some(modal);
                 return task;
             }
+            Message::VerificationAccept(user_id, flow_id) => {
+                let core = self.core.clone();
+                let tx = self.timeline_tx.clone();
+                let tx2 = self.timeline_tx.clone();
+                // Update modal state to show we're accepting
+                if let Some(crate::state::Modal::Verification { ref mut info }) = self.modal {
+                    info.state = "accepting...".into();
+                }
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::verification::accept_verification(
+                            &client, &user_id, &flow_id,
+                            move |info| {
+                                let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(info)));
+                            },
+                            move || {
+                                let _ = tx2.send(Message::CloseModal);
+                            },
+                        ).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::VerificationConfirm(user_id, flow_id) => {
+                if let Some(crate::state::Modal::Verification { ref mut info }) = self.modal {
+                    info.state = "confirming...".into();
+                }
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::verification::confirm_verification(&client, &user_id, &flow_id).await.ok()
+                    },
+                    |_| Message::CloseModal,
+                );
+            }
+            Message::VerificationCancel(user_id, flow_id) => {
+                self.modal = None;
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::verification::cancel_verification(&client, &user_id, &flow_id).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
             Message::CloseModal => {
                 self.modal = None;
             }

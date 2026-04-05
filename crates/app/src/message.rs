@@ -165,6 +165,11 @@ pub enum Message {
     SecurityRecover,
     SecurityRecoverResult(Result<(), String>),
 
+    // --- Verification ---
+    VerificationAccept(String, String),  // user_id, flow_id
+    VerificationConfirm(String, String), // user_id, flow_id
+    VerificationCancel(String, String),  // user_id, flow_id
+
     // --- Avatars ---
     AvatarsResolved(Vec<(String, Vec<u8>)>), // vec of (mxc_uri, image_bytes)
 

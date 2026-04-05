@@ -1019,6 +1019,58 @@ impl FluxChat {
             }
         }
 
+        // Action buttons based on state
+        let uid = info.other_user_id.clone();
+        let fid = info.flow_id.clone();
+
+        if info.state == "requested" {
+            col = col.push(
+                row![
+                    button(text("Accept").font(MONO).size(14).color(theme::BG_DEEP))
+                        .on_press(Message::VerificationAccept(uid.clone(), fid.clone()))
+                        .padding([8, 20])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::GREEN.into()),
+                            text_color: theme::BG_DEEP,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    button(text("Reject").font(MONO).size(14).color(theme::TEXT_NORMAL))
+                        .on_press(Message::VerificationCancel(uid, fid))
+                        .padding([8, 20])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::RED.into()),
+                            text_color: theme::TEXT_BRIGHT,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                ].spacing(8)
+            );
+        } else if info.emojis.is_some() {
+            col = col.push(
+                row![
+                    button(text("They Match").font(MONO).size(14).color(theme::BG_DEEP))
+                        .on_press(Message::VerificationConfirm(uid.clone(), fid.clone()))
+                        .padding([8, 20])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::GREEN.into()),
+                            text_color: theme::BG_DEEP,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    button(text("They Don't Match").font(MONO).size(14).color(theme::TEXT_NORMAL))
+                        .on_press(Message::VerificationCancel(uid, fid))
+                        .padding([8, 20])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::RED.into()),
+                            text_color: theme::TEXT_BRIGHT,
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                ].spacing(8)
+            );
+        }
+
         col.width(400).into()
     }
 
