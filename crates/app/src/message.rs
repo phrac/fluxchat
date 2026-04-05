@@ -79,6 +79,12 @@ pub enum Message {
     EmojiCategoryChanged(u8),
     EmojiSelect(String),           // emoji character
     ToggleOverflowMenu,
+    RefreshRoomList,
+    InvitesRefreshed(Vec<fluxchat_core::RoomInfo>),
+    ToggleCreateMenu,
+    DmSearchChanged(String),
+    DmSearchSubmit,
+    DmSearchResults(Vec<fluxchat_core::rooms::UserSearchResult>),
     OpenContextMenu(super::state::ContextMenu),
     CloseContextMenu,
     ContextMenuAction(String, String), // action, target_id (room_id or space_id)
@@ -289,6 +295,7 @@ pub enum Message {
     SidebarDragStart,
     SidebarDragEnd,
     SidebarDrag(f32), // new x position
+    CursorMoved(f32, f32), // x, y
 
     // --- Scroll ---
     MessagesScrolled(iced::widget::scrollable::Viewport),

@@ -654,7 +654,7 @@ impl FluxChat {
                                     ..Default::default()
                                 }),
                         )
-                        .padding(iced::Padding { top: 100.0, left: 70.0, ..Default::default() })
+                        .padding(iced::Padding { top: self.context_menu_position.1, left: self.context_menu_position.0, ..Default::default() })
                         .width(Fill)
                         .height(Fill),
                     )
@@ -930,8 +930,8 @@ impl FluxChat {
         // Group rooms into sections
         let mut favourites: Vec<&fluxchat_core::RoomInfo> = Vec::new();
         let mut ungrouped: Vec<&fluxchat_core::RoomInfo> = Vec::new();
-        let mut by_space: std::collections::BTreeMap<String, Vec<&fluxchat_core::RoomInfo>> =
-            std::collections::BTreeMap::new();
+        let mut by_space_id: std::collections::HashMap<String, Vec<&fluxchat_core::RoomInfo>> =
+            std::collections::HashMap::new();
         let mut dms: Vec<&fluxchat_core::RoomInfo> = Vec::new();
 
         for room in &self.rooms {
@@ -948,8 +948,8 @@ impl FluxChat {
             }
             if room.is_direct {
                 dms.push(room);
-            } else if let Some(ref sn) = room.space_name {
-                by_space.entry(sn.clone()).or_default().push(room);
+            } else if let Some(ref sid) = room.space_id {
+                by_space_id.entry(sid.clone()).or_default().push(room);
             } else {
                 ungrouped.push(room);
             }
@@ -994,12 +994,18 @@ impl FluxChat {
         }
 
         header_row = header_row.push(
-            button(text("+").font(MONO).size(16).color(theme::TEXT_DIM))
-                .on_press(Message::OpenModal(crate::state::Modal::CreateRoom))
-                .padding([0, 4])
-                .style(|_, _| button::Style {
-                    background: None,
-                    text_color: theme::TEXT_DIM,
+            button(
+                iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PLUS))
+                    .width(14).height(14)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::ACCENT) })
+            )
+                .on_press(Message::ToggleCreateMenu)
+                .padding([2, 4])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else { None },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
         );
@@ -1017,6 +1023,50 @@ impl FluxChat {
         });
 
         let mut col = column![header].spacing(0);
+
+        // Create menu popup
+        if self.create_menu_open {
+            let menu_item = |label: &'static str, icon: &'static [u8], msg: Message| -> Element<Message> {
+                button(
+                    row![
+                        iced::widget::svg(iced::widget::svg::Handle::from_memory(icon))
+                            .width(16).height(16)
+                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_NORMAL) }),
+                        text(label).font(MONO).size(13).color(theme::TEXT_NORMAL),
+                    ].spacing(8).align_y(iced::Alignment::Center)
+                )
+                .on_press(msg)
+                .padding([6, 12])
+                .width(Fill)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else { None },
+                    ..Default::default()
+                })
+                .into()
+            };
+
+            col = col.push(
+                container(
+                    column![
+                        menu_item("New Room", SVG_HASH, Message::OpenModal(crate::state::Modal::CreateRoom)),
+                        menu_item("Direct Message", SVG_CHAT, Message::OpenModal(crate::state::Modal::CreateDm)),
+                    ].spacing(0)
+                )
+                .padding(4)
+                .width(Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::BG_DARK.into()),
+                    border: iced::Border {
+                        color: theme::BORDER,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+            );
+        }
 
         // Invites
         if !self.invited_rooms.is_empty() {
@@ -1105,11 +1155,90 @@ impl FluxChat {
             }
         }
 
-        // Space-grouped rooms
-        for (space_name, rooms) in &by_space {
-            // Find space avatar MXC
+        // Space-grouped rooms — render in tree order with depth indentation
+        // First, determine base depth (0 for home, or the selected space's depth)
+        let base_depth = self.selected_space_id.as_ref()
+            .and_then(|sid| self.space_tree.iter().find(|n| n.info.room_id == *sid))
+            .map(|n| n.depth)
+            .unwrap_or(0);
+
+        // Determine which spaces have rooms (directly or via descendants)
+        let mut spaces_with_rooms: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for sid in by_space_id.keys() {
+            spaces_with_rooms.insert(sid.clone());
+            // Also mark all ancestor spaces as having rooms
+            for node in &self.space_tree {
+                if let Some(desc) = self.space_descendants.get(&node.info.room_id) {
+                    if desc.contains(sid) {
+                        spaces_with_rooms.insert(node.info.room_id.clone());
+                    }
+                }
+            }
+        }
+
+        // Walk the space tree in order; render sections for spaces that have rooms (directly or via descendants)
+        // Track collapsed depth: if a space at depth N is collapsed, skip everything deeper
+        let mut skip_below_depth: Option<usize> = None;
+
+        for node in &self.space_tree {
+            let sid = &node.info.room_id;
+
+            // Check if we should skip this node because an ancestor is collapsed
+            if let Some(skip_depth) = skip_below_depth {
+                if node.depth > skip_depth {
+                    continue;
+                } else {
+                    skip_below_depth = None;
+                }
+            }
+
+            if !spaces_with_rooms.contains(sid.as_str()) {
+                continue;
+            }
+            {
+                let rooms = by_space_id.get(sid.as_str());
+                let space_name = &node.info.name;
+                let space_mxc = node.info.avatar_url.as_deref();
+                let indent_depth = node.depth.saturating_sub(base_depth);
+                let indent_px = (indent_depth as u16).min(4) * 8;
+
+                let room_count = rooms.map_or(0, |r| r.len());
+                let header = self.view_section_header_with_icon(space_name, room_count, Some(SVG_HASH), space_mxc);
+                let header_el: Element<Message> = if indent_px > 0 {
+                    container(header).padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: indent_px as f32 }).into()
+                } else {
+                    header.into()
+                };
+                col = col.push(header_el);
+
+                if self.collapsed_sections.contains(space_name) {
+                    skip_below_depth = Some(node.depth);
+                } else {
+                    if let Some(rooms) = rooms {
+                        for room in rooms {
+                            let entry: Element<Message> = if indent_px > 0 {
+                                container(self.view_room_entry(room, false)).padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: indent_px as f32 }).into()
+                            } else {
+                                self.view_room_entry(room, false).into()
+                            };
+                            col = col.push(entry);
+                            for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Render any rooms whose space_id wasn't in the tree (fallback)
+        for (sid, rooms) in &by_space_id {
+            if self.space_tree.iter().any(|n| n.info.room_id == *sid) {
+                continue; // already rendered above
+            }
+            let space_name = rooms.first()
+                .and_then(|r| r.space_name.as_deref())
+                .unwrap_or("Other");
             let space_mxc = self.spaces.iter()
-                .find(|s| s.name == *space_name)
+                .find(|s| s.room_id == *sid)
                 .and_then(|s| s.avatar_url.as_deref());
             col = col.push(self.view_section_header_with_icon(space_name, rooms.len(), Some(SVG_HASH), space_mxc));
             if !self.collapsed_sections.contains(space_name) {
@@ -2252,7 +2381,7 @@ impl FluxChat {
                     Some(Message::WindowFocusChanged(false))
                 }
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                    Some(Message::SidebarDrag(position.x))
+                    Some(Message::CursorMoved(position.x, position.y))
                 }
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                     Some(Message::SidebarDragEnd)

@@ -44,6 +44,7 @@ pub enum ContextMenu {
 pub enum Modal {
     Settings { tab: String },
     CreateRoom,
+    CreateDm,
     RoomSettings,
     Profile { user_id: String },
     Verification { info: VerificationInfo },
@@ -135,7 +136,12 @@ pub struct FluxChat {
     pub emoji_category: u8, // 0=frequent, 1-9=emojis::Group
     pub emoji_freq: std::collections::HashMap<String, u32>,
     pub overflow_menu_open: bool,
+    pub create_menu_open: bool,
     pub context_menu: Option<ContextMenu>,
+    pub context_menu_position: (f32, f32),
+    pub cursor_position: (f32, f32),
+    /// Rooms we're in the process of leaving (filter from sync updates)
+    pub leaving_rooms: HashSet<String>,
     pub hovered_message: Option<String>, // event_id of hovered message
     pub gif_query: String,
     pub gif_searched: bool, // true after a search has completed
@@ -258,6 +264,10 @@ pub struct FluxChat {
     pub invite_results: Vec<fluxchat_core::rooms::UserSearchResult>,
     pub invite_target_id: Option<String>, // override room_id for space invites
 
+    // DM modal state
+    pub dm_search: String,
+    pub dm_results: Vec<fluxchat_core::rooms::UserSearchResult>,
+
     // Space details modal state
     pub space_detail_rooms: Vec<fluxchat_core::RoomInfo>,
     pub space_detail_members: Vec<fluxchat_core::MemberInfo>,
@@ -346,7 +356,11 @@ impl FluxChat {
             files_open: false,
             notices_open: false,
             overflow_menu_open: false,
+            create_menu_open: false,
             context_menu: None,
+            context_menu_position: (0.0, 0.0),
+            cursor_position: (0.0, 0.0),
+            leaving_rooms: HashSet::new(),
             hovered_message: None,
             gifs_open: false,
             audio_playing: None,
@@ -437,6 +451,8 @@ impl FluxChat {
             profile_power_input: String::new(),
             forward_search: String::new(),
             invite_search: String::new(),
+            dm_search: String::new(),
+            dm_results: Vec::new(),
             invite_results: Vec::new(),
             invite_target_id: None,
             space_detail_rooms: Vec::new(),

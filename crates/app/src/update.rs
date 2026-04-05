@@ -210,6 +210,7 @@ impl FluxChat {
                     let selected = self.selected_room_id.clone();
                     self.rooms = rooms
                         .into_iter()
+                        .filter(|r| !self.leaving_rooms.contains(&r.room_id))
                         .map(|mut r| {
                             if self.read_rooms.contains(&r.room_id)
                                 || selected.as_deref() == Some(&r.room_id)
@@ -1285,7 +1286,66 @@ impl FluxChat {
             Message::ToggleOverflowMenu => {
                 self.overflow_menu_open = !self.overflow_menu_open;
             }
+            Message::InvitesRefreshed(invited) => {
+                self.invited_rooms = invited;
+            }
+            Message::RefreshRoomList => {
+                self.leaving_rooms.clear();
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let rooms = fluxchat_core::rooms::get_rooms(&client).await.ok()?;
+                        let spaces = fluxchat_core::rooms::get_spaces(&client).await.ok()?;
+                        let invited = fluxchat_core::rooms::get_invited_rooms(&client).await.ok()?;
+                        let knocked = fluxchat_core::rooms::get_knocked_rooms(&client).await.ok()?;
+                        let (space_tree, space_descendants) = fluxchat_core::rooms::get_space_tree(&client).await;
+                        Some((rooms, spaces, invited, knocked, space_tree, space_descendants))
+                    },
+                    |result| match result {
+                        Some((rooms, spaces, invited, knocked, tree, desc)) =>
+                            Message::SyncEvent(SyncEvent::RoomListUpdate(rooms, spaces, invited, knocked, tree, desc)),
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::ToggleCreateMenu => {
+                self.create_menu_open = !self.create_menu_open;
+            }
+            Message::DmSearchChanged(query) => {
+                self.dm_search = query;
+            }
+            Message::DmSearchSubmit => {
+                let query = self.dm_search.clone();
+                if query.is_empty() { return Task::none(); }
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::search_users(&client, &query, 20).await.ok()
+                    },
+                    |result| match result {
+                        Some(results) => Message::DmSearchResults(results),
+                        None => Message::DmSearchResults(Vec::new()),
+                    },
+                );
+            }
+            Message::DmSearchResults(mut results) => {
+                // If query looks like a user ID and isn't in results, add it
+                if self.dm_search.starts_with('@') && self.dm_search.contains(':') {
+                    let uid = self.dm_search.clone();
+                    if !results.iter().any(|r| r.user_id == uid) {
+                        results.insert(0, fluxchat_core::rooms::UserSearchResult {
+                            user_id: uid,
+                            display_name: None,
+                            avatar_url: None,
+                        });
+                    }
+                }
+                self.dm_results = results;
+            }
             Message::OpenContextMenu(menu) => {
+                self.context_menu_position = self.cursor_position;
                 self.context_menu = Some(menu);
             }
             Message::CloseContextMenu => {
@@ -1322,15 +1382,7 @@ impl FluxChat {
                         );
                     }
                     "leave" => {
-                        let core = self.core.clone();
-                        let rid = target_id;
-                        return Task::perform(
-                            async move {
-                                let client = core.get_client().await.ok()?;
-                                fluxchat_core::rooms::leave_room(&client, &rid).await.ok()
-                            },
-                            |_| Message::Noop,
-                        );
+                        return self.update(Message::LeaveRoom(target_id));
                     }
                     "mark_read" => {
                         self.read_rooms.insert(target_id);
@@ -1367,6 +1419,7 @@ impl FluxChat {
 
             // --- Modals ---
             Message::OpenModal(modal) => {
+                self.create_menu_open = false;
                 // Clicking own profile opens settings instead
                 if let crate::state::Modal::Profile { ref user_id } = modal {
                     if *user_id == self.user_id {
@@ -1411,6 +1464,10 @@ impl FluxChat {
                         .map(|m| m.power_level)
                         .unwrap_or(0);
                     self.profile_power_input = power.to_string();
+                    Task::none()
+                } else if matches!(&modal, crate::state::Modal::CreateDm) {
+                    self.dm_search.clear();
+                    self.dm_results.clear();
                     Task::none()
                 } else if matches!(&modal, crate::state::Modal::Report { .. }) {
                     self.report_reason.clear();
@@ -1480,13 +1537,15 @@ impl FluxChat {
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::join_room(&client, &room_or_alias).await.ok()
+                        let result = fluxchat_core::rooms::join_room(&client, &room_or_alias).await.ok()?;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        Some(result)
                     },
                     |result| match result {
                         Some(room) => Message::SelectRoom(room.room_id),
                         None => Message::Noop,
                     },
-                );
+                ).chain(Task::done(Message::RefreshRoomList));
             }
             Message::LeaveRoom(room_id) => {
                 self.modal = None;
@@ -1494,7 +1553,8 @@ impl FluxChat {
                 if self.selected_room_id.as_deref() == Some(&room_id) {
                     self.selected_room_id = self.open_tabs.last().map(|(id, _, _, _)| id.clone());
                 }
-                // Remove from sidebar immediately
+                // Remove from sidebar immediately and mark as leaving
+                self.leaving_rooms.insert(room_id.clone());
                 self.rooms.retain(|r| r.room_id != room_id);
                 self.messages_by_room.remove(&room_id);
                 self.members_by_room.remove(&room_id);
@@ -1503,9 +1563,11 @@ impl FluxChat {
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::leave_room(&client, &room_id).await.ok()
+                        fluxchat_core::rooms::leave_room(&client, &room_id).await.ok()?;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        Some(())
                     },
-                    |_| Message::Noop,
+                    |_| Message::RefreshRoomList,
                 );
             }
             Message::SpaceInvite(space_id) => {
@@ -1795,7 +1857,11 @@ impl FluxChat {
                     async move {
                         let client = core.get_client().await.ok()?;
                         match fluxchat_core::rooms::accept_invite(&client, &rid).await {
-                            Ok(()) => Some(rid),
+                            Ok(()) => {
+                                // Brief delay for server to process the join
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                Some(rid)
+                            }
                             Err(e) => {
                                 tracing::warn!("Failed to accept invite for {rid}: {e}");
                                 None
@@ -1806,7 +1872,7 @@ impl FluxChat {
                         Some(room_id) => Message::SelectRoom(room_id),
                         None => Message::Noop,
                     },
-                );
+                ).chain(Task::done(Message::RefreshRoomList));
             }
             Message::RejectInvite(room_id) => {
                 // Remove from invite list immediately for snappy UI
@@ -1819,9 +1885,10 @@ impl FluxChat {
                         if let Err(e) = fluxchat_core::rooms::reject_invite(&client, &rid).await {
                             tracing::warn!("Failed to reject invite for {rid}: {e}");
                         }
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         Some(())
                     },
-                    |_| Message::Noop,
+                    |_| Message::RefreshRoomList,
                 );
             }
 
@@ -2669,12 +2736,15 @@ impl FluxChat {
             Message::SidebarDragEnd => {
                 self.sidebar_dragging = false;
             }
-            Message::SidebarDrag(x) => {
+            Message::CursorMoved(x, y) => {
+                self.cursor_position = (x, y);
                 if self.sidebar_dragging {
-                    // x is the cursor position; subtract the space sidebar width (~56px)
                     let new_width = (x - 56.0).clamp(150.0, 400.0);
                     self.sidebar_width = new_width;
                 }
+            }
+            Message::SidebarDrag(_) => {
+                // Legacy — now handled by CursorMoved
             }
             Message::OpenUrl(url) => {
                 // Handle matrix.to room links by navigating to the room
@@ -2747,6 +2817,22 @@ impl FluxChat {
 
                     // Room list updates are now reactive via RoomListService watcher
                     // Tick only handles read receipts and call presence polling
+
+                    // Refresh invites (sliding sync watcher may not trigger for invite state changes)
+                    {
+                        let core_inv = self.core.clone();
+                        tasks.push(Task::perform(
+                            async move {
+                                let client = core_inv.get_client().await.ok()?;
+                                let invited = fluxchat_core::rooms::get_invited_rooms(&client).await.ok()?;
+                                Some(invited)
+                            },
+                            |result| match result {
+                                Some(invited) => Message::InvitesRefreshed(invited),
+                                None => Message::Noop,
+                            },
+                        ));
+                    }
 
                     // Clear stale typing indicators (timeout after 10s)
                     self.typing_by_room.retain(|_, (_, updated)| updated.elapsed().as_secs() < 10);

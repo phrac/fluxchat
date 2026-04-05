@@ -26,6 +26,7 @@ impl FluxChat {
             crate::state::Modal::Forward { body, .. } => self.view_forward_modal(body),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
             crate::state::Modal::Invite => self.view_invite_modal(),
+            crate::state::Modal::CreateDm => self.view_create_dm_modal(),
             crate::state::Modal::SpaceDetails { space_id } => self.view_space_details_modal(space_id),
             crate::state::Modal::Report { .. } => {
                 let col = column![
@@ -1375,6 +1376,85 @@ impl FluxChat {
                     text(format!("Invite {}", &self.invite_search)).font(MONO).size(14).color(theme::GREEN)
                 )
                 .on_press(Message::InviteUserFromModal(uid))
+                .padding([6, 10])
+                .width(Fill)
+                .style(|_, _| button::Style {
+                    background: Some(theme::BG_LIGHT.into()),
+                    text_color: theme::GREEN,
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        col.spacing(8).width(450).into()
+    }
+
+    fn view_create_dm_modal(&self) -> Element<Message> {
+        let mut col = column![
+            row![
+                text("Direct Message").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                Space::new().width(Fill),
+                button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
+                    .on_press(Message::CloseModal)
+                    .padding([2, 6])
+                    .style(theme::button_transparent),
+            ].align_y(iced::Alignment::Center),
+            text("Search for a user to message").font(MONO).size(13).color(theme::TEXT_DIM),
+            row![
+                text_input("@user:server or display name...", &self.dm_search)
+                    .on_input(Message::DmSearchChanged)
+                    .on_submit(Message::DmSearchSubmit)
+                    .font(MONO).size(14).padding(8),
+                button(text("Search").font(MONO).size(14).color(theme::ACCENT))
+                    .on_press(Message::DmSearchSubmit)
+                    .padding([8, 16])
+                    .style(|_, _| button::Style {
+                        background: Some(theme::BG_LIGHT.into()),
+                        text_color: theme::ACCENT,
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+            ].spacing(8),
+        ].spacing(10);
+
+        if self.dm_results.is_empty() && !self.dm_search.is_empty() {
+            col = col.push(text("No users found").font(MONO).size(13).color(theme::TEXT_DIM));
+        }
+
+        for user in &self.dm_results {
+            let uid = user.user_id.clone();
+            let name = user.display_name.as_deref().unwrap_or(&user.user_id);
+            col = col.push(
+                button(
+                    row![
+                        text(name).font(MONO).size(14).color(theme::TEXT_NORMAL),
+                        Space::new().width(Fill),
+                        text(&user.user_id).font(MONO).size(12).color(theme::TEXT_DIM),
+                    ].spacing(8).align_y(iced::Alignment::Center)
+                )
+                .on_press(Message::SendDmToUser(uid))
+                .padding([6, 10])
+                .width(Fill)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                    } else { None },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
+        }
+
+        // Allow direct DM by typing a user ID
+        if self.dm_search.starts_with('@') && self.dm_search.contains(':') {
+            let uid = self.dm_search.clone();
+            col = col.push(rule::horizontal(1));
+            col = col.push(
+                button(
+                    text(format!("Message {}", &self.dm_search)).font(MONO).size(14).color(theme::GREEN)
+                )
+                .on_press(Message::SendDmToUser(uid))
                 .padding([6, 10])
                 .width(Fill)
                 .style(|_, _| button::Style {
