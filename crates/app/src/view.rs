@@ -116,11 +116,22 @@ impl FluxChat {
             return None;
         }
         // Right-aligned row of small stacked avatars (max 5 shown)
+        // Resolve avatar from member cache (avoids per-receipt member lookups in core)
+        let members = self.selected_room_id.as_ref()
+            .and_then(|rid| self.members_by_room.get(rid));
         let mut avatars_row = row![].spacing(2);
         let shown = msg_receipts.len().min(5);
         for r in msg_receipts.iter().take(shown) {
+            let avatar_mxc = r.avatar_url.as_deref()
+                .or_else(|| members.and_then(|m| m.iter()
+                    .find(|member| member.user_id == r.user_id)
+                    .and_then(|member| member.avatar_url.as_deref())));
+            let display = members.and_then(|m| m.iter()
+                .find(|member| member.user_id == r.user_id)
+                .map(|member| member.display_name.as_str()))
+                .unwrap_or(&r.display_name);
             avatars_row = avatars_row.push(
-                self.render_avatar_with_initial(r.avatar_url.as_deref(), &r.display_name, 14.0),
+                self.render_avatar_with_initial(avatar_mxc, display, 14.0),
             );
         }
         if msg_receipts.len() > 5 {

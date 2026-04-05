@@ -2700,8 +2700,16 @@ impl FluxChat {
                 }
             }
 
-            Message::ReadReceiptsLoaded(room_id, receipts) => {
-                self.receipts_by_room.insert(room_id, receipts);
+            Message::ReadReceiptsLoaded(room_id, new_receipts) => {
+                // Merge with existing receipts — update positions, add new users
+                let entry = self.receipts_by_room.entry(room_id).or_default();
+                for new_r in new_receipts {
+                    if let Some(existing) = entry.iter_mut().find(|r| r.user_id == new_r.user_id) {
+                        existing.event_id = new_r.event_id;
+                    } else {
+                        entry.push(new_r);
+                    }
+                }
             }
 
             // --- Misc ---
@@ -2885,28 +2893,38 @@ impl FluxChat {
                     // Clear stale typing indicators (timeout after 10s)
                     self.typing_by_room.retain(|_, (_, updated)| updated.elapsed().as_secs() < 10);
 
-                    // Load read receipts for current room
+                    // Load read receipts for current room (only if messages changed)
                     if let Some(ref room_id) = self.selected_room_id {
-                        let core2 = self.core.clone();
-                        let rid = room_id.clone();
-                        let event_ids: Vec<String> = self.messages_by_room
-                            .get(room_id)
-                            .map(|msgs| msgs.iter().map(|m| m.event_id.clone()).collect())
-                            .unwrap_or_default();
-                        if !event_ids.is_empty() {
-                            tasks.push(Task::perform(
-                                async move {
-                                    let client = core2.get_client().await.ok()?;
-                                    let receipts = fluxchat_core::messages::get_room_read_receipts(
-                                        &client, &rid, &event_ids,
-                                    ).await.ok()?;
-                                    Some((rid, receipts))
-                                },
-                                |result| match result {
-                                    Some((rid, receipts)) => Message::ReadReceiptsLoaded(rid, receipts),
-                                    None => Message::Noop,
-                                },
-                            ));
+                        let msg_count = self.messages_by_room.get(room_id).map(|m| m.len()).unwrap_or(0);
+                        let last_count = self.receipts_msg_count.get(room_id).copied().unwrap_or(0);
+                        if msg_count != last_count {
+                            self.receipts_msg_count.insert(room_id.clone(), msg_count);
+                            let core2 = self.core.clone();
+                            let rid = room_id.clone();
+                            // Only check the last 10 messages for receipts
+                            let event_ids: Vec<String> = self.messages_by_room
+                                .get(room_id)
+                                .map(|msgs| msgs.iter().rev()
+                                    .filter(|m| !m.event_id.starts_with("~"))
+                                    .take(10)
+                                    .map(|m| m.event_id.clone())
+                                    .collect())
+                                .unwrap_or_default();
+                            if !event_ids.is_empty() {
+                                tasks.push(Task::perform(
+                                    async move {
+                                        let client = core2.get_client().await.ok()?;
+                                        let receipts = fluxchat_core::messages::get_room_read_receipts(
+                                            &client, &rid, &event_ids,
+                                        ).await.ok()?;
+                                        Some((rid, receipts))
+                                    },
+                                    |result| match result {
+                                        Some((rid, receipts)) => Message::ReadReceiptsLoaded(rid, receipts),
+                                        None => Message::Noop,
+                                    },
+                                ));
+                            }
                         }
                     }
 

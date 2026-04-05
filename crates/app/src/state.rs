@@ -98,6 +98,7 @@ pub struct FluxChat {
     pub members_by_room: HashMap<String, Vec<MemberInfo>>,
     pub typing_by_room: HashMap<String, (Vec<String>, std::time::Instant)>, // (user_ids, last_updated)
     pub receipts_by_room: HashMap<String, Vec<ReadReceipt>>,
+    pub receipts_msg_count: HashMap<String, usize>, // room_id → msg count when receipts were last loaded
 
     // Message actions
     pub reply_to: Option<(String, String, String)>,  // (event_id, sender_name, body)
@@ -345,6 +346,7 @@ impl FluxChat {
             members_by_room: HashMap::new(),
             typing_by_room: HashMap::new(),
             receipts_by_room: HashMap::new(),
+            receipts_msg_count: HashMap::new(),
             reply_to: None,
             edit_event: None,
             upload_pending: None,

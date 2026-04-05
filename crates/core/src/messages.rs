@@ -567,18 +567,13 @@ pub async fn get_room_read_receipts(
                     if seen_users.contains(&uid_str) { continue; }
                     seen_users.insert(uid_str.clone());
 
-                    let (display_name, avatar_url) = if let Some(member) = room.get_member_no_sync(&user_id).await.ok().flatten() {
-                        let name = member.display_name().unwrap_or(user_id.localpart()).to_string();
-                        let avatar = member.avatar_url().map(|u| u.to_string());
-                        (name, avatar)
-                    } else {
-                        (user_id.localpart().to_string(), None)
-                    };
+                    // Skip expensive per-user member lookups here.
+                    // The app resolves display names and avatars from its member cache.
                     receipts.push(crate::models::ReadReceipt {
                         user_id: uid_str,
                         event_id: eid_str.clone(),
-                        display_name,
-                        avatar_url,
+                        display_name: user_id.localpart().to_string(),
+                        avatar_url: None,
                     });
                 }
             }
