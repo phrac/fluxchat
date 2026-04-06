@@ -21,6 +21,8 @@ A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app wit
 - **Search** -- server-side with client-side fallback, overlay with arrow key navigation, scroll-to-highlight
 - **Polls** -- create/vote/end with progress bars (MSC3381)
 - **Files & media** -- upload via button/drag-drop/paste, thumbnails, GIF search via Giphy, stickers, location sharing
+- **Themes** -- 9 built-in themes (FluxChat, Nord, Nord Light, Dracula, Night Owl, Tokyo Night, Atom One Dark, Catppuccin Mocha/Latte), custom TOML theme files, light/dark mode
+- **Fonts** -- separate message and sidebar font selection from system fonts
 - **Code highlighting** -- 100+ languages via syntect, base16 Ocean Dark theme, collapsible code blocks
 - **Notifications** -- desktop notifications via notify-rust, per-room mute, mentions-only mode, invite notifications
 - **Profile & settings** -- Discord-style profile cards, power level management, banner/avatar editing, appearance/notification/security settings
