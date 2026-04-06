@@ -31,16 +31,16 @@ impl FluxChat {
             crate::state::Modal::PendingInvites => self.view_pending_invites_modal(),
             crate::state::Modal::Report { .. } => {
                 let col = column![
-                    text("Report Message").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    text("Report Message").font(MONO).size(16).color(theme::colors().text_bright),
                     rule::horizontal(1),
-                    text("Why are you reporting this message?").font(MONO).size(13).color(theme::TEXT_DIM),
+                    text("Why are you reporting this message?").font(MONO).size(13).color(theme::colors().text_dim),
                     text_input("Reason...", &self.report_reason)
                         .on_input(Message::ReportReasonChanged)
                         .on_submit(Message::SubmitReport)
                         .font(MONO).size(14).padding(8),
                     row![
                         Space::new().width(Fill),
-                        button(text("Cancel").font(MONO).size(13).color(theme::TEXT_DIM))
+                        button(text("Cancel").font(MONO).size(13).color(theme::colors().text_dim))
                             .on_press(Message::CloseModal)
                             .padding([6, 14])
                             .style(|_, status| button::Style {
@@ -72,9 +72,9 @@ impl FluxChat {
         container(modal_body)
             .padding(pad)
             .style(|_: &Theme| container::Style {
-                background: Some(theme::BG_DARK.into()),
+                background: Some(theme::colors().bg_dark.into()),
                 border: iced::Border {
-                    color: theme::BORDER,
+                    color: theme::colors().border,
                     width: 1.0,
                     radius: 8.0.into(),
                 },
@@ -89,14 +89,14 @@ impl FluxChat {
         let make_tab_btn = |label: String, tab_id: String, current: &str| -> Element<Message> {
             let is_active = current == tab_id;
             let bg = if is_active {
-                theme::BG_LIGHT
+                theme::colors().bg_light
             } else {
                 iced::Color::TRANSPARENT
             };
             let color = if is_active {
-                theme::TEXT_BRIGHT
+                theme::colors().text_bright
             } else {
-                theme::TEXT_MUTED
+                theme::colors().text_muted
             };
             button(text(label).font(MONO).size(14).color(color))
                 .on_press(Message::OpenModal(crate::state::Modal::Settings {
@@ -149,13 +149,13 @@ impl FluxChat {
                 } else {
                     let initial = display.chars().next().unwrap_or('?').to_uppercase().to_string();
                     container(
-                        text(initial).font(MONO).size(24).color(theme::TEXT_MUTED),
+                        text(initial).font(MONO).size(24).color(theme::colors().text_muted),
                     )
                     .width(64)
                     .height(64)
                     .center(Fill)
                     .style(|_: &Theme| container::Style {
-                        background: Some(theme::BG_LIGHT.into()),
+                        background: Some(theme::colors().bg_light.into()),
                         border: iced::Border { radius: 32.0.into(), ..Default::default() },
                         ..Default::default()
                     })
@@ -165,14 +165,14 @@ impl FluxChat {
                 let avatar_row = row![
                     avatar_element,
                     column![
-                        button(text("change avatar").font(MONO).size(13).color(theme::ACCENT))
+                        button(text("change avatar").font(MONO).size(13).color(theme::colors().accent))
                             .on_press(Message::SettingsUploadAvatar)
                             .padding([2, 0])
-                            .style(|_, _| button::Style { background: None, text_color: theme::ACCENT, ..Default::default() }),
-                        button(text("remove avatar").font(MONO).size(13).color(theme::TEXT_DIM))
+                            .style(|_, _| button::Style { background: None, text_color: theme::colors().accent, ..Default::default() }),
+                        button(text("remove avatar").font(MONO).size(13).color(theme::colors().text_dim))
                             .on_press(Message::SettingsRemoveAvatar)
                             .padding([2, 0])
-                            .style(|_, _| button::Style { background: None, text_color: theme::TEXT_DIM, ..Default::default() }),
+                            .style(|_, _| button::Style { background: None, text_color: theme::colors().text_dim, ..Default::default() }),
                     ].spacing(2),
                 ].spacing(12).align_y(iced::Alignment::Center);
 
@@ -195,13 +195,13 @@ impl FluxChat {
                     .into()
                 } else {
                     container(
-                        text("no banner").font(MONO).size(13).color(theme::TEXT_DIM),
+                        text("no banner").font(MONO).size(13).color(theme::colors().text_dim),
                     )
                     .width(Fill)
                     .height(BANNER_HEIGHT)
                     .center(Fill)
                     .style(|_: &Theme| container::Style {
-                        background: Some(theme::BG_LIGHT.into()),
+                        background: Some(theme::colors().bg_light.into()),
                         border: iced::Border { radius: 6.0.into(), ..Default::default() },
                         ..Default::default()
                     })
@@ -210,14 +210,14 @@ impl FluxChat {
 
                 // Banner actions + position slider
                 let mut banner_actions = row![
-                    button(text("change").font(MONO).size(12).color(theme::ACCENT))
+                    button(text("change").font(MONO).size(12).color(theme::colors().accent))
                         .on_press(Message::SettingsPickBanner)
                         .padding([2, 0])
-                        .style(|_, _| button::Style { background: None, text_color: theme::ACCENT, ..Default::default() }),
-                    button(text("remove").font(MONO).size(12).color(theme::TEXT_DIM))
+                        .style(|_, _| button::Style { background: None, text_color: theme::colors().accent, ..Default::default() }),
+                    button(text("remove").font(MONO).size(12).color(theme::colors().text_dim))
                         .on_press(Message::SettingsRemoveBanner)
                         .padding([2, 0])
-                        .style(|_, _| button::Style { background: None, text_color: theme::TEXT_DIM, ..Default::default() }),
+                        .style(|_, _| button::Style { background: None, text_color: theme::colors().text_dim, ..Default::default() }),
                 ].spacing(8).align_y(iced::Alignment::Center);
 
                 // Show position slider + save if banner needs cropping
@@ -227,7 +227,7 @@ impl FluxChat {
                     if img_h > target_h {
                         banner_actions = banner_actions.push(Space::new().width(Fill));
                         banner_actions = banner_actions.push(
-                            text("crop").font(MONO).size(11).color(theme::TEXT_DIM),
+                            text("crop").font(MONO).size(11).color(theme::colors().text_dim),
                         );
                         banner_actions = banner_actions.push(
                             iced::widget::slider(0.0..=1.0, self.settings_banner_offset, Message::SettingsBannerOffsetChanged)
@@ -235,19 +235,19 @@ impl FluxChat {
                                 .width(80),
                         );
                         banner_actions = banner_actions.push(
-                            button(text("save").font(MONO).size(12).color(theme::GREEN))
+                            button(text("save").font(MONO).size(12).color(theme::colors().green))
                                 .on_press(Message::SettingsSaveBanner)
                                 .padding([2, 6])
-                                .style(|_, _| button::Style { background: None, text_color: theme::GREEN, ..Default::default() }),
+                                .style(|_, _| button::Style { background: None, text_color: theme::colors().green, ..Default::default() }),
                         );
                     } else {
                         // Already good aspect ratio, save directly
                         banner_actions = banner_actions.push(Space::new().width(Fill));
                         banner_actions = banner_actions.push(
-                            button(text("save").font(MONO).size(12).color(theme::GREEN))
+                            button(text("save").font(MONO).size(12).color(theme::colors().green))
                                 .on_press(Message::SettingsSaveBanner)
                                 .padding([2, 6])
-                                .style(|_, _| button::Style { background: None, text_color: theme::GREEN, ..Default::default() }),
+                                .style(|_, _| button::Style { background: None, text_color: theme::colors().green, ..Default::default() }),
                         );
                     }
                 }
@@ -259,20 +259,20 @@ impl FluxChat {
                     Space::new().height(2),
                     // Avatar + profile info
                     avatar_row,
-                    text(format!("User ID: {}", self.user_id)).font(MONO).size(13).color(theme::TEXT_DIM),
+                    text(format!("User ID: {}", self.user_id)).font(MONO).size(13).color(theme::colors().text_dim),
                     // Display name
-                    text("Display Name").font(MONO).size(13).color(theme::TEXT_DIM),
+                    text("Display Name").font(MONO).size(13).color(theme::colors().text_dim),
                     row![
                         text_input("display name", &self.settings_nick_input)
                             .on_input(Message::SettingsNickChanged)
                             .on_submit(Message::SettingsSaveNick)
                             .font(MONO).size(14).padding(6),
-                        button(text("Save").font(MONO).size(14).color(theme::TEXT_BRIGHT))
+                        button(text("Save").font(MONO).size(14).color(theme::colors().text_bright))
                             .on_press(Message::SettingsSaveNick)
                             .padding([6, 16])
                             .style(|_, _| button::Style {
-                                background: Some(theme::ACCENT.into()),
-                                text_color: theme::TEXT_BRIGHT,
+                                background: Some(theme::colors().accent.into()),
+                                text_color: theme::colors().text_bright,
                                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
@@ -280,13 +280,13 @@ impl FluxChat {
                 ].spacing(10);
 
                 if let Some(ref status) = self.settings_status {
-                    col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::GREEN));
+                    col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::colors().green));
                 }
 
                 // Password change section
                 col = col.push(Space::new().height(4));
                 col = col.push(rule::horizontal(1));
-                col = col.push(text("PASSWORD").font(MONO).size(12).color(theme::TEXT_DIM));
+                col = col.push(text("PASSWORD").font(MONO).size(12).color(theme::colors().text_dim));
                 col = col.push(
                     text_input("Current password", &self.settings_old_password)
                         .on_input(Message::SettingsOldPasswordChanged)
@@ -303,12 +303,12 @@ impl FluxChat {
                             .on_input(Message::SettingsConfirmPasswordChanged)
                             .on_submit(Message::SettingsChangePassword)
                             .font(MONO).size(13).padding(6).secure(true),
-                        button(text("Change").font(MONO).size(13).color(theme::TEXT_BRIGHT))
+                        button(text("Change").font(MONO).size(13).color(theme::colors().text_bright))
                             .on_press(Message::SettingsChangePassword)
                             .padding([6, 12])
                             .style(|_, _| button::Style {
-                                background: Some(theme::ACCENT.into()),
-                                text_color: theme::TEXT_BRIGHT,
+                                background: Some(theme::colors().accent.into()),
+                                text_color: theme::colors().text_bright,
                                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
@@ -318,12 +318,12 @@ impl FluxChat {
                 col = col.push(Space::new().height(8));
                 col = col.push(rule::horizontal(1));
                 col = col.push(
-                    button(text("Log Out").font(MONO).size(15).color(theme::RED))
+                    button(text("Log Out").font(MONO).size(15).color(theme::colors().red))
                         .on_press(Message::Logout)
                         .padding([6, 16])
                         .style(|_, _| button::Style {
-                            background: Some(theme::BG_LIGHT.into()),
-                            text_color: theme::RED,
+                            background: Some(theme::colors().bg_light.into()),
+                            text_color: theme::colors().red,
                             border: iced::Border { radius: 4.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
@@ -332,26 +332,26 @@ impl FluxChat {
             }
             "sessions" => {
                 let mut col = column![
-                    text("Active Sessions").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    text("Active Sessions").font(MONO).size(16).color(theme::colors().text_bright),
                     rule::horizontal(1),
                 ].spacing(10);
 
                 if self.settings_devices.is_empty() {
-                    col = col.push(text("Loading devices...").font(MONO).size(14).color(theme::TEXT_DIM));
+                    col = col.push(text("Loading devices...").font(MONO).size(14).color(theme::colors().text_dim));
                 } else {
                     let other_count = self.settings_devices.iter().filter(|d| !d.is_current).count();
 
                     // Current session first
-                    col = col.push(text("CURRENT SESSION").font(MONO).size(12).color(theme::TEXT_DIM));
+                    col = col.push(text("CURRENT SESSION").font(MONO).size(12).color(theme::colors().text_dim));
                     for device in self.settings_devices.iter().filter(|d| d.is_current) {
                         col = col.push(self.view_device_row(device));
                     }
 
                     col = col.push(Space::new().height(4));
-                    col = col.push(text(format!("OTHER SESSIONS ({other_count})")).font(MONO).size(12).color(theme::TEXT_DIM));
+                    col = col.push(text(format!("OTHER SESSIONS ({other_count})")).font(MONO).size(12).color(theme::colors().text_dim));
 
                     if other_count == 0 {
-                        col = col.push(text("no other sessions").font(MONO).size(14).color(theme::TEXT_DIM));
+                        col = col.push(text("no other sessions").font(MONO).size(14).color(theme::colors().text_dim));
                     }
 
                     for device in self.settings_devices.iter().filter(|d| !d.is_current) {
@@ -362,59 +362,59 @@ impl FluxChat {
             }
             "security" => {
                 let mut col = column![
-                    text("Security & Encryption").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    text("Security & Encryption").font(MONO).size(16).color(theme::colors().text_bright),
                     rule::horizontal(1),
                 ].spacing(10);
 
                 // Cross-signing section
-                col = col.push(text("CROSS-SIGNING").font(MONO).size(12).color(theme::TEXT_DIM));
+                col = col.push(text("CROSS-SIGNING").font(MONO).size(12).color(theme::colors().text_dim));
                 if let Some(ref sec) = self.security_state {
                     if sec.is_verified {
                         col = col.push(
                             row![
-                                text("\u{2713}").font(MONO).size(14).color(theme::GREEN),
-                                text("verified").font(MONO).size(14).color(theme::GREEN),
-                                text("This device is cross-signed").font(MONO).size(14).color(theme::TEXT_DIM),
+                                text("\u{2713}").font(MONO).size(14).color(theme::colors().green),
+                                text("verified").font(MONO).size(14).color(theme::colors().green),
+                                text("This device is cross-signed").font(MONO).size(14).color(theme::colors().text_dim),
                             ].spacing(8)
                         );
                     } else {
                         col = col.push(
                             row![
-                                text("\u{2717}").font(MONO).size(14).color(theme::YELLOW),
-                                text("unverified").font(MONO).size(14).color(theme::YELLOW),
-                                text("Verify this device for secure messaging").font(MONO).size(14).color(theme::TEXT_DIM),
+                                text("\u{2717}").font(MONO).size(14).color(theme::colors().yellow),
+                                text("unverified").font(MONO).size(14).color(theme::colors().yellow),
+                                text("Verify this device for secure messaging").font(MONO).size(14).color(theme::colors().text_dim),
                             ].spacing(8)
                         );
                     }
                 } else {
-                    col = col.push(text("loading...").font(MONO).size(14).color(theme::TEXT_DIM));
+                    col = col.push(text("loading...").font(MONO).size(14).color(theme::colors().text_dim));
                 }
 
                 col = col.push(Space::new().height(8));
 
                 // Key backup section
-                col = col.push(text("KEY BACKUP").font(MONO).size(12).color(theme::TEXT_DIM));
+                col = col.push(text("KEY BACKUP").font(MONO).size(12).color(theme::colors().text_dim));
                 if let Some(ref sec) = self.security_state {
-                    let server_color = if sec.backup_exists { theme::GREEN } else { theme::TEXT_DIM };
-                    let local_color = if sec.backup_enabled { theme::GREEN } else { theme::TEXT_DIM };
+                    let server_color = if sec.backup_exists { theme::colors().green } else { theme::colors().text_dim };
+                    let local_color = if sec.backup_enabled { theme::colors().green } else { theme::colors().text_dim };
                     col = col.push(
                         row![
-                            text("Server backup:").font(MONO).size(14).color(theme::TEXT_MUTED),
+                            text("Server backup:").font(MONO).size(14).color(theme::colors().text_muted),
                             text(if sec.backup_exists { "exists" } else { "none" })
                                 .font(MONO).size(14).color(server_color),
                         ].spacing(8)
                     );
                     col = col.push(
                         row![
-                            text("Local backup:").font(MONO).size(14).color(theme::TEXT_MUTED),
+                            text("Local backup:").font(MONO).size(14).color(theme::colors().text_muted),
                             text(if sec.backup_enabled { "enabled" } else { "disabled" })
                                 .font(MONO).size(14).color(local_color),
                         ].spacing(8)
                     );
                     col = col.push(
                         row![
-                            text("Recovery:").font(MONO).size(14).color(theme::TEXT_MUTED),
-                            text(sec.recovery_state.as_str()).font(MONO).size(14).color(theme::TEXT_NORMAL),
+                            text("Recovery:").font(MONO).size(14).color(theme::colors().text_muted),
+                            text(sec.recovery_state.as_str()).font(MONO).size(14).color(theme::colors().text_normal),
                         ].spacing(8)
                     );
 
@@ -422,14 +422,14 @@ impl FluxChat {
                     if !sec.backup_enabled {
                         col = col.push(Space::new().height(4));
                         col = col.push(
-                            button(text("enable backup").font(MONO).size(14).color(theme::GREEN))
+                            button(text("enable backup").font(MONO).size(14).color(theme::colors().green))
                                 .on_press(Message::SecurityEnableBackup)
                                 .padding([4, 12])
                                 .style(|_, _| button::Style {
                                     background: None,
-                                    text_color: theme::GREEN,
+                                    text_color: theme::colors().green,
                                     border: iced::Border {
-                                        color: theme::GREEN,
+                                        color: theme::colors().green,
                                         width: 1.0,
                                         radius: 4.0.into(),
                                     },
@@ -438,25 +438,25 @@ impl FluxChat {
                         );
                     }
                 } else {
-                    col = col.push(text("loading...").font(MONO).size(14).color(theme::TEXT_DIM));
+                    col = col.push(text("loading...").font(MONO).size(14).color(theme::colors().text_dim));
                 }
 
                 // Recovery key display (shown after enabling backup)
                 if let Some(ref key) = self.security_shown_recovery_key {
                     col = col.push(Space::new().height(8));
-                    col = col.push(text("RECOVERY KEY \u{2014} SAVE THIS!").font(MONO).size(12).color(theme::YELLOW));
+                    col = col.push(text("RECOVERY KEY \u{2014} SAVE THIS!").font(MONO).size(12).color(theme::colors().yellow));
                     col = col.push(
                         container(
                             text(key.as_str())
-                                .font(MONO).size(14).color(theme::TEXT_BRIGHT)
+                                .font(MONO).size(14).color(theme::colors().text_bright)
                                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                         )
                         .padding([12, 12])
                         .width(Fill)
                         .style(|_: &Theme| container::Style {
-                            background: Some(theme::BG_DEEP.into()),
+                            background: Some(theme::colors().bg_deep.into()),
                             border: iced::Border {
-                                color: theme::YELLOW,
+                                color: theme::colors().yellow,
                                 width: 1.0,
                                 radius: 4.0.into(),
                             },
@@ -465,28 +465,28 @@ impl FluxChat {
                     );
                     col = col.push(
                         text("Store this key safely. You'll need it to restore encrypted messages on new devices.")
-                            .font(MONO).size(12).color(theme::TEXT_DIM)
+                            .font(MONO).size(12).color(theme::colors().text_dim)
                     );
                 }
 
                 col = col.push(Space::new().height(8));
 
                 // Recover from backup
-                col = col.push(text("RECOVER FROM BACKUP").font(MONO).size(12).color(theme::TEXT_DIM));
+                col = col.push(text("RECOVER FROM BACKUP").font(MONO).size(12).color(theme::colors().text_dim));
                 col = col.push(
                     row![
                         text_input("Recovery key or passphrase", &self.security_recovery_key_input)
                             .on_input(Message::SecurityRecoveryKeyInputChanged)
                             .on_submit(Message::SecurityRecover)
                             .font(MONO).size(14).padding(6),
-                        button(text("recover").font(MONO).size(14).color(theme::ACCENT))
+                        button(text("recover").font(MONO).size(14).color(theme::colors().accent))
                             .on_press(Message::SecurityRecover)
                             .padding([6, 12])
                             .style(|_, _| button::Style {
                                 background: None,
-                                text_color: theme::ACCENT,
+                                text_color: theme::colors().accent,
                                 border: iced::Border {
-                                    color: theme::BORDER,
+                                    color: theme::colors().border,
                                     width: 1.0,
                                     radius: 4.0.into(),
                                 },
@@ -497,7 +497,7 @@ impl FluxChat {
 
                 // Status message
                 if let Some(ref status) = self.settings_status {
-                    col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::TEXT_MUTED));
+                    col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::colors().text_muted));
                 }
 
                 scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
@@ -511,11 +511,11 @@ impl FluxChat {
                 let options: Vec<String> = self.available_fonts.clone();
 
                 let col = column![
-                    text("Appearance").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    text("Appearance").font(MONO).size(16).color(theme::colors().text_bright),
                     rule::horizontal(1),
 
                     // Message font family
-                    text("MESSAGE FONT").font(MONO).size(11).color(theme::TEXT_DIM),
+                    text("MESSAGE FONT").font(MONO).size(11).color(theme::colors().text_dim),
                     iced::widget::pick_list(
                         options.clone(),
                         Some(self.msg_font_family.clone()),
@@ -526,7 +526,7 @@ impl FluxChat {
                     .padding([4, 8]),
 
                     // Sidebar font family
-                    text("SIDEBAR FONT").font(MONO).size(11).color(theme::TEXT_DIM),
+                    text("SIDEBAR FONT").font(MONO).size(11).color(theme::colors().text_dim),
                     iced::widget::pick_list(
                         options,
                         Some(self.sidebar_font_family.clone()),
@@ -539,41 +539,41 @@ impl FluxChat {
                     Space::new().height(4),
 
                     // Message font size
-                    text("MESSAGE FONT SIZE").font(MONO).size(11).color(theme::TEXT_DIM),
+                    text("MESSAGE FONT SIZE").font(MONO).size(11).color(theme::colors().text_dim),
                     row![
                         iced::widget::slider(10.0..=24.0, fs, Message::SetMsgFontSize)
                             .step(1.0)
                             .width(200),
-                        text(format!("{:.0}px", fs)).font(MONO).size(13).color(theme::TEXT_NORMAL),
+                        text(format!("{:.0}px", fs)).font(MONO).size(13).color(theme::colors().text_normal),
                     ].spacing(12).align_y(iced::Alignment::Center),
 
                     Space::new().height(8),
 
                     // Preview
-                    text("PREVIEW").font(MONO).size(11).color(theme::TEXT_DIM),
+                    text("PREVIEW").font(MONO).size(11).color(theme::colors().text_dim),
                     container(
                         column![
                             row![
-                                text("Messages: ").font(MONO).size(12).color(theme::TEXT_DIM),
-                                text(&self.msg_font_family).font(msg_font).size(12).color(theme::TEXT_MUTED),
+                                text("Messages: ").font(MONO).size(12).color(theme::colors().text_dim),
+                                text(&self.msg_font_family).font(msg_font).size(12).color(theme::colors().text_muted),
                             ],
                             text("The quick brown fox jumps over the lazy dog.")
-                                .font(msg_font).size(fs).color(theme::TEXT_NORMAL),
+                                .font(msg_font).size(fs).color(theme::colors().text_normal),
                             text("**bold** *italic* `code` ~~strike~~")
-                                .font(msg_font_bold).size(fs).color(theme::TEXT_MUTED),
+                                .font(msg_font_bold).size(fs).color(theme::colors().text_muted),
                             Space::new().height(4),
                             row![
-                                text("Sidebar: ").font(MONO).size(12).color(theme::TEXT_DIM),
-                                text(&self.sidebar_font_family).font(sidebar_font).size(12).color(theme::TEXT_MUTED),
+                                text("Sidebar: ").font(MONO).size(12).color(theme::colors().text_dim),
+                                text(&self.sidebar_font_family).font(sidebar_font).size(12).color(theme::colors().text_muted),
                             ],
                             text("# general  # random  @ user")
-                                .font(sidebar_font).size(13).color(theme::TEXT_NORMAL),
+                                .font(sidebar_font).size(13).color(theme::colors().text_normal),
                         ].spacing(4)
                     )
                     .padding([8, 12])
                     .width(Fill)
                     .style(|_: &Theme| container::Style {
-                        background: Some(theme::BG_MID.into()),
+                        background: Some(theme::colors().bg_mid.into()),
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
@@ -584,7 +584,7 @@ impl FluxChat {
             "notifications" => {
                 let make_toggle = |label: &'static str, enabled: bool, msg: fn(bool) -> Message| -> Element<Message> {
                     row![
-                        text(label).font(MONO).size(14).color(theme::TEXT_NORMAL),
+                        text(label).font(MONO).size(14).color(theme::colors().text_normal),
                         Space::new().width(Fill),
                         iced::widget::toggler(enabled)
                             .on_toggle(msg)
@@ -595,10 +595,10 @@ impl FluxChat {
                                     toggler::Status::Active { is_toggled } | toggler::Status::Hovered { is_toggled } | toggler::Status::Disabled { is_toggled } => is_toggled,
                                 };
                                 toggler::Style {
-                                    background: if is_on { theme::ACCENT.into() } else { theme::BG_LIGHT.into() },
+                                    background: if is_on { theme::colors().accent.into() } else { theme::colors().bg_light.into() },
                                     foreground: iced::Color::WHITE.into(),
                                     background_border_width: 1.0,
-                                    background_border_color: if is_on { theme::ACCENT } else { theme::BORDER },
+                                    background_border_color: if is_on { theme::colors().accent } else { theme::colors().border },
                                     foreground_border_width: 0.0,
                                     foreground_border_color: iced::Color::TRANSPARENT,
                                     text_color: None,
@@ -614,21 +614,21 @@ impl FluxChat {
                 };
 
                 let col = column![
-                    text("Notifications").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                    text("Notifications").font(MONO).size(16).color(theme::colors().text_bright),
                     rule::horizontal(1),
                     make_toggle("Enable notifications", self.notifications_enabled, Message::SetNotificationsEnabled),
                     make_toggle("Mentions only", self.notify_mentions_only, Message::SetNotifyMentionsOnly),
                     make_toggle("Show message preview", self.notify_show_preview, Message::SetNotifyShowPreview),
                     make_toggle("Notification sound", self.notify_sound, Message::SetNotifySound),
                     Space::new().height(12),
-                    text("Per-room mute: use /mute and /unmute commands").font(MONO).size(12).color(theme::TEXT_DIM),
+                    text("Per-room mute: use /mute and /unmute commands").font(MONO).size(12).color(theme::colors().text_dim),
                 ].spacing(6);
                 scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
             }
             _ => text("Unknown tab")
                 .font(MONO)
                 .size(15)
-                .color(theme::TEXT_DIM)
+                .color(theme::colors().text_dim)
                 .into(),
         };
 
@@ -637,9 +637,9 @@ impl FluxChat {
                 text("Settings")
                     .font(MONO)
                     .size(16)
-                    .color(theme::TEXT_BRIGHT),
+                    .color(theme::colors().text_bright),
                 Space::new().width(Fill),
-                button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
+                button(text("x").font(MONO).size(14).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(|_, _| button::Style {
@@ -675,7 +675,7 @@ impl FluxChat {
 
         let mut space_buttons = row![
             button(text("None").font(MONO).size(13).color(
-                if self.create_room_space.is_none() { theme::ACCENT } else { theme::TEXT_MUTED }
+                if self.create_room_space.is_none() { theme::colors().accent } else { theme::colors().text_muted }
             ))
             .on_press(Message::CreateRoomSelectSpace(None))
             .padding([3, 8])
@@ -689,7 +689,7 @@ impl FluxChat {
         for space in &self.spaces {
             let sid = space.room_id.clone();
             let is_sel = self.create_room_space.as_deref() == Some(&space.room_id);
-            let color = if is_sel { theme::ACCENT } else { theme::TEXT_MUTED };
+            let color = if is_sel { theme::colors().accent } else { theme::colors().text_muted };
             space_buttons = space_buttons.push(
                 button(text(&space.name).font(MONO).size(13).color(color))
                     .on_press(Message::CreateRoomSelectSpace(Some(sid)))
@@ -704,43 +704,43 @@ impl FluxChat {
 
         column![
             row![
-                text("Create Room").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                text("Create Room").font(MONO).size(16).color(theme::colors().text_bright),
                 Space::new().width(Fill),
-                button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
+                button(text("\u{00d7}").font(MONO).size(18).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(theme::button_transparent),
             ].align_y(iced::Alignment::Center),
-            text("Room Name").font(MONO).size(13).color(theme::TEXT_DIM),
+            text("Room Name").font(MONO).size(13).color(theme::colors().text_dim),
             text_input("e.g. my-room", &self.create_room_name)
                 .on_input(Message::CreateRoomNameChanged)
                 .on_submit(Message::CreateRoomSubmit)
                 .font(MONO).size(14).padding(8),
-            text("Topic (optional)").font(MONO).size(13).color(theme::TEXT_DIM),
+            text("Topic (optional)").font(MONO).size(13).color(theme::colors().text_dim),
             text_input("Room topic...", &self.create_room_topic)
                 .on_input(Message::CreateRoomTopicChanged)
                 .font(MONO).size(14).padding(8),
-            text(format!("Space: {space_label}")).font(MONO).size(13).color(theme::TEXT_DIM),
+            text(format!("Space: {space_label}")).font(MONO).size(13).color(theme::colors().text_dim),
             scrollable(space_buttons)
                 .direction(iced::widget::scrollable::Direction::Horizontal(
                     iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0),
                 )),
             row![
-                button(text(public_label).font(MONO).size(14).color(theme::TEXT_MUTED))
+                button(text(public_label).font(MONO).size(14).color(theme::colors().text_muted))
                     .on_press(Message::CreateRoomTogglePublic)
                     .padding([4, 8])
                     .style(theme::button_transparent),
-                button(text(encrypted_label).font(MONO).size(14).color(theme::TEXT_MUTED))
+                button(text(encrypted_label).font(MONO).size(14).color(theme::colors().text_muted))
                     .on_press(Message::CreateRoomToggleEncrypted)
                     .padding([4, 8])
                     .style(theme::button_transparent),
             ].spacing(12),
-            button(text("Create").font(MONO).size(14).color(theme::BG_DEEP))
+            button(text("Create").font(MONO).size(14).color(theme::colors().bg_deep))
                 .on_press(Message::CreateRoomSubmit)
                 .padding([8, 24])
                 .style(|_, _| button::Style {
-                    background: Some(theme::ACCENT.into()),
-                    text_color: theme::BG_DEEP,
+                    background: Some(theme::colors().accent.into()),
+                    text_color: theme::colors().bg_deep,
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
@@ -777,9 +777,9 @@ impl FluxChat {
 
         // Role color + badge
         let role_color = match power {
-            100.. => theme::YELLOW,
-            50..=99 => theme::ACCENT,
-            _ => theme::TEXT_NORMAL,
+            100.. => theme::colors().yellow,
+            50..=99 => theme::colors().accent,
+            _ => theme::colors().text_normal,
         };
 
         // --- Colored banner strip with close button ---
@@ -824,7 +824,7 @@ impl FluxChat {
             avatar_el,
             column![
                 text(display_name).font(MONO).size(16).color(nick_col),
-                text(user_id).font(MONO).size(11).color(theme::TEXT_MUTED),
+                text(user_id).font(MONO).size(11).color(theme::colors().text_muted),
             ].spacing(2),
         ]
         .spacing(10)
@@ -845,19 +845,19 @@ impl FluxChat {
 
         let about_section = container(
             column![
-                text("ABOUT").font(MONO).size(10).color(theme::TEXT_DIM),
+                text("ABOUT").font(MONO).size(10).color(theme::colors().text_dim),
                 Space::new().height(4),
                 row![
                     role_badge,
                     Space::new().width(Fill),
-                    text(format!("Power {power}")).font(MONO).size(11).color(theme::TEXT_DIM),
+                    text(format!("Power {power}")).font(MONO).size(11).color(theme::colors().text_dim),
                 ].align_y(iced::Alignment::Center),
             ].spacing(0),
         )
         .padding([10, 16])
         .width(Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(theme::BG_MID.into()),
+            background: Some(theme::colors().bg_mid.into()),
             border: iced::Border { radius: 6.0.into(), ..Default::default() },
             ..Default::default()
         });
@@ -867,20 +867,20 @@ impl FluxChat {
             let room_id = self.selected_room_id.clone().unwrap_or_default();
             let mut role_col = column![].spacing(4);
             for (label, desc, level, color) in [
-                ("Member", "Default permissions", 0i64, theme::TEXT_NORMAL),
-                ("Moderator", "Kick, ban, mute", 50, theme::ACCENT),
-                ("Admin", "Full room control", 100, theme::YELLOW),
+                ("Member", "Default permissions", 0i64, theme::colors().text_normal),
+                ("Moderator", "Kick, ban, mute", 50, theme::colors().accent),
+                ("Admin", "Full room control", 100, theme::colors().yellow),
             ] {
                 let is_active = power == level;
-                let bg = if is_active { theme::BG_LIGHT } else { theme::BG_DEEP };
-                let fg = if is_active { color } else { theme::TEXT_MUTED };
-                let border_c = if is_active { color } else { theme::BG_LIGHT };
+                let bg = if is_active { theme::colors().bg_light } else { theme::colors().bg_deep };
+                let fg = if is_active { color } else { theme::colors().text_muted };
+                let border_c = if is_active { color } else { theme::colors().bg_light };
                 role_col = role_col.push(
                     button(
                         row![
                             text(label).font(MONO).size(12).color(fg),
                             Space::new().width(Fill),
-                            text(desc).font(MONO).size(10).color(theme::TEXT_DIM),
+                            text(desc).font(MONO).size(10).color(theme::colors().text_dim),
                         ].align_y(iced::Alignment::Center),
                     )
                     .on_press(Message::SetPowerLevel(room_id.clone(), uid.clone(), level))
@@ -903,18 +903,18 @@ impl FluxChat {
             role_col = role_col.push(
                 button(
                     row![
-                        text("Custom").font(MONO).size(12).color(theme::TEXT_MUTED),
+                        text("Custom").font(MONO).size(12).color(theme::colors().text_muted),
                         Space::new().width(Fill),
                         text_input("0-100", &self.profile_power_input)
                             .on_input(Message::ProfilePowerInputChanged)
                             .on_submit(Message::ProfileSetPowerLevel)
                             .font(MONO).size(11).padding(3).width(60),
-                        button(text("Set").font(MONO).size(11).color(theme::TEXT_BRIGHT))
+                        button(text("Set").font(MONO).size(11).color(theme::colors().text_bright))
                             .on_press(Message::ProfileSetPowerLevel)
                             .padding([3, 8])
                             .style(|_, _| button::Style {
-                                background: Some(theme::ACCENT.into()),
-                                text_color: theme::TEXT_BRIGHT,
+                                background: Some(theme::colors().accent.into()),
+                                text_color: theme::colors().text_bright,
                                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
@@ -923,9 +923,9 @@ impl FluxChat {
                 .padding([4, 12])
                 .width(Fill)
                 .style(|_, _| button::Style {
-                    background: Some(theme::BG_DEEP.into()),
+                    background: Some(theme::colors().bg_deep.into()),
                     border: iced::Border {
-                        color: theme::BG_LIGHT,
+                        color: theme::colors().bg_light,
                         width: 1.0,
                         radius: 4.0.into(),
                     },
@@ -935,7 +935,7 @@ impl FluxChat {
 
             Some(container(
                 column![
-                    text("SET ROLE").font(MONO).size(10).color(theme::TEXT_DIM),
+                    text("SET ROLE").font(MONO).size(10).color(theme::colors().text_dim),
                     Space::new().height(6),
                     role_col,
                 ].spacing(0),
@@ -943,7 +943,7 @@ impl FluxChat {
             .padding([10, 16])
             .width(Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(theme::BG_MID.into()),
+                background: Some(theme::colors().bg_mid.into()),
                 border: iced::Border { radius: 6.0.into(), ..Default::default() },
                 ..Default::default()
             })
@@ -954,17 +954,17 @@ impl FluxChat {
 
         // --- Action buttons ---
         let ignore_label = if is_ignored { "Unignore" } else { "Ignore" };
-        let ignore_color = if is_ignored { theme::GREEN } else { theme::RED };
+        let ignore_color = if is_ignored { theme::colors().green } else { theme::colors().red };
         let mut actions_row = row![].spacing(6);
         if uid != self.user_id {
             actions_row = actions_row.push(
-                button(text("Message").font(MONO).size(12).color(theme::ACCENT))
+                button(text("Message").font(MONO).size(12).color(theme::colors().accent))
                     .on_press(Message::SendDmToUser(uid.clone()))
                     .padding([5, 14])
                     .width(Fill)
                     .style(|_, _| button::Style {
-                        background: Some(theme::BG_LIGHT.into()),
-                        text_color: theme::ACCENT,
+                        background: Some(theme::colors().bg_light.into()),
+                        text_color: theme::colors().accent,
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
@@ -976,7 +976,7 @@ impl FluxChat {
                 .padding([5, 14])
                 .width(Fill)
                 .style(move |_, _| button::Style {
-                    background: Some(theme::BG_LIGHT.into()),
+                    background: Some(theme::colors().bg_light.into()),
                     text_color: ignore_color,
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
@@ -1000,7 +1000,7 @@ impl FluxChat {
 
         if is_ignored {
             card = card.push(
-                container(text("(ignored)").font(MONO).size(11).color(theme::RED)).padding([0, 16]),
+                container(text("(ignored)").font(MONO).size(11).color(theme::colors().red)).padding([0, 16]),
             );
         }
 
@@ -1014,9 +1014,9 @@ impl FluxChat {
                 text("Verify Device")
                     .font(MONO)
                     .size(16)
-                    .color(theme::TEXT_BRIGHT),
+                    .color(theme::colors().text_bright),
                 Space::new().width(Fill),
-                button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
+                button(text("x").font(MONO).size(14).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(|_, _| button::Style {
@@ -1028,16 +1028,16 @@ impl FluxChat {
             text(format!("User: {}", info.other_user_id))
                 .font(MONO)
                 .size(15)
-                .color(theme::TEXT_NORMAL),
+                .color(theme::colors().text_normal),
             text(format!("State: {}", info.state))
                 .font(MONO)
                 .size(14)
-                .color(theme::TEXT_MUTED),
+                .color(theme::colors().text_muted),
             rule::horizontal(1),
             text("Compare these emoji:")
                 .font(MONO)
                 .size(15)
-                .color(theme::TEXT_NORMAL),
+                .color(theme::colors().text_normal),
         ]
         .spacing(8);
 
@@ -1053,7 +1053,7 @@ impl FluxChat {
                             text(&emoji.description)
                                 .font(MONO)
                                 .size(12)
-                                .color(theme::TEXT_DIM),
+                                .color(theme::colors().text_dim),
                         ]
                         .spacing(2)
                         .align_x(iced::Alignment::Center),
@@ -1073,21 +1073,21 @@ impl FluxChat {
         if info.state == "requested" {
             col = col.push(
                 row![
-                    button(text("Accept").font(MONO).size(14).color(theme::BG_DEEP))
+                    button(text("Accept").font(MONO).size(14).color(theme::colors().bg_deep))
                         .on_press(Message::VerificationAccept(uid.clone(), fid.clone()))
                         .padding([8, 20])
                         .style(|_, _| button::Style {
-                            background: Some(theme::GREEN.into()),
-                            text_color: theme::BG_DEEP,
+                            background: Some(theme::colors().green.into()),
+                            text_color: theme::colors().bg_deep,
                             border: iced::Border { radius: 4.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
-                    button(text("Reject").font(MONO).size(14).color(theme::TEXT_NORMAL))
+                    button(text("Reject").font(MONO).size(14).color(theme::colors().text_normal))
                         .on_press(Message::VerificationCancel(uid, fid))
                         .padding([8, 20])
                         .style(|_, _| button::Style {
-                            background: Some(theme::RED.into()),
-                            text_color: theme::TEXT_BRIGHT,
+                            background: Some(theme::colors().red.into()),
+                            text_color: theme::colors().text_bright,
                             border: iced::Border { radius: 4.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
@@ -1096,21 +1096,21 @@ impl FluxChat {
         } else if info.emojis.is_some() {
             col = col.push(
                 row![
-                    button(text("They Match").font(MONO).size(14).color(theme::BG_DEEP))
+                    button(text("They Match").font(MONO).size(14).color(theme::colors().bg_deep))
                         .on_press(Message::VerificationConfirm(uid.clone(), fid.clone()))
                         .padding([8, 20])
                         .style(|_, _| button::Style {
-                            background: Some(theme::GREEN.into()),
-                            text_color: theme::BG_DEEP,
+                            background: Some(theme::colors().green.into()),
+                            text_color: theme::colors().bg_deep,
                             border: iced::Border { radius: 4.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
-                    button(text("They Don't Match").font(MONO).size(14).color(theme::TEXT_NORMAL))
+                    button(text("They Don't Match").font(MONO).size(14).color(theme::colors().text_normal))
                         .on_press(Message::VerificationCancel(uid, fid))
                         .padding([8, 20])
                         .style(|_, _| button::Style {
-                            background: Some(theme::RED.into()),
-                            text_color: theme::TEXT_BRIGHT,
+                            background: Some(theme::colors().red.into()),
+                            text_color: theme::colors().text_bright,
                             border: iced::Border { radius: 4.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
@@ -1129,13 +1129,13 @@ impl FluxChat {
                 .height(Fill)
                 .into()
         } else {
-            text("Loading...").font(MONO).size(14).color(theme::TEXT_DIM).into()
+            text("Loading...").font(MONO).size(14).color(theme::colors().text_dim).into()
         };
 
         column![
             row![
                 Space::new().width(Fill),
-                button(text("\u{00d7}").font(MONO).size(20).color(theme::TEXT_BRIGHT))
+                button(text("\u{00d7}").font(MONO).size(20).color(theme::colors().text_bright))
                     .on_press(Message::CloseModal)
                     .padding([4, 10])
                     .style(|_, status| button::Style {
@@ -1167,9 +1167,9 @@ impl FluxChat {
                 text("Forward Message")
                     .font(MONO)
                     .size(16)
-                    .color(theme::TEXT_BRIGHT),
+                    .color(theme::colors().text_bright),
                 Space::new().width(Fill),
-                button(text("x").font(MONO).size(14).color(theme::TEXT_DIM))
+                button(text("x").font(MONO).size(14).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(|_, _| button::Style {
@@ -1179,9 +1179,9 @@ impl FluxChat {
             ]
             .align_y(iced::Alignment::Center),
             text(format!("Message: {}", &body.chars().take(80).collect::<String>()))
-                .font(MONO).size(13).color(theme::TEXT_MUTED),
+                .font(MONO).size(13).color(theme::colors().text_muted),
             rule::horizontal(1),
-            text("Send to:").font(MONO).size(13).color(theme::TEXT_DIM),
+            text("Send to:").font(MONO).size(13).color(theme::colors().text_dim),
             text_input("Search rooms...", &self.forward_search)
                 .on_input(Message::ForwardSearchChanged)
                 .font(MONO).size(14).padding(6),
@@ -1194,7 +1194,7 @@ impl FluxChat {
                 {
                     let rid = room.room_id.clone();
                     room_list = room_list.push(
-                        button(text(&room.name).font(MONO).size(14).color(theme::TEXT_NORMAL))
+                        button(text(&room.name).font(MONO).size(14).color(theme::colors().text_normal))
                             .on_press(Message::ForwardToRoom(rid))
                             .padding([4, 8])
                             .width(Fill)
@@ -1221,9 +1221,9 @@ impl FluxChat {
                 text("Room Settings")
                     .font(MONO)
                     .size(16)
-                    .color(theme::TEXT_BRIGHT),
+                    .color(theme::colors().text_bright),
                 Space::new().width(Fill),
-                button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
+                button(text("\u{00d7}").font(MONO).size(18).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(|_, _| button::Style {
@@ -1249,11 +1249,11 @@ impl FluxChat {
                             ..Default::default()
                         }).into()
                     } else {
-                        container(text("#").font(MONO).size(20).color(theme::TEXT_DIM))
+                        container(text("#").font(MONO).size(20).color(theme::colors().text_dim))
                             .width(48).height(48)
                             .center_x(Length::Fixed(48.0)).center_y(Length::Fixed(48.0))
                             .style(|_: &Theme| container::Style {
-                                background: Some(theme::BG_LIGHT.into()),
+                                background: Some(theme::colors().bg_light.into()),
                                 border: iced::Border { radius: 8.0.into(), ..Default::default() },
                                 ..Default::default()
                             }).into()
@@ -1261,20 +1261,20 @@ impl FluxChat {
                     info_col = info_col.push(
                         row![
                             avatar_el,
-                            button(text("Upload").font(MONO).size(12).color(theme::ACCENT))
+                            button(text("Upload").font(MONO).size(12).color(theme::colors().accent))
                                 .on_press(Message::RoomSettingsUploadAvatar)
                                 .padding([4, 8])
                                 .style(|_, _| button::Style {
-                                    background: Some(theme::BG_LIGHT.into()),
-                                    text_color: theme::ACCENT,
+                                    background: Some(theme::colors().bg_light.into()),
+                                    text_color: theme::colors().accent,
                                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                     ..Default::default()
                                 }),
-                            button(text("Remove").font(MONO).size(12).color(theme::TEXT_DIM))
+                            button(text("Remove").font(MONO).size(12).color(theme::colors().text_dim))
                                 .on_press(Message::RoomSettingsRemoveAvatar)
                                 .padding([4, 8])
                                 .style(|_, _| button::Style {
-                                    background: None, text_color: theme::TEXT_DIM,
+                                    background: None, text_color: theme::colors().text_dim,
                                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                     ..Default::default()
                                 }),
@@ -1282,19 +1282,19 @@ impl FluxChat {
                     );
 
                     // Editable name
-                    info_col = info_col.push(text("Name").font(MONO).size(11).color(theme::TEXT_DIM));
+                    info_col = info_col.push(text("Name").font(MONO).size(11).color(theme::colors().text_dim));
                     info_col = info_col.push(
                         row![
                             text_input("Room name", &self.room_settings_name)
                                 .on_input(Message::RoomSettingsNameChanged)
                                 .on_submit(Message::RoomSettingsSaveName)
                                 .font(MONO).size(13).padding(6),
-                            button(text("Save").font(MONO).size(12).color(theme::ACCENT))
+                            button(text("Save").font(MONO).size(12).color(theme::colors().accent))
                                 .on_press(Message::RoomSettingsSaveName)
                                 .padding([6, 10])
                                 .style(|_, _| button::Style {
-                                    background: Some(theme::BG_LIGHT.into()),
-                                    text_color: theme::ACCENT,
+                                    background: Some(theme::colors().bg_light.into()),
+                                    text_color: theme::colors().accent,
                                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                     ..Default::default()
                                 }),
@@ -1302,19 +1302,19 @@ impl FluxChat {
                     );
 
                     // Editable topic
-                    info_col = info_col.push(text("Topic").font(MONO).size(11).color(theme::TEXT_DIM));
+                    info_col = info_col.push(text("Topic").font(MONO).size(11).color(theme::colors().text_dim));
                     info_col = info_col.push(
                         row![
                             text_input("Room topic", &self.room_settings_topic)
                                 .on_input(Message::RoomSettingsTopicChanged)
                                 .on_submit(Message::RoomSettingsSaveTopic)
                                 .font(MONO).size(13).padding(6),
-                            button(text("Save").font(MONO).size(12).color(theme::ACCENT))
+                            button(text("Save").font(MONO).size(12).color(theme::colors().accent))
                                 .on_press(Message::RoomSettingsSaveTopic)
                                 .padding([6, 10])
                                 .style(|_, _| button::Style {
-                                    background: Some(theme::BG_LIGHT.into()),
-                                    text_color: theme::ACCENT,
+                                    background: Some(theme::colors().bg_light.into()),
+                                    text_color: theme::colors().accent,
                                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                     ..Default::default()
                                 }),
@@ -1324,30 +1324,30 @@ impl FluxChat {
                     info_col = info_col.push(rule::horizontal(1));
                     info_col = info_col.push(
                         row![
-                            text("Room ID:").font(MONO).size(13).color(theme::TEXT_DIM),
-                            text(&room.room_id).font(MONO).size(12).color(theme::TEXT_DIM),
+                            text("Room ID:").font(MONO).size(13).color(theme::colors().text_dim),
+                            text(&room.room_id).font(MONO).size(12).color(theme::colors().text_dim),
                         ].spacing(8)
                     );
                     if room.is_encrypted {
                         info_col = info_col.push(
                             row![
-                                text("Encrypted:").font(MONO).size(13).color(theme::TEXT_DIM),
-                                text("Yes").font(MONO).size(14).color(theme::GREEN),
+                                text("Encrypted:").font(MONO).size(13).color(theme::colors().text_dim),
+                                text("Yes").font(MONO).size(14).color(theme::colors().green),
                             ].spacing(8)
                         );
                     } else {
                         let rid = room.room_id.clone();
                         info_col = info_col.push(
                             row![
-                                text("Encrypted:").font(MONO).size(13).color(theme::TEXT_DIM),
-                                text("No").font(MONO).size(14).color(theme::TEXT_MUTED),
+                                text("Encrypted:").font(MONO).size(13).color(theme::colors().text_dim),
+                                text("No").font(MONO).size(14).color(theme::colors().text_muted),
                                 Space::new().width(Fill),
-                                button(text("Enable Encryption").font(MONO).size(12).color(theme::ACCENT))
+                                button(text("Enable Encryption").font(MONO).size(12).color(theme::colors().accent))
                                     .on_press(Message::EnableEncryption(rid))
                                     .padding([4, 10])
                                     .style(|_, _| button::Style {
-                                        background: Some(theme::BG_LIGHT.into()),
-                                        text_color: theme::ACCENT,
+                                        background: Some(theme::colors().bg_light.into()),
+                                        text_color: theme::colors().accent,
                                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                         ..Default::default()
                                     }),
@@ -1357,7 +1357,7 @@ impl FluxChat {
                     // Space membership
                     info_col = info_col.push(rule::horizontal(1));
                     info_col = info_col.push(
-                        text("SPACES").font(MONO).size(12).color(theme::TEXT_DIM)
+                        text("SPACES").font(MONO).size(12).color(theme::colors().text_dim)
                     );
 
                     let current_space = room.space_id.as_deref();
@@ -1365,10 +1365,10 @@ impl FluxChat {
                         let is_in = current_space == Some(&space.room_id);
                         let sid = space.room_id.clone();
                         let (label, color, msg) = if is_in {
-                            (format!("\u{2713} {}", space.name), theme::GREEN,
+                            (format!("\u{2713} {}", space.name), theme::colors().green,
                              Message::RemoveRoomFromSpace(sid))
                         } else {
-                            (format!("+ {}", space.name), theme::TEXT_MUTED,
+                            (format!("+ {}", space.name), theme::colors().text_muted,
                              Message::AddRoomToSpace(sid))
                         };
                         info_col = info_col.push(
@@ -1389,18 +1389,18 @@ impl FluxChat {
                     info_col = info_col.push(rule::horizontal(1));
                     let rid = room.room_id.clone();
                     info_col = info_col.push(
-                        button(text("Leave Room").font(MONO).size(14).color(theme::RED))
+                        button(text("Leave Room").font(MONO).size(14).color(theme::colors().red))
                             .on_press(Message::LeaveRoom(rid))
                             .padding([6, 16])
                             .style(|_, _| button::Style {
-                                background: Some(theme::BG_LIGHT.into()),
-                                text_color: theme::RED,
+                                background: Some(theme::colors().bg_light.into()),
+                                text_color: theme::colors().red,
                                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
                     );
                 } else {
-                    info_col = info_col.push(text("No room selected").font(MONO).size(14).color(theme::TEXT_DIM));
+                    info_col = info_col.push(text("No room selected").font(MONO).size(14).color(theme::colors().text_dim));
                 }
                 info_col
             },
@@ -1413,25 +1413,25 @@ impl FluxChat {
     fn view_invite_modal(&self) -> Element<Message> {
         let mut col = column![
             row![
-                text("Invite User").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                text("Invite User").font(MONO).size(16).color(theme::colors().text_bright),
                 Space::new().width(Fill),
-                button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
+                button(text("\u{00d7}").font(MONO).size(18).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(theme::button_transparent),
             ].align_y(iced::Alignment::Center),
-            text("Search for a user to invite").font(MONO).size(13).color(theme::TEXT_DIM),
+            text("Search for a user to invite").font(MONO).size(13).color(theme::colors().text_dim),
             row![
                 text_input("@user:server or display name...", &self.invite_search)
                     .on_input(Message::InviteSearchChanged)
                     .on_submit(Message::InviteSearchSubmit)
                     .font(MONO).size(14).padding(8),
-                button(text("Search").font(MONO).size(14).color(theme::ACCENT))
+                button(text("Search").font(MONO).size(14).color(theme::colors().accent))
                     .on_press(Message::InviteSearchSubmit)
                     .padding([8, 16])
                     .style(|_, _| button::Style {
-                        background: Some(theme::BG_LIGHT.into()),
-                        text_color: theme::ACCENT,
+                        background: Some(theme::colors().bg_light.into()),
+                        text_color: theme::colors().accent,
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
@@ -1439,7 +1439,7 @@ impl FluxChat {
         ].spacing(10);
 
         if self.invite_results.is_empty() && !self.invite_search.is_empty() {
-            col = col.push(text("No users found").font(MONO).size(13).color(theme::TEXT_DIM));
+            col = col.push(text("No users found").font(MONO).size(13).color(theme::colors().text_dim));
         }
 
         for user in &self.invite_results {
@@ -1448,9 +1448,9 @@ impl FluxChat {
             col = col.push(
                 button(
                     row![
-                        text(name).font(MONO).size(14).color(theme::TEXT_NORMAL),
+                        text(name).font(MONO).size(14).color(theme::colors().text_normal),
                         Space::new().width(Fill),
-                        text(&user.user_id).font(MONO).size(12).color(theme::TEXT_DIM),
+                        text(&user.user_id).font(MONO).size(12).color(theme::colors().text_dim),
                     ].spacing(8).align_y(iced::Alignment::Center)
                 )
                 .on_press(Message::InviteUserFromModal(uid))
@@ -1472,14 +1472,14 @@ impl FluxChat {
             col = col.push(rule::horizontal(1));
             col = col.push(
                 button(
-                    text(format!("Invite {}", &self.invite_search)).font(MONO).size(14).color(theme::GREEN)
+                    text(format!("Invite {}", &self.invite_search)).font(MONO).size(14).color(theme::colors().green)
                 )
                 .on_press(Message::InviteUserFromModal(uid))
                 .padding([6, 10])
                 .width(Fill)
                 .style(|_, _| button::Style {
-                    background: Some(theme::BG_LIGHT.into()),
-                    text_color: theme::GREEN,
+                    background: Some(theme::colors().bg_light.into()),
+                    text_color: theme::colors().green,
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
@@ -1492,25 +1492,25 @@ impl FluxChat {
     fn view_create_dm_modal(&self) -> Element<Message> {
         let mut col = column![
             row![
-                text("Direct Message").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                text("Direct Message").font(MONO).size(16).color(theme::colors().text_bright),
                 Space::new().width(Fill),
-                button(text("\u{00d7}").font(MONO).size(18).color(theme::TEXT_DIM))
+                button(text("\u{00d7}").font(MONO).size(18).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(theme::button_transparent),
             ].align_y(iced::Alignment::Center),
-            text("Search for a user to message").font(MONO).size(13).color(theme::TEXT_DIM),
+            text("Search for a user to message").font(MONO).size(13).color(theme::colors().text_dim),
             row![
                 text_input("@user:server or display name...", &self.dm_search)
                     .on_input(Message::DmSearchChanged)
                     .on_submit(Message::DmSearchSubmit)
                     .font(MONO).size(14).padding(8),
-                button(text("Search").font(MONO).size(14).color(theme::ACCENT))
+                button(text("Search").font(MONO).size(14).color(theme::colors().accent))
                     .on_press(Message::DmSearchSubmit)
                     .padding([8, 16])
                     .style(|_, _| button::Style {
-                        background: Some(theme::BG_LIGHT.into()),
-                        text_color: theme::ACCENT,
+                        background: Some(theme::colors().bg_light.into()),
+                        text_color: theme::colors().accent,
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
@@ -1518,7 +1518,7 @@ impl FluxChat {
         ].spacing(10);
 
         if self.dm_results.is_empty() && !self.dm_search.is_empty() {
-            col = col.push(text("No users found").font(MONO).size(13).color(theme::TEXT_DIM));
+            col = col.push(text("No users found").font(MONO).size(13).color(theme::colors().text_dim));
         }
 
         for user in &self.dm_results {
@@ -1527,9 +1527,9 @@ impl FluxChat {
             col = col.push(
                 button(
                     row![
-                        text(name).font(MONO).size(14).color(theme::TEXT_NORMAL),
+                        text(name).font(MONO).size(14).color(theme::colors().text_normal),
                         Space::new().width(Fill),
-                        text(&user.user_id).font(MONO).size(12).color(theme::TEXT_DIM),
+                        text(&user.user_id).font(MONO).size(12).color(theme::colors().text_dim),
                     ].spacing(8).align_y(iced::Alignment::Center)
                 )
                 .on_press(Message::SendDmToUser(uid))
@@ -1551,14 +1551,14 @@ impl FluxChat {
             col = col.push(rule::horizontal(1));
             col = col.push(
                 button(
-                    text(format!("Message {}", &self.dm_search)).font(MONO).size(14).color(theme::GREEN)
+                    text(format!("Message {}", &self.dm_search)).font(MONO).size(14).color(theme::colors().green)
                 )
                 .on_press(Message::SendDmToUser(uid))
                 .padding([6, 10])
                 .width(Fill)
                 .style(|_, _| button::Style {
-                    background: Some(theme::BG_LIGHT.into()),
-                    text_color: theme::GREEN,
+                    background: Some(theme::colors().bg_light.into()),
+                    text_color: theme::colors().green,
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
@@ -1571,7 +1571,7 @@ impl FluxChat {
     /// Single device/session row for the sessions settings tab.
     pub(crate) fn view_device_row<'a>(&self, device: &'a fluxchat_core::devices::DeviceInfo) -> Element<'a, Message> {
         let name = device.display_name.as_deref().unwrap_or("Unknown device");
-        let verified_color = if device.is_verified { theme::GREEN } else { theme::YELLOW };
+        let verified_color = if device.is_verified { theme::colors().green } else { theme::colors().yellow };
         let verified_label = if device.is_verified { "verified" } else { "unverified" };
         let device_id_short = if device.device_id.len() > 10 {
             &device.device_id[..10]
@@ -1591,25 +1591,25 @@ impl FluxChat {
             else { format!("{}d ago", ago / 86400) }
         }).unwrap_or_else(|| "unknown".to_string());
 
-        let border_color = if device.is_current { theme::ACCENT } else { theme::BORDER };
+        let border_color = if device.is_current { theme::colors().accent } else { theme::colors().border };
         let mut device_col = column![
             row![
-                text(name).font(MONO).size(14).color(theme::TEXT_BRIGHT),
+                text(name).font(MONO).size(14).color(theme::colors().text_bright),
                 if device.is_current {
-                    text(" (this device)").font(MONO).size(12).color(theme::ACCENT)
+                    text(" (this device)").font(MONO).size(12).color(theme::colors().accent)
                 } else {
                     text("").size(1)
                 },
             ].spacing(4),
             row![
                 text(verified_label).font(MONO).size(12).color(verified_color),
-                text(format!(" | {device_id_short}")).font(MONO).size(12).color(theme::TEXT_DIM),
+                text(format!(" | {device_id_short}")).font(MONO).size(12).color(theme::colors().text_dim),
                 if let Some(ref ip) = device.last_seen_ip {
-                    text(format!(" | {ip}")).font(MONO).size(12).color(theme::TEXT_DIM)
+                    text(format!(" | {ip}")).font(MONO).size(12).color(theme::colors().text_dim)
                 } else {
                     text("").size(1)
                 },
-                text(format!(" | {last_seen}")).font(MONO).size(12).color(theme::TEXT_DIM),
+                text(format!(" | {last_seen}")).font(MONO).size(12).color(theme::colors().text_dim),
             ].spacing(0),
         ].spacing(2);
 
@@ -1623,12 +1623,12 @@ impl FluxChat {
                             .on_submit(Message::SettingsSignOutConfirm)
                             .secure(true)
                             .font(MONO).size(13).padding(4).width(200),
-                        button(text("Confirm").font(MONO).size(12).color(theme::RED))
+                        button(text("Confirm").font(MONO).size(12).color(theme::colors().red))
                             .on_press(Message::SettingsSignOutConfirm)
                             .padding([4, 8])
                             .style(|_, _| button::Style {
-                                background: Some(theme::BG_LIGHT.into()),
-                                text_color: theme::RED,
+                                background: Some(theme::colors().bg_light.into()),
+                                text_color: theme::colors().red,
                                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
@@ -1637,12 +1637,12 @@ impl FluxChat {
             } else {
                 let did = device.device_id.clone();
                 device_col = device_col.push(
-                    button(text("Sign out").font(MONO).size(12).color(theme::RED))
+                    button(text("Sign out").font(MONO).size(12).color(theme::colors().red))
                         .on_press(Message::SettingsSignOutDevice(did))
                         .padding([2, 8])
                         .style(|_, _| button::Style {
                             background: None,
-                            text_color: theme::RED,
+                            text_color: theme::colors().red,
                             ..Default::default()
                         }),
                 );
@@ -1653,7 +1653,7 @@ impl FluxChat {
             .padding([8, 12])
             .width(Fill)
             .style(move |_: &Theme| container::Style {
-                background: Some(theme::BG_MID.into()),
+                background: Some(theme::colors().bg_mid.into()),
                 border: iced::Border {
                     color: border_color,
                     width: 1.0,
@@ -1678,12 +1678,12 @@ impl FluxChat {
         let mut content = column![
             // Header
             row![
-                text(space_name).font(MONO).size(18).color(theme::TEXT_BRIGHT),
+                text(space_name).font(MONO).size(18).color(theme::colors().text_bright),
                 Space::new().width(Fill),
                 button(
                     iced::widget::svg(close_handle)
                         .width(14).height(14)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) }),
                 )
                 .on_press(Message::CloseModal)
                 .padding([4, 6])
@@ -1699,10 +1699,10 @@ impl FluxChat {
             ].align_y(iced::Alignment::Center),
 
             // Space ID + homeserver
-            text(space_id).font(MONO).size(11).color(theme::TEXT_DIM),
+            text(space_id).font(MONO).size(11).color(theme::colors().text_dim),
             row![
-                text("Homeserver: ").font(MONO).size(12).color(theme::TEXT_DIM),
-                text(homeserver).font(MONO).size(12).color(theme::ACCENT),
+                text("Homeserver: ").font(MONO).size(12).color(theme::colors().text_dim),
+                text(homeserver).font(MONO).size(12).color(theme::colors().accent),
             ],
         ].spacing(4);
 
@@ -1711,12 +1711,12 @@ impl FluxChat {
             content = content.push(Space::new().height(4));
             content = content.push(
                 container(
-                    text(topic).font(MONO).size(13).color(theme::TEXT_NORMAL)
+                    text(topic).font(MONO).size(13).color(theme::colors().text_normal)
                 )
                 .padding([8, 12])
                 .width(Fill)
                 .style(|_: &Theme| container::Style {
-                    background: Some(theme::BG_MID.into()),
+                    background: Some(theme::colors().bg_mid.into()),
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
@@ -1728,12 +1728,12 @@ impl FluxChat {
         // Rooms section
         content = content.push(
             text(format!("ROOMS \u{2014} {}", self.space_detail_rooms.len()))
-                .font(MONO).size(11).color(theme::TEXT_DIM)
+                .font(MONO).size(11).color(theme::colors().text_dim)
         );
 
         if self.space_detail_rooms.is_empty() {
             content = content.push(
-                text("Loading...").font(MONO).size(12).color(theme::TEXT_MUTED)
+                text("Loading...").font(MONO).size(12).color(theme::colors().text_muted)
             );
         } else {
             let mut rooms_col = column![].spacing(2);
@@ -1753,7 +1753,7 @@ impl FluxChat {
                                 .style(|_, _| iced::widget::svg::Style {
                                     color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3))
                                 }),
-                            text(&room.name).font(MONO).size(13).color(theme::TEXT_NORMAL),
+                            text(&room.name).font(MONO).size(13).color(theme::colors().text_normal),
                         ].spacing(6).align_y(iced::Alignment::Center),
                     )
                     .on_press(Message::SelectRoom(rid))
@@ -1782,7 +1782,7 @@ impl FluxChat {
                 .max_height(200.0)
                 .width(Fill)
                 .style(|_: &Theme| container::Style {
-                    background: Some(theme::BG_MID.into()),
+                    background: Some(theme::colors().bg_mid.into()),
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
@@ -1794,12 +1794,12 @@ impl FluxChat {
         // Members section
         content = content.push(
             text(format!("MEMBERS \u{2014} {}", self.space_detail_members.len()))
-                .font(MONO).size(11).color(theme::TEXT_DIM)
+                .font(MONO).size(11).color(theme::colors().text_dim)
         );
 
         if self.space_detail_members.is_empty() {
             content = content.push(
-                text("Loading...").font(MONO).size(12).color(theme::TEXT_MUTED)
+                text("Loading...").font(MONO).size(12).color(theme::colors().text_muted)
             );
         } else {
             let mut members_col = column![].spacing(1);
@@ -1829,7 +1829,7 @@ impl FluxChat {
             if self.space_detail_members.len() > 50 {
                 members_col = members_col.push(
                     text(format!("...and {} more", self.space_detail_members.len() - 50))
-                        .font(MONO).size(11).color(theme::TEXT_DIM)
+                        .font(MONO).size(11).color(theme::colors().text_dim)
                 );
             }
             content = content.push(
@@ -1844,7 +1844,7 @@ impl FluxChat {
                 .max_height(200.0)
                 .width(Fill)
                 .style(|_: &Theme| container::Style {
-                    background: Some(theme::BG_MID.into()),
+                    background: Some(theme::colors().bg_mid.into()),
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
@@ -1858,12 +1858,12 @@ impl FluxChat {
         let close_handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_CLOSE);
         let mut content = column![
             row![
-                text("Pending Invites").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                text("Pending Invites").font(MONO).size(16).color(theme::colors().text_bright),
                 Space::new().width(Fill),
                 button(
                     iced::widget::svg(close_handle)
                         .width(14).height(14)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) }),
                 )
                 .on_press(Message::CloseModal)
                 .padding([4, 6])
@@ -1881,7 +1881,7 @@ impl FluxChat {
 
         if self.invited_rooms.is_empty() {
             content = content.push(
-                text("No pending invites").font(MONO).size(13).color(theme::TEXT_DIM)
+                text("No pending invites").font(MONO).size(13).color(theme::colors().text_dim)
             );
         } else {
             let mut list = column![].spacing(4);
@@ -1892,24 +1892,24 @@ impl FluxChat {
                 list = list.push(
                     container(
                         column![
-                            text(&room.name).font(MONO).size(14).color(theme::TEXT_BRIGHT),
-                            text(room_id_display).font(MONO).size(11).color(theme::TEXT_DIM),
+                            text(&room.name).font(MONO).size(14).color(theme::colors().text_bright),
+                            text(room_id_display).font(MONO).size(11).color(theme::colors().text_dim),
                             row![
-                                button(text("Accept").font(MONO).size(11).color(theme::BG_DEEP))
+                                button(text("Accept").font(MONO).size(11).color(theme::colors().bg_deep))
                                     .on_press(Message::AcceptInvite(rid_accept))
                                     .padding([4, 14])
                                     .style(|_, _| button::Style {
-                                        background: Some(theme::GREEN.into()),
-                                        text_color: theme::BG_DEEP,
+                                        background: Some(theme::colors().green.into()),
+                                        text_color: theme::colors().bg_deep,
                                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                         ..Default::default()
                                     }),
-                                button(text("Reject").font(MONO).size(11).color(theme::BG_DEEP))
+                                button(text("Reject").font(MONO).size(11).color(theme::colors().bg_deep))
                                     .on_press(Message::RejectInvite(rid_reject))
                                     .padding([4, 14])
                                     .style(|_, _| button::Style {
-                                        background: Some(theme::RED.into()),
-                                        text_color: theme::BG_DEEP,
+                                        background: Some(theme::colors().red.into()),
+                                        text_color: theme::colors().bg_deep,
                                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                                         ..Default::default()
                                     }),
@@ -1919,7 +1919,7 @@ impl FluxChat {
                     .padding([8, 12])
                     .width(Fill)
                     .style(|_: &Theme| container::Style {
-                        background: Some(theme::BG_MID.into()),
+                        background: Some(theme::colors().bg_mid.into()),
                         border: iced::Border { radius: 6.0.into(), ..Default::default() },
                         ..Default::default()
                     }),

@@ -1,0 +1,24 @@
+# Nord Light — Snow Storm backgrounds, Polar Night text, Frost/Aurora accents
+# https://www.nordtheme.com/
+
+name = "Nord Light"
+dark = false
+
+bg_deep = [216, 222, 233]
+bg_dark = [229, 233, 240]
+bg_mid = [236, 239, 244]
+bg_light = [216, 222, 233]
+bg_hover = [202, 210, 226]
+
+text_bright = [46, 52, 64]
+text_normal = [59, 66, 82]
+text_muted = [76, 86, 106]
+text_dim = [123, 136, 157]
+
+accent = [94, 129, 172]
+green = [163, 190, 140]
+yellow = [208, 135, 112]
+red = [191, 97, 106]
+purple = [180, 142, 173]
+
+border = [0, 0, 0, 25]

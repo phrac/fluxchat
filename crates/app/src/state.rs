@@ -170,6 +170,8 @@ pub struct FluxChat {
     pub msg_font_family: String,     // font family name for message area
     pub sidebar_font_family: String, // font family name for sidebar
     pub available_fonts: Vec<String>, // discovered system font families
+    pub available_themes: Vec<crate::theme::ThemeColors>,
+    pub active_theme_name: String,
     pub giphy_api_key: String,
 
     // Notifications
@@ -410,6 +412,8 @@ impl FluxChat {
             msg_font_family: "JetBrainsMono Nerd Font".to_string(),
             sidebar_font_family: "JetBrainsMono Nerd Font".to_string(),
             available_fonts: Vec::new(),
+            available_themes: Vec::new(),
+            active_theme_name: "FluxChat".to_string(),
             giphy_api_key: String::new(),
             notifications_enabled: true,
             notify_mentions_only: false,

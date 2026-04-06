@@ -33,12 +33,12 @@ impl FluxChat {
                 text(format!("USERS \u{2014} {total}"))
                     .font(self.sidebar_font())
                     .size(14)
-                    .color(theme::TEXT_BRIGHT),
+                    .color(theme::colors().text_bright),
                 Space::new().width(Fill),
                 button(
                     iced::widget::svg(invite_handle)
                         .width(14).height(14)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) }),
                 )
                 .on_press(Message::OpenModal(crate::state::Modal::Invite))
                 .padding([2, 4])
@@ -119,7 +119,7 @@ impl FluxChat {
             }
 
             let mic_icon = if self.call_mic_muted { SVG_MIC_OFF } else { SVG_MIC };
-            let mic_color = if self.call_mic_muted { theme::RED } else { theme::GREEN };
+            let mic_color = if self.call_mic_muted { theme::colors().red } else { theme::colors().green };
             let call_rid = self.call_room_id.clone().unwrap_or_default();
 
             panel = panel.push(container(
@@ -128,13 +128,13 @@ impl FluxChat {
                         row![
                             iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
                                 .width(12).height(12)
-                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::GREEN) }),
-                            text(call_room_name).font(self.sidebar_font()).size(11).color(theme::GREEN),
+                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().green) }),
+                            text(call_room_name).font(self.sidebar_font()).size(11).color(theme::colors().green),
                         ].spacing(4).align_y(iced::Alignment::Center)
                     )
                     .on_press(Message::SelectRoom(call_rid))
                     .padding([2, 0])
-                    .style(|_, _| button::Style { background: None, text_color: theme::GREEN, ..Default::default() }),
+                    .style(|_, _| button::Style { background: None, text_color: theme::colors().green, ..Default::default() }),
                     pip_participants,
                     row![
                         button(
@@ -145,19 +145,19 @@ impl FluxChat {
                             .on_press(Message::CallToggleMic)
                             .padding([4, 8])
                             .style(move |_, _| button::Style {
-                                background: Some(theme::BG_LIGHT.into()),
+                                background: Some(theme::colors().bg_light.into()),
                                 border: iced::Border { radius: 12.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
                         button(
                             iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE_OFF))
                                 .width(14).height(14)
-                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_BRIGHT) })
+                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_bright) })
                         )
                             .on_press(Message::CallLeave)
                             .padding([4, 8])
                             .style(|_, _| button::Style {
-                                background: Some(theme::RED.into()),
+                                background: Some(theme::colors().red.into()),
                                 border: iced::Border { radius: 12.0.into(), ..Default::default() },
                                 ..Default::default()
                             }),
@@ -168,15 +168,15 @@ impl FluxChat {
             )
             .width(Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(theme::BG_MID.into()),
-                border: iced::Border { color: theme::GREEN, width: 1.0, ..Default::default() },
+                background: Some(theme::colors().bg_mid.into()),
+                border: iced::Border { color: theme::colors().green, width: 1.0, ..Default::default() },
                 ..Default::default()
             }));
         } else if is_connecting {
             panel = panel.push(container(
-                text("Connecting...").font(self.sidebar_font()).size(11).color(theme::ACCENT),
+                text("Connecting...").font(self.sidebar_font()).size(11).color(theme::colors().accent),
             ).padding([8, 10]).width(Fill).style(|_: &Theme| container::Style {
-                background: Some(theme::BG_MID.into()),
+                background: Some(theme::colors().bg_mid.into()),
                 ..Default::default()
             }));
         } else if is_failed {
@@ -187,12 +187,12 @@ impl FluxChat {
             } else { "Error" };
             panel = panel.push(container(
                 row![
-                    text(err_msg).font(self.sidebar_font()).size(11).color(theme::RED),
+                    text(err_msg).font(self.sidebar_font()).size(11).color(theme::colors().red),
                     Space::new().width(Fill),
                     button(
                         iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_CLOSE))
                             .width(10).height(10)
-                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) })
+                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) })
                     )
                     .on_press(Message::CallDisconnected("dismissed".into()))
                     .padding(2)
@@ -200,7 +200,7 @@ impl FluxChat {
                 ].spacing(4).align_y(iced::Alignment::Center),
             ).padding([6, 10]).width(Fill).style(|_: &Theme| container::Style {
                 background: Some(Color::from_rgba(0.8, 0.0, 0.0, 0.1).into()),
-                border: iced::Border { color: theme::RED, width: 1.0, ..Default::default() },
+                border: iced::Border { color: theme::colors().red, width: 1.0, ..Default::default() },
                 ..Default::default()
             }));
         } else if selected_has_call {
@@ -210,22 +210,22 @@ impl FluxChat {
                 row![
                     iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
                         .width(12).height(12)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::GREEN) }),
-                    text("Call active").font(self.sidebar_font()).size(11).color(theme::TEXT_NORMAL),
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().green) }),
+                    text("Call active").font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
                     Space::new().width(Fill),
-                    button(text("Join").font(self.sidebar_font()).size(11).color(theme::BG_DEEP))
+                    button(text("Join").font(self.sidebar_font()).size(11).color(theme::colors().bg_deep))
                         .on_press(Message::CallJoin(rid))
                         .padding([3, 10])
                         .style(|_, _| button::Style {
-                            background: Some(theme::GREEN.into()),
-                            text_color: theme::BG_DEEP,
+                            background: Some(theme::colors().green.into()),
+                            text_color: theme::colors().bg_deep,
                             border: iced::Border { radius: 4.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
                 ].spacing(6).align_y(iced::Alignment::Center),
             ).padding([6, 10]).width(Fill).style(|_: &Theme| container::Style {
-                background: Some(theme::BG_MID.into()),
-                border: iced::Border { color: theme::GREEN, width: 1.0, ..Default::default() },
+                background: Some(theme::colors().bg_mid.into()),
+                border: iced::Border { color: theme::colors().green, width: 1.0, ..Default::default() },
                 ..Default::default()
             }));
         }
@@ -234,9 +234,9 @@ impl FluxChat {
             .width(200)
             .height(Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(theme::BG_DEEP.into()),
+                background: Some(theme::colors().bg_deep.into()),
                 border: iced::Border {
-                    color: theme::BORDER,
+                    color: theme::colors().border,
                     width: 1.0,
                     radius: 0.0.into(),
                 },
@@ -256,7 +256,7 @@ impl FluxChat {
                 text(format!("{} \u{2014} {}", label.to_uppercase(), members.len()))
                     .font(self.sidebar_font())
                     .size(11)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::colors().text_dim),
             )
             .padding([10.0, 14.0]),
         ]
@@ -273,8 +273,8 @@ impl FluxChat {
     pub(crate) fn view_member_row<'a>(&'a self, member: &'a fluxchat_core::MemberInfo) -> Element<'a, Message> {
         let nick_col = theme::nick_color(&member.display_name);
         let presence_color = match member.presence.as_str() {
-            "online" => theme::GREEN,
-            "idle" => theme::YELLOW,
+            "online" => theme::colors().green,
+            "idle" => theme::colors().yellow,
             _ => Color::TRANSPARENT,
         };
         let user_id = member.user_id.clone();
@@ -289,7 +289,7 @@ impl FluxChat {
                 background: Some(presence_color.into()),
                 border: iced::Border {
                     radius: 5.0.into(),
-                    color: theme::BG_DEEP,
+                    color: theme::colors().bg_deep,
                     width: 2.0,
                 },
                 ..Default::default()
@@ -325,7 +325,7 @@ impl FluxChat {
                 } else {
                     None
                 },
-                text_color: theme::TEXT_NORMAL,
+                text_color: theme::colors().text_normal,
                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                 ..Default::default()
             })

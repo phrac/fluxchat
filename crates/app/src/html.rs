@@ -653,7 +653,7 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                     spans.push(pill);
                 } else {
                     let mut span = styled_span(text, &style);
-                    span.color = Some(theme::ACCENT);
+                    span.color = Some(theme::colors().accent);
                     span.underline = true;
                     span.link = Some(url);
                     spans.push(span);
@@ -762,7 +762,7 @@ fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo]) 
                     current_spans.push(pill);
                 } else {
                     let mut span = styled_span(text, &style);
-                    span.color = Some(theme::ACCENT);
+                    span.color = Some(theme::colors().accent);
                     span.underline = true;
                     span.link = Some(url);
                     current_spans.push(span);
@@ -873,7 +873,7 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
             style: font_style,
             ..Font::default()
         });
-        span.color = Some(theme::ACCENT);
+        span.color = Some(theme::colors().accent);
         span = span
             .background(Color::from_rgba(0.0, 0.0, 0.0, 0.3))
             .border(iced::Border {
@@ -920,12 +920,12 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
 
     // Blockquote — dim + left border effect via background
     if style.blockquote && !style.code {
-        span.color = Some(theme::TEXT_MUTED);
+        span.color = Some(theme::colors().text_muted);
     }
 
     // Default text color if not set
     if span.color.is_none() {
-        span.color = Some(theme::TEXT_NORMAL);
+        span.color = Some(theme::colors().text_normal);
     }
 
     span
@@ -960,7 +960,7 @@ fn try_room_pill(url: &str, rooms: &[fluxchat_core::RoomInfo]) -> Option<Span<'s
         format!("{short}:...")
     };
 
-    let color = theme::ACCENT;
+    let color = theme::colors().accent;
     let mut span = Span::new(display);
     span.color = Some(color);
     span.font = Some(Font {

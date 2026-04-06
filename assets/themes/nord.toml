@@ -1,0 +1,23 @@
+# Nord Dark — Polar Night backgrounds, Snow Storm text, Frost/Aurora accents
+# https://www.nordtheme.com/
+
+name = "Nord"
+
+bg_deep = [33, 38, 46]
+bg_dark = [46, 52, 64]
+bg_mid = [59, 66, 82]
+bg_light = [67, 76, 94]
+bg_hover = [76, 86, 106]
+
+text_bright = [236, 239, 244]
+text_normal = [216, 222, 233]
+text_muted = [123, 136, 157]
+text_dim = [86, 98, 118]
+
+accent = [136, 192, 208]
+green = [163, 190, 140]
+yellow = [235, 203, 139]
+red = [191, 97, 106]
+purple = [180, 142, 173]
+
+border = [255, 255, 255, 20]

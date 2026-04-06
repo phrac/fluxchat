@@ -102,6 +102,7 @@ pub enum Message {
     SetMsgFontSize(f32),
     SetMsgFontFamily(String),
     SetSidebarFontFamily(String),
+    SetTheme(String), // theme name
 
     // --- Notifications ---
     SetNotificationsEnabled(bool),

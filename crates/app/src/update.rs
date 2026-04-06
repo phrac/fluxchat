@@ -1565,6 +1565,13 @@ impl FluxChat {
                 self.sidebar_font_family = name.clone();
                 let _ = self.core.db.set_setting("sidebar_font_family", &name);
             }
+            Message::SetTheme(name) => {
+                if let Some(theme) = self.available_themes.iter().find(|t| t.name == name) {
+                    crate::theme::set_active_theme(theme.clone());
+                    self.active_theme_name = name.clone();
+                    let _ = self.core.db.set_setting("theme", &name);
+                }
+            }
 
             // --- Notifications ---
             Message::SetNotificationsEnabled(enabled) => {
@@ -3352,6 +3359,13 @@ impl FluxChat {
             self.sidebar_font_family = val;
         }
         self.available_fonts = crate::view::discover_system_fonts();
+        self.available_themes = crate::theme::discover_themes();
+        if let Some(val) = self.core.db.get_setting("theme") {
+            self.active_theme_name = val.clone();
+            if let Some(theme) = self.available_themes.iter().find(|t| t.name == val) {
+                crate::theme::set_active_theme(theme.clone());
+            }
+        }
         if let Some(key) = self.core.db.get_setting("giphy_api_key") {
             self.giphy_api_key = key;
         }
