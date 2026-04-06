@@ -100,6 +100,8 @@ pub enum Message {
     ToggleJoinPart,
     SetZoomLevel(u32),
     SetMsgFontSize(f32),
+    SetMsgFontFamily(String),
+    SetSidebarFontFamily(String),
 
     // --- Notifications ---
     SetNotificationsEnabled(bool),

@@ -13,7 +13,7 @@ use crate::theme;
 use crate::update::extract_urls;
 use crate::view::{
     emoji_search_id, local_time_of_day, thin_scrollbar, EMOJI_CELL_SIZE, EMOJI_FREQ_COUNT,
-    EMOJI_GRID_COLUMNS, EMOJI_PANEL_HEIGHT, MONO,
+    EMOJI_GRID_COLUMNS, EMOJI_PANEL_HEIGHT,
 };
 
 impl FluxChat {
@@ -40,12 +40,12 @@ impl FluxChat {
         if msg.event_id.starts_with("~") {
             return row![
                 text(time_str)
-                    .font(MONO)
+                    .font(self.msg_font())
                     .size(14)
                     .color(theme::TEXT_DIM)
                     .width(Length::Fixed(50.0)),
                 text(&msg.body)
-                    .font(MONO)
+                    .font(self.msg_font())
                     .size(14)
                     .color(theme::TEXT_DIM)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
@@ -61,12 +61,12 @@ impl FluxChat {
             let nick_col = theme::nick_color(&msg.sender_name);
             return row![
                 text(time_str)
-                    .font(MONO)
+                    .font(self.msg_font())
                     .size(14)
                     .color(theme::TEXT_DIM)
                     .width(Length::Fixed(50.0)),
                 text(format!("* {} {}", msg.sender_name, msg.body))
-                    .font(MONO)
+                    .font(self.msg_font())
                     .size(fs)
                     .color(nick_col)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
@@ -84,7 +84,7 @@ impl FluxChat {
         };
 
         let time = text(time_str)
-            .font(MONO)
+            .font(self.msg_font())
             .size(14)
             .color(theme::TEXT_DIM)
             .width(Length::Fixed(time_width));
@@ -93,7 +93,7 @@ impl FluxChat {
         let nick_col = theme::nick_color(&msg.sender_name);
         let nick = container(
             text(&msg.sender_name)
-                .font(MONO)
+                .font(self.msg_font())
                 .size(fs)
                 .color(nick_col),
         )
@@ -118,7 +118,7 @@ impl FluxChat {
         // Poll messages
         if let Some(ref poll) = msg.poll {
             let mut poll_col = column![
-                text(&poll.question).font(MONO).size(fs).color(theme::TEXT_BRIGHT),
+                text(&poll.question).font(self.msg_font()).size(fs).color(theme::TEXT_BRIGHT),
             ]
             .spacing(4);
 
@@ -135,11 +135,11 @@ impl FluxChat {
                 poll_col = poll_col.push(
                     row![
                         text(format!("{answer_text} ({votes})"))
-                            .font(MONO)
+                            .font(self.msg_font())
                             .size(14)
                             .color(label_color),
                         text(format!("{pct}%"))
-                            .font(MONO)
+                            .font(self.msg_font())
                             .size(13)
                             .color(theme::TEXT_DIM),
                     ]
@@ -150,7 +150,7 @@ impl FluxChat {
             if poll.is_ended {
                 poll_col = poll_col.push(
                     text("Poll ended")
-                        .font(MONO)
+                        .font(self.msg_font())
                         .size(13)
                         .color(theme::TEXT_DIM),
                 );
@@ -180,16 +180,16 @@ impl FluxChat {
                 row![
                     iced::widget::svg(pin_handle).width(20).height(20)
                         .style(|_, _| iced::widget::svg::Style { color: Some(theme::RED) }),
-                    text(format!("{lat}, {lon}")).font(MONO).size(fs).color(theme::TEXT_BRIGHT),
+                    text(format!("{lat}, {lon}")).font(self.msg_font()).size(fs).color(theme::TEXT_BRIGHT),
                 ].spacing(8).align_y(iced::Alignment::Center),
             ].spacing(4);
             if let Some(desc) = description {
                 card_col = card_col.push(
-                    text(desc).font(MONO).size(fs - 1.0).color(theme::TEXT_MUTED)
+                    text(desc).font(self.msg_font()).size(fs - 1.0).color(theme::TEXT_MUTED)
                 );
             }
             card_col = card_col.push(
-                text("Open in OpenStreetMap").font(MONO).size(12).color(theme::ACCENT)
+                text("Open in OpenStreetMap").font(self.msg_font()).size(12).color(theme::ACCENT)
             );
             button(
                 container(card_col)
@@ -277,8 +277,8 @@ impl FluxChat {
                                     }),
                             ].spacing(0),
                         ),
-                        text(duration_str).font(MONO).size(12).color(theme::TEXT_DIM),
-                        text(label).font(MONO).size(12).color(theme::TEXT_MUTED)
+                        text(duration_str).font(self.msg_font()).size(12).color(theme::TEXT_DIM),
+                        text(label).font(self.msg_font()).size(12).color(theme::TEXT_MUTED)
                             .wrapping(iced::widget::text::Wrapping::None),
                     ].spacing(8).align_y(iced::Alignment::Center),
                 )
@@ -336,18 +336,18 @@ impl FluxChat {
                 } else {
                     let label = if msg.body.trim().is_empty() { "Loading image..." } else { &msg.body };
                     text(format!("[image: {label}]"))
-                        .font(MONO).size(fs).color(theme::TEXT_DIM)
+                        .font(self.msg_font()).size(fs).color(theme::TEXT_DIM)
                         .into()
                 }
             } else {
                 // Video messages
                 text(format!("[video: {}]", msg.body))
-                    .font(MONO).size(fs).color(theme::PURPLE).width(Fill)
+                    .font(self.msg_font()).size(fs).color(theme::PURPLE).width(Fill)
                     .into()
             }
         } else if msg.is_video {
             text(format!("[video: {}]", msg.body))
-                .font(MONO).size(fs).color(theme::PURPLE).width(Fill)
+                .font(self.msg_font()).size(fs).color(theme::PURPLE).width(Fill)
                 .into()
         } else if let Some(ref formatted) = msg.formatted_body {
             let has_code_block = formatted.contains("<pre>");
@@ -380,7 +380,7 @@ impl FluxChat {
                             }
                             body_col = body_col.push(
                                 selectable_rich_text(spans)
-                                    .font(MONO)
+                                    .font(self.msg_font())
                                     .size(fs)
                                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                                     .width(Fill)
@@ -392,12 +392,12 @@ impl FluxChat {
                             let label = if is_expanded { "Show less" } else { "Show more" };
                             let code_col = column![
                                 selectable_rich_text(spans)
-                                    .font(MONO)
+                                    .font(self.msg_font())
                                     .size(fs)
                                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                                     .width(Fill)
                                     .on_link_click(Message::OpenUrl),
-                                button(text(label).font(MONO).size(11).color(theme::ACCENT))
+                                button(text(label).font(self.msg_font()).size(11).color(theme::ACCENT))
                                     .on_press(Message::ToggleCodeBlock(eid))
                                     .padding([2, 8])
                                     .style(|_, status| button::Style {
@@ -426,7 +426,7 @@ impl FluxChat {
             } else {
                 let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms);
                 selectable_rich_text(spans)
-                    .font(MONO)
+                    .font(self.msg_font())
                     .size(fs)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(Fill)
@@ -437,7 +437,7 @@ impl FluxChat {
             // Parse basic markdown in plain text bodies
             let spans = crate::html::plain_text_to_spans(&msg.body);
             selectable_rich_text(spans)
-                .font(MONO)
+                .font(self.msg_font())
                 .size(fs)
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(Fill)
@@ -480,8 +480,8 @@ impl FluxChat {
                     row![
                         text("\u{2503}").size(20).color(sender_color), // vertical bar character
                         column![
-                            text(reply_sender).font(MONO).size(12).color(sender_color),
-                            text(preview_text).font(MONO).size(12).color(theme::TEXT_DIM)
+                            text(reply_sender).font(self.msg_font()).size(12).color(sender_color),
+                            text(preview_text).font(self.msg_font()).size(12).color(theme::TEXT_DIM)
                                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                         ].spacing(1),
                     ].spacing(4).align_y(iced::Alignment::Center)
@@ -667,7 +667,7 @@ impl FluxChat {
                     Space::new().width(Length::Fixed(indent)),
                     button(
                         text(format!("Show {extra_count} more preview{}", if extra_count == 1 { "" } else { "s" }))
-                            .font(MONO).size(11).color(theme::ACCENT)
+                            .font(self.msg_font()).size(11).color(theme::ACCENT)
                     )
                     .on_press(Message::TogglePreviewExpand(eid))
                     .padding([2, 0])
@@ -680,7 +680,7 @@ impl FluxChat {
                 row![
                     Space::new().width(Length::Fixed(indent)),
                     button(
-                        text("Show less").font(MONO).size(11).color(theme::TEXT_DIM)
+                        text("Show less").font(self.msg_font()).size(11).color(theme::TEXT_DIM)
                     )
                     .on_press(Message::TogglePreviewExpand(eid))
                     .padding([2, 0])
@@ -733,7 +733,7 @@ impl FluxChat {
             let reaction_btn = button(
                 row![
                     text(&reaction.emoji).size(16),
-                    text(reaction.count.to_string()).font(MONO).size(12).color(theme::TEXT_MUTED),
+                    text(reaction.count.to_string()).font(self.msg_font()).size(12).color(theme::TEXT_MUTED),
                 ].spacing(4).align_y(iced::Alignment::Center)
             )
                 .on_press(Message::ToggleReaction(event_id, emoji))
@@ -754,7 +754,7 @@ impl FluxChat {
             reactions_row = reactions_row.push(
                 iced::widget::tooltip(
                     reaction_btn,
-                    text(tooltip_text).font(MONO).size(11),
+                    text(tooltip_text).font(self.msg_font()).size(11),
                     iced::widget::tooltip::Position::Top,
                 )
                 .style(|_: &Theme| container::Style {
@@ -803,13 +803,13 @@ impl FluxChat {
             "EMOJI"
         };
         let header = row![
-            text(title).font(MONO).size(12).color(theme::TEXT_DIM),
+            text(title).font(self.msg_font()).size(12).color(theme::TEXT_DIM),
             text_input("Search emoji...", &self.emoji_query)
                 .id(emoji_search_id())
                 .on_input(Message::EmojiQueryChanged)
-                .font(MONO).size(14).padding(6)
+                .font(self.msg_font()).size(14).padding(6)
                 .width(Fill),
-            button(text("\u{00d7}").font(MONO).size(16).color(theme::TEXT_DIM))
+            button(text("\u{00d7}").font(self.msg_font()).size(16).color(theme::TEXT_DIM))
                 .on_press(Message::ToggleEmojiPicker)
                 .padding([0, 6])
                 .style(theme::button_transparent),
@@ -896,7 +896,7 @@ impl FluxChat {
             } else {
                 "No results"
             };
-            grid = grid.push(text(hint).font(MONO).size(13).color(theme::TEXT_DIM));
+            grid = grid.push(text(hint).font(self.msg_font()).size(13).color(theme::TEXT_DIM));
         } else {
             for chunk in emojis_to_show.chunks(EMOJI_GRID_COLUMNS) {
                 let mut row_items = row![].spacing(2);
@@ -952,14 +952,14 @@ impl FluxChat {
         if let Some(ref site_name) = preview.site_name {
             content_col = content_col.push(
                 text(site_name.as_str().to_uppercase())
-                    .font(MONO).size(11).color(theme::TEXT_DIM)
+                    .font(self.msg_font()).size(11).color(theme::TEXT_DIM)
             );
         }
 
         if let Some(ref title) = preview.title {
             content_col = content_col.push(
                 text(title.as_str())
-                    .font(MONO).size(14).color(theme::ACCENT)
+                    .font(self.msg_font()).size(14).color(theme::ACCENT)
                     .wrapping(iced::widget::text::Wrapping::None)
             );
         }
@@ -968,7 +968,7 @@ impl FluxChat {
             let short = if desc.len() > 150 { &desc[..150] } else { desc };
             content_col = content_col.push(
                 text(short)
-                    .font(MONO).size(13).color(theme::TEXT_MUTED)
+                    .font(self.msg_font()).size(13).color(theme::TEXT_MUTED)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             );
         }

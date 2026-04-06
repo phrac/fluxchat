@@ -167,6 +167,9 @@ pub struct FluxChat {
     pub show_joinpart: bool,
     pub zoom_level: u32,
     pub msg_font_size: f32,
+    pub msg_font_family: String,     // font family name for message area
+    pub sidebar_font_family: String, // font family name for sidebar
+    pub available_fonts: Vec<String>, // discovered system font families
     pub giphy_api_key: String,
 
     // Notifications
@@ -404,6 +407,9 @@ impl FluxChat {
             show_joinpart: true,
             zoom_level: 100,
             msg_font_size: 14.0,
+            msg_font_family: "JetBrainsMono Nerd Font".to_string(),
+            sidebar_font_family: "JetBrainsMono Nerd Font".to_string(),
+            available_fonts: Vec::new(),
             giphy_api_key: String::new(),
             notifications_enabled: true,
             notify_mentions_only: false,

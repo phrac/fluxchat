@@ -2298,6 +2298,7 @@ dependencies = [
  "dirs",
  "emojis",
  "fluxchat-core",
+ "fontdb",
  "futures-util",
  "html5ever",
  "iced",

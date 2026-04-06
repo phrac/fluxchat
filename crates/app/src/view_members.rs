@@ -8,7 +8,7 @@ use crate::icons::*;
 use crate::message::Message;
 use crate::state::FluxChat;
 use crate::theme;
-use crate::view::{thin_scrollbar, MONO};
+use crate::view::thin_scrollbar;
 
 impl FluxChat {
     /// Member list panel (right sidebar).
@@ -31,7 +31,7 @@ impl FluxChat {
         let header = container(
             row![
                 text(format!("USERS \u{2014} {total}"))
-                    .font(MONO)
+                    .font(self.sidebar_font())
                     .size(14)
                     .color(theme::TEXT_BRIGHT),
                 Space::new().width(Fill),
@@ -129,7 +129,7 @@ impl FluxChat {
                             iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
                                 .width(12).height(12)
                                 .style(|_, _| iced::widget::svg::Style { color: Some(theme::GREEN) }),
-                            text(call_room_name).font(MONO).size(11).color(theme::GREEN),
+                            text(call_room_name).font(self.sidebar_font()).size(11).color(theme::GREEN),
                         ].spacing(4).align_y(iced::Alignment::Center)
                     )
                     .on_press(Message::SelectRoom(call_rid))
@@ -174,7 +174,7 @@ impl FluxChat {
             }));
         } else if is_connecting {
             panel = panel.push(container(
-                text("Connecting...").font(MONO).size(11).color(theme::ACCENT),
+                text("Connecting...").font(self.sidebar_font()).size(11).color(theme::ACCENT),
             ).padding([8, 10]).width(Fill).style(|_: &Theme| container::Style {
                 background: Some(theme::BG_MID.into()),
                 ..Default::default()
@@ -187,7 +187,7 @@ impl FluxChat {
             } else { "Error" };
             panel = panel.push(container(
                 row![
-                    text(err_msg).font(MONO).size(11).color(theme::RED),
+                    text(err_msg).font(self.sidebar_font()).size(11).color(theme::RED),
                     Space::new().width(Fill),
                     button(
                         iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_CLOSE))
@@ -211,9 +211,9 @@ impl FluxChat {
                     iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
                         .width(12).height(12)
                         .style(|_, _| iced::widget::svg::Style { color: Some(theme::GREEN) }),
-                    text("Call active").font(MONO).size(11).color(theme::TEXT_NORMAL),
+                    text("Call active").font(self.sidebar_font()).size(11).color(theme::TEXT_NORMAL),
                     Space::new().width(Fill),
-                    button(text("Join").font(MONO).size(11).color(theme::BG_DEEP))
+                    button(text("Join").font(self.sidebar_font()).size(11).color(theme::BG_DEEP))
                         .on_press(Message::CallJoin(rid))
                         .padding([3, 10])
                         .style(|_, _| button::Style {
@@ -254,7 +254,7 @@ impl FluxChat {
         let mut col = column![
             container(
                 text(format!("{} \u{2014} {}", label.to_uppercase(), members.len()))
-                    .font(MONO)
+                    .font(self.sidebar_font())
                     .size(11)
                     .color(theme::TEXT_DIM),
             )
@@ -305,7 +305,7 @@ impl FluxChat {
         let member_row = row![
             avatar,
             text(&member.display_name)
-                .font(MONO)
+                .font(self.sidebar_font())
                 .size(13)
                 .color(nick_col)
                 .wrapping(iced::widget::text::Wrapping::None),

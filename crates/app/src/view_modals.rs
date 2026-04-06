@@ -504,9 +504,41 @@ impl FluxChat {
             }
             "appearance" => {
                 let fs = self.msg_font_size;
+                let msg_font = crate::view::font_by_name(&self.msg_font_family);
+                let msg_font_bold = crate::view::font_bold_by_name(&self.msg_font_family);
+                let sidebar_font = crate::view::font_by_name(&self.sidebar_font_family);
+
+                let options: Vec<String> = self.available_fonts.clone();
+
                 let col = column![
                     text("Appearance").font(MONO).size(16).color(theme::TEXT_BRIGHT),
                     rule::horizontal(1),
+
+                    // Message font family
+                    text("MESSAGE FONT").font(MONO).size(11).color(theme::TEXT_DIM),
+                    iced::widget::pick_list(
+                        options.clone(),
+                        Some(self.msg_font_family.clone()),
+                        Message::SetMsgFontFamily,
+                    )
+                    .font(MONO)
+                    .text_size(13)
+                    .padding([4, 8]),
+
+                    // Sidebar font family
+                    text("SIDEBAR FONT").font(MONO).size(11).color(theme::TEXT_DIM),
+                    iced::widget::pick_list(
+                        options,
+                        Some(self.sidebar_font_family.clone()),
+                        Message::SetSidebarFontFamily,
+                    )
+                    .font(MONO)
+                    .text_size(13)
+                    .padding([4, 8]),
+
+                    Space::new().height(4),
+
+                    // Message font size
                     text("MESSAGE FONT SIZE").font(MONO).size(11).color(theme::TEXT_DIM),
                     row![
                         iced::widget::slider(10.0..=24.0, fs, Message::SetMsgFontSize)
@@ -514,15 +546,28 @@ impl FluxChat {
                             .width(200),
                         text(format!("{:.0}px", fs)).font(MONO).size(13).color(theme::TEXT_NORMAL),
                     ].spacing(12).align_y(iced::Alignment::Center),
+
                     Space::new().height(8),
+
                     // Preview
                     text("PREVIEW").font(MONO).size(11).color(theme::TEXT_DIM),
                     container(
                         column![
+                            row![
+                                text("Messages: ").font(MONO).size(12).color(theme::TEXT_DIM),
+                                text(&self.msg_font_family).font(msg_font).size(12).color(theme::TEXT_MUTED),
+                            ],
                             text("The quick brown fox jumps over the lazy dog.")
-                                .font(MONO).size(fs).color(theme::TEXT_NORMAL),
+                                .font(msg_font).size(fs).color(theme::TEXT_NORMAL),
                             text("**bold** *italic* `code` ~~strike~~")
-                                .font(MONO).size(fs).color(theme::TEXT_MUTED),
+                                .font(msg_font_bold).size(fs).color(theme::TEXT_MUTED),
+                            Space::new().height(4),
+                            row![
+                                text("Sidebar: ").font(MONO).size(12).color(theme::TEXT_DIM),
+                                text(&self.sidebar_font_family).font(sidebar_font).size(12).color(theme::TEXT_MUTED),
+                            ],
+                            text("# general  # random  @ user")
+                                .font(sidebar_font).size(13).color(theme::TEXT_NORMAL),
                         ].spacing(4)
                     )
                     .padding([8, 12])
@@ -533,6 +578,7 @@ impl FluxChat {
                         ..Default::default()
                     }),
                 ].spacing(10);
+
                 scrollable(container(col).padding([0, 12]).width(Fill)).height(Fill).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3))).style(thin_scrollbar).into()
             }
             "notifications" => {

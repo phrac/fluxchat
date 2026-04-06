@@ -75,6 +75,7 @@ pub(crate) fn thin_scrollbar(_theme: &Theme, status: iced::widget::scrollable::S
     }
 }
 
+// Default font constants (used as fallback and for non-customizable UI elements)
 pub(crate) const MONO: Font = Font {
     family: iced::font::Family::Name("JetBrainsMono Nerd Font"),
     ..Font::MONOSPACE
@@ -87,7 +88,70 @@ pub(crate) const MONO_BOLD: Font = Font {
 pub(crate) const SANS: Font = Font::DEFAULT;
 pub(crate) const SANS_BOLD: Font = Font { weight: iced::font::Weight::Bold, ..Font::DEFAULT };
 
+/// Leaked font family names for 'static lifetime requirement.
+/// We only leak unique names the user has actually selected.
+static LEAKED_NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn font_by_name(name: &str) -> Font {
+    let leaked = leaked_name(name);
+    Font {
+        family: iced::font::Family::Name(leaked),
+        ..Font::MONOSPACE
+    }
+}
+
+pub(crate) fn font_bold_by_name(name: &str) -> Font {
+    let leaked = leaked_name(name);
+    Font {
+        family: iced::font::Family::Name(leaked),
+        weight: iced::font::Weight::Bold,
+        ..Font::MONOSPACE
+    }
+}
+
+fn leaked_name(name: &str) -> &'static str {
+    let mut names = LEAKED_NAMES.lock().unwrap();
+    if let Some(existing) = names.iter().find(|n| **n == name) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    names.push(leaked);
+    leaked
+}
+
+/// Discover available system fonts.
+pub fn discover_system_fonts() -> Vec<String> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let mut families: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for face in db.faces() {
+        if let Some((name, _)) = face.families.first() {
+            families.insert(name.clone());
+        }
+    }
+    let mut sorted: Vec<String> = families.into_iter().collect();
+    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    sorted
+}
+
 impl FluxChat {
+    /// Get the user's chosen message font.
+    pub(crate) fn msg_font(&self) -> Font {
+        font_by_name(&self.msg_font_family)
+    }
+    /// Get the user's chosen message font (bold).
+    pub(crate) fn msg_font_bold(&self) -> Font {
+        font_bold_by_name(&self.msg_font_family)
+    }
+    /// Get the user's chosen sidebar font.
+    pub(crate) fn sidebar_font(&self) -> Font {
+        font_by_name(&self.sidebar_font_family)
+    }
+    /// Get the user's chosen sidebar font (bold).
+    pub(crate) fn sidebar_font_bold(&self) -> Font {
+        font_bold_by_name(&self.sidebar_font_family)
+    }
+
     /// Top-level view — dispatches to login or main layout.
     pub fn view(&self) -> Element<Message> {
         match self.screen {
@@ -1451,7 +1515,7 @@ impl FluxChat {
         let mut row_content = row![
             room_icon,
             text(&room.name)
-                .font(MONO)
+                .font(self.sidebar_font())
                 .size(13)
                 .color(name_color)
                 .wrapping(iced::widget::text::Wrapping::None),

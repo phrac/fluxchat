@@ -1557,6 +1557,14 @@ impl FluxChat {
                 self.msg_font_size = size.clamp(10.0, 24.0);
                 let _ = self.core.db.set_setting("msg_font_size", &self.msg_font_size.to_string());
             }
+            Message::SetMsgFontFamily(name) => {
+                self.msg_font_family = name.clone();
+                let _ = self.core.db.set_setting("msg_font_family", &name);
+            }
+            Message::SetSidebarFontFamily(name) => {
+                self.sidebar_font_family = name.clone();
+                let _ = self.core.db.set_setting("sidebar_font_family", &name);
+            }
 
             // --- Notifications ---
             Message::SetNotificationsEnabled(enabled) => {
@@ -3337,6 +3345,13 @@ impl FluxChat {
                 self.msg_font_size = size.clamp(10.0, 24.0);
             }
         }
+        if let Some(val) = self.core.db.get_setting("msg_font_family") {
+            self.msg_font_family = val;
+        }
+        if let Some(val) = self.core.db.get_setting("sidebar_font_family") {
+            self.sidebar_font_family = val;
+        }
+        self.available_fonts = crate::view::discover_system_fonts();
         if let Some(key) = self.core.db.get_setting("giphy_api_key") {
             self.giphy_api_key = key;
         }
