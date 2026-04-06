@@ -28,6 +28,7 @@ impl FluxChat {
             crate::state::Modal::Invite => self.view_invite_modal(),
             crate::state::Modal::CreateDm => self.view_create_dm_modal(),
             crate::state::Modal::SpaceDetails { space_id } => self.view_space_details_modal(space_id),
+            crate::state::Modal::PendingInvites => self.view_pending_invites_modal(),
             crate::state::Modal::Report { .. } => {
                 let col = column![
                     text("Report Message").font(MONO).size(16).color(theme::TEXT_BRIGHT),
@@ -1805,5 +1806,89 @@ impl FluxChat {
         }
 
         content.width(420).into()
+    }
+
+    fn view_pending_invites_modal(&self) -> Element<Message> {
+        let close_handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_CLOSE);
+        let mut content = column![
+            row![
+                text("Pending Invites").font(MONO).size(16).color(theme::TEXT_BRIGHT),
+                Space::new().width(Fill),
+                button(
+                    iced::widget::svg(close_handle)
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::TEXT_DIM) }),
+                )
+                .on_press(Message::CloseModal)
+                .padding([4, 6])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            ].align_y(iced::Alignment::Center),
+        ].spacing(8);
+
+        if self.invited_rooms.is_empty() {
+            content = content.push(
+                text("No pending invites").font(MONO).size(13).color(theme::TEXT_DIM)
+            );
+        } else {
+            let mut list = column![].spacing(4);
+            for room in &self.invited_rooms {
+                let rid_accept = room.room_id.clone();
+                let rid_reject = room.room_id.clone();
+                let room_id_display = &room.room_id;
+                list = list.push(
+                    container(
+                        column![
+                            text(&room.name).font(MONO).size(14).color(theme::TEXT_BRIGHT),
+                            text(room_id_display).font(MONO).size(11).color(theme::TEXT_DIM),
+                            row![
+                                button(text("Accept").font(MONO).size(11).color(theme::BG_DEEP))
+                                    .on_press(Message::AcceptInvite(rid_accept))
+                                    .padding([4, 14])
+                                    .style(|_, _| button::Style {
+                                        background: Some(theme::GREEN.into()),
+                                        text_color: theme::BG_DEEP,
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                                button(text("Reject").font(MONO).size(11).color(theme::BG_DEEP))
+                                    .on_press(Message::RejectInvite(rid_reject))
+                                    .padding([4, 14])
+                                    .style(|_, _| button::Style {
+                                        background: Some(theme::RED.into()),
+                                        text_color: theme::BG_DEEP,
+                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                            ].spacing(8),
+                        ].spacing(4),
+                    )
+                    .padding([8, 12])
+                    .width(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::BG_MID.into()),
+                        border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                );
+            }
+            content = content.push(
+                scrollable(list)
+                    .height(Length::Shrink)
+                    .direction(iced::widget::scrollable::Direction::Vertical(
+                        iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                    ))
+                    .style(thin_scrollbar)
+            );
+        }
+
+        content.width(400).into()
     }
 }

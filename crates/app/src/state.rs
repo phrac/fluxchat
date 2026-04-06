@@ -53,6 +53,7 @@ pub enum Modal {
     Invite,
     Report { event_id: String, room_id: String },
     SpaceDetails { space_id: String },
+    PendingInvites,
 }
 
 

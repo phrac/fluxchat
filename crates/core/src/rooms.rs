@@ -54,8 +54,24 @@ pub async fn room_to_info(room: &matrix_sdk::Room, space_info: Option<(String, S
         is_encrypted: room.encryption_state().is_encrypted(),
         is_space: room.is_space(),
         is_direct: room.is_direct().await.unwrap_or(false),
-        unread_count: room.unread_notification_counts().notification_count,
-        highlight_count: room.unread_notification_counts().highlight_count,
+        unread_count: {
+            // Prefer client-side computed counts (more accurate for encrypted rooms)
+            let client_notifs = room.num_unread_notifications();
+            let client_msgs = room.num_unread_messages();
+            if client_notifs > 0 || client_msgs > 0 {
+                client_notifs.max(client_msgs)
+            } else {
+                room.unread_notification_counts().notification_count
+            }
+        },
+        highlight_count: {
+            let client_mentions = room.num_unread_mentions();
+            if client_mentions > 0 {
+                client_mentions
+            } else {
+                room.unread_notification_counts().highlight_count
+            }
+        },
         avatar_url: room.avatar_url().map(|mxc| mxc.to_string()),
         topic: room.topic(),
         space_name: space_info.as_ref().map(|(name, _)| name.clone()),

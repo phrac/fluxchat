@@ -1079,44 +1079,48 @@ impl FluxChat {
             );
         }
 
-        // Invites
+        // Invites notification bar
         if !self.invited_rooms.is_empty() {
-            col = col.push(self.view_invite_section_header(self.invited_rooms.len()));
-            if !self.collapsed_sections.contains("Invites") {
-                for room in &self.invited_rooms {
-                    let rid_accept = room.room_id.clone();
-                    let rid_reject = room.room_id.clone();
-                    col = col.push(
+            let count = self.invited_rooms.len();
+            let label = if count == 1 {
+                "1 new invite".to_string()
+            } else {
+                format!("{count} new invites")
+            };
+            let bell_handle = iced::widget::svg::Handle::from_memory(SVG_BELL);
+            col = col.push(
+                button(
+                    row![
+                        iced::widget::svg(bell_handle)
+                            .width(14).height(14)
+                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::RED) }),
+                        text(label).font(MONO).size(12).color(theme::RED),
+                        Space::new().width(Fill),
                         container(
-                            row![
-                                text(&room.name).font(MONO).size(13).color(theme::TEXT_NORMAL),
-                                Space::new().width(Fill),
-                                button(text("Join").font(MONO).size(11).color(theme::BG_DEEP))
-                                    .on_press(Message::AcceptInvite(rid_accept))
-                                    .padding([3, 10])
-                                    .style(|_, _| button::Style {
-                                        background: Some(theme::GREEN.into()),
-                                        text_color: theme::BG_DEEP,
-                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                        ..Default::default()
-                                    }),
-                                button(text("Reject").font(MONO).size(11).color(theme::BG_DEEP))
-                                    .on_press(Message::RejectInvite(rid_reject))
-                                    .padding([3, 10])
-                                    .style(|_, _| button::Style {
-                                        background: Some(theme::RED.into()),
-                                        text_color: theme::BG_DEEP,
-                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                        ..Default::default()
-                                    }),
-                            ]
-                            .spacing(6)
-                            .align_y(iced::Alignment::Center),
+                            text(count.to_string()).font(MONO).size(10).color(theme::TEXT_BRIGHT),
                         )
-                        .padding(iced::Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 12.0 })
-                    );
-                }
-            }
+                        .padding([1, 5])
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::RED.into()),
+                            border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center),
+                )
+                .on_press(Message::OpenModal(crate::state::Modal::PendingInvites))
+                .padding([6, 12])
+                .width(Fill)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(Color::from_rgba(1.0, 0.2, 0.2, 0.08).into())
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                }),
+            );
         }
 
         // Knocked (pending join requests)
@@ -1352,64 +1356,6 @@ impl FluxChat {
                         None
                     },
                     text_color: theme::TEXT_DIM,
-                    ..Default::default()
-                }),
-        ].spacing(0).into()
-    }
-
-    /// Invite section header with bell icon and red badge.
-    fn view_invite_section_header(&self, count: usize) -> Element<'_, Message> {
-        let collapsed = self.collapsed_sections.contains("Invites");
-        let arrow = if collapsed { "\u{25b8}" } else { "\u{25be}" };
-
-        let bell_handle = iced::widget::svg::Handle::from_memory(SVG_BELL);
-        let header_row = row![
-            text(arrow).font(MONO).size(14).color(theme::RED),
-            iced::widget::svg(bell_handle)
-                .width(14)
-                .height(14)
-                .style(|_, _| iced::widget::svg::Style {
-                    color: Some(theme::RED),
-                }),
-            text("INVITES").font(MONO_BOLD).size(11).color(theme::RED),
-            Space::new().width(Fill),
-            container(
-                text(count.to_string())
-                    .font(MONO)
-                    .size(10)
-                    .color(theme::TEXT_BRIGHT),
-            )
-            .padding([1, 5])
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::RED.into()),
-                border: iced::Border {
-                    radius: 8.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-        ]
-        .spacing(5)
-        .align_y(iced::Alignment::Center);
-
-        column![
-            container(rule::horizontal(1).style(|_: &Theme| rule::Style {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.06),
-                radius: 0.0.into(),
-                fill_mode: rule::FillMode::Full,
-                snap: true,
-            })).padding([0, 8]),
-            button(header_row)
-                .on_press(Message::ToggleSection("Invites".to_string()))
-                .padding([4, 10])
-                .width(Fill)
-                .style(|_, status| button::Style {
-                    background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into())
-                    } else {
-                        None
-                    },
-                    text_color: theme::RED,
                     ..Default::default()
                 }),
         ].spacing(0).into()
