@@ -1,0 +1,23 @@
+# Atom One Dark — https://github.com/atom/one-dark-syntax
+
+name = "Atom One Dark"
+dark = true
+
+bg_deep = [30, 33, 36]
+bg_dark = [40, 44, 52]
+bg_mid = [50, 55, 65]
+bg_light = [62, 68, 81]
+bg_hover = [72, 78, 92]
+
+text_bright = [220, 223, 228]
+text_normal = [171, 178, 191]
+text_muted = [116, 124, 140]
+text_dim = [76, 82, 99]
+
+accent = [97, 175, 239]
+green = [152, 195, 121]
+yellow = [229, 192, 123]
+red = [224, 108, 117]
+purple = [198, 120, 221]
+
+border = [255, 255, 255, 12]

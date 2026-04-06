@@ -1,0 +1,23 @@
+# Catppuccin Mocha — https://github.com/catppuccin/catppuccin
+
+name = "Catppuccin Mocha"
+dark = true
+
+bg_deep = [17, 17, 27]
+bg_dark = [30, 30, 46]
+bg_mid = [49, 50, 68]
+bg_light = [69, 71, 90]
+bg_hover = [88, 91, 112]
+
+text_bright = [205, 214, 244]
+text_normal = [186, 194, 222]
+text_muted = [147, 153, 178]
+text_dim = [108, 112, 134]
+
+accent = [137, 180, 250]
+green = [166, 227, 161]
+yellow = [249, 226, 175]
+red = [243, 139, 168]
+purple = [203, 166, 247]
+
+border = [255, 255, 255, 12]

@@ -1,0 +1,23 @@
+# Night Owl — https://github.com/sdras/night-owl-vscode-theme
+
+name = "Night Owl"
+dark = true
+
+bg_deep = [1, 10, 18]
+bg_dark = [1, 22, 39]
+bg_mid = [13, 35, 56]
+bg_light = [27, 50, 72]
+bg_hover = [35, 60, 85]
+
+text_bright = [214, 222, 235]
+text_normal = [192, 202, 216]
+text_muted = [127, 155, 178]
+text_dim = [68, 109, 140]
+
+accent = [130, 170, 255]
+green = [34, 218, 109]
+yellow = [255, 203, 139]
+red = [239, 83, 80]
+purple = [199, 146, 234]
+
+border = [255, 255, 255, 12]

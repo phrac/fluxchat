@@ -151,11 +151,26 @@ pub fn load_theme_file(path: &std::path::Path) -> Option<ThemeColors> {
 pub fn discover_themes() -> Vec<ThemeColors> {
     let mut themes = vec![fluxchat_theme()];
     // Bundled themes (compiled into binary)
-    if let Some(t) = load_theme_str(include_str!("../../../assets/themes/nord.toml")) {
-        themes.push(t);
-    }
-    if let Some(t) = load_theme_str(include_str!("../../../assets/themes/nord-light.toml")) {
-        themes.push(t);
+    // Write bundled themes to data dir on first run
+    if let Some(data_dir) = dirs::data_dir() {
+        let themes_dir = data_dir.join("fluxchat").join("themes");
+        let _ = std::fs::create_dir_all(&themes_dir);
+        let bundled: &[(&str, &str)] = &[
+            ("nord.toml", include_str!("../../../assets/themes/nord.toml")),
+            ("nord-light.toml", include_str!("../../../assets/themes/nord-light.toml")),
+            ("dracula.toml", include_str!("../../../assets/themes/dracula.toml")),
+            ("night-owl.toml", include_str!("../../../assets/themes/night-owl.toml")),
+            ("tokyo-night.toml", include_str!("../../../assets/themes/tokyo-night.toml")),
+            ("atom-one-dark.toml", include_str!("../../../assets/themes/atom-one-dark.toml")),
+            ("catppuccin-mocha.toml", include_str!("../../../assets/themes/catppuccin-mocha.toml")),
+            ("catppuccin-latte.toml", include_str!("../../../assets/themes/catppuccin-latte.toml")),
+        ];
+        for (filename, content) in bundled {
+            let path = themes_dir.join(filename);
+            if !path.exists() {
+                let _ = std::fs::write(&path, content);
+            }
+        }
     }
     if let Some(data_dir) = dirs::data_dir() {
         let themes_dir = data_dir.join("fluxchat").join("themes");

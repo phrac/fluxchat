@@ -1,0 +1,23 @@
+# Catppuccin Latte (light) — https://github.com/catppuccin/catppuccin
+
+name = "Catppuccin Latte"
+dark = false
+
+bg_deep = [220, 224, 232]
+bg_dark = [230, 233, 239]
+bg_mid = [239, 241, 245]
+bg_light = [220, 224, 232]
+bg_hover = [204, 208, 218]
+
+text_bright = [76, 79, 105]
+text_normal = [92, 95, 119]
+text_muted = [124, 127, 147]
+text_dim = [156, 160, 176]
+
+accent = [30, 102, 245]
+green = [64, 160, 43]
+yellow = [223, 142, 29]
+red = [210, 15, 57]
+purple = [136, 57, 239]
+
+border = [0, 0, 0, 20]

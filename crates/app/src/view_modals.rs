@@ -510,9 +510,28 @@ impl FluxChat {
 
                 let options: Vec<String> = self.available_fonts.clone();
 
+                let theme_names: Vec<String> = self.available_themes.iter()
+                    .map(|t| t.name.clone())
+                    .collect();
+
                 let col = column![
                     text("Appearance").font(MONO).size(16).color(theme::colors().text_bright),
                     rule::horizontal(1),
+
+                    // Theme
+                    text("THEME").font(MONO).size(11).color(theme::colors().text_dim),
+                    iced::widget::pick_list(
+                        theme_names,
+                        Some(self.active_theme_name.clone()),
+                        Message::SetTheme,
+                    )
+                    .font(MONO)
+                    .text_size(13)
+                    .padding([4, 8]),
+                    text("Custom themes: place .toml files in data_dir/fluxchat/themes/")
+                        .font(MONO).size(10).color(theme::colors().text_dim),
+
+                    Space::new().height(4),
 
                     // Message font family
                     text("MESSAGE FONT").font(MONO).size(11).color(theme::colors().text_dim),

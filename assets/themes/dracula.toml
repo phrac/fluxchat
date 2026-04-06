@@ -1,0 +1,23 @@
+# Dracula — https://draculatheme.com/
+
+name = "Dracula"
+dark = true
+
+bg_deep = [30, 31, 41]
+bg_dark = [40, 42, 54]
+bg_mid = [52, 54, 68]
+bg_light = [68, 71, 90]
+bg_hover = [78, 81, 102]
+
+text_bright = [248, 248, 242]
+text_normal = [226, 226, 220]
+text_muted = [158, 154, 168]
+text_dim = [98, 114, 164]
+
+accent = [139, 233, 253]
+green = [80, 250, 123]
+yellow = [241, 250, 140]
+red = [255, 85, 85]
+purple = [189, 147, 249]
+
+border = [255, 255, 255, 15]

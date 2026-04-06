@@ -1,0 +1,23 @@
+# Tokyo Night — https://github.com/enkia/tokyo-night-vscode-theme
+
+name = "Tokyo Night"
+dark = true
+
+bg_deep = [22, 22, 30]
+bg_dark = [26, 27, 38]
+bg_mid = [36, 40, 59]
+bg_light = [52, 56, 78]
+bg_hover = [61, 66, 91]
+
+text_bright = [198, 208, 245]
+text_normal = [169, 177, 214]
+text_muted = [86, 95, 137]
+text_dim = [65, 72, 104]
+
+accent = [122, 162, 247]
+green = [158, 206, 106]
+yellow = [224, 175, 104]
+red = [247, 118, 142]
+purple = [187, 154, 247]
+
+border = [255, 255, 255, 12]
