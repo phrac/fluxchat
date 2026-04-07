@@ -129,6 +129,11 @@ pub struct FluxChat {
     pub audio_start_time: Option<std::time::Instant>, // when playback started
     pub audio_duration_ms: u64,             // duration of current audio
     pub audio_pid: Option<u32>,             // PID of audio player process
+    pub video_thumb_sizes: HashMap<String, (u32, u32)>,  // thumb_key -> (width, height)
+    pub video_player: Option<iced_video_player::Video>, // inline video player
+    pub video_playing_event: Option<String>,            // event_id of video being played
+    pub video_position: f64,                            // current position in seconds
+    pub video_dragging: bool,                           // true while seeking via slider
     pub location_open: bool,
     pub location_lat: String,
     pub location_lon: String,
@@ -385,6 +390,11 @@ impl FluxChat {
             audio_start_time: None,
             audio_duration_ms: 0,
             audio_pid: None,
+            video_thumb_sizes: HashMap::new(),
+            video_player: None,
+            video_playing_event: None,
+            video_position: 0.0,
+            video_dragging: false,
             location_open: false,
             location_lat: String::new(),
             location_lon: String::new(),

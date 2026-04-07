@@ -1,6 +1,9 @@
 # Required for LiveKit's bundled libwebrtc on macOS.
 # Without -ObjC, Objective-C category methods on NSString are stripped
 # from the static library, causing runtime crashes.
+[env]
+PKG_CONFIG_PATH = { value = "/opt/homebrew/lib/pkgconfig", force = false }
+
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-arg=-ObjC"]
 

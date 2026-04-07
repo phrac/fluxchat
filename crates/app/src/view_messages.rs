@@ -346,69 +346,201 @@ impl FluxChat {
                     .into()
             }
         } else if msg.is_video {
-            // Video: show thumbnail with play overlay, click to download + open
             let eid = msg.event_id.clone();
             let rid = self.selected_room_id.clone().unwrap_or_default();
-            let thumbnail: Element<Message> = if let Some(mxc) = msg.image_mxc.as_ref() {
-                if let Some(handle) = self.image_cache.get(mxc) {
-                    let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
-                    let img_h = if let (Some(w), Some(h)) = (msg.image_width, msg.image_height) {
-                        (img_w * h as f32 / w as f32).min(300.0)
-                    } else { 200.0 };
-                    iced::widget::stack![
-                        iced::widget::image(handle.clone())
-                            .width(img_w).height(img_h)
-                            .content_fit(iced::ContentFit::Cover),
-                        // Play button overlay
-                        container(
-                            container(
-                                iced::widget::svg(iced::widget::svg::Handle::from_memory(
-                                    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice(),
-                                ))
-                                .width(32).height(32)
-                                .style(|_, _| iced::widget::svg::Style { color: Some(Color::WHITE) }),
+            let is_playing = self.video_playing_event.as_deref() == Some(&msg.event_id);
+
+            if is_playing {
+                if let Some(ref video) = self.video_player {
+                    // Use actual video dimensions, accounting for possible rotation
+                    let (raw_w, raw_h) = video.size();
+                    let (raw_w, raw_h) = if raw_w > 0 && raw_h > 0 {
+                        (raw_w as f32, raw_h as f32)
+                    } else {
+                        (480.0, 270.0)
+                    };
+                    // Fit within 480w x 500h, minimum 300w for readability
+                    let scale = (480.0 / raw_w).min(500.0 / raw_h).min(1.0);
+                    let vid_w = (raw_w * scale).max(300.0);
+                    let vid_h = (raw_h * scale).max(200.0);
+
+                    let duration = video.duration().as_secs_f64();
+                    let paused = video.paused();
+
+                    let play_pause_icon = if paused {
+                        br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice()
+                    } else {
+                        br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>"#.as_slice()
+                    };
+
+                    let pos_mins = (self.video_position / 60.0) as u32;
+                    let pos_secs = (self.video_position % 60.0) as u32;
+                    let dur_mins = (duration / 60.0) as u32;
+                    let dur_secs = (duration % 60.0) as u32;
+                    let time_str = format!("{pos_mins}:{pos_secs:02} / {dur_mins}:{dur_secs:02}");
+
+                    let player_widget: Element<Message> = iced_video_player::VideoPlayer::new(video)
+                        .width(vid_w)
+                        .height(vid_h)
+                        .content_fit(iced::ContentFit::Contain)
+                        .on_new_frame(Message::VideoNewFrame)
+                        .on_end_of_stream(Message::VideoEndOfStream)
+                        .into();
+
+                    let controls = container(
+                        row![
+                            button(
+                                iced::widget::svg(iced::widget::svg::Handle::from_memory(play_pause_icon))
+                                    .width(18).height(18)
+                                    .style(|_, _| iced::widget::svg::Style { color: Some(Color::WHITE) }),
                             )
-                            .padding(12)
+                            .on_press(Message::VideoTogglePause)
+                            .padding([4, 8])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                            iced::widget::slider(0.0..=duration.max(0.001), self.video_position, Message::VideoSeek)
+                                .on_release(Message::VideoSeekRelease)
+                                .width(Fill)
+                                .height(16),
+                            text(time_str)
+                                .size(11).color(Color::WHITE)
+                                .font(self.msg_font()),
+                            button(
+                                iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_CLOSE))
+                                    .width(16).height(16)
+                                    .style(|_, _| iced::widget::svg::Style { color: Some(Color::WHITE) }),
+                            )
+                            .on_press(Message::VideoClose)
+                            .padding([4, 8])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                        ]
+                        .spacing(6)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .padding([4, 8])
+                    .style(|_: &Theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.7).into()),
+                        ..Default::default()
+                    });
+
+                    column![
+                        container(player_widget)
                             .style(|_: &Theme| container::Style {
-                                background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
-                                border: iced::Border { radius: 28.0.into(), ..Default::default() },
+                                background: Some(Color::BLACK.into()),
+                                border: iced::Border { radius: 8.0.into(), ..Default::default() },
                                 ..Default::default()
-                            }),
-                        )
-                        .width(img_w).height(img_h)
-                        .center(Fill),
-                    ].width(img_w).height(img_h).into()
+                            })
+                            .clip(true),
+                        controls,
+                    ]
+                    .width(vid_w)
+                    .into()
                 } else {
-                    // Thumbnail loading
-                    text(format!("[video: {}]", msg.body))
+                    // Loading state
+                    text(format!("[loading video: {}]", msg.body))
                         .font(self.msg_font()).size(fs).color(theme::colors().purple)
                         .into()
                 }
             } else {
-                // No thumbnail
-                container(
-                    row![
-                        iced::widget::svg(iced::widget::svg::Handle::from_memory(
-                            br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice(),
-                        ))
-                        .width(20).height(20)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
-                        text(&msg.body).font(self.msg_font()).size(fs).color(theme::colors().text_bright),
-                    ].spacing(8).align_y(iced::Alignment::Center),
-                )
-                .padding([8, 12])
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().bg_mid.into()),
-                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 8.0.into() },
-                    ..Default::default()
-                })
-                .into()
-            };
-            button(thumbnail)
-                .on_press(Message::PlayVideo(eid, rid))
-                .padding(0)
-                .style(|_, _| button::Style { background: None, ..Default::default() })
-                .into()
+                // Thumbnail with play overlay (not currently playing)
+                let thumbnail: Element<Message> = if let Some(mxc) = msg.image_mxc.as_ref() {
+                    if let Some(handle) = self.image_cache.get(mxc) {
+                        let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
+                        let img_h = if let (Some(w), Some(h)) = (msg.image_width, msg.image_height) {
+                            (img_w * h as f32 / w as f32).min(300.0)
+                        } else { 200.0 };
+                        iced::widget::stack![
+                            iced::widget::image(handle.clone())
+                                .width(img_w).height(img_h)
+                                .content_fit(iced::ContentFit::Cover),
+                            // Play button overlay
+                            container(
+                                container(
+                                    iced::widget::svg(iced::widget::svg::Handle::from_memory(
+                                        br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice(),
+                                    ))
+                                    .width(32).height(32)
+                                    .style(|_, _| iced::widget::svg::Style { color: Some(Color::WHITE) }),
+                                )
+                                .padding(12)
+                                .style(|_: &Theme| container::Style {
+                                    background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                                    border: iced::Border { radius: 28.0.into(), ..Default::default() },
+                                    ..Default::default()
+                                }),
+                            )
+                            .width(img_w).height(img_h)
+                            .center(Fill),
+                        ].width(img_w).height(img_h).into()
+                    } else {
+                        text(format!("[video: {}]", msg.body))
+                            .font(self.msg_font()).size(fs).color(theme::colors().purple)
+                            .into()
+                    }
+                } else {
+                    // Check for generated thumbnail via video_thumb key
+                    let thumb_key = msg.video_mxc.as_ref().map(|v| format!("video_thumb:{v}"));
+                    let gen_handle = thumb_key.as_ref().and_then(|k| self.image_cache.get(k));
+                    if let Some(handle) = gen_handle {
+                        let (tw, th) = thumb_key.as_ref()
+                            .and_then(|k| self.video_thumb_sizes.get(k))
+                            .copied()
+                            .unwrap_or((320, 240));
+                        let img_w = tw as f32;
+                        let img_h = th as f32;
+                        let play_svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice();
+                        button(
+                            iced::widget::stack![
+                                iced::widget::image(handle.clone())
+                                    .width(img_w).height(img_h)
+                                    .content_fit(iced::ContentFit::Cover),
+                                container(
+                                    container(
+                                        iced::widget::svg(iced::widget::svg::Handle::from_memory(play_svg))
+                                            .width(32).height(32)
+                                            .style(|_, _| iced::widget::svg::Style { color: Some(Color::WHITE) }),
+                                    )
+                                    .padding(12)
+                                    .style(|_: &Theme| container::Style {
+                                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                                        border: iced::Border { radius: 28.0.into(), ..Default::default() },
+                                        ..Default::default()
+                                    }),
+                                )
+                                .width(img_w).height(img_h)
+                                .center(Fill),
+                            ].width(img_w).height(img_h)
+                        )
+                        .on_press(Message::PlayVideo(eid.clone(), rid.clone()))
+                        .padding(0)
+                        .style(|_, _| button::Style { background: None, ..Default::default() })
+                        .into()
+                    } else {
+                        // No thumbnail yet (loading or unavailable)
+                        container(
+                            row![
+                                iced::widget::svg(iced::widget::svg::Handle::from_memory(
+                                    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice(),
+                                ))
+                                .width(20).height(20)
+                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
+                                text(&msg.body).font(self.msg_font()).size(fs).color(theme::colors().text_bright),
+                            ].spacing(8).align_y(iced::Alignment::Center),
+                        )
+                        .padding([8, 12])
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::colors().bg_mid.into()),
+                            border: iced::Border { color: theme::colors().border, width: 1.0, radius: 8.0.into() },
+                            ..Default::default()
+                        })
+                        .into()
+                    }
+                };
+                button(thumbnail)
+                    .on_press(Message::PlayVideo(eid, rid))
+                    .padding(0)
+                    .style(|_, _| button::Style { background: None, ..Default::default() })
+                    .into()
+            }
         } else if msg.file_mxc.is_some() {
             // File attachment card
             let file_icon = iced::widget::svg::Handle::from_memory(crate::icons::SVG_FILE);

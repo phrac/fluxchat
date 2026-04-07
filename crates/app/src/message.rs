@@ -19,6 +19,7 @@ pub enum Message {
 
     // --- Post-login startup ---
     SyncStarted,
+    SyncReconnected,
     InitialRoomsLoaded(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<SpaceNode>, HashMap<String, Vec<String>>), // rooms, spaces, invited, knocked, space_tree, space_descendants
     TimelineLoaded {
         room_id: String,
@@ -205,6 +206,14 @@ pub enum Message {
     StopAudio,
     DownloadFile(String, String), // event_id, room_id
     PlayVideo(String, String),    // event_id, room_id
+    VideoReady(String, std::path::PathBuf), // event_id, temp file path
+    VideoTogglePause,
+    VideoSeek(f64),               // position in seconds
+    VideoSeekRelease,
+    VideoNewFrame,
+    VideoEndOfStream,
+    VideoClose,
+    VideoThumbResolved(String, Vec<u8>, u32, u32), // thumb_key, png_data, width, height
     AudioFinished,
     StartVoiceRecording,
     StopVoiceRecording,

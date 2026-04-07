@@ -1,4 +1,6 @@
 use iced::Task;
+use gstreamer::prelude::*;
+use gstreamer_pbutils::prelude::*;
 
 use crate::message::{LoginSuccess, Message, SyncEvent};
 use crate::state::{FluxChat, Screen};
@@ -133,6 +135,27 @@ impl FluxChat {
             // --- Post-login startup ---
             Message::SyncStarted => {
                 self.sync_running = true;
+            }
+            Message::SyncReconnected => {
+                tracing::info!("Sync reconnected — clearing cached timelines");
+                // Clear cached timelines so they get re-created with fresh subscriptions
+                let core = self.core.clone();
+                let clear_task = Task::perform(
+                    async move {
+                        core.timelines.lock().await.clear();
+                    },
+                    |_| Message::Noop,
+                );
+                // Clear cached messages so the active room reloads from fresh timeline
+                self.messages_by_room.clear();
+                // Re-select the active room to re-subscribe its timeline
+                if let Some(ref room_id) = self.selected_room_id.clone() {
+                    return Task::batch([
+                        clear_task,
+                        Task::done(Message::SelectRoom(room_id.clone())),
+                    ]);
+                }
+                return clear_task;
             }
             Message::InitialRoomsLoaded(rooms, spaces, invited, knocked, space_tree, space_descendants) => {
                 let mut mxc_uris: Vec<String> = spaces.iter()
@@ -2115,18 +2138,95 @@ impl FluxChat {
                     .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
                     .map(|m| m.body.clone())
                     .unwrap_or_else(|| "video.mp4".to_string());
+                let eid = event_id.clone();
                 return Task::perform(
                     async move {
+                        // Lazy GStreamer init (safe to call multiple times)
+                        if let Err(e) = gstreamer::init() {
+                            tracing::warn!("GStreamer init failed: {e}");
+                            return None;
+                        }
                         let client = core.get_client().await.ok()?;
-                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?;
-                        // Write to temp file and open with system player
+                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &eid).await.ok()?;
                         let tmp = std::env::temp_dir().join(format!("fluxchat_video_{filename}"));
                         std::fs::write(&tmp, &data).ok()?;
-                        open::that(&tmp).ok()?;
-                        Some(())
+                        Some((event_id, tmp))
                     },
-                    |_| Message::Noop,
+                    |result| match result {
+                        Some((eid, path)) => Message::VideoReady(eid, path),
+                        None => Message::Noop,
+                    },
                 );
+            }
+            Message::VideoReady(event_id, path) => {
+                match url::Url::from_file_path(&path) {
+                    Ok(file_url) => {
+                        match create_video_player(&file_url) {
+                            Ok(mut video) => {
+                                video.set_volume(1.0);
+                                self.video_player = Some(video);
+                                self.video_playing_event = Some(event_id);
+                                self.video_position = 0.0;
+                                self.video_dragging = false;
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to create video player: {e}");
+                                // Fallback: open with system player
+                                let _ = open::that(&path);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        tracing::warn!("Invalid video file path");
+                        let _ = open::that(&path);
+                    }
+                }
+            }
+            Message::VideoTogglePause => {
+                if let Some(ref mut video) = self.video_player {
+                    video.set_paused(!video.paused());
+                }
+            }
+            Message::VideoSeek(secs) => {
+                self.video_dragging = true;
+                self.video_position = secs;
+                if let Some(ref mut video) = self.video_player {
+                    video.set_paused(true);
+                }
+            }
+            Message::VideoSeekRelease => {
+                self.video_dragging = false;
+                if let Some(ref mut video) = self.video_player {
+                    let _ = video.seek(std::time::Duration::from_secs_f64(self.video_position), false);
+                    video.set_paused(false);
+                }
+            }
+            Message::VideoNewFrame => {
+                if !self.video_dragging {
+                    if let Some(ref video) = self.video_player {
+                        self.video_position = video.position().as_secs_f64();
+                    }
+                }
+            }
+            Message::VideoEndOfStream => {
+                if let Some(ref mut video) = self.video_player {
+                    video.set_paused(true);
+                }
+            }
+            Message::VideoClose => {
+                self.video_player = None;
+                self.video_playing_event = None;
+                self.video_position = 0.0;
+                self.video_dragging = false;
+            }
+            Message::VideoThumbResolved(key, data, w, h) => {
+                self.image_cache_pending.remove(&key);
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                self.core.db.cache_media(&format!("iced_img:{key}"), &b64);
+                let handle = iced::widget::image::Handle::from_bytes(data);
+                self.image_cache.insert(key.clone(), handle);
+                self.video_thumb_sizes.insert(key, (w, h));
             }
             Message::AudioFinished => {
                 self.audio_playing = None;
@@ -3238,6 +3338,60 @@ impl FluxChat {
                     },
                 ));
             }
+            // Generate thumbnails for videos without server-provided thumbnails
+            if msg.is_video && msg.image_mxc.is_none() {
+                if let Some(ref vmxc) = msg.video_mxc {
+                    let thumb_key = format!("video_thumb:{vmxc}");
+                    if self.image_cache.contains_key(&thumb_key) || self.image_cache_pending.contains(&thumb_key) {
+                        continue;
+                    }
+                    // Check SQLite cache
+                    if let Some(b64) = self.core.db.get_cached_media(&format!("iced_img:{thumb_key}")) {
+                        use base64::Engine;
+                        if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                            if data.len() > 100 {
+                                // Read PNG dimensions from header
+                                if let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(&data)).with_guessed_format() {
+                                    if let Ok((w, h)) = reader.into_dimensions() {
+                                        self.video_thumb_sizes.insert(thumb_key.clone(), (w, h));
+                                    }
+                                }
+                                let handle = iced::widget::image::Handle::from_bytes(data);
+                                self.image_cache.insert(thumb_key, handle);
+                                continue;
+                            }
+                        }
+                    }
+                    self.image_cache_pending.insert(thumb_key.clone());
+                    let core = self.core.clone();
+                    let event_id = msg.event_id.clone();
+                    let room_id = self.selected_room_id.clone().unwrap_or_default();
+                    let real_room = if room_id.starts_with("thread::") {
+                        room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                    } else {
+                        room_id
+                    };
+                    tasks.push(Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            let (data, _mime) = fluxchat_core::media::get_event_media_bytes(
+                                &client, &real_room, &event_id,
+                            ).await.ok()?;
+                            // Write to temp file for GStreamer
+                            let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{event_id}.tmp"));
+                            std::fs::write(&tmp, &data).ok()?;
+                            let result = extract_video_thumbnail(&tmp);
+                            let _ = std::fs::remove_file(&tmp);
+                            let (data, w, h) = result?;
+                            Some((thumb_key, data, w, h))
+                        },
+                        |result| match result {
+                            Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
+                            None => Message::Noop,
+                        },
+                    ));
+                }
+            }
         }
         if tasks.is_empty() { Task::none() } else { Task::batch(tasks) }
     }
@@ -3367,6 +3521,7 @@ impl FluxChat {
                         {
                             let mut state_sub = sync_service.state();
                             let core_reconnect = core.clone();
+                            let tx_reconnect = tx.clone();
                             tokio::spawn(async move {
                                 use fluxchat_core::SyncState;
                                 loop {
@@ -3380,6 +3535,7 @@ impl FluxChat {
                                             if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
                                                 svc.start().await;
                                                 tracing::info!("Sync restarted after error");
+                                                let _ = tx_reconnect.send(Message::SyncReconnected);
                                             }
                                         }
                                         SyncState::Terminated => {
@@ -3388,6 +3544,7 @@ impl FluxChat {
                                             if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
                                                 svc.start().await;
                                                 tracing::info!("Sync restarted after termination");
+                                                let _ = tx_reconnect.send(Message::SyncReconnected);
                                             }
                                         }
                                         _ => {}
@@ -3487,6 +3644,131 @@ impl FluxChat {
             self.device_id = Some(did);
         }
     }
+}
+
+/// Create a video player with rotation handling and framerate fallback.
+/// Always uses a custom pipeline with `videoflip method=automatic` for correct orientation.
+fn create_video_player(uri: &url::Url) -> Result<iced_video_player::Video, iced_video_player::Error> {
+    // Always use custom pipeline with videoflip for rotation support
+    let pipeline_str = format!(
+        "playbin uri=\"{}\" video-sink=\"videoflip method=automatic ! videorate ! videoscale ! videoconvert ! appsink name=iced_video drop=true caps=video/x-raw,format=NV12,pixel-aspect-ratio=1/1\"",
+        uri.as_str()
+    );
+    let pipeline = gstreamer::parse::launch(&pipeline_str)?
+        .downcast::<gstreamer::Pipeline>()
+        .map_err(|_| iced_video_player::Error::Cast)?;
+
+    let video_sink: gstreamer::Element = pipeline.property("video-sink");
+    let pad = video_sink.pads().first().cloned().unwrap();
+    let pad = pad.dynamic_cast::<gstreamer::GhostPad>().unwrap();
+    let bin = pad
+        .parent_element()
+        .unwrap()
+        .downcast::<gstreamer::Bin>()
+        .unwrap();
+    let video_sink = bin.by_name("iced_video").unwrap();
+    let video_sink = video_sink
+        .downcast::<gstreamer_app::AppSink>()
+        .map_err(|_| iced_video_player::Error::Cast)?;
+
+    iced_video_player::Video::from_gst_pipeline(pipeline, video_sink, None)
+}
+
+/// Extract the first frame of a video as a PNG thumbnail using GStreamer.
+/// Reads rotation metadata via GstDiscoverer for reliable orientation.
+/// Fits within a 400x400 bounding box, preserving aspect ratio.
+fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)> {
+    gstreamer::init().ok()?;
+    let uri = url::Url::from_file_path(path).ok()?;
+
+    // Read rotation from container metadata via Discoverer
+    let mut rotation = 0u32;
+    if let Ok(discoverer) = gstreamer_pbutils::Discoverer::new(gstreamer::ClockTime::from_seconds(5)) {
+        if let Ok(info) = discoverer.discover_uri(uri.as_str()) {
+            let check_tags = |tags: &gstreamer::TagListRef| -> Option<u32> {
+                let val = tags.get::<gstreamer::tags::ImageOrientation>()?;
+                let s = val.get();
+                tracing::info!("Video orientation tag: {s}");
+                match s {
+                    "rotate-90" => Some(90),
+                    "rotate-180" => Some(180),
+                    "rotate-270" => Some(270),
+                    _ => None,
+                }
+            };
+            if let Some(tags) = info.tags() {
+                if let Some(r) = check_tags(&tags) {
+                    rotation = r;
+                }
+            }
+            if rotation == 0 {
+                for stream in info.video_streams() {
+                    if let Some(tags) = stream.tags() {
+                        if let Some(r) = check_tags(&tags) {
+                            rotation = r;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Extract raw frame (no videoflip — we rotate manually for reliability)
+    let pipeline_str = format!(
+        "uridecodebin uri=\"{}\" ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true",
+        uri.as_str()
+    );
+    let pipeline = gstreamer::parse::launch(&pipeline_str).ok()?
+        .downcast::<gstreamer::Pipeline>().ok()?;
+
+    let sink = pipeline.by_name("sink")?
+        .downcast::<gstreamer_app::AppSink>().ok()?;
+
+    pipeline.set_state(gstreamer::State::Playing).ok()?;
+    pipeline.state(gstreamer::ClockTime::from_seconds(5)).0.ok()?;
+
+    let sample = sink.try_pull_sample(gstreamer::ClockTime::from_seconds(5))?;
+    let caps = sample.caps()?;
+    let s = caps.structure(0)?;
+    let width = s.get::<i32>("width").ok()? as u32;
+    let height = s.get::<i32>("height").ok()? as u32;
+
+    let buffer = sample.buffer()?;
+    let map = buffer.map_readable().ok()?;
+    let rgb_data = map.as_slice();
+
+    pipeline.set_state(gstreamer::State::Null).ok()?;
+
+    let img = image::RgbImage::from_raw(width, height, rgb_data.to_vec())?;
+
+    // Apply rotation from metadata
+    let rotated = match rotation {
+        90 => image::DynamicImage::ImageRgb8(img).rotate90().to_rgb8(),
+        180 => image::DynamicImage::ImageRgb8(img).rotate180().to_rgb8(),
+        270 => image::DynamicImage::ImageRgb8(img).rotate270().to_rgb8(),
+        _ => img,
+    };
+    let (rw, rh) = rotated.dimensions();
+
+    // Fit within 350x500 CSS-point box
+    let max_w = 350u32;
+    let max_h = 500u32;
+    let scale = (max_w as f64 / rw as f64).min(max_h as f64 / rh as f64).min(1.0);
+    let new_w = (rw as f64 * scale) as u32;
+    let new_h = (rh as f64 * scale) as u32;
+
+    let resized = image::imageops::resize(&rotated, new_w, new_h, image::imageops::FilterType::Triangle);
+
+    let mut png_buf = Vec::new();
+    {
+        let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
+        use image::ImageEncoder;
+        encoder.write_image(resized.as_raw(), new_w, new_h, image::ExtendedColorType::Rgb8).ok()?;
+    }
+
+    tracing::info!("Video thumbnail generated: {new_w}x{new_h} pixels (from {rw}x{rh} rotated frame)");
+    Some((png_buf, new_w, new_h))
 }
 
 /// Guess MIME type from file extension.
