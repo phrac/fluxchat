@@ -31,3 +31,7 @@ purple = [168, 85, 247]
 
 # Border
 border = [255, 255, 255, 15]
+
+# Code blocks
+code_bg = [0, 0, 0, 76]
+code_text = [200, 201, 205]

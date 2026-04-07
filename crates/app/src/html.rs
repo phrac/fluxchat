@@ -682,8 +682,13 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                 );
                 let mut parse_state = syntect::parsing::ParseState::new(syntax);
 
-                let code_bg = Color::from_rgba(0.0, 0.0, 0.0, 0.3);
-                let line_num_color = Color::from_rgba(1.0, 1.0, 1.0, 0.25);
+                let is_dark = theme::colors().dark;
+                let code_bg = theme::colors().code_bg;
+                let line_num_color = if is_dark {
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.25)
+                } else {
+                    Color::from_rgba(0.0, 0.0, 0.0, 0.3)
+                };
                 let code_size = 13;
                 let line_count = code.lines().count();
                 let num_width = if line_count >= 100 { 4 } else if line_count >= 10 { 3 } else { 2 };
@@ -707,11 +712,15 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                         &highlighter,
                     );
                     for (style, text) in regions {
-                        let color = Color::from_rgb(
-                            style.foreground.r as f32 / 255.0,
-                            style.foreground.g as f32 / 255.0,
-                            style.foreground.b as f32 / 255.0,
-                        );
+                        let color = if is_dark {
+                            Color::from_rgb(
+                                style.foreground.r as f32 / 255.0,
+                                style.foreground.g as f32 / 255.0,
+                                style.foreground.b as f32 / 255.0,
+                            )
+                        } else {
+                            theme::colors().code_text
+                        };
                         spans.push(
                             Span::new(text.to_string())
                                 .font(Font::MONOSPACE)
@@ -799,6 +808,9 @@ fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo]) 
 fn highlight_code_block(code: &str, language: Option<&str>) -> Vec<Span<'static, String>> {
     use syntect::easy::HighlightLines;
 
+    let is_dark = theme::colors().dark;
+    let code_text = theme::colors().code_text;
+
     let syntax = language
         .and_then(|l| SS.find_syntax_by_token(l))
         .or_else(|| {
@@ -809,7 +821,11 @@ fn highlight_code_block(code: &str, language: Option<&str>) -> Vec<Span<'static,
     let theme = &TS.themes["base16-ocean.dark"];
     let mut h = HighlightLines::new(syntax, theme);
 
-    let line_num_color = Color::from_rgba(1.0, 1.0, 1.0, 0.25);
+    let line_num_color = if is_dark {
+        Color::from_rgba(1.0, 1.0, 1.0, 0.25)
+    } else {
+        Color::from_rgba(0.0, 0.0, 0.0, 0.3)
+    };
     let line_count = code.lines().count();
     let num_width = if line_count >= 100 { 4 } else if line_count >= 10 { 3 } else { 2 };
 
@@ -829,11 +845,15 @@ fn highlight_code_block(code: &str, language: Option<&str>) -> Vec<Span<'static,
             // Skip the trailing newline we added
             let text = text.trim_end_matches('\n');
             if text.is_empty() { continue; }
-            let color = Color::from_rgb(
-                style.foreground.r as f32 / 255.0,
-                style.foreground.g as f32 / 255.0,
-                style.foreground.b as f32 / 255.0,
-            );
+            let color = if is_dark {
+                Color::from_rgb(
+                    style.foreground.r as f32 / 255.0,
+                    style.foreground.g as f32 / 255.0,
+                    style.foreground.b as f32 / 255.0,
+                )
+            } else {
+                code_text
+            };
             spans.push(
                 Span::new(text.to_string())
                     .font(Font::MONOSPACE)
@@ -875,7 +895,7 @@ fn styled_span(text: String, style: &Style) -> Span<'static, String> {
         });
         span.color = Some(theme::colors().accent);
         span = span
-            .background(Color::from_rgba(0.0, 0.0, 0.0, 0.3))
+            .background(theme::colors().code_bg)
             .border(iced::Border {
                 radius: 3.0.into(),
                 ..Default::default()

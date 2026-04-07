@@ -1919,12 +1919,17 @@ impl FluxChat {
             Message::ToggleFavourite => {
                 self.overflow_menu_open = false;
                 if let Some(room_id) = self.selected_room_id.clone() {
+                    // Toggle local state immediately for snappy UI
+                    if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+                        room.is_favourite = !room.is_favourite;
+                    }
                     let core = self.core.clone();
+                    let new_fav = self.rooms.iter().find(|r| r.room_id == room_id)
+                        .map(|r| r.is_favourite).unwrap_or(false);
                     return Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
-                            let is_fav = fluxchat_core::rooms::is_room_favourite(&client, &room_id).await.ok()?;
-                            fluxchat_core::rooms::set_room_favourite(&client, &room_id, !is_fav).await.ok()
+                            fluxchat_core::rooms::set_room_favourite(&client, &room_id, new_fav).await.ok()
                         },
                         |_| Message::Noop,
                     );

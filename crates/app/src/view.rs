@@ -1740,7 +1740,39 @@ impl FluxChat {
                 make_action_btn(SVG_THREAD, Message::ToggleThreads, self.threads_open, "Threads"),
                 make_action_btn(SVG_USERS, Message::ToggleMemberList, self.show_member_list, "Members"),
                 make_action_btn(SVG_INFO, Message::OpenModal(crate::state::Modal::RoomSettings), false, "Settings"),
-                make_action_btn(SVG_STAR, Message::ToggleFavourite, current_room.map(|r| r.is_favourite).unwrap_or(false), "Favourite"),
+                {
+                    let is_fav = current_room.map(|r| r.is_favourite).unwrap_or(false);
+                    let star_color = if is_fav { Color::from_rgb(1.0, 0.8, 0.0) } else { theme::colors().text_dim };
+                    let handle = iced::widget::svg::Handle::from_memory(SVG_STAR);
+                    let fav_btn: Element<Message> = button(
+                        iced::widget::svg(handle)
+                            .width(16).height(16)
+                            .style(move |_, _| iced::widget::svg::Style { color: Some(star_color) }),
+                    )
+                    .on_press(Message::ToggleFavourite)
+                    .padding([4, 6])
+                    .style(move |_, status| button::Style {
+                        background: if is_fav {
+                            Some(Color::from_rgba(1.0, 0.8, 0.0, 0.1).into())
+                        } else if matches!(status, button::Status::Hovered) {
+                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        } else {
+                            None
+                        },
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    })
+                    .into();
+                    let tt: Element<Message> = iced::widget::tooltip(fav_btn, "Favourite", iced::widget::tooltip::Position::Bottom)
+                        .gap(4)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::colors().bg_dark.into()),
+                            border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                            ..Default::default()
+                        })
+                        .into();
+                    tt
+                },
             ]
             .spacing(2)
             .align_y(iced::Alignment::Center);

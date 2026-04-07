@@ -61,6 +61,10 @@ struct ThemeDef {
     purple: Option<ColorDef>,
     #[serde(default)]
     border: Option<ColorDef>,
+    #[serde(default)]
+    code_bg: Option<ColorDef>,
+    #[serde(default)]
+    code_text: Option<ColorDef>,
 }
 
 /// Runtime theme colors.
@@ -83,6 +87,8 @@ pub struct ThemeColors {
     pub red: Color,
     pub purple: Color,
     pub border: Color,
+    pub code_bg: Color,
+    pub code_text: Color,
 }
 
 fn default_true() -> bool { true }
@@ -113,6 +119,8 @@ pub fn fluxchat_theme() -> ThemeColors {
         red: Color::from_rgb(0xef as f32 / 255.0, 0x44 as f32 / 255.0, 0x44 as f32 / 255.0),
         purple: Color::from_rgb(0xa8 as f32 / 255.0, 0x55 as f32 / 255.0, 0xf7 as f32 / 255.0),
         border: Color::from_rgba(1.0, 1.0, 1.0, 0.06),
+        code_bg: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+        code_text: Color::from_rgb(0xc8 as f32 / 255.0, 0xc9 as f32 / 255.0, 0xcd as f32 / 255.0),
     }
 }
 
@@ -138,6 +146,14 @@ fn load_theme_str(toml_str: &str) -> Option<ThemeColors> {
         red: def.red.map(|c| c.to_color()).unwrap_or(base.red),
         purple: def.purple.map(|c| c.to_color()).unwrap_or(base.purple),
         border: def.border.map(|c| c.to_color()).unwrap_or(base.border),
+        code_bg: def.code_bg.map(|c| c.to_color()).unwrap_or(
+            if def.dark { Color::from_rgba(0.0, 0.0, 0.0, 0.3) }
+            else { Color::from_rgba(0.0, 0.0, 0.0, 0.07) }
+        ),
+        code_text: def.code_text.map(|c| c.to_color()).unwrap_or(
+            if def.dark { Color::from_rgb(0xc8 as f32 / 255.0, 0xc9 as f32 / 255.0, 0xcd as f32 / 255.0) }
+            else { Color::from_rgb(0x1a as f32 / 255.0, 0x1b as f32 / 255.0, 0x1e as f32 / 255.0) }
+        ),
     })
 }
 

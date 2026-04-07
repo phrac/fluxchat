@@ -636,12 +636,13 @@ impl FluxChat {
                                     }),
                             ].spacing(4).width(Fill);
 
+                            let code_container_bg = theme::colors().code_bg;
                             body_col = body_col.push(
                                 container(code_col)
                                     .padding([8, 12])
                                     .width(Fill)
-                                    .style(|_| container::Style {
-                                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.35).into()),
+                                    .style(move |_| container::Style {
+                                        background: Some(code_container_bg.into()),
                                         border: iced::Border { radius: 6.0.into(), ..Default::default() },
                                         ..Default::default()
                                     }),
@@ -760,80 +761,77 @@ impl FluxChat {
             })
             .into();
 
-        let msg_row: Element<'a, Message> = if is_hovered {
-            // Size action buttons to fit within the message row height
-            let btn_size = (fs + 4.0).max(18.0);
-            let icon_sz = btn_size - 6.0;
-            let btn_pad = ((btn_size - icon_sz) / 2.0).floor() as u16;
-            let make_msg_action = move |svg_bytes: &'static [u8], msg_action: Message| -> Element<'a, Message> {
-                let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
-                button(
-                    iced::widget::svg(handle)
-                        .width(Length::Fixed(icon_sz)).height(Length::Fixed(icon_sz))
-                        .content_fit(iced::ContentFit::Fill)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_muted) }),
-                )
-                .on_press(msg_action)
-                .padding(btn_pad)
-                .width(Length::Fixed(btn_size))
-                .height(Length::Fixed(btn_size))
-                .style(|_, status| button::Style {
-                    background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into())
-                    } else {
-                        None
-                    },
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                })
-                .into()
-            };
-
-            let is_own = msg.sender == self.user_id;
-            let mut action_row = row![].spacing(2).align_y(iced::Alignment::Center);
-
-            action_row = action_row.push(make_msg_action(SVG_REACT, Message::OpenEmojiReact(event_id.clone())));
-            action_row = action_row.push(make_msg_action(SVG_CLIPBOARD, Message::CopyMessageText(msg.body.clone())));
-            action_row = action_row.push(make_msg_action(SVG_REPLY, Message::StartReply(
-                event_id.clone(),
-                msg.sender_name.clone(),
-                msg.body.chars().take(80).collect(),
-            )));
-            // Reply in thread
-            if let Some(room_id) = &self.selected_room_id {
-                if !room_id.starts_with("thread::") {
-                    // Use existing thread_root if this message is in a thread, otherwise start new thread on this message
-                    let thread_root = msg.thread_root.as_deref().unwrap_or(&msg.event_id);
-                    action_row = action_row.push(make_msg_action(SVG_THREAD, Message::OpenThread(
-                        room_id.clone(),
-                        thread_root.to_string(),
-                    )));
-                }
-            }
-
-            // Pin/unpin
-            action_row = action_row.push(make_msg_action(SVG_PIN, Message::PinMessage(event_id.clone())));
-
-            if is_own {
-                action_row = action_row.push(make_msg_action(SVG_EDIT, Message::StartEdit(
-                    event_id.clone(),
-                    msg.body.clone(),
-                )));
-                action_row = action_row.push(make_msg_action(SVG_DELETE, Message::DeleteMessage(event_id.clone())));
-            } else {
-                // Report button (other people's messages only)
-                let report_room = self.selected_room_id.clone().unwrap_or_default();
-                let report_room = if report_room.starts_with("thread::") {
-                    report_room.splitn(3, "::").nth(1).unwrap_or(&report_room).to_string()
+        // Always build the action bar to keep widget tree structure stable
+        // (changing tree structure on hover loses SelectableRichText selection state)
+        let btn_size = (fs + 4.0).max(18.0);
+        let icon_sz = btn_size - 6.0;
+        let btn_pad = ((btn_size - icon_sz) / 2.0).floor() as u16;
+        let make_msg_action = move |svg_bytes: &'static [u8], msg_action: Message| -> Element<'a, Message> {
+            let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+            button(
+                iced::widget::svg(handle)
+                    .width(Length::Fixed(icon_sz)).height(Length::Fixed(icon_sz))
+                    .content_fit(iced::ContentFit::Fill)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_muted) }),
+            )
+            .on_press(msg_action)
+            .padding(btn_pad)
+            .width(Length::Fixed(btn_size))
+            .height(Length::Fixed(btn_size))
+            .style(|_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into())
                 } else {
-                    report_room
-                };
-                action_row = action_row.push(make_msg_action(SVG_FLAG, Message::OpenModal(
-                    crate::state::Modal::Report { event_id: event_id.clone(), room_id: report_room },
+                    None
+                },
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+        };
+
+        let is_own = msg.sender == self.user_id;
+        let mut action_row = row![].spacing(2).align_y(iced::Alignment::Center);
+
+        action_row = action_row.push(make_msg_action(SVG_REACT, Message::OpenEmojiReact(event_id.clone())));
+        action_row = action_row.push(make_msg_action(SVG_CLIPBOARD, Message::CopyMessageText(msg.body.clone())));
+        action_row = action_row.push(make_msg_action(SVG_REPLY, Message::StartReply(
+            event_id.clone(),
+            msg.sender_name.clone(),
+            msg.body.chars().take(80).collect(),
+        )));
+        if let Some(room_id) = &self.selected_room_id {
+            if !room_id.starts_with("thread::") {
+                let thread_root = msg.thread_root.as_deref().unwrap_or(&msg.event_id);
+                action_row = action_row.push(make_msg_action(SVG_THREAD, Message::OpenThread(
+                    room_id.clone(),
+                    thread_root.to_string(),
                 )));
             }
+        }
+        action_row = action_row.push(make_msg_action(SVG_PIN, Message::PinMessage(event_id.clone())));
 
-            let action_bar: Element<'a, Message> = container(
+        if is_own {
+            action_row = action_row.push(make_msg_action(SVG_EDIT, Message::StartEdit(
+                event_id.clone(),
+                msg.body.clone(),
+            )));
+            action_row = action_row.push(make_msg_action(SVG_DELETE, Message::DeleteMessage(event_id.clone())));
+        } else {
+            let report_room = self.selected_room_id.clone().unwrap_or_default();
+            let report_room = if report_room.starts_with("thread::") {
+                report_room.splitn(3, "::").nth(1).unwrap_or(&report_room).to_string()
+            } else {
+                report_room
+            };
+            action_row = action_row.push(make_msg_action(SVG_FLAG, Message::OpenModal(
+                crate::state::Modal::Report { event_id: event_id.clone(), room_id: report_room },
+            )));
+        }
+
+        // Only show action bar when hovered (opacity 0 when not, preserving tree structure)
+        let action_bar: Element<'a, Message> = if is_hovered {
+            container(
                 row![
                     Space::new().width(Fill),
                     container(action_row)
@@ -858,20 +856,18 @@ impl FluxChat {
             .width(Fill)
             .height(Length::Shrink)
             .padding([0, 8])
-            .into();
-
-            let stacked = mouse_area(
-                stack![base_row, action_bar].width(Fill)
-            )
-            .on_enter(Message::HoverMessage(Some(eid_hover)));
-
-            stacked.into()
+            .into()
         } else {
-            mouse_area(base_row)
-                .on_enter(Message::HoverMessage(Some(eid_hover)))
-                .on_exit(Message::HoverMessage(None))
-                .into()
+            // Invisible placeholder — same tree shape, zero height
+            container(Space::new().height(0)).width(Fill).into()
         };
+
+        let msg_row: Element<'a, Message> = mouse_area(
+            stack![base_row, action_bar].width(Fill)
+        )
+        .on_enter(Message::HoverMessage(Some(eid_hover)))
+        .on_exit(Message::HoverMessage(None))
+        .into();
 
         // URL preview cards (max 2 unless expanded)
         let indent = time_width + 100.0 + 22.0 + 18.0;
