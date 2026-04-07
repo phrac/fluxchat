@@ -1511,8 +1511,34 @@ impl FluxChat {
                 .into()
         };
 
-        // Unread badge (before room name so it's visible when sidebar is narrow)
-        let unread_badge: Option<Element<Message>> = if room.highlight_count > 0 {
+        // Unread indicator: colored dot on the far left + badge count on the right
+        let has_mentions = room.highlight_count > 0 && !self.read_rooms.contains(&room.room_id);
+        let indicator_dot: Element<Message> = if has_mentions {
+            // Red dot for mentions
+            container(Space::new().width(0).height(0))
+                .width(8).height(8)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().red.into()),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into()
+        } else if has_unread {
+            // Accent dot for regular unread
+            container(Space::new().width(0).height(0))
+                .width(8).height(8)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().accent.into()),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            // Invisible spacer to keep alignment
+            Space::new().width(8).height(8).into()
+        };
+
+        let unread_badge: Option<Element<Message>> = if has_mentions {
             Some(container(
                 text(room.highlight_count.to_string())
                     .font(self.sidebar_font())
@@ -1526,7 +1552,7 @@ impl FluxChat {
                 ..Default::default()
             })
             .into())
-        } else if room.unread_count > 0 && !self.read_rooms.contains(&room.room_id) {
+        } else if has_unread {
             Some(container(
                 text(room.unread_count.to_string())
                     .font(self.sidebar_font())
@@ -1544,10 +1570,11 @@ impl FluxChat {
             None
         };
 
-        let mut row_content = row![room_icon].spacing(6).align_y(iced::Alignment::Center);
+        let mut row_content = row![indicator_dot].spacing(6).align_y(iced::Alignment::Center);
         if let Some(badge) = unread_badge {
             row_content = row_content.push(badge);
         }
+        row_content = row_content.push(room_icon);
         row_content = row_content.push(
             text(&room.name)
                 .font(self.sidebar_font())
