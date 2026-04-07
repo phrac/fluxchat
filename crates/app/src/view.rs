@@ -1763,14 +1763,19 @@ impl FluxChat {
                         ..Default::default()
                     })
                     .into();
-                    let tt: Element<Message> = iced::widget::tooltip(fav_btn, "Favourite", iced::widget::tooltip::Position::Bottom)
-                        .gap(4)
-                        .style(|_: &Theme| container::Style {
-                            background: Some(theme::colors().bg_dark.into()),
-                            border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
-                            ..Default::default()
-                        })
-                        .into();
+                    let tt: Element<Message> = iced::widget::tooltip(
+                        fav_btn,
+                        text("Favourite").font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
+                        iced::widget::tooltip::Position::Bottom,
+                    )
+                    .gap(4)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::colors().bg_dark.into()),
+                        border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                        ..Default::default()
+                    })
+                    .padding(4)
+                    .into();
                     tt
                 },
             ]
