@@ -13,7 +13,7 @@ use iced::advanced::text::{self, Paragraph, Span};
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget};
 use iced::widget::text::{Alignment, LineHeight, Shaping, Wrapping};
-use iced::{Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector};
+use iced::{Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector};
 
 /// Selection state: anchor and cursor as (line, byte_index) in the cosmic_text buffer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -317,7 +317,7 @@ where
         };
         if let Some((anchor, cursor)) = sel_anchors {
             let selection_rects = compute_selection_rects(&state.paragraph, anchor, cursor);
-            let selection_color = Color::from_rgba(0.23, 0.51, 0.96, 0.3);
+            let selection_color = crate::theme::with_alpha(crate::theme::colors().accent, 0.3);
             for rect in selection_rects {
                 renderer.fill_quad(
                     renderer::Quad {

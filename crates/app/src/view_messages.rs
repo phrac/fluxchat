@@ -1085,7 +1085,7 @@ impl FluxChat {
             let emoji = reaction.emoji.clone();
             let is_mine = reaction.users.iter().any(|u| u == &self.user_id);
             let bg = if is_mine {
-                Color::from_rgba(0.23, 0.51, 0.96, 0.15) // ACCENT tint
+                theme::with_alpha(theme::colors().accent, 0.15) // ACCENT tint
             } else {
                 Color::from_rgba(1.0, 1.0, 1.0, 0.06)
             };
@@ -1157,7 +1157,7 @@ impl FluxChat {
             container(col)
                 .width(Fill)
                 .style(|_: &Theme| container::Style {
-                    background: Some(Color::from_rgba(0.23, 0.51, 0.96, 0.15).into()),
+                    background: Some(theme::with_alpha(theme::colors().accent, 0.15).into()),
                     ..Default::default()
                 })
                 .into()

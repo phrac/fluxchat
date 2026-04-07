@@ -5,6 +5,22 @@ use gstreamer_pbutils::prelude::*;
 use crate::message::{LoginSuccess, Message, SyncEvent};
 use crate::state::{FluxChat, Screen};
 
+/// Cache size limits
+const AVATAR_CACHE_LIMIT: usize = 1000;
+const IMAGE_CACHE_LIMIT: usize = 500;
+const URL_PREVIEW_LIMIT: usize = 200;
+const GIF_CACHE_LIMIT: usize = 100;
+
+/// Evict entries from a HashMap when it exceeds the limit.
+fn evict_cache<K: std::hash::Hash + Eq + Clone, V>(cache: &mut std::collections::HashMap<K, V>, limit: usize) {
+    if cache.len() > limit {
+        let to_remove: Vec<K> = cache.keys().take(cache.len() - limit).cloned().collect();
+        for key in to_remove {
+            cache.remove(&key);
+        }
+    }
+}
+
 /// Global voice recording handle (cpal::Stream isn't Send, can't store in async state).
 /// Safety: only accessed from the main UI thread.
 struct SendHandle(Option<fluxchat_core::voice::RecordingHandle>);
@@ -1856,6 +1872,7 @@ impl FluxChat {
                     let handle = iced::widget::image::Handle::from_bytes(data);
                     self.avatar_cache.insert(mxc, handle);
                 }
+                evict_cache(&mut self.avatar_cache, AVATAR_CACHE_LIMIT);
             }
 
             // --- Inline images ---
@@ -1885,9 +1902,11 @@ impl FluxChat {
                 }
                 let handle = iced::widget::image::Handle::from_bytes(data);
                 self.image_cache.insert(mxc, handle);
+                evict_cache(&mut self.image_cache, IMAGE_CACHE_LIMIT);
             }
             Message::GifFramesResolved(mxc, frames) => {
                 self.gif_frames_cache.insert(mxc, frames);
+                evict_cache(&mut self.gif_frames_cache, GIF_CACHE_LIMIT);
             }
 
             // --- URL Previews ---
@@ -1925,12 +1944,14 @@ impl FluxChat {
                         Task::none()
                     };
                     self.url_previews.insert(url, preview);
+                    evict_cache(&mut self.url_previews, URL_PREVIEW_LIMIT);
                     return task;
                 }
             }
             Message::UrlPreviewImageResolved(url, data) => {
                 let handle = iced::widget::image::Handle::from_bytes(data);
                 self.url_preview_images.insert(url, handle);
+                evict_cache(&mut self.url_preview_images, URL_PREVIEW_LIMIT);
             }
 
             // --- Message hover ---
@@ -2207,12 +2228,12 @@ impl FluxChat {
                                 video.set_volume(1.0);
                                 self.video_player = Some(video);
                                 self.video_playing_event = Some(event_id);
+                                self.video_temp_path = Some(path);
                                 self.video_position = 0.0;
                                 self.video_dragging = false;
                             }
                             Err(e) => {
                                 tracing::warn!("Failed to create video player: {e}");
-                                // Fallback: open with system player
                                 let _ = open::that(&path);
                             }
                         }
@@ -2259,6 +2280,9 @@ impl FluxChat {
                 self.video_playing_event = None;
                 self.video_position = 0.0;
                 self.video_dragging = false;
+                if let Some(path) = self.video_temp_path.take() {
+                    let _ = std::fs::remove_file(&path);
+                }
             }
             Message::VideoThumbResolved(key, data, w, h) => {
                 self.image_cache_pending.remove(&key);
@@ -2877,6 +2901,7 @@ impl FluxChat {
             }
             Message::GifPreviewLoaded(url, frames) => {
                 self.gif_preview_cache.insert(url, frames);
+                evict_cache(&mut self.gif_preview_cache, GIF_CACHE_LIMIT);
             }
             Message::GifSelect(gif_url, description) => {
                 self.gifs_open = false;

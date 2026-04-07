@@ -1495,19 +1495,19 @@ impl FluxChat {
             let handle = iced::widget::svg::Handle::from_memory(SVG_PERSON);
             iced::widget::svg(handle)
                 .width(14).height(14)
-                .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3)) })
+                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) })
                 .into()
         } else if room.is_encrypted {
             let handle = iced::widget::svg::Handle::from_memory(SVG_LOCK);
             iced::widget::svg(handle)
                 .width(14).height(14)
-                .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3)) })
+                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) })
                 .into()
         } else {
             let handle = iced::widget::svg::Handle::from_memory(SVG_HASH);
             iced::widget::svg(handle)
                 .width(14).height(14)
-                .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.3)) })
+                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) })
                 .into()
         };
 
@@ -2160,7 +2160,7 @@ impl FluxChat {
                                     .padding([2, 6])
                                     .style(|_, status| button::Style {
                                         background: if matches!(status, button::Status::Hovered) {
-                                            Some(Color::from_rgba(0.23, 0.51, 0.96, 0.1).into())
+                                            Some(theme::with_alpha(theme::colors().accent, 0.1).into())
                                         } else {
                                             None
                                         },
@@ -2205,15 +2205,15 @@ impl FluxChat {
                 {
                     let pill = button(
                         text("\u{2193} New messages")
-                        .font(self.sidebar_font()).size(12).color(Color::WHITE)
+                        .font(self.sidebar_font()).size(12).color(theme::colors().text_bright)
                     )
                     .on_press(Message::ScrollToBottom)
                     .padding([4, 12])
                     .style(|_, status| button::Style {
                         background: Some(if matches!(status, button::Status::Hovered) {
-                            Color::from_rgba(0.23, 0.51, 0.96, 0.9)
+                            theme::with_alpha(theme::colors().accent, 0.9)
                         } else {
-                            Color::from_rgba(0.23, 0.51, 0.96, 0.75)
+                            theme::with_alpha(theme::colors().accent, 0.75)
                         }.into()),
                         border: iced::Border { radius: 12.0.into(), ..Default::default() },
                         ..Default::default()

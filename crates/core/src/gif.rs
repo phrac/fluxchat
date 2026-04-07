@@ -116,11 +116,20 @@ pub async fn search_gifs(query: &str, api_key: Option<&str>) -> Result<Vec<GifRe
     Ok(results)
 }
 
+/// Maximum GIF download size (50 MB).
+const MAX_GIF_SIZE: u64 = 50 * 1024 * 1024;
+
 /// Download GIF bytes from a URL.
 pub async fn download_gif(url: &str) -> Result<Vec<u8>, AppError> {
     let resp = reqwest::get(url)
         .await
         .map_err(|e| AppError::Other(format!("GIF download failed: {e}")))?;
+
+    if let Some(len) = resp.content_length() {
+        if len > MAX_GIF_SIZE {
+            return Err(AppError::Other(format!("GIF too large: {len} bytes (max {MAX_GIF_SIZE})")));
+        }
+    }
 
     resp.bytes()
         .await

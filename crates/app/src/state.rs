@@ -133,6 +133,7 @@ pub struct FluxChat {
     pub video_thumb_sizes: HashMap<String, (u32, u32)>,  // thumb_key -> (width, height)
     pub video_player: Option<iced_video_player::Video>, // inline video player
     pub video_playing_event: Option<String>,            // event_id of video being played
+    pub video_temp_path: Option<std::path::PathBuf>,    // temp file to clean up
     pub video_position: f64,                            // current position in seconds
     pub video_dragging: bool,                           // true while seeking via slider
     pub location_open: bool,
@@ -395,6 +396,7 @@ impl FluxChat {
             video_thumb_sizes: HashMap::new(),
             video_player: None,
             video_playing_event: None,
+            video_temp_path: None,
             video_position: 0.0,
             video_dragging: false,
             location_open: false,

@@ -202,15 +202,15 @@ impl FluxChat {
                         .on_submit(Message::LocationSubmit)
                         .font(self.msg_font()).size(14).padding(4).width(Length::Fixed(120.0)),
                     button(
-                        text("Send").font(self.msg_font()).size(13).color(Color::WHITE)
+                        text("Send").font(self.msg_font()).size(13).color(theme::colors().text_bright)
                     )
                     .on_press(Message::LocationSubmit)
                     .padding([4, 12])
                     .style(|_, status| button::Style {
                         background: Some(if matches!(status, button::Status::Hovered) {
-                            Color::from_rgba(0.23, 0.51, 0.96, 0.9)
+                            theme::with_alpha(theme::colors().accent, 0.9)
                         } else {
-                            Color::from_rgba(0.23, 0.51, 0.96, 0.7)
+                            theme::with_alpha(theme::colors().accent, 0.7)
                         }.into()),
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
@@ -598,14 +598,14 @@ impl FluxChat {
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
-                button(text("Send").font(self.msg_font()).size(13).color(Color::WHITE))
+                button(text("Send").font(self.msg_font()).size(13).color(theme::colors().text_bright))
                     .on_press(Message::SendVoiceMessage)
                     .padding([4, 12])
                     .style(|_, status| button::Style {
                         background: Some(if matches!(status, button::Status::Hovered) {
-                            Color::from_rgba(0.23, 0.51, 0.96, 0.9)
+                            theme::with_alpha(theme::colors().accent, 0.9)
                         } else {
-                            Color::from_rgba(0.23, 0.51, 0.96, 0.7)
+                            theme::with_alpha(theme::colors().accent, 0.7)
                         }.into()),
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()

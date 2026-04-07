@@ -247,6 +247,11 @@ pub fn colors() -> ThemeColors {
     active().clone()
 }
 
+/// Apply an alpha value to an existing Color.
+pub fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color::from_rgba(color.r, color.g, color.b, alpha)
+}
+
 /// The 15 IRC nick colors.
 pub const NICK_COLORS: [Color; 15] = [
     Color::from_rgb(0.925, 0.380, 0.380),
