@@ -1512,57 +1512,50 @@ impl FluxChat {
                 .into()
         };
 
-        let mut row_content = row![
-            room_icon,
+        // Unread badge (before room name so it's visible when sidebar is narrow)
+        let unread_badge: Option<Element<Message>> = if room.highlight_count > 0 {
+            Some(container(
+                text(room.highlight_count.to_string())
+                    .font(self.sidebar_font())
+                    .size(10)
+                    .color(theme::colors().text_bright),
+            )
+            .padding([1, 4])
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().red.into()),
+                border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into())
+        } else if room.unread_count > 0 && !self.read_rooms.contains(&room.room_id) {
+            Some(container(
+                text(room.unread_count.to_string())
+                    .font(self.sidebar_font())
+                    .size(10)
+                    .color(theme::colors().text_bright),
+            )
+            .padding([1, 4])
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().accent.into()),
+                border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into())
+        } else {
+            None
+        };
+
+        let mut row_content = row![room_icon].spacing(6).align_y(iced::Alignment::Center);
+        if let Some(badge) = unread_badge {
+            row_content = row_content.push(badge);
+        }
+        row_content = row_content.push(
             text(&room.name)
                 .font(self.sidebar_font())
                 .size(13)
                 .color(name_color)
                 .wrapping(iced::widget::text::Wrapping::None),
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-
-        // Unread badge
-        if room.highlight_count > 0 {
-            row_content = row_content.push(Space::new().width(Fill));
-            row_content = row_content.push(
-                container(
-                    text(room.highlight_count.to_string())
-                        .font(self.sidebar_font())
-                        .size(12)
-                        .color(theme::colors().text_bright),
-                )
-                .padding([1, 5])
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().red.into()),
-                    border: iced::Border {
-                        radius: 8.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-            );
-        } else if room.unread_count > 0 && !self.read_rooms.contains(&room.room_id) {
-            row_content = row_content.push(Space::new().width(Fill));
-            row_content = row_content.push(
-                container(
-                    text(room.unread_count.to_string())
-                        .font(self.sidebar_font())
-                        .size(12)
-                        .color(theme::colors().text_bright),
-                )
-                .padding([1, 5])
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().accent.into()),
-                    border: iced::Border {
-                        radius: 8.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-            );
-        }
+        );
 
         // Call indicator
         if self.rooms_with_calls.contains(&room.room_id) {

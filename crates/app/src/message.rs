@@ -203,6 +203,8 @@ pub enum Message {
     SendLocation(String), // geo_uri (e.g. "geo:51.5074,-0.1278")
     PlayAudio(String, String), // event_id, room_id
     StopAudio,
+    DownloadFile(String, String), // event_id, room_id
+    PlayVideo(String, String),    // event_id, room_id
     AudioFinished,
     StartVoiceRecording,
     StopVoiceRecording,

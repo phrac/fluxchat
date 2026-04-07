@@ -611,6 +611,11 @@ impl FluxChat {
                 if !self.collapsed_sections.remove(&section) {
                     self.collapsed_sections.insert(section);
                 }
+                // Persist collapsed sections
+                let sections: Vec<&str> = self.collapsed_sections.iter().map(|s| s.as_str()).collect();
+                if let Ok(json) = serde_json::to_string(&sections) {
+                    let _ = self.core.db.set_setting("collapsed_sections", &json);
+                }
             }
 
             // --- Message input ---
@@ -2070,6 +2075,59 @@ impl FluxChat {
                 self.audio_start_time = None;
                 self.audio_pid = None;
             }
+            Message::DownloadFile(event_id, room_id) => {
+                // Get the filename from the message
+                let filename = self.messages_by_room
+                    .get(&room_id)
+                    .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                    .map(|m| m.body.clone())
+                    .unwrap_or_else(|| "file".to_string());
+                let core = self.core.clone();
+                let real_room = if room_id.starts_with("thread::") {
+                    room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                } else {
+                    room_id
+                };
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?;
+                        // Open save dialog
+                        let handle = rfd::AsyncFileDialog::new()
+                            .set_file_name(&filename)
+                            .save_file()
+                            .await?;
+                        handle.write(&data).await.ok()?;
+                        Some(())
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::PlayVideo(event_id, room_id) => {
+                let core = self.core.clone();
+                let real_room = if room_id.starts_with("thread::") {
+                    room_id.splitn(3, "::").nth(1).unwrap_or(&room_id).to_string()
+                } else {
+                    room_id
+                };
+                let filename = self.messages_by_room
+                    .get(&real_room)
+                    .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                    .map(|m| m.body.clone())
+                    .unwrap_or_else(|| "video.mp4".to_string());
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?;
+                        // Write to temp file and open with system player
+                        let tmp = std::env::temp_dir().join(format!("fluxchat_video_{filename}"));
+                        std::fs::write(&tmp, &data).ok()?;
+                        open::that(&tmp).ok()?;
+                        Some(())
+                    },
+                    |_| Message::Noop,
+                );
+            }
             Message::AudioFinished => {
                 self.audio_playing = None;
                 self.audio_progress = 0.0;
@@ -3305,6 +3363,39 @@ impl FluxChat {
                                 },
                             ).await;
                         }
+                        // Spawn reconnection watcher
+                        {
+                            let mut state_sub = sync_service.state();
+                            let core_reconnect = core.clone();
+                            tokio::spawn(async move {
+                                use fluxchat_core::SyncState;
+                                loop {
+                                    let next: Option<SyncState> = state_sub.next().await;
+                                    if next.is_none() { break; }
+                                    let current = state_sub.get();
+                                    match current {
+                                        SyncState::Error(ref e) => {
+                                            tracing::warn!("Sync error: {e}, reconnecting in 5s...");
+                                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                            if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
+                                                svc.start().await;
+                                                tracing::info!("Sync restarted after error");
+                                            }
+                                        }
+                                        SyncState::Terminated => {
+                                            tracing::warn!("Sync terminated, reconnecting in 5s...");
+                                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                            if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
+                                                svc.start().await;
+                                                tracing::info!("Sync restarted after termination");
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            });
+                        }
+
                         *core.sync_service.lock().await = Some(sync_service);
                     }
                     Err(e) => {
@@ -3333,6 +3424,11 @@ impl FluxChat {
     /// Load persisted settings from SQLite into state.
     fn load_persisted_settings(&mut self) {
         // read_rooms is session-only — SDK notification_count is authoritative on startup
+        if let Some(json) = self.core.db.get_setting("collapsed_sections") {
+            if let Ok(sections) = serde_json::from_str::<Vec<String>>(&json) {
+                self.collapsed_sections = sections.into_iter().collect();
+            }
+        }
         if let Some(val) = self.core.db.get_setting("timestamp_format") {
             self.timestamp_format = val;
         }

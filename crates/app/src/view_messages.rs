@@ -346,9 +346,105 @@ impl FluxChat {
                     .into()
             }
         } else if msg.is_video {
-            text(format!("[video: {}]", msg.body))
-                .font(self.msg_font()).size(fs).color(theme::colors().purple).width(Fill)
+            // Video: show thumbnail with play overlay, click to download + open
+            let eid = msg.event_id.clone();
+            let rid = self.selected_room_id.clone().unwrap_or_default();
+            let thumbnail: Element<Message> = if let Some(mxc) = msg.image_mxc.as_ref() {
+                if let Some(handle) = self.image_cache.get(mxc) {
+                    let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
+                    let img_h = if let (Some(w), Some(h)) = (msg.image_width, msg.image_height) {
+                        (img_w * h as f32 / w as f32).min(300.0)
+                    } else { 200.0 };
+                    iced::widget::stack![
+                        iced::widget::image(handle.clone())
+                            .width(img_w).height(img_h)
+                            .content_fit(iced::ContentFit::Cover),
+                        // Play button overlay
+                        container(
+                            container(
+                                iced::widget::svg(iced::widget::svg::Handle::from_memory(
+                                    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice(),
+                                ))
+                                .width(32).height(32)
+                                .style(|_, _| iced::widget::svg::Style { color: Some(Color::WHITE) }),
+                            )
+                            .padding(12)
+                            .style(|_: &Theme| container::Style {
+                                background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                                border: iced::Border { radius: 28.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                        )
+                        .width(img_w).height(img_h)
+                        .center(Fill),
+                    ].width(img_w).height(img_h).into()
+                } else {
+                    // Thumbnail loading
+                    text(format!("[video: {}]", msg.body))
+                        .font(self.msg_font()).size(fs).color(theme::colors().purple)
+                        .into()
+                }
+            } else {
+                // No thumbnail
+                container(
+                    row![
+                        iced::widget::svg(iced::widget::svg::Handle::from_memory(
+                            br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5,3 19,12 5,21"/></svg>"#.as_slice(),
+                        ))
+                        .width(20).height(20)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
+                        text(&msg.body).font(self.msg_font()).size(fs).color(theme::colors().text_bright),
+                    ].spacing(8).align_y(iced::Alignment::Center),
+                )
+                .padding([8, 12])
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_mid.into()),
+                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 8.0.into() },
+                    ..Default::default()
+                })
                 .into()
+            };
+            button(thumbnail)
+                .on_press(Message::PlayVideo(eid, rid))
+                .padding(0)
+                .style(|_, _| button::Style { background: None, ..Default::default() })
+                .into()
+        } else if msg.file_mxc.is_some() {
+            // File attachment card
+            let file_icon = iced::widget::svg::Handle::from_memory(crate::icons::SVG_FILE);
+            let size_str = msg.file_size.map(|s| {
+                if s >= 1_048_576 { format!("{:.1} MB", s as f64 / 1_048_576.0) }
+                else if s >= 1024 { format!("{:.0} KB", s as f64 / 1024.0) }
+                else { format!("{s} B") }
+            }).unwrap_or_default();
+            let mime_str = msg.file_mimetype.as_deref().unwrap_or("file");
+            let eid = msg.event_id.clone();
+            let rid = self.selected_room_id.clone().unwrap_or_default();
+            button(
+                container(
+                    row![
+                        iced::widget::svg(file_icon)
+                            .width(24).height(24)
+                            .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
+                        column![
+                            text(&msg.body).font(self.msg_font()).size(fs).color(theme::colors().text_bright),
+                            text(format!("{mime_str}  {size_str}")).font(self.msg_font()).size(11).color(theme::colors().text_dim),
+                        ].spacing(2),
+                    ]
+                    .spacing(10)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding([10, 14])
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_mid.into()),
+                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 8.0.into() },
+                    ..Default::default()
+                }),
+            )
+            .on_press(Message::DownloadFile(eid, rid))
+            .padding(0)
+            .style(|_, _| button::Style { background: None, ..Default::default() })
+            .into()
         } else if let Some(ref formatted) = msg.formatted_body {
             let has_code_block = formatted.contains("<pre>");
             let is_expanded = self.expanded_code_blocks.contains(&msg.event_id);

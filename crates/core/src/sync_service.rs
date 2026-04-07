@@ -19,6 +19,7 @@ pub async fn create_sync_service(client: &Client) -> Result<SyncService, AppErro
     service.start().await;
     info!("SyncService started");
 
+
     Ok(service)
 }
 

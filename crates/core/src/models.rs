@@ -47,6 +47,10 @@ pub struct MessageInfo {
     pub geo_uri: Option<String>,
     pub audio_mxc: Option<String>,
     pub duration_ms: Option<u64>,
+    pub file_mxc: Option<String>,    // non-image file attachment MXC
+    pub file_mimetype: Option<String>,
+    pub file_size: Option<u64>,
+    pub video_mxc: Option<String>,   // video source MXC (separate from thumbnail in image_mxc)
     #[serde(default)]
     pub is_emote: bool,
     #[serde(default)]

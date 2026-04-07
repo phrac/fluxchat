@@ -102,7 +102,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                     event_id: format!("~state-{}", member_ev.event_id), sender: String::new(), sender_name: String::new(),
                     body, formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                     reply_to_id: None, reply_to_sender: None, reply_to_body: None,
-                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
+                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                 });
             }
         }
@@ -135,7 +135,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                 transformed_body: None, // Will be populated by UI if needed
                 image_mxc,
                 reactions, reply_to_id, reply_to_sender: None, reply_to_body: None,
-                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
+                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
             });
         }
     }
@@ -452,7 +452,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
                 reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),
-                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, is_emote: false, is_video: false, is_voice: false,
+                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
             });
         }
     }
