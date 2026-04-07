@@ -2412,6 +2412,12 @@ impl FluxChat {
                         if c.as_str() == "f" || c.as_str() == "F" {
                             return Some(Message::ToggleSearch);
                         }
+                        if c.as_str() == "c" || c.as_str() == "C" {
+                            return Some(Message::CopySelection);
+                        }
+                        if c.as_str() == "u" || c.as_str() == "U" {
+                            return Some(Message::ClearInput);
+                        }
                     }
                 }
                 // Escape while quick switcher is open — intercept before text_input consumes it

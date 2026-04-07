@@ -937,6 +937,42 @@ impl FluxChat {
             Message::CopyMessageText(body) => {
                 return iced::clipboard::write(body);
             }
+            Message::SelectionStarted(widget_id, line, index) => {
+                use crate::selectable_text::{GlobalSelectionAnchor, CrossMessageSelection};
+                let anchor = GlobalSelectionAnchor { widget_id, line, index };
+                self.selection = CrossMessageSelection {
+                    cursor: Some(anchor.clone()),
+                    anchor: Some(anchor),
+                    active: true,
+                };
+            }
+            Message::SelectionMoved(widget_id, line, index) => {
+                if self.selection.active {
+                    self.selection.cursor = Some(crate::selectable_text::GlobalSelectionAnchor {
+                        widget_id, line, index,
+                    });
+                }
+            }
+            Message::SelectionEnded => {
+                self.selection.active = false;
+                // Clear if no actual drag occurred (click without movement)
+                if self.selection.anchor == self.selection.cursor {
+                    self.selection = Default::default();
+                }
+            }
+            Message::CopySelection => {
+                if let Some(text) = self.extract_selection_text() {
+                    return iced::clipboard::write(text);
+                }
+            }
+            Message::ClearInput => {
+                self.input_text.clear();
+                self.input_content = iced::widget::text_editor::Content::new();
+                self.reply_to = None;
+                self.edit_event = None;
+                self.cmd_completions.clear();
+                self.mention_completions.clear();
+            }
             Message::ToggleReaction(event_id, emoji) => {
                 if let Some(room_id) = self.selected_room_id.clone() {
                     let core = self.core.clone();
@@ -3013,6 +3049,8 @@ impl FluxChat {
                     self.search_results.clear();
                     self.search_selected = None;
                     self.highlight_event_id = None;
+                } else if self.selection.anchor.is_some() {
+                    self.selection = Default::default();
                 } else if self.context_menu.is_some() {
                     self.context_menu = None;
                 } else if self.overflow_menu_open {
@@ -3260,6 +3298,55 @@ impl FluxChat {
     }
 
     /// Spawn full-size image fetches for message images.
+    /// Extract selected text across messages for Ctrl+C copy.
+    fn extract_selection_text(&self) -> Option<String> {
+        let anchor = self.selection.anchor.as_ref()?;
+        let cursor = self.selection.cursor.as_ref()?;
+
+        let room_id = self.selected_room_id.as_ref()?;
+        let messages = self.messages_by_room.get(room_id)?;
+
+        let anchor_idx = messages.iter().position(|m| m.event_id == anchor.widget_id.event_id)?;
+        let cursor_idx = messages.iter().position(|m| m.event_id == cursor.widget_id.event_id)?;
+
+        let (start, end, start_idx, end_idx) = if anchor_idx < cursor_idx
+            || (anchor_idx == cursor_idx && (anchor.line < cursor.line || (anchor.line == cursor.line && anchor.index <= cursor.index)))
+        {
+            (anchor, cursor, anchor_idx, cursor_idx)
+        } else {
+            (cursor, anchor, cursor_idx, anchor_idx)
+        };
+
+        let mut result = String::new();
+        for i in start_idx..=end_idx {
+            let msg = &messages[i];
+            let text = &msg.body;
+
+            if i == start_idx && i == end_idx {
+                // Single message
+                let s = line_index_to_offset(text, start.line, start.index);
+                let e = line_index_to_offset(text, end.line, end.index);
+                if s < e && e <= text.len() {
+                    result.push_str(&text[s..e]);
+                }
+            } else if i == start_idx {
+                let off = line_index_to_offset(text, start.line, start.index);
+                if off < text.len() {
+                    result.push_str(&text[off..]);
+                }
+                result.push('\n');
+            } else if i == end_idx {
+                let off = line_index_to_offset(text, end.line, end.index);
+                result.push_str(&text[..off.min(text.len())]);
+            } else {
+                result.push_str(text);
+                result.push('\n');
+            }
+        }
+
+        if result.is_empty() { None } else { Some(result) }
+    }
+
     fn resolve_images(&mut self, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
         let mut tasks = Vec::new();
         for msg in messages {
@@ -3649,6 +3736,18 @@ impl FluxChat {
             self.device_id = Some(did);
         }
     }
+}
+
+/// Convert (line, byte_index) in a multi-line string to a flat byte offset.
+fn line_index_to_offset(text: &str, line: usize, index: usize) -> usize {
+    let mut offset = 0;
+    for (i, text_line) in text.split('\n').enumerate() {
+        if i == line {
+            return (offset + index).min(text.len());
+        }
+        offset += text_line.len() + 1; // +1 for the \n
+    }
+    text.len()
 }
 
 /// Create a video player with rotation handling and framerate fallback.

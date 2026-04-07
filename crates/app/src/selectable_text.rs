@@ -12,15 +12,59 @@ use iced::advanced::renderer;
 use iced::advanced::text::{self, Paragraph, Span};
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget};
-use iced::keyboard;
 use iced::widget::text::{Alignment, LineHeight, Shaping, Wrapping};
 use iced::{Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size, Vector};
 
 /// Selection state: anchor and cursor as (line, byte_index) in the cosmic_text buffer.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct SelectionAnchor {
-    line: usize,
-    index: usize,
+pub(crate) struct SelectionAnchor {
+    pub line: usize,
+    pub index: usize,
+}
+
+/// Identifies a specific SelectableRichText widget instance.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SelectionWidgetId {
+    pub event_id: String,
+    pub part_index: usize,
+}
+
+/// A position within a specific widget.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GlobalSelectionAnchor {
+    pub widget_id: SelectionWidgetId,
+    pub line: usize,
+    pub index: usize,
+}
+
+/// What portion of a widget's text is selected.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SelectionRange {
+    /// No selection in this widget.
+    None,
+    /// Partial selection between start and end (line, byte_index).
+    Partial { start: (usize, usize), end: (usize, usize) },
+    /// Entire widget text is selected.
+    Full,
+}
+
+impl Default for SelectionRange {
+    fn default() -> Self { SelectionRange::None }
+}
+
+/// Events emitted by SelectableRichText for parent-managed selection.
+pub enum SelectionEvent {
+    Started(SelectionWidgetId, usize, usize),
+    Moved(SelectionWidgetId, usize, usize),
+    Ended,
+}
+
+/// Global cross-message selection state, stored in FluxChat.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CrossMessageSelection {
+    pub anchor: Option<GlobalSelectionAnchor>,
+    pub cursor: Option<GlobalSelectionAnchor>,
+    pub active: bool,
 }
 
 /// A selectable rich text widget.
@@ -40,6 +84,14 @@ where
     font: Option<Font>,
     wrapping: Wrapping,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    /// Widget identity for cross-message selection.
+    widget_id: Option<SelectionWidgetId>,
+    /// What portion of this widget is selected (driven by parent).
+    selection_range: SelectionRange,
+    /// Whether a selection drag is globally active.
+    selection_active: bool,
+    /// Callback for selection events.
+    on_selection: Option<Box<dyn Fn(SelectionEvent) -> Message + 'a>>,
 }
 
 impl<'a, Link, Message> SelectableRichText<'a, Link, Message>
@@ -57,6 +109,10 @@ where
             font: None,
             wrapping: Wrapping::default(),
             on_link_click: None,
+            widget_id: None,
+            selection_range: SelectionRange::None,
+            selection_active: false,
+            on_selection: None,
         }
     }
 
@@ -99,31 +155,41 @@ where
         self.on_link_click = Some(Box::new(on_link_click));
         self
     }
+
+    pub fn widget_id(mut self, id: SelectionWidgetId) -> Self {
+        self.widget_id = Some(id);
+        self
+    }
+
+    pub fn selection_range(mut self, range: SelectionRange) -> Self {
+        self.selection_range = range;
+        self
+    }
+
+    pub fn selection_active(mut self, active: bool) -> Self {
+        self.selection_active = active;
+        self
+    }
+
+    pub fn on_selection(
+        mut self,
+        on_selection: impl Fn(SelectionEvent) -> Message + 'a,
+    ) -> Self {
+        self.on_selection = Some(Box::new(on_selection));
+        self
+    }
 }
 
 /// Widget state stored in the tree.
 struct State<Link> {
     spans: Vec<Span<'static, Link, Font>>,
     paragraph: ConcreteParagraph,
-    /// Mouse anchor for selection (where the drag started).
-    anchor: Option<SelectionAnchor>,
-    /// Current cursor end of the selection.
-    cursor: Option<SelectionAnchor>,
-    /// Whether the mouse button is currently pressed (for drag tracking).
+    /// Whether the mouse button is currently pressed (for link click vs drag detection).
     mouse_pressed: bool,
     /// The span index that was pressed (for link click detection).
     span_pressed: Option<usize>,
     /// Currently hovered link span index.
     hovered_link: Option<usize>,
-}
-
-impl<Link: Clone> State<Link> {
-    fn has_selection(&self) -> bool {
-        match (self.anchor, self.cursor) {
-            (Some(a), Some(c)) => a.line != c.line || a.index != c.index,
-            _ => false,
-        }
-    }
 }
 
 impl<Link, Message> Widget<Message, iced::Theme, iced::Renderer>
@@ -140,8 +206,6 @@ where
         tree::State::new(State::<Link> {
             spans: Vec::new(),
             paragraph: ConcreteParagraph::default(),
-            anchor: None,
-            cursor: None,
             mouse_pressed: false,
             span_pressed: None,
             hovered_link: None,
@@ -241,13 +305,18 @@ where
         let translation = layout.position() - Point::ORIGIN;
 
         // Draw selection highlights first (behind text)
-        if state.has_selection() {
-            let selection_rects = compute_selection_rects(
-                &state.paragraph,
-                state.anchor.unwrap(),
-                state.cursor.unwrap(),
-            );
-
+        let sel_anchors: Option<(SelectionAnchor, SelectionAnchor)> = match self.selection_range {
+            SelectionRange::None => None,
+            SelectionRange::Partial { start, end } => {
+                Some((
+                    SelectionAnchor { line: start.0, index: start.1 },
+                    SelectionAnchor { line: end.0, index: end.1 },
+                ))
+            }
+            SelectionRange::Full => select_all_anchors(&state.paragraph),
+        };
+        if let Some((anchor, cursor)) = sel_anchors {
+            let selection_rects = compute_selection_rects(&state.paragraph, anchor, cursor);
             let selection_color = Color::from_rgba(0.23, 0.51, 0.96, 0.3);
             for rect in selection_rects {
                 renderer.fill_quad(
@@ -362,7 +431,7 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &iced::Renderer,
-        clipboard: &mut dyn Clipboard,
+        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
@@ -392,8 +461,6 @@ where
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(position) = cursor.position_in(bounds) {
                     if let Some(hit) = hit_cursor(&state.paragraph, position) {
-                        state.anchor = Some(hit);
-                        state.cursor = Some(hit);
                         state.mouse_pressed = true;
 
                         // Track span press for link click detection
@@ -408,31 +475,45 @@ where
                                 }
                             });
 
+                        // Emit selection started event
+                        if let (Some(on_sel), Some(wid)) = (&self.on_selection, &self.widget_id) {
+                            shell.publish(on_sel(SelectionEvent::Started(
+                                wid.clone(), hit.line, hit.index,
+                            )));
+                        }
+
                         shell.request_redraw();
                     }
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                if state.mouse_pressed {
-                    let hit_pos = if let Some(position) = cursor.position_in(bounds)
-                    {
-                        Some(position)
-                    } else {
-                        // Cursor outside bounds while dragging - clamp to edges
-                        cursor.position().map(|pos| {
-                            Point::new(
-                                (pos.x - bounds.x).max(0.0).min(bounds.width),
-                                (pos.y - bounds.y).max(0.0).min(bounds.height),
-                            )
-                        })
-                    };
-
-                    if let Some(position) = hit_pos {
+                if let Some(position) = cursor.position_in(bounds) {
+                    // Cursor is within this widget — emit if drag is active
+                    if state.mouse_pressed || self.selection_active {
                         if let Some(hit) = hit_cursor(&state.paragraph, position) {
-                            let old_cursor = state.cursor;
-                            state.cursor = Some(hit);
-                            if old_cursor != state.cursor {
+                            if let (Some(on_sel), Some(wid)) = (&self.on_selection, &self.widget_id) {
                                 state.span_pressed = None;
+                                shell.publish(on_sel(SelectionEvent::Moved(
+                                    wid.clone(), hit.line, hit.index,
+                                )));
+                                shell.request_redraw();
+                            }
+                        }
+                    }
+                } else if state.mouse_pressed {
+                    // Cursor outside bounds but THIS widget started the press — clamp to edges
+                    // (only for the originating widget, not others)
+                    if let Some(pos) = cursor.position() {
+                        let clamped = Point::new(
+                            (pos.x - bounds.x).max(0.0).min(bounds.width),
+                            (pos.y - bounds.y).max(0.0).min(bounds.height),
+                        );
+                        if let Some(hit) = hit_cursor(&state.paragraph, clamped) {
+                            if let (Some(on_sel), Some(wid)) = (&self.on_selection, &self.widget_id) {
+                                state.span_pressed = None;
+                                shell.publish(on_sel(SelectionEvent::Moved(
+                                    wid.clone(), hit.line, hit.index,
+                                )));
                                 shell.request_redraw();
                             }
                         }
@@ -443,9 +524,8 @@ where
                 if state.mouse_pressed {
                     state.mouse_pressed = false;
 
-                    // If no drag (anchor == cursor) and a link span was pressed,
-                    // treat it as a link click
-                    if !state.has_selection() {
+                    // If a link span was pressed and no drag occurred, treat as link click
+                    if self.selection_range == SelectionRange::None {
                         if let Some(span_idx) = state.span_pressed.take() {
                             if let Some(on_link_click) = &self.on_link_click {
                                 if let Some(link) = spans
@@ -456,55 +536,16 @@ where
                                 }
                             }
                         }
-                        // Clear selection on simple click (no drag)
-                        state.anchor = None;
-                        state.cursor = None;
                     }
                     state.span_pressed = None;
-                }
-            }
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key, modifiers, ..
-            }) => {
-                // Ctrl+C / Cmd+C to copy
-                if modifiers.command()
-                    && matches!(
-                        key,
-                        keyboard::Key::Character(ref c) if c.as_str() == "c"
-                    )
-                    && state.has_selection()
-                {
-                    let selected = extract_selected_text(
-                        &state.paragraph,
-                        state.anchor.unwrap(),
-                        state.cursor.unwrap(),
-                    );
-                    if !selected.is_empty() {
-                        clipboard.write(
-                            iced::advanced::clipboard::Kind::Standard,
-                            selected,
-                        );
-                    }
-                    shell.capture_event();
-                }
-                // Ctrl+A / Cmd+A to select all text in this widget
-                if modifiers.command()
-                    && matches!(
-                        key,
-                        keyboard::Key::Character(ref c) if c.as_str() == "a"
-                    )
-                    && cursor.is_over(bounds)
-                {
-                    if let Some((first, last)) =
-                        select_all_anchors(&state.paragraph)
-                    {
-                        state.anchor = Some(first);
-                        state.cursor = Some(last);
-                        shell.request_redraw();
-                        shell.capture_event();
+
+                    // Emit selection ended
+                    if let Some(on_sel) = &self.on_selection {
+                        shell.publish(on_sel(SelectionEvent::Ended));
                     }
                 }
             }
+            // Ctrl+C and Ctrl+A now handled at the app level
             _ => {}
         }
     }
@@ -530,7 +571,7 @@ where
 }
 
 /// Hit-test the cosmic_text buffer to get a (line, byte_index) cursor position.
-fn hit_cursor(
+pub(crate) fn hit_cursor(
     paragraph: &ConcreteParagraph,
     position: Point,
 ) -> Option<SelectionAnchor> {
@@ -543,7 +584,7 @@ fn hit_cursor(
 }
 
 /// Compute selection rectangles between two anchors in the cosmic_text buffer.
-fn compute_selection_rects(
+pub(crate) fn compute_selection_rects(
     paragraph: &ConcreteParagraph,
     anchor: SelectionAnchor,
     cursor: SelectionAnchor,
@@ -619,7 +660,7 @@ fn compute_selection_rects(
 }
 
 /// Extract the selected text between two anchors.
-fn extract_selected_text(
+pub(crate) fn extract_selected_text(
     paragraph: &ConcreteParagraph,
     anchor: SelectionAnchor,
     cursor: SelectionAnchor,
@@ -678,7 +719,7 @@ fn extract_selected_text(
 }
 
 /// Get anchors representing the entire text (for Ctrl+A).
-fn select_all_anchors(
+pub(crate) fn select_all_anchors(
     paragraph: &ConcreteParagraph,
 ) -> Option<(SelectionAnchor, SelectionAnchor)> {
     let buffer = paragraph.buffer();

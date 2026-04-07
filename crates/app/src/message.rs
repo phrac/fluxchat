@@ -50,6 +50,11 @@ pub enum Message {
 
     // --- Message actions ---
     CopyMessageText(String),       // body text to copy
+    SelectionStarted(crate::selectable_text::SelectionWidgetId, usize, usize),
+    SelectionMoved(crate::selectable_text::SelectionWidgetId, usize, usize),
+    SelectionEnded,
+    CopySelection,
+    ClearInput,
     ToggleReaction(String, String), // event_id, emoji
     DeleteMessage(String),          // event_id
     PinMessage(String),             // event_id

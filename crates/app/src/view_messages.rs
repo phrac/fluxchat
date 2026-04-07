@@ -17,6 +17,101 @@ use crate::view::{
 };
 
 impl FluxChat {
+    /// Compute selection range for a specific widget, based on global selection state.
+    fn selection_range_for(&self, widget_id: &crate::selectable_text::SelectionWidgetId) -> crate::selectable_text::SelectionRange {
+        use crate::selectable_text::{SelectionRange, GlobalSelectionAnchor};
+
+        let anchor = match &self.selection.anchor {
+            Some(a) => a,
+            None => return SelectionRange::None,
+        };
+        let cursor = match &self.selection.cursor {
+            Some(c) => c,
+            None => return SelectionRange::None,
+        };
+
+        // Get message list for position ordering
+        let room_id = match &self.selected_room_id {
+            Some(r) => r,
+            None => return SelectionRange::None,
+        };
+        let messages = match self.messages_by_room.get(room_id) {
+            Some(m) => m,
+            None => return SelectionRange::None,
+        };
+
+        // Find message indices
+        let find_idx = |a: &GlobalSelectionAnchor| -> Option<usize> {
+            messages.iter().position(|m| m.event_id == a.widget_id.event_id)
+        };
+        let anchor_idx = match find_idx(anchor) { Some(i) => i, None => return SelectionRange::None };
+        let cursor_idx = match find_idx(cursor) { Some(i) => i, None => return SelectionRange::None };
+
+        // Normalize direction (start <= end)
+        let (start, end, start_idx, end_idx) = if anchor_idx < cursor_idx
+            || (anchor_idx == cursor_idx && (anchor.widget_id.part_index < cursor.widget_id.part_index
+                || (anchor.widget_id.part_index == cursor.widget_id.part_index
+                    && (anchor.line < cursor.line || (anchor.line == cursor.line && anchor.index <= cursor.index)))))
+        {
+            (anchor, cursor, anchor_idx, cursor_idx)
+        } else {
+            (cursor, anchor, cursor_idx, anchor_idx)
+        };
+
+        let widget_msg_idx = match messages.iter().position(|m| m.event_id == widget_id.event_id) {
+            Some(i) => i,
+            None => return SelectionRange::None,
+        };
+
+        // Check if widget is in range
+        if widget_msg_idx < start_idx || widget_msg_idx > end_idx {
+            return SelectionRange::None;
+        }
+
+        let is_start_widget = widget_id == &start.widget_id;
+        let is_end_widget = widget_id == &end.widget_id;
+
+        // Same message: check part_index ordering
+        if widget_msg_idx == start_idx && widget_msg_idx == end_idx {
+            if widget_id.part_index < start.widget_id.part_index || widget_id.part_index > end.widget_id.part_index {
+                return SelectionRange::None;
+            }
+            if is_start_widget && is_end_widget {
+                return SelectionRange::Partial {
+                    start: (start.line, start.index),
+                    end: (end.line, end.index),
+                };
+            }
+            if widget_id.part_index == start.widget_id.part_index {
+                return SelectionRange::Partial {
+                    start: (start.line, start.index),
+                    end: (usize::MAX, usize::MAX),
+                };
+            }
+            if widget_id.part_index == end.widget_id.part_index {
+                return SelectionRange::Partial {
+                    start: (0, 0),
+                    end: (end.line, end.index),
+                };
+            }
+            return SelectionRange::Full;
+        }
+
+        if is_start_widget {
+            SelectionRange::Partial {
+                start: (start.line, start.index),
+                end: (usize::MAX, usize::MAX),
+            }
+        } else if is_end_widget {
+            SelectionRange::Partial {
+                start: (0, 0),
+                end: (end.line, end.index),
+            }
+        } else {
+            SelectionRange::Full
+        }
+    }
+
     /// Render a single message row: [time] [nick] | [body]
     pub(crate) fn view_message<'a>(&'a self, msg: &'a fluxchat_core::MessageInfo) -> Element<'a, Message> {
         let fs = self.msg_font_size;
@@ -599,6 +694,7 @@ impl FluxChat {
                 // Use structured parts to render code blocks in containers
                 let parts = crate::html::html_to_parts(&display_html, &self.rooms);
                 let mut body_col = column![].spacing(4).width(Fill);
+                let mut part_idx = 0usize;
 
                 for part in parts {
                     match part {
@@ -606,17 +702,36 @@ impl FluxChat {
                             if spans.iter().all(|s| s.text.as_ref().trim().is_empty()) {
                                 continue;
                             }
+                            let wid = crate::selectable_text::SelectionWidgetId {
+                                event_id: msg.event_id.clone(), part_index: part_idx,
+                            };
+                            let sel_range = self.selection_range_for(&wid);
+                            let sel_active = self.selection.active;
                             body_col = body_col.push(
                                 selectable_rich_text(spans)
                                     .font(self.msg_font())
                                     .size(fs)
                                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                                     .width(Fill)
-                                    .on_link_click(Message::OpenUrl),
+                                    .on_link_click(Message::OpenUrl)
+                                    .widget_id(wid)
+                                    .selection_range(sel_range)
+                                    .selection_active(sel_active)
+                                    .on_selection(|evt| match evt {
+                                        crate::selectable_text::SelectionEvent::Started(id, l, i) => Message::SelectionStarted(id, l, i),
+                                        crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
+                                        crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
+                                    }),
                             );
+                            part_idx += 1;
                         }
                         crate::html::MessagePart::CodeBlock(spans) => {
                             let eid = msg.event_id.clone();
+                            let wid = crate::selectable_text::SelectionWidgetId {
+                                event_id: msg.event_id.clone(), part_index: part_idx,
+                            };
+                            let sel_range = self.selection_range_for(&wid);
+                            let sel_active = self.selection.active;
                             let label = if is_expanded { "Show less" } else { "Show more" };
                             let code_col = column![
                                 selectable_rich_text(spans)
@@ -624,7 +739,15 @@ impl FluxChat {
                                     .size(fs)
                                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                                     .width(Fill)
-                                    .on_link_click(Message::OpenUrl),
+                                    .on_link_click(Message::OpenUrl)
+                                    .widget_id(wid)
+                                    .selection_range(sel_range)
+                                    .selection_active(sel_active)
+                                    .on_selection(|evt| match evt {
+                                        crate::selectable_text::SelectionEvent::Started(id, l, i) => Message::SelectionStarted(id, l, i),
+                                        crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
+                                        crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
+                                    }),
                                 button(text(label).font(self.msg_font()).size(11).color(theme::colors().accent))
                                     .on_press(Message::ToggleCodeBlock(eid))
                                     .padding([2, 8])
@@ -647,12 +770,18 @@ impl FluxChat {
                                         ..Default::default()
                                     }),
                             );
+                            part_idx += 1;
                         }
                     }
                 }
 
                 body_col.into()
             } else {
+                let wid = crate::selectable_text::SelectionWidgetId {
+                    event_id: msg.event_id.clone(), part_index: 0,
+                };
+                let sel_range = self.selection_range_for(&wid);
+                let sel_active = self.selection.active;
                 let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms);
                 selectable_rich_text(spans)
                     .font(self.msg_font())
@@ -660,9 +789,22 @@ impl FluxChat {
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(Fill)
                     .on_link_click(Message::OpenUrl)
+                    .widget_id(wid)
+                    .selection_range(sel_range)
+                    .selection_active(sel_active)
+                    .on_selection(|evt| match evt {
+                        crate::selectable_text::SelectionEvent::Started(id, l, i) => Message::SelectionStarted(id, l, i),
+                        crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
+                        crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
+                    })
                     .into()
             }
         } else {
+            let wid = crate::selectable_text::SelectionWidgetId {
+                event_id: msg.event_id.clone(), part_index: 0,
+            };
+            let sel_range = self.selection_range_for(&wid);
+            let sel_active = self.selection.active;
             // Parse basic markdown in plain text bodies
             let spans = crate::html::plain_text_to_spans(&msg.body);
             selectable_rich_text(spans)
@@ -671,6 +813,14 @@ impl FluxChat {
                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .width(Fill)
                 .on_link_click(Message::OpenUrl)
+                .widget_id(wid)
+                .selection_range(sel_range)
+                .selection_active(sel_active)
+                .on_selection(|evt| match evt {
+                    crate::selectable_text::SelectionEvent::Started(id, l, i) => Message::SelectionStarted(id, l, i),
+                    crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
+                    crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
+                })
                 .into()
         };
 
