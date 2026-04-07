@@ -187,6 +187,7 @@ Login (password + SSO/OIDC with provider detection), session persistence, rooms 
 - Voice message waveform visualization (MSC3246)
 - Cross-message text selection (currently single-message only; needs lifted selection state in FluxChat + coordinated mouse events across widget instances)
 - Push-to-talk for voice calls (hold key to unmute, release to mute; toggle between PTT and open mic modes)
+- Video thumbnail generation for bridged videos without thumbnails (ffmpeg frame extraction)
 
 ## Known Issues
 - SDK v0.16 doesn't populate `thread_root` or `thread_summary` — we extract from raw event JSON in a single parse pass; thread counts computed at update time
