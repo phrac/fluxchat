@@ -1294,12 +1294,11 @@ impl FluxChat {
                     skip_below_depth = Some(node.depth);
                 } else {
                     if let Some(rooms) = rooms {
+                        let room_indent = (indent_px as f32 + 10.0).max(10.0); // always indent rooms under spaces
                         for room in rooms {
-                            let entry: Element<Message> = if indent_px > 0 {
-                                container(self.view_room_entry(room, false)).padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: indent_px as f32 }).into()
-                            } else {
-                                self.view_room_entry(room, false).into()
-                            };
+                            let entry: Element<Message> = container(self.view_room_entry(room, false))
+                                .padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: room_indent })
+                                .into();
                             col = col.push(entry);
                             for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
                         }

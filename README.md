@@ -17,10 +17,10 @@ A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app wit
 - **Voice calls** -- MatrixRTC + LiveKit SFU, mic capture via cpal, in-call panel with participant tiles, PIP widget, mute/hangup
 - **Voice messages** -- record with mic button, Opus/OGG encoding, auto-normalization, preview before send, playback with progress bar
 - **Threads** -- indicators with reply counts, dedicated thread view, thread entries in sidebar
-- **Rooms & spaces** -- grouped room list, room creation, settings, invitations, favourites, notifications (all/mentions/mute), aliases, space details modal with room list and members, right-click context menus
+- **Rooms & spaces** -- grouped room list with indented space hierarchy, room creation, settings, invitations, favourites, notifications (all/mentions/mute), aliases, space details modal, right-click context menus, persistent collapsed sections
 - **Search** -- server-side with client-side fallback, overlay with arrow key navigation, scroll-to-highlight
 - **Polls** -- create/vote/end with progress bars (MSC3381)
-- **Files & media** -- upload via button/drag-drop/paste, thumbnails, GIF search via Giphy, stickers, location sharing
+- **Files & media** -- upload via button/drag-drop/paste, thumbnails, GIF search via Giphy, stickers, location sharing, video playback via system player with thumbnail preview, file download cards
 - **Themes** -- 9 built-in themes (FluxChat, Nord, Nord Light, Dracula, Night Owl, Tokyo Night, Atom One Dark, Catppuccin Mocha/Latte), custom TOML theme files, light/dark mode
 - **Fonts** -- separate message and sidebar font selection from system fonts
 - **Code highlighting** -- 100+ languages via syntect, base16 Ocean Dark theme, collapsible code blocks
