@@ -2800,12 +2800,8 @@ impl FluxChat {
                                 else if name.ends_with(".webp") { "image/webp" }
                                 else { "image/jpeg" };
                             let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::upload_room_avatar(&client, &room_id, mime, data.to_vec()).await.ok()?;
-                            // Return the new avatar URL so we can update local state
-                            let rid = matrix_sdk::ruma::RoomId::parse(&room_id).ok()?;
-                            let room = client.get_room(&rid)?;
-                            let mxc = room.avatar_url().map(|u| u.to_string());
-                            Some((room_id, mxc))
+                            let mxc = fluxchat_core::rooms::upload_room_avatar(&client, &room_id, mime, data.to_vec()).await.ok()?;
+                            Some((room_id, Some(mxc)))
                         },
                         |result| match result {
                             Some((room_id, mxc)) => Message::RoomAvatarUpdated(room_id, mxc),

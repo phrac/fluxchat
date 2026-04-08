@@ -723,7 +723,7 @@ pub async fn remove_room_alias(client: &matrix_sdk::Client, alias: &str) -> Resu
 }
 
 /// Upload a room avatar image.
-pub async fn upload_room_avatar(client: &matrix_sdk::Client, room_id: &str, mime_type: &str, data: Vec<u8>) -> Result<(), AppError> {
+pub async fn upload_room_avatar(client: &matrix_sdk::Client, room_id: &str, mime_type: &str, data: Vec<u8>) -> Result<String, AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let ct: mime::Mime = mime_type.parse().unwrap_or(mime::IMAGE_PNG);
@@ -731,9 +731,9 @@ pub async fn upload_room_avatar(client: &matrix_sdk::Client, room_id: &str, mime
         .map_err(|e| AppError::Other(format!("Failed to upload: {e}")))?.content_uri;
     use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
     let mut content = RoomAvatarEventContent::new();
-    content.url = Some(mxc);
+    content.url = Some(mxc.clone());
     room.send_state_event(content).await.map_err(|e| AppError::Other(format!("Failed to set avatar: {e}")))?;
-    Ok(())
+    Ok(mxc.to_string())
 }
 
 /// Remove the room avatar.
