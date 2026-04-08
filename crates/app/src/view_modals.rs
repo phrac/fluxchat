@@ -29,6 +29,7 @@ impl FluxChat {
             crate::state::Modal::CreateDm => self.view_create_dm_modal(),
             crate::state::Modal::SpaceDetails { space_id } => self.view_space_details_modal(space_id),
             crate::state::Modal::PendingInvites => self.view_pending_invites_modal(),
+            crate::state::Modal::DevTools => self.view_devtools_modal(),
             crate::state::Modal::Report { .. } => {
                 let col = column![
                     text("Report Message").font(MONO).size(16).color(theme::colors().text_bright),
@@ -1955,5 +1956,147 @@ impl FluxChat {
         }
 
         content.width(400).into()
+    }
+
+    fn view_devtools_modal(&self) -> Element<Message> {
+        use iced::widget::{column, row, container, text, button, scrollable, text_input, toggler, rule, Space};
+        use iced::{Fill, Length};
+
+        let room_name = self.selected_room_id.as_ref()
+            .and_then(|rid| self.rooms.iter().find(|r| r.room_id == *rid))
+            .map(|r| r.name.as_str())
+            .unwrap_or("Unknown");
+
+        let header = row![
+            text("Developer Tools").font(MONO).size(16).color(theme::colors().text_bright),
+            Space::new().width(Fill),
+            text(room_name).font(MONO).size(12).color(theme::colors().text_muted),
+        ].align_y(iced::Alignment::Center);
+
+        // Tabs
+        let state_tab_style = if self.devtools_tab == "state" { theme::colors().accent } else { theme::colors().text_dim };
+        let send_tab_style = if self.devtools_tab == "send" { theme::colors().accent } else { theme::colors().text_dim };
+        let tabs = row![
+            button(text("Room State").font(MONO).size(13).color(state_tab_style))
+                .on_press(Message::DevToolsTabChanged("state".into()))
+                .padding([4, 12])
+                .style(|_, _| button::Style {
+                    background: None,
+                    ..Default::default()
+                }),
+            button(text("Send Event").font(MONO).size(13).color(send_tab_style))
+                .on_press(Message::DevToolsTabChanged("send".into()))
+                .padding([4, 12])
+                .style(|_, _| button::Style {
+                    background: None,
+                    ..Default::default()
+                }),
+        ].spacing(4);
+
+        let body: Element<Message> = if self.devtools_tab == "state" {
+            // State events list
+            if self.devtools_state_events.is_empty() {
+                text("Loading state events...").font(MONO).size(13).color(theme::colors().text_muted).into()
+            } else {
+                let mut col = column![].spacing(4);
+                for (event_type, json) in &self.devtools_state_events {
+                    let type_label = text(event_type)
+                        .font(MONO).size(12).color(theme::colors().accent);
+                    let json_preview = if json.len() > 500 {
+                        format!("{}...", &json[..500])
+                    } else {
+                        json.clone()
+                    };
+                    let json_text = text(json_preview)
+                        .font(MONO).size(11).color(theme::colors().text_muted)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+                    col = col.push(
+                        container(
+                            column![type_label, json_text].spacing(2)
+                        )
+                        .padding([6, 8])
+                        .width(Fill)
+                        .style(|_: &iced::Theme| container::Style {
+                            background: Some(theme::colors().bg_mid.into()),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        })
+                    );
+                }
+                scrollable(col).height(Length::Fixed(500.0))
+                    .direction(iced::widget::scrollable::Direction::Vertical(
+                        iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                    ))
+                    .into()
+            }
+        } else {
+            // Send event form
+            let type_input = text_input("Event type (e.g. m.room.message)", &self.devtools_send_type)
+                .on_input(Message::DevToolsSendTypeChanged)
+                .font(MONO)
+                .size(13);
+
+            let state_key_input = text_input("State key (empty = '')", &self.devtools_send_state_key)
+                .on_input(Message::DevToolsSendStateKeyChanged)
+                .font(MONO)
+                .size(13);
+
+            let body_input = text_input("{}", &self.devtools_send_body)
+                .on_input(Message::DevToolsSendBodyChanged)
+                .font(MONO)
+                .size(13);
+
+            let is_state_toggle = row![
+                text("State event").font(MONO).size(13).color(theme::colors().text_normal),
+                toggler(self.devtools_is_state)
+                    .on_toggle(|_| Message::DevToolsToggleIsState)
+                    .size(18),
+            ].spacing(8).align_y(iced::Alignment::Center);
+
+            let send_btn = button(
+                text("Send").font(MONO).size(13).color(theme::colors().text_bright)
+            )
+            .on_press(Message::DevToolsSend)
+            .padding([6, 16])
+            .style(|_, status| button::Style {
+                background: Some(if matches!(status, button::Status::Hovered) {
+                    theme::with_alpha(theme::colors().accent, 0.9)
+                } else {
+                    theme::with_alpha(theme::colors().accent, 0.7)
+                }.into()),
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+
+            let mut form = column![
+                text("Event Type").font(MONO).size(11).color(theme::colors().text_dim),
+                type_input,
+            ].spacing(4);
+
+            if self.devtools_is_state {
+                form = form.push(text("State Key").font(MONO).size(11).color(theme::colors().text_dim));
+                form = form.push(state_key_input);
+            }
+
+            form = form.push(text("JSON Body").font(MONO).size(11).color(theme::colors().text_dim));
+            form = form.push(body_input);
+            form = form.push(Space::new().height(8));
+            form = form.push(is_state_toggle);
+            form = form.push(Space::new().height(8));
+            form = form.push(send_btn);
+
+            form.spacing(6).into()
+        };
+
+        column![
+            header,
+            rule::horizontal(1),
+            tabs,
+            rule::horizontal(1),
+            body,
+        ]
+        .spacing(8)
+        .width(700)
+        .into()
     }
 }

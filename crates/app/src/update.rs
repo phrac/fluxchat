@@ -1552,6 +1552,24 @@ impl FluxChat {
                 } else if matches!(&modal, crate::state::Modal::Report { .. }) {
                     self.report_reason.clear();
                     Task::none()
+                } else if matches!(&modal, crate::state::Modal::DevTools) {
+                    self.devtools_state_events.clear();
+                    self.devtools_tab = "state".into();
+                    if let Some(room_id) = self.selected_room_id.clone() {
+                        let core = self.core.clone();
+                        Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                fluxchat_core::rooms::get_room_state_events(&client, &room_id).await.ok()
+                            },
+                            |result| match result {
+                                Some(events) => Message::DevToolsLoaded(events),
+                                None => Message::Noop,
+                            },
+                        )
+                    } else {
+                        Task::none()
+                    }
                 } else {
                     Task::none()
                 };
@@ -1817,6 +1835,46 @@ impl FluxChat {
                         async move {
                             let client = core.get_client().await.ok()?;
                             fluxchat_core::rooms::upgrade_room(&client, &room_id, &version).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::DevToolsLoaded(events) => {
+                self.devtools_state_events = events;
+            }
+            Message::DevToolsTabChanged(tab) => {
+                self.devtools_tab = tab;
+            }
+            Message::DevToolsSendTypeChanged(t) => {
+                self.devtools_send_type = t;
+            }
+            Message::DevToolsSendStateKeyChanged(k) => {
+                self.devtools_send_state_key = k;
+            }
+            Message::DevToolsSendBodyChanged(b) => {
+                self.devtools_send_body = b;
+            }
+            Message::DevToolsToggleIsState => {
+                self.devtools_is_state = !self.devtools_is_state;
+            }
+            Message::DevToolsSend => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    let event_type = self.devtools_send_type.clone();
+                    let body = self.devtools_send_body.clone();
+                    let state_key = if self.devtools_is_state {
+                        Some(self.devtools_send_state_key.clone())
+                    } else {
+                        None
+                    };
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::send_raw_event(
+                                &client, &room_id, &event_type,
+                                state_key.as_deref(), &body,
+                            ).await.ok()
                         },
                         |_| Message::Noop,
                     );

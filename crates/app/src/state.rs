@@ -54,6 +54,7 @@ pub enum Modal {
     Report { event_id: String, room_id: String },
     SpaceDetails { space_id: String },
     PendingInvites,
+    DevTools,
 }
 
 
@@ -152,6 +153,12 @@ pub struct FluxChat {
     /// Rooms we're in the process of leaving (filter from sync updates)
     pub leaving_rooms: HashSet<String>,
     pub hovered_message: Option<String>, // event_id of hovered message
+    pub devtools_state_events: Vec<(String, String)>, // (event_type, json)
+    pub devtools_tab: String,                         // "state" or "send"
+    pub devtools_send_type: String,                   // event type to send
+    pub devtools_send_state_key: String,              // state key (empty for message events)
+    pub devtools_send_body: String,                   // JSON body to send
+    pub devtools_is_state: bool,                      // sending state event vs message event
     pub gif_query: String,
     pub gif_searched: bool, // true after a search has completed
     pub help_text: Option<String>,
@@ -377,6 +384,12 @@ impl FluxChat {
             cursor_position: (0.0, 0.0),
             leaving_rooms: HashSet::new(),
             hovered_message: None,
+            devtools_state_events: Vec::new(),
+            devtools_tab: "state".into(),
+            devtools_send_type: String::new(),
+            devtools_send_state_key: String::new(),
+            devtools_send_body: "{}".into(),
+            devtools_is_state: true,
             gifs_open: false,
             audio_playing: None,
             voice_recording: false,

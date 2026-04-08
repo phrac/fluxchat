@@ -132,6 +132,13 @@ pub enum Message {
     SendHtml(String),                           // raw HTML to send
     SendPlain(String),                          // plain text (no markdown)
     UpgradeRoom(String),                        // room version
+    DevToolsLoaded(Vec<(String, String)>),      // state events: (type, json)
+    DevToolsTabChanged(String),                 // "state" or "send"
+    DevToolsSendTypeChanged(String),
+    DevToolsSendStateKeyChanged(String),
+    DevToolsSendBodyChanged(String),
+    DevToolsToggleIsState,
+    DevToolsSend,
     SetNick(String),                            // new display name
     SendDm(String, String),                     // user_id, body
 

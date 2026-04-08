@@ -408,6 +408,47 @@ pub async fn upgrade_room(client: &matrix_sdk::Client, room_id: &str, version: &
     Ok(())
 }
 
+/// Get all room state events as (event_type, json_string) pairs for dev tools.
+pub async fn get_room_state_events(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<(String, String)>, AppError> {
+    use matrix_sdk::ruma::api::client::state::get_state_events;
+    let room_id = parse_room_id(room_id)?;
+    let request = get_state_events::v3::Request::new(room_id);
+    let response = client.send(request).await
+        .map_err(|e| AppError::Other(format!("Failed to get state: {e}")))?;
+    let mut events: Vec<(String, String)> = response.room_state.iter()
+        .filter_map(|raw| {
+            let val: serde_json::Value = serde_json::from_str(raw.json().get()).ok()?;
+            let event_type = val.get("type")?.as_str()?.to_string();
+            let pretty = serde_json::to_string_pretty(&val).ok()?;
+            Some((event_type, pretty))
+        })
+        .collect();
+    events.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(events)
+}
+
+/// Send a raw JSON event to a room (state or message).
+pub async fn send_raw_event(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    event_type: &str,
+    state_key: Option<&str>,
+    body_json: &str,
+) -> Result<(), AppError> {
+    let room_id_parsed = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let body: serde_json::Value = serde_json::from_str(body_json)
+        .map_err(|e| AppError::Other(format!("Invalid JSON: {e}")))?;
+    if let Some(key) = state_key {
+        room.send_state_event_raw(event_type, key, body).await
+            .map_err(|e| AppError::Other(format!("Failed to send state event: {e}")))?;
+    } else {
+        room.send_raw(event_type, body).await
+            .map_err(|e| AppError::Other(format!("Failed to send event: {e}")))?;
+    }
+    Ok(())
+}
+
 /// Set a user's power level in a room.
 pub async fn set_user_power_level(client: &matrix_sdk::Client, room_id: &str, user_id: &str, power_level: i64) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;

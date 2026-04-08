@@ -93,6 +93,7 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/html", usage: "<html>", description: "Send a message as raw HTML", needs_room: true },
         Command { name: "/plain", usage: "<text>", description: "Send without markdown formatting", needs_room: true },
         Command { name: "/upgraderoom", usage: "<version>", description: "Upgrade room to a new version", needs_room: true },
+        Command { name: "/devtools", usage: "", description: "Open developer tools", needs_room: true },
     ]
 }
 
@@ -544,6 +545,11 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             } else {
                 CommandResult::Messages(vec![Message::SendPlain(args.to_string())])
             }
+        }
+
+        // --- Dev tools ---
+        "/devtools" => {
+            CommandResult::Messages(vec![Message::OpenModal(crate::state::Modal::DevTools)])
         }
 
         // --- Upgrade room ---
