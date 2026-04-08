@@ -126,7 +126,12 @@ pub enum Message {
     SpaceDetailsLoaded(Vec<fluxchat_core::RoomInfo>, Vec<fluxchat_core::MemberInfo>),
     KickUser(String, String, Option<String>),   // room_id, user_id, reason
     BanUser(String, String, Option<String>),    // room_id, user_id, reason
+    UnbanUser(String),                          // user_id or display name
     SetTopic(String, String),                   // room_id, topic
+    SetRoomName(String),                        // new room name
+    SendHtml(String),                           // raw HTML to send
+    SendPlain(String),                          // plain text (no markdown)
+    UpgradeRoom(String),                        // room version
     SetNick(String),                            // new display name
     SendDm(String, String),                     // user_id, body
 

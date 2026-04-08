@@ -146,7 +146,43 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
 pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str) -> Result<String, AppError> {
     let room_id_parsed = parse_room_id(room_id)?;
     let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+
+    // Handle /me emotes — strip prefix and send as emote message type
+    if let Some(emote_body) = body.strip_prefix("/me ") {
+        let content = build_emote_content(&room, emote_body).await;
+        let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
+        return Ok(result.event_id.to_string());
+    }
+
     let content = build_message_content(&room, body).await;
+    let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
+    Ok(result.event_id.to_string())
+}
+
+/// Send a message as raw HTML (for /html command).
+pub async fn send_html(client: &matrix_sdk::Client, room_id: &str, html: &str) -> Result<String, AppError> {
+    let room_id_parsed = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    // Strip HTML tags for the plain-text body fallback
+    let plain = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n");
+    let mut plain_stripped = String::with_capacity(plain.len());
+    let mut in_tag = false;
+    for c in plain.chars() {
+        if c == '<' { in_tag = true; }
+        else if c == '>' { in_tag = false; }
+        else if !in_tag { plain_stripped.push(c); }
+    }
+    let plain = plain_stripped;
+    let content = RoomMessageEventContent::text_html(&plain, html);
+    let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
+    Ok(result.event_id.to_string())
+}
+
+/// Send a plain text message without any markdown processing (for /plain command).
+pub async fn send_plain(client: &matrix_sdk::Client, room_id: &str, text: &str) -> Result<String, AppError> {
+    let room_id_parsed = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let content = RoomMessageEventContent::text_plain(text);
     let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
     Ok(result.event_id.to_string())
 }
@@ -201,6 +237,28 @@ pub async fn send_location(client: &matrix_sdk::Client, room_id: &str, geo_uri: 
 
 /// Build message content with mention resolution, markdown formatting,
 /// and MSC3952 intentional mentions (m.mentions).
+/// Build emote content (for /me commands). Uses m.emote msgtype.
+async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
+    let has_markdown = body.contains("**") || body.contains('`') || body.contains("~~");
+
+    let content = if has_markdown {
+        let html = simple_markdown(body);
+        if html != body {
+            let mut final_html = html;
+            if final_html.contains('\n') {
+                final_html = final_html.replace('\n', "<br>");
+            }
+            RoomMessageEventContent::emote_html(body, &final_html)
+        } else {
+            RoomMessageEventContent::emote_plain(body)
+        }
+    } else {
+        RoomMessageEventContent::emote_plain(body)
+    };
+
+    content
+}
+
 async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
     // Only attempt mention resolution if body contains @
     let has_mentions = body.contains('@');

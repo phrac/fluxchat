@@ -88,6 +88,11 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/pollend", usage: "", description: "End the current poll", needs_room: true },
         Command { name: "/away", usage: "[message]", description: "Set away status", needs_room: false },
         Command { name: "/rotatekeys", usage: "", description: "Rotate encryption keys for this room", needs_room: true },
+        Command { name: "/unban", usage: "<user>", description: "Unban a user from the room", needs_room: true },
+        Command { name: "/roomname", usage: "<name>", description: "Set the room name", needs_room: true },
+        Command { name: "/html", usage: "<html>", description: "Send a message as raw HTML", needs_room: true },
+        Command { name: "/plain", usage: "<text>", description: "Send without markdown formatting", needs_room: true },
+        Command { name: "/upgraderoom", usage: "<version>", description: "Upgrade room to a new version", needs_room: true },
     ]
 }
 
@@ -502,6 +507,51 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 )])
             } else {
                 CommandResult::Noop
+            }
+        }
+
+        // --- Unban ---
+        "/unban" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /unban <user>".into())
+            } else {
+                CommandResult::Messages(vec![Message::UnbanUser(args.to_string())])
+            }
+        }
+
+        // --- Room name ---
+        "/roomname" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /roomname <name>".into())
+            } else {
+                CommandResult::Messages(vec![Message::SetRoomName(args.to_string())])
+            }
+        }
+
+        // --- Raw HTML ---
+        "/html" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /html <html content>".into())
+            } else {
+                CommandResult::Messages(vec![Message::SendHtml(args.to_string())])
+            }
+        }
+
+        // --- Plain text (no markdown) ---
+        "/plain" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /plain <text>".into())
+            } else {
+                CommandResult::Messages(vec![Message::SendPlain(args.to_string())])
+            }
+        }
+
+        // --- Upgrade room ---
+        "/upgraderoom" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /upgraderoom <version> (e.g., 11)".into())
+            } else {
+                CommandResult::Messages(vec![Message::UpgradeRoom(args.to_string())])
             }
         }
 

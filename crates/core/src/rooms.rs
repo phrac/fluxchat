@@ -387,6 +387,27 @@ pub async fn ban_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str,
     Ok(())
 }
 
+/// Unban a user from a room.
+pub async fn unban_user(client: &matrix_sdk::Client, room_id: &str, user_id: &str) -> Result<(), AppError> {
+    let room_id = parse_room_id(room_id)?;
+    let user_id = parse_user_id(user_id)?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    room.unban_user(&user_id, None).await.map_err(|e| AppError::Other(format!("Failed to unban: {e}")))?;
+    Ok(())
+}
+
+/// Upgrade a room to a new version.
+pub async fn upgrade_room(client: &matrix_sdk::Client, room_id: &str, version: &str) -> Result<(), AppError> {
+    use matrix_sdk::ruma::api::client::room::upgrade_room::v3::Request;
+    use matrix_sdk::ruma::RoomVersionId;
+    let room_id = parse_room_id(room_id)?;
+    let new_version: RoomVersionId = version.try_into()
+        .map_err(|_| AppError::Other(format!("Invalid room version: {version}")))?;
+    let request = Request::new(room_id, new_version);
+    client.send(request).await.map_err(|e| AppError::Other(format!("Failed to upgrade room: {e}")))?;
+    Ok(())
+}
+
 /// Set a user's power level in a room.
 pub async fn set_user_power_level(client: &matrix_sdk::Client, room_id: &str, user_id: &str, power_level: i64) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;

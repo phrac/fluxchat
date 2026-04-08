@@ -1751,6 +1751,77 @@ impl FluxChat {
                     |_| Message::Noop,
                 );
             }
+            Message::UnbanUser(user_input) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    // Resolve display name to user_id via members list
+                    let user_id = if user_input.starts_with('@') {
+                        user_input
+                    } else if let Some(members) = self.members_by_room.get(&room_id) {
+                        let lower = user_input.to_lowercase();
+                        members.iter().find(|m| m.display_name.to_lowercase() == lower)
+                            .map(|m| m.user_id.clone())
+                            .unwrap_or(user_input)
+                    } else {
+                        user_input
+                    };
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::unban_user(&client, &room_id, &user_id).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::SetRoomName(name) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::set_room_name(&client, &room_id, &name).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::SendHtml(html) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::messages::send_html(&client, &room_id, &html).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::SendPlain(text) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::messages::send_plain(&client, &room_id, &text).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::UpgradeRoom(version) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::rooms::upgrade_room(&client, &room_id, &version).await.ok()
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
             Message::SetTopic(room_id, topic) => {
                 let core = self.core.clone();
                 return Task::perform(
