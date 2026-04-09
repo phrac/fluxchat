@@ -691,6 +691,9 @@ impl FluxChat {
                                 self.input_content.perform(iced::widget::text_editor::Action::Move(
                                     iced::widget::text_editor::Motion::DocumentEnd,
                                 ));
+                                // Dismiss the autocomplete HUD after accepting
+                                self.mention_completions.clear();
+                                self.mention_completion_idx = 0;
                             }
                         }
                     }

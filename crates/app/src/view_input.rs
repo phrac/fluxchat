@@ -390,8 +390,8 @@ impl FluxChat {
                         .style(|_: &Theme| container::Style {
                             background: Some(theme::colors().bg_deep.into()),
                             border: iced::Border {
-                                color: theme::colors().accent,
-                                width: 2.0,
+                                color: theme::colors().border,
+                                width: 1.0,
                                 radius: 6.0.into(),
                             },
                             shadow: iced::Shadow {
