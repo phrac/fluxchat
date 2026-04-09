@@ -1127,6 +1127,7 @@ impl FluxChat {
                     column![
                         menu_item("New Room", SVG_HASH, Message::OpenModal(crate::state::Modal::CreateRoom)),
                         menu_item("Direct Message", SVG_CHAT, Message::OpenModal(crate::state::Modal::CreateDm)),
+                        menu_item("Explore Rooms", SVG_SEARCH, Message::OpenModal(crate::state::Modal::Directory)),
                     ].spacing(0)
                 )
                 .padding(4)

@@ -480,8 +480,14 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         }
 
         // --- Directory ---
-        "/users" | "/directory" => {
-            CommandResult::Help("User/room directory search coming soon".into())
+        "/users" => {
+            CommandResult::Help("User directory search coming soon".into())
+        }
+        "/directory" => {
+            CommandResult::Messages(vec![
+                Message::DirectorySearchChanged(args.to_string()),
+                Message::OpenModal(crate::state::Modal::Directory),
+            ])
         }
 
         // --- Polls ---

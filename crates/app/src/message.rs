@@ -139,6 +139,12 @@ pub enum Message {
     DevToolsSendBodyChanged(String),
     DevToolsToggleIsState,
     DevToolsSend,
+    DirectorySearch,
+    DirectorySearchChanged(String),
+    DirectoryServerChanged(String),
+    DirectoryResults(Vec<fluxchat_core::rooms::PublicRoomResult>, Option<String>), // results, next_batch
+    DirectoryLoadMore,
+    DirectoryJoinRoom(String), // room_id
     SetNick(String),                            // new display name
     SendDm(String, String),                     // user_id, body
 

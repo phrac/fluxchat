@@ -30,6 +30,7 @@ impl FluxChat {
             crate::state::Modal::SpaceDetails { space_id } => self.view_space_details_modal(space_id),
             crate::state::Modal::PendingInvites => self.view_pending_invites_modal(),
             crate::state::Modal::DevTools => self.view_devtools_modal(),
+            crate::state::Modal::Directory => self.view_directory_modal(),
             crate::state::Modal::Report { .. } => {
                 let col = column![
                     text("Report Message").font(MONO).size(16).color(theme::colors().text_bright),
@@ -2097,6 +2098,239 @@ impl FluxChat {
         ]
         .spacing(8)
         .width(700)
+        .into()
+    }
+
+    fn view_directory_modal(&self) -> Element<Message> {
+        let colors = theme::colors();
+
+        // Header
+        let header = row![
+            iced::widget::svg(iced::widget::svg::Handle::from_memory(crate::icons::SVG_SEARCH))
+                .width(18).height(18)
+                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
+            text("Explore Rooms").font(MONO).size(16).color(colors.text_bright),
+            Space::new().width(Fill),
+            button(text("\u{00d7}").font(MONO).size(18).color(colors.text_dim))
+                .on_press(Message::CloseModal)
+                .padding([2, 6])
+                .style(|_, _| button::Style { background: None, ..Default::default() }),
+        ].spacing(8).align_y(iced::Alignment::Center);
+
+        // Server selector tabs
+        let servers = ["", "matrixrooms.info"];
+        let server_row = {
+            let mut r = row![].spacing(0);
+            for &srv in &servers {
+                let label = if srv.is_empty() { "My Server" } else { srv };
+                let is_active = self.directory_server == srv;
+                let srv_owned = srv.to_string();
+                r = r.push(
+                    button(text(label).font(MONO).size(12).color(
+                        if is_active { colors.text_bright } else { colors.text_dim }
+                    ))
+                    .on_press(Message::DirectoryServerChanged(srv_owned))
+                    .padding([6, 14])
+                    .style(move |_, status| button::Style {
+                        background: Some(if is_active {
+                            colors.accent.into()
+                        } else if matches!(status, button::Status::Hovered) {
+                            Color::from_rgba(1.0, 1.0, 1.0, 0.08).into()
+                        } else {
+                            colors.bg_light.into()
+                        }),
+                        border: iced::Border {
+                            radius: 4.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                );
+                r = r.push(Space::new().width(4));
+            }
+            r
+        };
+
+        // Search bar
+        let search_bar = row![
+            text_input("Search rooms...", &self.directory_search)
+                .on_input(Message::DirectorySearchChanged)
+                .on_submit(Message::DirectorySearch)
+                .font(MONO).size(13).padding(8)
+                .width(Fill),
+            button(
+                iced::widget::svg(iced::widget::svg::Handle::from_memory(crate::icons::SVG_SEARCH))
+                    .width(14).height(14)
+                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_bright) })
+            )
+                .on_press(Message::DirectorySearch)
+                .padding([8, 12])
+                .style(|_, status| button::Style {
+                    background: Some(if matches!(status, button::Status::Hovered) {
+                        theme::colors().accent.into()
+                    } else {
+                        theme::colors().bg_light.into()
+                    }),
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+        ].spacing(6).align_y(iced::Alignment::Center);
+
+        // Results count
+        let count_text = if !self.directory_results.is_empty() {
+            text(format!("{} rooms", self.directory_results.len()))
+                .font(MONO).size(11).color(colors.text_muted)
+        } else {
+            text("").font(MONO).size(11)
+        };
+
+        // Results list
+        let mut results_col = column![].spacing(4);
+        for room in &self.directory_results {
+            let rid = room.room_id.clone();
+            let name = room.name.as_deref().unwrap_or("(unnamed)");
+            let alias = room.alias.as_deref().unwrap_or("");
+            let members = room.num_members;
+            let already_joined = self.rooms.iter().any(|r| r.room_id == rid);
+
+            // Room avatar (32px rounded)
+            let avatar_el: Element<Message> = if let Some(handle) = room.avatar_url.as_ref()
+                .and_then(|mxc| self.avatar_cache.get(mxc))
+            {
+                container(
+                    iced::widget::image(handle.clone())
+                        .width(32).height(32)
+                        .content_fit(iced::ContentFit::Cover),
+                ).width(32).height(32).clip(true)
+                .style(|_: &Theme| container::Style {
+                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                    ..Default::default()
+                }).into()
+            } else {
+                container(
+                    text("#").font(MONO).size(16).color(colors.text_dim)
+                )
+                .width(32).height(32)
+                .center_x(Length::Fixed(32.0)).center_y(Length::Fixed(32.0))
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_light.into()),
+                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                    ..Default::default()
+                }).into()
+            };
+
+            // Room info
+            let mut info_col = column![].spacing(1);
+            let name_row = row![
+                text(name).font(MONO).size(13).color(colors.text_bright),
+            ].spacing(6).align_y(iced::Alignment::Center);
+            info_col = info_col.push(name_row);
+            if !alias.is_empty() {
+                info_col = info_col.push(
+                    text(alias).font(MONO).size(11).color(colors.text_dim)
+                );
+            }
+            if let Some(ref topic) = room.topic {
+                let short: String = topic.replace('\n', " ").chars().take(100).collect();
+                if !short.is_empty() {
+                    info_col = info_col.push(
+                        text(short).font(MONO).size(11).color(colors.text_muted)
+                    );
+                }
+            }
+
+            // Member count + join button
+            let member_label = if members >= 1000 {
+                format!("{}k", members / 1000)
+            } else {
+                members.to_string()
+            };
+            let right_col = column![
+                if already_joined {
+                    button(text("Joined").font(MONO).size(11).color(colors.text_muted))
+                        .padding([4, 10])
+                        .style(|_, _| button::Style {
+                            background: Some(theme::colors().bg_light.into()),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        })
+                } else {
+                    button(text("Join").font(MONO).size(11).color(colors.text_bright))
+                        .on_press(Message::DirectoryJoinRoom(rid))
+                        .padding([4, 12])
+                        .style(|_, status| button::Style {
+                            background: Some(if matches!(status, button::Status::Hovered) {
+                                theme::colors().accent.into()
+                            } else {
+                                theme::colors().bg_light.into()
+                            }),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        })
+                },
+                text(format!("{member_label} members")).font(MONO).size(10).color(colors.text_muted),
+            ].spacing(4).align_x(iced::Alignment::End);
+
+            let row_content = row![
+                avatar_el,
+                info_col.width(Fill),
+                right_col,
+            ].spacing(10).align_y(iced::Alignment::Center);
+
+            results_col = results_col.push(
+                container(row_content)
+                    .padding([8, 10])
+                    .width(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::colors().bg_dark.into()),
+                        border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                        ..Default::default()
+                    })
+            );
+        }
+
+        // Loading / load more / empty states
+        if self.directory_loading {
+            results_col = results_col.push(
+                container(text("Loading...").font(MONO).size(13).color(colors.text_muted))
+                    .width(Fill).center_x(Fill).padding(20)
+            );
+        } else if self.directory_next_batch.is_some() {
+            results_col = results_col.push(
+                container(
+                    button(text("Load more...").font(MONO).size(12).color(colors.accent))
+                        .on_press(Message::DirectoryLoadMore)
+                        .padding([8, 16])
+                        .style(|_, status| button::Style {
+                            background: if matches!(status, button::Status::Hovered) {
+                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                            } else { None },
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                ).width(Fill).center_x(Fill).padding([8, 0])
+            );
+        } else if self.directory_results.is_empty() && !self.directory_loading {
+            results_col = results_col.push(
+                container(text("No rooms found").font(MONO).size(13).color(colors.text_muted))
+                    .width(Fill).center_x(Fill).padding(20)
+            );
+        }
+
+        column![
+            header,
+            server_row,
+            search_bar,
+            count_text,
+            rule::horizontal(1),
+            scrollable(results_col).height(450)
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3),
+                ))
+                .style(thin_scrollbar),
+        ]
+        .spacing(8)
+        .width(600)
         .into()
     }
 }

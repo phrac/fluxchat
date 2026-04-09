@@ -645,12 +645,15 @@ pub struct PublicRoomResult {
     pub avatar_url: Option<String>,
 }
 
+
 /// List public rooms, optionally filtered by search term.
+/// When `server` is provided, queries that server's directory via federation.
 pub async fn list_public_rooms(
     client: &matrix_sdk::Client,
     search: Option<&str>,
     limit: Option<u32>,
     since: Option<&str>,
+    server: Option<&str>,
 ) -> Result<(Vec<PublicRoomResult>, Option<String>), AppError> {
     use matrix_sdk::ruma::api::client::directory::get_public_rooms_filtered;
     use matrix_sdk::ruma::directory::Filter;
@@ -664,6 +667,11 @@ pub async fn list_public_rooms(
         request.limit = Some(l.into());
     }
     request.since = since.map(|s| s.to_string());
+    if let Some(srv) = server {
+        if let Ok(name) = matrix_sdk::ruma::ServerName::parse(srv) {
+            request.server = Some(name.to_owned());
+        }
+    }
 
     let response = client.send(request).await
         .map_err(|e| AppError::Other(format!("Public rooms listing failed: {e}")))?;

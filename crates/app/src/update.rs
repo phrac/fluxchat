@@ -1552,6 +1552,13 @@ impl FluxChat {
                 } else if matches!(&modal, crate::state::Modal::Report { .. }) {
                     self.report_reason.clear();
                     Task::none()
+                } else if matches!(&modal, crate::state::Modal::Directory) {
+                    self.directory_results.clear();
+                    self.directory_next_batch = None;
+                    self.directory_loading = true;
+                    // Defer to DirectorySearch which handles MRS vs federation
+                    self.modal = Some(modal);
+                    return self.update(Message::DirectorySearch);
                 } else if matches!(&modal, crate::state::Modal::DevTools) {
                     self.devtools_state_events.clear();
                     self.devtools_tab = "state".into();
@@ -1879,6 +1886,74 @@ impl FluxChat {
                         |_| Message::Noop,
                     );
                 }
+            }
+            Message::DirectorySearchChanged(q) => {
+                self.directory_search = q;
+            }
+            Message::DirectoryServerChanged(s) => {
+                self.directory_server = s;
+                return self.update(Message::DirectorySearch);
+            }
+            Message::DirectorySearch => {
+                self.directory_results.clear();
+                self.directory_next_batch = None;
+                self.directory_loading = true;
+                let core = self.core.clone();
+                let query = self.directory_search.clone();
+                let server = self.directory_server.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let search = if query.is_empty() { None } else { Some(query.as_str()) };
+                        let srv = if server.is_empty() { None } else { Some(server.as_str()) };
+                        fluxchat_core::rooms::list_public_rooms(&client, search, Some(20), None, srv).await.ok()
+                    },
+                    |result| match result {
+                        Some((rooms, next)) => Message::DirectoryResults(rooms, next),
+                        None => Message::DirectoryResults(vec![], None),
+                    },
+                );
+            }
+            Message::DirectoryResults(rooms, next_batch) => {
+                self.directory_loading = false;
+                let mxc_uris: Vec<String> = rooms.iter()
+                    .filter_map(|r| r.avatar_url.clone())
+                    .collect();
+                self.directory_results.extend(rooms);
+                self.directory_next_batch = next_batch;
+                if !mxc_uris.is_empty() {
+                    return self.resolve_avatars(mxc_uris);
+                }
+            }
+            Message::DirectoryLoadMore => {
+                if let Some(since) = self.directory_next_batch.clone() {
+                    self.directory_loading = true;
+                    let core = self.core.clone();
+                    let query = self.directory_search.clone();
+                    let server = self.directory_server.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            let search = if query.is_empty() { None } else { Some(query.as_str()) };
+                            let srv = if server.is_empty() { None } else { Some(server.as_str()) };
+                            fluxchat_core::rooms::list_public_rooms(&client, search, Some(20), Some(&since), srv).await.ok()
+                        },
+                        |result| match result {
+                            Some((rooms, next)) => Message::DirectoryResults(rooms, next),
+                            None => Message::DirectoryResults(vec![], None),
+                        },
+                    );
+                }
+            }
+            Message::DirectoryJoinRoom(room_id) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::rooms::join_room(&client, &room_id).await.ok()
+                    },
+                    |_| Message::CloseModal,
+                );
             }
             Message::SetTopic(room_id, topic) => {
                 let core = self.core.clone();

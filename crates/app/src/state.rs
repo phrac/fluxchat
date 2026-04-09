@@ -55,6 +55,7 @@ pub enum Modal {
     SpaceDetails { space_id: String },
     PendingInvites,
     DevTools,
+    Directory,
 }
 
 
@@ -159,6 +160,11 @@ pub struct FluxChat {
     pub devtools_send_state_key: String,              // state key (empty for message events)
     pub devtools_send_body: String,                   // JSON body to send
     pub devtools_is_state: bool,                      // sending state event vs message event
+    pub directory_results: Vec<fluxchat_core::rooms::PublicRoomResult>,
+    pub directory_search: String,
+    pub directory_server: String,                      // server to query ("" = own homeserver)
+    pub directory_next_batch: Option<String>,
+    pub directory_loading: bool,
     pub gif_query: String,
     pub gif_searched: bool, // true after a search has completed
     pub help_text: Option<String>,
@@ -390,6 +396,11 @@ impl FluxChat {
             devtools_send_state_key: String::new(),
             devtools_send_body: "{}".into(),
             devtools_is_state: true,
+            directory_results: Vec::new(),
+            directory_search: String::new(),
+            directory_server: String::new(),
+            directory_next_batch: None,
+            directory_loading: false,
             gifs_open: false,
             audio_playing: None,
             voice_recording: false,

@@ -190,6 +190,8 @@ struct State<Link> {
     span_pressed: Option<usize>,
     /// Currently hovered link span index.
     hovered_link: Option<usize>,
+    /// Position where mouse was pressed (for drag threshold).
+    press_position: Option<Point>,
 }
 
 impl<Link, Message> Widget<Message, iced::Theme, iced::Renderer>
@@ -209,6 +211,7 @@ where
             mouse_pressed: false,
             span_pressed: None,
             hovered_link: None,
+            press_position: None,
         })
     }
 
@@ -462,6 +465,7 @@ where
                 if let Some(position) = cursor.position_in(bounds) {
                     if let Some(hit) = hit_cursor(&state.paragraph, position) {
                         state.mouse_pressed = true;
+                        state.press_position = Some(position);
 
                         // Track span press for link click detection
                         state.span_pressed = state
@@ -490,13 +494,23 @@ where
                 if let Some(position) = cursor.position_in(bounds) {
                     // Cursor is within this widget — emit if drag is active
                     if state.mouse_pressed || self.selection_active {
-                        if let Some(hit) = hit_cursor(&state.paragraph, position) {
-                            if let (Some(on_sel), Some(wid)) = (&self.on_selection, &self.widget_id) {
-                                state.span_pressed = None;
-                                shell.publish(on_sel(SelectionEvent::Moved(
-                                    wid.clone(), hit.line, hit.index,
-                                )));
-                                shell.request_redraw();
+                        // Only treat as drag if moved beyond threshold (3px)
+                        let is_drag = if let Some(press_pos) = state.press_position {
+                            let dx = position.x - press_pos.x;
+                            let dy = position.y - press_pos.y;
+                            (dx * dx + dy * dy) > 9.0
+                        } else {
+                            !state.mouse_pressed // selection_active from another widget
+                        };
+                        if is_drag {
+                            if let Some(hit) = hit_cursor(&state.paragraph, position) {
+                                if let (Some(on_sel), Some(wid)) = (&self.on_selection, &self.widget_id) {
+                                    state.span_pressed = None;
+                                    shell.publish(on_sel(SelectionEvent::Moved(
+                                        wid.clone(), hit.line, hit.index,
+                                    )));
+                                    shell.request_redraw();
+                                }
                             }
                         }
                     }
@@ -524,16 +538,15 @@ where
                 if state.mouse_pressed {
                     state.mouse_pressed = false;
 
-                    // If a link span was pressed and no drag occurred, treat as link click
-                    if self.selection_range == SelectionRange::None {
-                        if let Some(span_idx) = state.span_pressed.take() {
-                            if let Some(on_link_click) = &self.on_link_click {
-                                if let Some(link) = spans
-                                    .get(span_idx)
-                                    .and_then(|s| s.link.clone())
-                                {
-                                    shell.publish(on_link_click(link));
-                                }
+                    // If a link span was pressed and no drag occurred, treat as link click.
+                    // span_pressed is cleared on drag, so Some means a clean click.
+                    if let Some(span_idx) = state.span_pressed.take() {
+                        if let Some(on_link_click) = &self.on_link_click {
+                            if let Some(link) = spans
+                                .get(span_idx)
+                                .and_then(|s| s.link.clone())
+                            {
+                                shell.publish(on_link_click(link));
                             }
                         }
                     }
