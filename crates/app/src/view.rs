@@ -2228,10 +2228,21 @@ impl FluxChat {
                 }
             }
 
+            // Emoji picker overlay — anchored to bottom-right of message area
+            if self.emoji_open {
+                msg_stack = msg_stack.push(
+                    container(self.view_emoji_picker())
+                        .width(Fill)
+                        .height(Fill)
+                        .align_y(iced::alignment::Vertical::Bottom)
+                        .align_x(iced::alignment::Horizontal::Right),
+                );
+            }
+
             content = content.push(msg_stack);
 
             // Input area: typing indicator, reply/edit preview, GIF panel,
-            // emoji picker, upload preview, help text, autocomplete, input bar
+            // upload preview, help text, autocomplete, input bar
             for element in self.view_input_area(room_id) {
                 content = content.push(element);
             }

@@ -1191,16 +1191,16 @@ impl FluxChat {
 
         // Category tabs
         let category_labels = [
-            "\u{2605}", // ★ frequent
-            "\u{1f600}", // 😀 SmileysAndEmotion
-            "\u{1f464}", // 👤 PeopleAndBody
-            "\u{1f43e}", // 🐾 AnimalsAndNature
-            "\u{1f34e}", // 🍎 FoodAndDrink
-            "\u{2708}",  // ✈ TravelAndPlaces
-            "\u{26bd}",  // ⚽ Activities
-            "\u{1f4a1}", // 💡 Objects
-            "\u{2660}",  // ♠ Symbols
-            "\u{1f3f4}", // 🏴 Flags
+            "\u{2b50}",          // ⭐ frequent
+            "\u{1f600}",         // 😀 SmileysAndEmotion
+            "\u{1f464}",         // 👤 PeopleAndBody
+            "\u{1f43e}",         // 🐾 AnimalsAndNature
+            "\u{1f34e}",         // 🍎 FoodAndDrink
+            "\u{1f30d}",         // 🌍 TravelAndPlaces
+            "\u{1f3c0}",         // 🏀 Activities
+            "\u{1f4a1}",         // 💡 Objects
+            "\u{1f523}",         // 🔣 Symbols
+            "\u{1f3f4}",         // 🏴 Flags
         ];
         let mut tabs = row![].spacing(2);
         for (i, label) in category_labels.iter().enumerate() {

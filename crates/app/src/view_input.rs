@@ -224,10 +224,7 @@ impl FluxChat {
             );
         }
 
-        // Emoji picker panel
-        if self.emoji_open {
-            elements.push(self.view_emoji_picker());
-        }
+        // Emoji picker is rendered as an overlay on the message area (see view.rs)
 
         // Upload preview bar
         if let Some((ref filename, _, _)) = self.upload_pending {
