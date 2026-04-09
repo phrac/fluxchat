@@ -392,28 +392,33 @@ impl FluxChat {
                     // Merge: keep old messages the SDK trimmed from its window,
                     // but always use SDK version for matching IDs (edits applied).
                     let merged = if let Some(existing) = self.messages_by_room.get(&room_id) {
-                        let new_ids: std::collections::HashSet<&str> = new_messages
-                            .iter()
-                            .map(|m| m.event_id.as_str())
-                            .collect();
-                        let oldest_new_ts = new_messages.iter()
-                            .filter(|m| !m.event_id.starts_with("~"))
-                            .map(|m| m.timestamp)
-                            .min()
-                            .unwrap_or(0);
-                        // Keep old messages that are older than the SDK window
-                        // and not replaced by a newer version from the SDK
-                        let mut merged: Vec<fluxchat_core::MessageInfo> = existing
-                            .iter()
-                            .filter(|m| {
-                                !new_ids.contains(m.event_id.as_str())
-                                    && m.timestamp < oldest_new_ts
-                            })
-                            .cloned()
-                            .collect();
-                        merged.extend(new_messages);
-                        merged.sort_by_key(|m| m.timestamp);
-                        merged
+                        if new_messages.is_empty() {
+                            // SDK sent empty timeline (e.g. bridge state event) — keep existing
+                            existing.clone()
+                        } else {
+                            let new_ids: std::collections::HashSet<&str> = new_messages
+                                .iter()
+                                .map(|m| m.event_id.as_str())
+                                .collect();
+                            let oldest_new_ts = new_messages.iter()
+                                .filter(|m| !m.event_id.starts_with("~"))
+                                .map(|m| m.timestamp)
+                                .min()
+                                .unwrap_or(0);
+                            // Keep old messages that are older than the SDK window
+                            // and not replaced by a newer version from the SDK
+                            let mut merged: Vec<fluxchat_core::MessageInfo> = existing
+                                .iter()
+                                .filter(|m| {
+                                    !new_ids.contains(m.event_id.as_str())
+                                        && m.timestamp < oldest_new_ts
+                                })
+                                .cloned()
+                                .collect();
+                            merged.extend(new_messages);
+                            merged.sort_by_key(|m| m.timestamp);
+                            merged
+                        }
                     } else {
                         new_messages
                     };
