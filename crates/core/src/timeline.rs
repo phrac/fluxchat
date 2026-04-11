@@ -73,6 +73,13 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     let timestamp = ev.timestamp().as_secs().into();
     let content = ev.content();
 
+    // Authoritative per-event read-receipt list from the SDK timeline item.
+    // The SDK keeps this live; no polling needed.
+    let read_receipt_user_ids: Vec<String> = ev.read_receipts()
+        .keys()
+        .map(|u| u.to_string())
+        .collect();
+
     // Extract reactions (on TimelineItemContent)
     let reactions: Vec<ReactionInfo> = if let Some(rxns) = content.reactions() {
         rxns.iter().map(|(emoji, senders)| {
@@ -241,6 +248,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width, image_height, poll: None, geo_uri,
                     audio_mxc, duration_ms, file_mxc, file_mimetype, file_size, video_mxc, is_emote, is_video, is_voice: is_voice_msg,
+                    read_receipt_user_ids: read_receipt_user_ids.clone(),
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -257,6 +265,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: w, image_height: h, poll: None,
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                    read_receipt_user_ids: read_receipt_user_ids.clone(),
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -284,6 +293,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                         my_vote: None,
                     }),
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                    read_receipt_user_ids: read_receipt_user_ids.clone(),
                 })
             } else {
                 Some(MessageInfo {
@@ -293,6 +303,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: None, image_height: None, poll: None,
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                    read_receipt_user_ids,
                 })
             }
         }
@@ -320,6 +331,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                read_receipt_user_ids: Vec::new(),
             })
         }
 
@@ -334,6 +346,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                read_receipt_user_ids: Vec::new(),
             })
         }
 
@@ -367,6 +380,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 reply_to_body: None, timestamp, avatar_url: None,
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                read_receipt_user_ids: Vec::new(),
             })
         }
 

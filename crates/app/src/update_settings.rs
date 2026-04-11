@@ -467,13 +467,23 @@ impl FluxChat {
                 Some(Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::open_dm(&client, &user_id).await.ok()
+                        let room_id = fluxchat_core::rooms::open_dm(&client, &user_id).await.ok()?;
+                        let rid = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                        let room = client.get_room(&rid)?;
+                        Some(fluxchat_core::rooms::room_to_info(&room, None).await)
                     },
                     |result| match result {
-                        Some(room_id) => Message::SelectRoom(room_id),
+                        Some(info) => Message::DmCreated(Box::new(info)),
                         None => Message::Noop,
                     },
                 ))
+            }
+            Message::DmCreated(info) => {
+                let room_id = info.room_id.clone();
+                if !self.rooms.iter().any(|r| r.room_id == room_id) {
+                    self.rooms.push(*info);
+                }
+                Some(Task::done(Message::SelectRoom(room_id)))
             }
 
             // --- Power levels ---

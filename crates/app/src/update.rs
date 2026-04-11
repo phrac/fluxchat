@@ -713,8 +713,8 @@ impl FluxChat {
 
                 self.input_text = text.clone();
 
-                // Update command autocomplete
-                if text.starts_with('/') && !text.contains(' ') {
+                // Update command autocomplete (skip escaped `//` literal messages)
+                if text.starts_with('/') && !text.starts_with("//") && !text.contains(' ') {
                     self.cmd_completions = crate::commands::autocomplete_entries(&text);
                     self.cmd_completion_idx = 0;
                 } else {
@@ -757,8 +757,8 @@ impl FluxChat {
                     // Update text but don't refocus (InputChanged handles it)
                     self.input_text = new_text.clone();
 
-                    // Update command autocomplete
-                    if new_text.starts_with('/') && !new_text.contains(' ') {
+                    // Update command autocomplete (skip escaped `//` literal messages)
+                    if new_text.starts_with('/') && !new_text.starts_with("//") && !new_text.contains(' ') {
                         self.cmd_completions = crate::commands::autocomplete_entries(&new_text);
                         self.cmd_completion_idx = 0;
                     } else {
@@ -812,8 +812,8 @@ impl FluxChat {
                     return Task::none();
                 }
 
-                // Handle slash commands
-                if self.input_text.starts_with('/') {
+                // Handle slash commands. `//foo` escapes to a literal `/foo` message.
+                if self.input_text.starts_with('/') && !self.input_text.starts_with("//") {
                     let result = crate::commands::dispatch(&self.input_text, self);
                     self.input_text.clear();
                     self.input_content = iced::widget::text_editor::Content::new();
@@ -854,7 +854,10 @@ impl FluxChat {
                     }
                 }
 
-                let body = std::mem::take(&mut self.input_text);
+                let mut body = std::mem::take(&mut self.input_text);
+                if body.starts_with("//") {
+                    body.remove(0);
+                }
                 self.input_content = iced::widget::text_editor::Content::new();
                 self.help_text = None;
                 self.cmd_completions.clear();
@@ -982,6 +985,10 @@ impl FluxChat {
                 // Clear if no actual drag occurred (click without movement)
                 if self.selection.anchor == self.selection.cursor {
                     self.selection = Default::default();
+                } else if let Some(text) = self.extract_selection_text() {
+                    // Mirror selection into the X11/Wayland PRIMARY selection so
+                    // Shift+Insert / middle-click paste works in terminals.
+                    crate::primary_clipboard::set(text);
                 }
             }
             Message::CopySelection => {
@@ -2072,6 +2079,7 @@ impl FluxChat {
                 | Message::SecurityRecoverResult(_)
                 | Message::ToggleIgnoreUser(_) | Message::ProfilePowerInputChanged(_)
                 | Message::ProfileSetPowerLevel | Message::SendDmToUser(_)
+                | Message::DmCreated(_)
                 | Message::SetPowerLevel(_, _, _)) => {
                 if let Some(task) = self.handle_settings_message(msg) {
                     return task;
@@ -3147,18 +3155,6 @@ impl FluxChat {
                 }
             }
 
-            Message::ReadReceiptsLoaded(room_id, new_receipts) => {
-                // Merge with existing receipts — update positions, add new users
-                let entry = self.receipts_by_room.entry(room_id).or_default();
-                for new_r in new_receipts {
-                    if let Some(existing) = entry.iter_mut().find(|r| r.user_id == new_r.user_id) {
-                        existing.event_id = new_r.event_id;
-                    } else {
-                        entry.push(new_r);
-                    }
-                }
-            }
-
             // --- Misc ---
             Message::PaginateBack(room_id) => {
                 let core = self.core.clone();
@@ -3342,40 +3338,8 @@ impl FluxChat {
                     // Clear stale typing indicators (timeout after 10s)
                     self.typing_by_room.retain(|_, (_, updated)| updated.elapsed().as_secs() < 10);
 
-                    // Load read receipts for current room (only if messages changed)
-                    if let Some(ref room_id) = self.selected_room_id {
-                        let msg_count = self.messages_by_room.get(room_id).map(|m| m.len()).unwrap_or(0);
-                        let last_count = self.receipts_msg_count.get(room_id).copied().unwrap_or(0);
-                        if msg_count != last_count {
-                            self.receipts_msg_count.insert(room_id.clone(), msg_count);
-                            let core2 = self.core.clone();
-                            let rid = room_id.clone();
-                            // Only check the last 10 messages for receipts
-                            let event_ids: Vec<String> = self.messages_by_room
-                                .get(room_id)
-                                .map(|msgs| msgs.iter().rev()
-                                    .filter(|m| !m.event_id.starts_with("~"))
-                                    .take(10)
-                                    .map(|m| m.event_id.clone())
-                                    .collect())
-                                .unwrap_or_default();
-                            if !event_ids.is_empty() {
-                                tasks.push(Task::perform(
-                                    async move {
-                                        let client = core2.get_client().await.ok()?;
-                                        let receipts = fluxchat_core::messages::get_room_read_receipts(
-                                            &client, &rid, &event_ids,
-                                        ).await.ok()?;
-                                        Some((rid, receipts))
-                                    },
-                                    |result| match result {
-                                        Some((rid, receipts)) => Message::ReadReceiptsLoaded(rid, receipts),
-                                        None => Message::Noop,
-                                    },
-                                ));
-                            }
-                        }
-                    }
+                    // Read receipts now come from each MessageInfo via the
+                    // SDK timeline item — no polling needed.
 
                     // Refresh member list for active room
                     if let Some(ref room_id) = self.selected_room_id {

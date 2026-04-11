@@ -1,13 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ReadReceipt {
-    pub user_id: String,
-    pub event_id: String,
-    pub display_name: String,
-    pub avatar_url: Option<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct RoomInfo {
     pub room_id: String,
@@ -57,6 +49,10 @@ pub struct MessageInfo {
     pub is_video: bool,
     #[serde(default)]
     pub is_voice: bool,
+    /// Matrix user IDs whose read marker points at this event, as reported
+    /// by the SDK timeline item. Authoritative; replaces polled receipts.
+    #[serde(default)]
+    pub read_receipt_user_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

@@ -296,6 +296,7 @@ pub enum Message {
     // --- Profile actions ---
     ToggleIgnoreUser(String), // user_id
     SendDmToUser(String),     // user_id
+    DmCreated(Box<fluxchat_core::RoomInfo>),
     ProfilePowerInputChanged(String),
     ProfileSetPowerLevel,     // apply power level from profile_power_input
 
@@ -331,7 +332,6 @@ pub enum Message {
 
     // --- Read receipts ---
     SendReadReceipt,
-    ReadReceiptsLoaded(String, Vec<fluxchat_core::ReadReceipt>), // room_id, receipts
 
     // --- Sidebar resize ---
     SidebarDragStart,

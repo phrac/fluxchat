@@ -692,7 +692,7 @@ impl FluxChat {
 
             if has_code_block {
                 // Use structured parts to render code blocks in containers
-                let parts = crate::html::html_to_parts(&display_html, &self.rooms);
+                let parts = crate::html::html_to_parts(&display_html, &self.rooms, fs);
                 let mut body_col = column![].spacing(4).width(Fill);
                 let mut part_idx = 0usize;
 
@@ -782,7 +782,7 @@ impl FluxChat {
                 };
                 let sel_range = self.selection_range_for(&wid);
                 let sel_active = self.selection.active;
-                let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms);
+                let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms, fs);
                 selectable_rich_text(spans)
                     .font(self.msg_font())
                     .size(fs)
@@ -1446,20 +1446,26 @@ fn convert_markdown_bullets(html: &str) -> String {
     result
 }
 
-/// Convert markdown-style headings (### text) to HTML <h3> tags.
+/// Convert markdown-style headings (`#` through `######`) to HTML heading tags.
 fn convert_markdown_headings(html: &str) -> String {
-    if !html.contains("###") && !html.contains("####") {
+    if !html.contains('#') {
         return html.to_string();
     }
     let mut result = String::with_capacity(html.len());
     for part in html.split("<br>").flat_map(|s| s.split("<br/>")).flat_map(|s| s.split('\n')) {
         let trimmed = part.trim();
-        let (level, rest) = if let Some(r) = trimmed.strip_prefix("#### ") {
+        let (level, rest) = if let Some(r) = trimmed.strip_prefix("###### ") {
+            (6, r)
+        } else if let Some(r) = trimmed.strip_prefix("##### ") {
+            (5, r)
+        } else if let Some(r) = trimmed.strip_prefix("#### ") {
             (4, r)
         } else if let Some(r) = trimmed.strip_prefix("### ") {
             (3, r)
         } else if let Some(r) = trimmed.strip_prefix("## ") {
             (2, r)
+        } else if let Some(r) = trimmed.strip_prefix("# ") {
+            (1, r)
         } else {
             if !result.is_empty() {
                 result.push_str("<br>");

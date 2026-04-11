@@ -34,3 +34,4 @@ gstreamer = "0.23"
 gstreamer-app = "0.23"
 gstreamer-pbutils = "0.23"
 url = "2"
+arboard = { version = "3", features = ["wayland-data-control"] }

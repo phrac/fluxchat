@@ -167,40 +167,34 @@ impl FluxChat {
     }
 
     /// Render stacked read receipt avatars for a message, right-aligned.
+    /// Sources per-event receipts directly from the SDK timeline item.
     fn view_read_receipts<'a>(
         &'a self,
-        event_id: &str,
-        receipts: Option<&'a Vec<fluxchat_core::ReadReceipt>>,
+        msg: &'a fluxchat_core::MessageInfo,
     ) -> Option<Element<'a, Message>> {
-        let receipts = receipts?;
-        let msg_receipts: Vec<_> = receipts.iter()
-            .filter(|r| r.event_id == event_id && r.user_id != self.user_id)
+        let user_ids: Vec<&str> = msg.read_receipt_user_ids.iter()
+            .filter(|uid| uid.as_str() != self.user_id)
+            .map(String::as_str)
             .collect();
-        if msg_receipts.is_empty() {
+        if user_ids.is_empty() {
             return None;
         }
-        // Right-aligned row of small stacked avatars (max 5 shown)
-        // Resolve avatar from member cache (avoids per-receipt member lookups in core)
         let members = self.selected_room_id.as_ref()
             .and_then(|rid| self.members_by_room.get(rid));
         let mut avatars_row = row![].spacing(2);
-        let shown = msg_receipts.len().min(5);
-        for r in msg_receipts.iter().take(shown) {
-            let avatar_mxc = r.avatar_url.as_deref()
-                .or_else(|| members.and_then(|m| m.iter()
-                    .find(|member| member.user_id == r.user_id)
-                    .and_then(|member| member.avatar_url.as_deref())));
-            let display = members.and_then(|m| m.iter()
-                .find(|member| member.user_id == r.user_id)
-                .map(|member| member.display_name.as_str()))
-                .unwrap_or(&r.display_name);
+        let shown = user_ids.len().min(5);
+        for uid in user_ids.iter().take(shown) {
+            let member = members.and_then(|m| m.iter().find(|m| m.user_id == *uid));
+            let avatar_mxc = member.and_then(|m| m.avatar_url.as_deref());
+            let display = member.map(|m| m.display_name.as_str())
+                .unwrap_or_else(|| uid.trim_start_matches('@').split(':').next().unwrap_or(uid));
             avatars_row = avatars_row.push(
                 self.render_avatar_with_initial(avatar_mxc, display, 14.0),
             );
         }
-        if msg_receipts.len() > 5 {
+        if user_ids.len() > 5 {
             avatars_row = avatars_row.push(
-                text(format!("+{}", msg_receipts.len() - 5))
+                text(format!("+{}", user_ids.len() - 5))
                     .font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
             );
         }
@@ -2080,9 +2074,6 @@ impl FluxChat {
                 );
             }
 
-            // Read receipts for current room
-            let room_receipts = self.receipts_by_room.get(room_id);
-
             if let Some(msgs) = messages {
                 let last_read = self.last_read_event.get(room_id).cloned();
                 // Don't show divider if the last read event is the very last message
@@ -2112,7 +2103,7 @@ impl FluxChat {
                                 divider_shown = true;
                                 msg_col = msg_col.push(self.view_message(msg));
                                 // Read receipts for this message
-                                if let Some(receipt_row) = self.view_read_receipts(&msg.event_id, room_receipts) {
+                                if let Some(receipt_row) = self.view_read_receipts(msg) {
                                     msg_col = msg_col.push(receipt_row);
                                 }
                                 msg_col = msg_col.push(
@@ -2173,7 +2164,7 @@ impl FluxChat {
                         }
                     }
                     // Read receipts for this message
-                    if let Some(receipt_row) = self.view_read_receipts(&msg.event_id, room_receipts) {
+                    if let Some(receipt_row) = self.view_read_receipts(msg) {
                         msg_col = msg_col.push(receipt_row);
                     }
                 }

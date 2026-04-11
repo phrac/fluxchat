@@ -21,8 +21,6 @@ use crate::rooms::parse_room_id;
 
 /// Default number of messages to load per page.
 const MESSAGE_PAGE_SIZE: u32 = 20;
-/// Maximum recent events to check for read receipts.
-const RECEIPT_EVENT_LIMIT: usize = 30;
 
 /// Extract body, formatted HTML, and image MXC from a message type.
 pub(crate) fn extract_message_content(msgtype: &MessageType) -> (String, Option<String>, Option<String>) {
@@ -103,6 +101,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                     body, formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                     reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                     timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                    read_receipt_user_ids: Vec::new(),
                 });
             }
         }
@@ -136,6 +135,7 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                 image_mxc,
                 reactions, reply_to_id, reply_to_sender: None, reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                read_receipt_user_ids: Vec::new(),
             });
         }
     }
@@ -262,7 +262,8 @@ async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMessag
 async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
     // Only attempt mention resolution if body contains @
     let has_mentions = body.contains('@');
-    let has_markdown = body.contains("**") || body.contains('`') || body.contains("~~");
+    let has_headings = body.lines().any(parse_heading_line_is_heading);
+    let has_markdown = body.contains("**") || body.contains('`') || body.contains("~~") || has_headings;
 
     if !has_mentions && !has_markdown {
         return RoomMessageEventContent::text_plain(body);
@@ -344,6 +345,39 @@ async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessa
     content
 }
 
+/// Returns true if a line is an ATX-style heading (`#` ... `######` followed by space).
+fn parse_heading_line_is_heading(line: &str) -> bool {
+    let hashes = line.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hashes) && line[hashes..].starts_with(' ')
+}
+
+/// Wrap heading lines (`# ` ... `###### `) in `<hN>` tags. Skips lines inside `<pre>` blocks.
+fn apply_headings(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_pre = false;
+    let mut first = true;
+    for line in text.split('\n') {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        if !in_pre && parse_heading_line_is_heading(line) {
+            let level = line.chars().take_while(|c| *c == '#').count();
+            let rest = &line[level + 1..];
+            out.push_str(&format!("<h{level}>{rest}</h{level}>"));
+        } else {
+            out.push_str(line);
+        }
+        if line.contains("<pre") {
+            in_pre = true;
+        }
+        if line.contains("</pre>") {
+            in_pre = false;
+        }
+    }
+    out
+}
+
 fn simple_markdown(text: &str) -> String {
     let mut result = text.to_string();
     // Code blocks (``` ... ```)
@@ -386,6 +420,8 @@ fn simple_markdown(text: &str) -> String {
             break;
         }
     }
+    // Headings (`# ` … `###### ` at line start) — applied last so we can skip <pre> regions
+    result = apply_headings(&result);
     result
 }
 
@@ -511,6 +547,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
+                read_receipt_user_ids: Vec::new(),
             });
         }
     }
@@ -596,48 +633,6 @@ pub async fn send_read_receipt(client: &matrix_sdk::Client, room_id: &str, event
     let receipts = matrix_sdk::room::Receipts::new().fully_read_marker(Some(event_id.clone())).public_read_receipt(Some(event_id));
     room.send_multiple_receipts(receipts).await.map_err(|e| AppError::Other(format!("Failed to send receipt: {e}")))?;
     Ok(())
-}
-
-/// Fetch read receipts for a room by checking recent event IDs.
-pub async fn get_room_read_receipts(
-    client: &matrix_sdk::Client,
-    room_id: &str,
-    recent_event_ids: &[String],
-) -> Result<Vec<crate::models::ReadReceipt>, AppError> {
-    use matrix_sdk::ruma::events::receipt::{ReceiptType, ReceiptThread};
-
-    let room_id = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-
-    let mut receipts = Vec::new();
-    let mut seen_users = std::collections::HashSet::new();
-
-    for eid_str in recent_event_ids.iter().rev().take(RECEIPT_EVENT_LIMIT) {
-        let event_id = match matrix_sdk::ruma::EventId::parse(eid_str) {
-            Ok(eid) => eid,
-            Err(_) => continue,
-        };
-        // Try both Main and Unthreaded thread types
-        for thread in [ReceiptThread::Main, ReceiptThread::Unthreaded] {
-            if let Ok(event_receipts) = room.load_event_receipts(ReceiptType::Read, thread, &event_id).await {
-                for (user_id, _receipt) in event_receipts {
-                    let uid_str = user_id.to_string();
-                    if seen_users.contains(&uid_str) { continue; }
-                    seen_users.insert(uid_str.clone());
-
-                    // Skip expensive per-user member lookups here.
-                    // The app resolves display names and avatars from its member cache.
-                    receipts.push(crate::models::ReadReceipt {
-                        user_id: uid_str,
-                        event_id: eid_str.clone(),
-                        display_name: user_id.localpart().to_string(),
-                        avatar_url: None,
-                    });
-                }
-            }
-        }
-    }
-    Ok(receipts)
 }
 
 /// Forward a message to another room by sending its content there.

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use fluxchat_core::{
-    AppState, MemberInfo, MessageInfo, ReadReceipt, RoomInfo, VerificationInfo,
+    AppState, MemberInfo, MessageInfo, RoomInfo, VerificationInfo,
 };
 
 /// Channel for timeline diff stream watcher to send updates back to the Iced event loop.
@@ -100,8 +100,6 @@ pub struct FluxChat {
     pub messages_by_room: HashMap<String, Vec<MessageInfo>>,
     pub members_by_room: HashMap<String, Vec<MemberInfo>>,
     pub typing_by_room: HashMap<String, (Vec<String>, std::time::Instant)>, // (user_ids, last_updated)
-    pub receipts_by_room: HashMap<String, Vec<ReadReceipt>>,
-    pub receipts_msg_count: HashMap<String, usize>, // room_id → msg count when receipts were last loaded
 
     // Message actions
     pub reply_to: Option<(String, String, String)>,  // (event_id, sender_name, body)
@@ -371,8 +369,6 @@ impl FluxChat {
             messages_by_room: HashMap::new(),
             members_by_room: HashMap::new(),
             typing_by_room: HashMap::new(),
-            receipts_by_room: HashMap::new(),
-            receipts_msg_count: HashMap::new(),
             reply_to: None,
             edit_event: None,
             upload_pending: None,

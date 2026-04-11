@@ -42,6 +42,8 @@ struct Style {
     mention: bool,
     mention_user_id: Option<String>,
     blockquote: bool,
+    /// 0 = none, 1-6 = h1-h6
+    heading_level: u8,
 }
 
 /// A part of a rendered message — either text spans or a code block.
@@ -57,19 +59,20 @@ pub enum MessagePart {
 /// Returns a Vec of Spans suitable for `rich_text!` or `Rich::from_iter()`.
 /// The `Link` type parameter is `String` (URL for clickable links).
 pub fn html_to_spans(html: &str) -> Vec<Span<'static, String>> {
-    html_to_spans_with_rooms(html, &[])
+    html_to_spans_with_rooms(html, &[], 14.0)
 }
 
 /// Parse Matrix HTML into Iced Spans, resolving matrix.to room links to pills.
-pub fn html_to_spans_with_rooms(html: &str, rooms: &[fluxchat_core::RoomInfo]) -> Vec<Span<'static, String>> {
+/// `base_size` is the parent text size in pixels — headings size relative to it.
+pub fn html_to_spans_with_rooms(html: &str, rooms: &[fluxchat_core::RoomInfo], base_size: f32) -> Vec<Span<'static, String>> {
     let segments = parse_html(html);
-    segments_to_spans_with_rooms(segments, rooms)
+    segments_to_spans_with_rooms(segments, rooms, base_size)
 }
 
 /// Parse Matrix HTML into structured parts (text + code blocks as separate elements).
-pub fn html_to_parts(html: &str, rooms: &[fluxchat_core::RoomInfo]) -> Vec<MessagePart> {
+pub fn html_to_parts(html: &str, rooms: &[fluxchat_core::RoomInfo], base_size: f32) -> Vec<MessagePart> {
     let segments = parse_html(html);
-    segments_to_parts(segments, rooms)
+    segments_to_parts(segments, rooms, base_size)
 }
 
 // ---------------------------------------------------------------------------
@@ -395,10 +398,14 @@ impl<'a> WalkCtx<'a> {
                         return;
                     }
 
-                    // Headings: render as bold text + line break
+                    // Headings: render as bold + sized text + line break
                     "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                        let level = tag.as_bytes()[1] - b'0';
+                        // Headings start on their own line
+                        self.segments.push(Segment::LineBreak);
                         let mut s = style.clone();
                         s.bold = true;
+                        s.heading_level = level;
                         let children: Vec<NodeId> = self.nodes[id].children.clone();
                         for child in children {
                             self.walk(child, &s);
@@ -636,23 +643,23 @@ fn parse_html(html: &str) -> Vec<Segment> {
 
 /// Convert Segments into Iced Spans.
 fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
-    segments_to_spans_with_rooms(segments, &[])
+    segments_to_spans_with_rooms(segments, &[], 14.0)
 }
 
-fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo]) -> Vec<Span<'static, String>> {
+fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo], base_size: f32) -> Vec<Span<'static, String>> {
     let mut spans = Vec::new();
 
     for segment in segments {
         match segment {
             Segment::Text(text, style) => {
-                spans.push(styled_span(text, &style));
+                spans.push(styled_span(text, &style, base_size));
             }
             Segment::Link { text, url, style } => {
                 // Check if this is a matrix.to room link
                 if let Some(pill) = try_room_pill(&url, rooms) {
                     spans.push(pill);
                 } else {
-                    let mut span = styled_span(text, &style);
+                    let mut span = styled_span(text, &style, base_size);
                     span.color = Some(theme::colors().accent);
                     span.underline = true;
                     span.link = Some(url);
@@ -757,20 +764,20 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
 }
 
 /// Convert Segments into structured MessageParts, separating code blocks from text.
-fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo]) -> Vec<MessagePart> {
+fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo], base_size: f32) -> Vec<MessagePart> {
     let mut parts = Vec::new();
     let mut current_spans: Vec<Span<'static, String>> = Vec::new();
 
     for segment in segments {
         match segment {
             Segment::Text(text, style) => {
-                current_spans.push(styled_span(text, &style));
+                current_spans.push(styled_span(text, &style, base_size));
             }
             Segment::Link { text, url, style } => {
                 if let Some(pill) = try_room_pill(&url, rooms) {
                     current_spans.push(pill);
                 } else {
-                    let mut span = styled_span(text, &style);
+                    let mut span = styled_span(text, &style, base_size);
                     span.color = Some(theme::colors().accent);
                     span.underline = true;
                     span.link = Some(url);
@@ -871,8 +878,21 @@ fn highlight_code_block(code: &str, language: Option<&str>) -> Vec<Span<'static,
 
 
 /// Create a styled Span from text and accumulated style.
-fn styled_span(text: String, style: &Style) -> Span<'static, String> {
+fn styled_span(text: String, style: &Style, base_size: f32) -> Span<'static, String> {
     let mut span = Span::new(text);
+
+    // Heading size: scale relative to base
+    if style.heading_level > 0 {
+        let scale = match style.heading_level {
+            1 => 1.7,
+            2 => 1.45,
+            3 => 1.25,
+            4 => 1.15,
+            5 => 1.05,
+            _ => 1.0,
+        };
+        span = span.size(base_size * scale);
+    }
 
     // Font: bold/italic/code combinations
     let weight = if style.bold {

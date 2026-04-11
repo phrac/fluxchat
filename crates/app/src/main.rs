@@ -4,6 +4,7 @@ mod commands;
 mod html;
 mod icons;
 mod message;
+mod primary_clipboard;
 mod selectable_text;
 mod state;
 mod theme;
