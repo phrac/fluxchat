@@ -367,9 +367,9 @@ impl FluxChat {
                     // Filter out empty messages upfront instead of per-render.
                     let new_messages: Vec<fluxchat_core::MessageInfo> = new_messages.into_iter()
                         .filter(|m| {
-                            // Always keep system events, emotes, images, videos, polls
+                            // Always keep system events, emotes, images, videos, polls, reactions
                             if m.event_id.starts_with("~") || m.is_emote || m.image_mxc.is_some()
-                                || m.is_video || m.poll.is_some() {
+                                || m.is_video || m.poll.is_some() || !m.reactions.is_empty() {
                                 return true;
                             }
                             // Check body
@@ -607,7 +607,16 @@ impl FluxChat {
                                     use futures_util::StreamExt;
                                     futures_util::pin_mut!(stream);
                                     while let Some(_diffs) = stream.next().await {
-                                        // Re-read full timeline items on any diff
+                                        // Drain any queued diffs before re-reading — avoids
+                                        // redundant full timeline reads when many diffs arrive
+                                        // in rapid succession (e.g. bot editing + reacting).
+                                        {
+                                            use std::task::{Context, Poll};
+                                            let waker = futures_util::task::noop_waker();
+                                            let mut cx = Context::from_waker(&waker);
+                                            while let Poll::Ready(Some(_)) = futures_util::Stream::poll_next(stream.as_mut(), &mut cx) {}
+                                        }
+                                        // Re-read full timeline items after coalescing diffs
                                         let items = timeline.items().await;
                                         let msgs = fluxchat_core::timeline::timeline_items_to_messages(
                                             &items.into_iter().collect::<Vec<_>>(),
@@ -1010,10 +1019,13 @@ impl FluxChat {
                     return Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
-                            let _ = fluxchat_core::messages::send_reaction(
-                                &client, &room_id, &event_id, &emoji,
-                            )
-                            .await;
+                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                            let timeline = fluxchat_core::timeline::get_or_create_timeline(
+                                &client, &core.timelines, &room_id_parsed,
+                            ).await.ok()?;
+                            let eid = fluxchat_core::ruma::EventId::parse(&event_id).ok()?.to_owned();
+                            let item_id = fluxchat_core::TimelineEventItemId::EventId(eid);
+                            timeline.toggle_reaction(&item_id, &emoji).await.ok()?;
                             Some(())
                         },
                         |_| Message::Noop,

@@ -25,3 +25,4 @@ pub use state::AppState;
 pub use matrix_sdk::Client;
 pub use matrix_sdk::ruma;
 pub use matrix_sdk_ui::sync_service::State as SyncState;
+pub use matrix_sdk_ui::timeline::TimelineEventItemId;
