@@ -674,6 +674,7 @@ impl FluxChat {
             .into()
         } else if let Some(ref formatted) = msg.formatted_body {
             let has_code_block = formatted.contains("<pre>");
+            let has_table = formatted.contains("<table");
             let is_expanded = self.expanded_code_blocks.contains(&msg.event_id);
 
             // Collapse code blocks: truncate <pre> content to ~5 lines if not expanded
@@ -690,7 +691,7 @@ impl FluxChat {
             }
             display_html = convert_markdown_headings(&display_html);
 
-            if has_code_block {
+            if has_code_block || has_table {
                 // Use structured parts to render code blocks in containers
                 let parts = crate::html::html_to_parts(&display_html, &self.rooms, fs);
                 let mut body_col = column![].spacing(4).width(Fill);
@@ -771,6 +772,108 @@ impl FluxChat {
                                     }),
                             );
                             part_idx += 1;
+                        }
+                        crate::html::MessagePart::Table { headers, rows } => {
+                            let border_color = theme::with_alpha(theme::colors().text_normal, 0.15);
+                            let header_bg = theme::colors().code_bg;
+                            let col_count = headers.len().max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
+                            if col_count == 0 {
+                                continue;
+                            }
+
+                            let mut table_col = column![].width(Fill);
+
+                            // Header row
+                            if !headers.is_empty() {
+                                let mut header_row = row![].width(Fill);
+                                for col in 0..col_count {
+                                    let spans = headers.get(col).cloned().unwrap_or_default();
+                                    let wid = crate::selectable_text::SelectionWidgetId {
+                                        event_id: msg.event_id.clone(), part_index: part_idx,
+                                    };
+                                    let sel_range = self.selection_range_for(&wid);
+                                    let sel_active = self.selection.active;
+                                    let cell = selectable_rich_text(spans)
+                                        .font(self.msg_font())
+                                        .size(fs)
+                                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                                        .width(Fill)
+                                        .on_link_click(Message::OpenUrl)
+                                        .widget_id(wid)
+                                        .selection_range(sel_range)
+                                        .selection_active(sel_active)
+                                        .on_selection(|evt| match evt {
+                                            crate::selectable_text::SelectionEvent::Started(id, l, i) => Message::SelectionStarted(id, l, i),
+                                            crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
+                                            crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
+                                        });
+                                    let bg = header_bg;
+                                    header_row = header_row.push(
+                                        container(cell)
+                                            .padding([6, 10])
+                                            .width(Length::FillPortion(1))
+                                            .style(move |_| container::Style {
+                                                background: Some(bg.into()),
+                                                border: iced::Border {
+                                                    color: border_color,
+                                                    width: 1.0,
+                                                    radius: 0.0.into(),
+                                                },
+                                                ..Default::default()
+                                            }),
+                                    );
+                                    part_idx += 1;
+                                }
+                                table_col = table_col.push(header_row);
+                            }
+
+                            // Body rows
+                            for row_cells in rows {
+                                let mut body_row = row![].width(Fill);
+                                for col in 0..col_count {
+                                    let spans = row_cells.get(col).cloned().unwrap_or_default();
+                                    let wid = crate::selectable_text::SelectionWidgetId {
+                                        event_id: msg.event_id.clone(), part_index: part_idx,
+                                    };
+                                    let sel_range = self.selection_range_for(&wid);
+                                    let sel_active = self.selection.active;
+                                    let cell = selectable_rich_text(spans)
+                                        .font(self.msg_font())
+                                        .size(fs)
+                                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                                        .width(Fill)
+                                        .on_link_click(Message::OpenUrl)
+                                        .widget_id(wid)
+                                        .selection_range(sel_range)
+                                        .selection_active(sel_active)
+                                        .on_selection(|evt| match evt {
+                                            crate::selectable_text::SelectionEvent::Started(id, l, i) => Message::SelectionStarted(id, l, i),
+                                            crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
+                                            crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
+                                        });
+                                    body_row = body_row.push(
+                                        container(cell)
+                                            .padding([6, 10])
+                                            .width(Length::FillPortion(1))
+                                            .style(move |_| container::Style {
+                                                border: iced::Border {
+                                                    color: border_color,
+                                                    width: 1.0,
+                                                    radius: 0.0.into(),
+                                                },
+                                                ..Default::default()
+                                            }),
+                                    );
+                                    part_idx += 1;
+                                }
+                                table_col = table_col.push(body_row);
+                            }
+
+                            body_col = body_col.push(
+                                container(table_col)
+                                    .width(Fill)
+                                    .padding([4, 0]),
+                            );
                         }
                     }
                 }

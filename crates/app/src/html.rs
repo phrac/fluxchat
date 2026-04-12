@@ -30,6 +30,15 @@ enum Segment {
     Link { text: String, url: String, style: Style },
     CodeBlock { code: String, language: Option<String> },
     LineBreak,
+    Table(TableData),
+}
+
+/// Parsed table: headers (one row, may be empty) and body rows. Each cell holds
+/// its own list of inline Segments so styling/links/mentions render normally.
+#[derive(Debug)]
+struct TableData {
+    headers: Vec<Vec<Segment>>,
+    rows: Vec<Vec<Vec<Segment>>>,
 }
 
 /// Accumulated inline style state from nested HTML tags.
@@ -46,12 +55,17 @@ struct Style {
     heading_level: u8,
 }
 
-/// A part of a rendered message — either text spans or a code block.
+/// A part of a rendered message — either text spans, a code block, or a table.
 pub enum MessagePart {
     /// Normal text (may include inline code, links, mentions, etc.)
     Text(Vec<Span<'static, String>>),
     /// A syntax-highlighted code block with line numbers.
     CodeBlock(Vec<Span<'static, String>>),
+    /// A table: optional header row + body rows. Each cell is its own span list.
+    Table {
+        headers: Vec<Vec<Span<'static, String>>>,
+        rows: Vec<Vec<Vec<Span<'static, String>>>>,
+    },
 }
 
 /// Parse Matrix HTML into a list of Iced Spans.
@@ -420,6 +434,15 @@ impl<'a> WalkCtx<'a> {
                         return;
                     }
 
+                    // Tables
+                    "table" => {
+                        let table = self.walk_table(id, style);
+                        self.segments.push(Segment::LineBreak);
+                        self.segments.push(Segment::Table(table));
+                        self.segments.push(Segment::LineBreak);
+                        return;
+                    }
+
                     // Anchor tags
                     "a" => {
                         let href = attrs.iter()
@@ -537,6 +560,67 @@ impl<'a> WalkCtx<'a> {
                 }
             }
         }
+    }
+
+    /// Recursively collect all <tr> descendants of a node.
+    fn collect_trs(&self, id: NodeId, out: &mut Vec<NodeId>) {
+        if self.is_element(id, "tr") {
+            out.push(id);
+            return;
+        }
+        for &child in &self.nodes[id].children {
+            if matches!(self.nodes[child].data, NodeData::Element { .. }) {
+                self.collect_trs(child, out);
+            }
+        }
+    }
+
+    /// Walk a <table> element and return a TableData. Cells are walked into
+    /// their own segment buffers via temporary swap of `self.segments`.
+    fn walk_table(&mut self, table_id: NodeId, style: &Style) -> TableData {
+        let mut tr_ids = Vec::new();
+        self.collect_trs(table_id, &mut tr_ids);
+
+        let mut headers: Vec<Vec<Segment>> = Vec::new();
+        let mut rows: Vec<Vec<Vec<Segment>>> = Vec::new();
+
+        for tr_id in tr_ids {
+            let cell_ids: Vec<NodeId> = self.nodes[tr_id]
+                .children
+                .iter()
+                .copied()
+                .filter(|&c| self.is_element(c, "td") || self.is_element(c, "th"))
+                .collect();
+            if cell_ids.is_empty() {
+                continue;
+            }
+            let mut is_header_row = false;
+            let mut cells: Vec<Vec<Segment>> = Vec::with_capacity(cell_ids.len());
+            for cell_id in cell_ids {
+                if self.is_element(cell_id, "th") {
+                    is_header_row = true;
+                }
+                // Walk cell into an isolated segment buffer
+                let saved = std::mem::take(&mut self.segments);
+                let children: Vec<NodeId> = self.nodes[cell_id].children.clone();
+                let mut cell_style = style.clone();
+                if self.is_element(cell_id, "th") {
+                    cell_style.bold = true;
+                }
+                for child in children {
+                    self.walk(child, &cell_style);
+                }
+                let cell_segs = std::mem::replace(&mut self.segments, saved);
+                cells.push(cell_segs);
+            }
+            if is_header_row && headers.is_empty() {
+                headers = cells;
+            } else {
+                rows.push(cells);
+            }
+        }
+
+        TableData { headers, rows }
     }
 
     /// Extract and emit a code block from a <pre> element.
@@ -744,6 +828,24 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                     );
                 }
             }
+            Segment::Table(td) => {
+                // Inline fallback: render as " | "-separated rows. The parts
+                // pipeline (used when <table> is present) renders a real grid.
+                if !spans.is_empty() {
+                    spans.push(Span::new("\n"));
+                }
+                let header_cells: Vec<String> = td.headers.iter()
+                    .map(|c| collect_segment_text(c)).collect();
+                if !header_cells.is_empty() {
+                    spans.push(styled_span(header_cells.join(" | "), &Style { bold: true, ..Style::default() }, base_size));
+                    spans.push(Span::new("\n"));
+                }
+                for row in &td.rows {
+                    let cells: Vec<String> = row.iter().map(|c| collect_segment_text(c)).collect();
+                    spans.push(styled_span(cells.join(" | "), &Style::default(), base_size));
+                    spans.push(Span::new("\n"));
+                }
+            }
             Segment::LineBreak => {
                 // Allow up to 2 consecutive newlines (paragraph spacing)
                 let trailing_newlines = spans.iter().rev()
@@ -791,6 +893,20 @@ fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo], 
                 }
                 // Build code block spans
                 parts.push(MessagePart::CodeBlock(highlight_code_block(&code, language.as_deref())));
+            }
+            Segment::Table(td) => {
+                if !current_spans.is_empty() {
+                    parts.push(MessagePart::Text(std::mem::take(&mut current_spans)));
+                }
+                let headers: Vec<Vec<Span<'static, String>>> = td.headers.into_iter()
+                    .map(|cell| segments_to_spans_with_rooms(cell, rooms, base_size))
+                    .collect();
+                let rows: Vec<Vec<Vec<Span<'static, String>>>> = td.rows.into_iter()
+                    .map(|row| row.into_iter()
+                        .map(|cell| segments_to_spans_with_rooms(cell, rooms, base_size))
+                        .collect())
+                    .collect();
+                parts.push(MessagePart::Table { headers, rows });
             }
             Segment::LineBreak => {
                 let trailing_newlines = current_spans.iter().rev()
@@ -876,6 +992,21 @@ fn highlight_code_block(code: &str, language: Option<&str>) -> Vec<Span<'static,
     spans
 }
 
+
+/// Flatten a segment list to plain text (used by the inline table fallback).
+fn collect_segment_text(segments: &[Segment]) -> String {
+    let mut out = String::new();
+    for s in segments {
+        match s {
+            Segment::Text(t, _) => out.push_str(t),
+            Segment::Link { text, .. } => out.push_str(text),
+            Segment::CodeBlock { code, .. } => out.push_str(code),
+            Segment::LineBreak => out.push(' '),
+            Segment::Table(_) => {}
+        }
+    }
+    out
+}
 
 /// Create a styled Span from text and accumulated style.
 fn styled_span(text: String, style: &Style, base_size: f32) -> Span<'static, String> {
