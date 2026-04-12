@@ -12,8 +12,8 @@ A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app wit
 
 ## Features
 
-- **Messaging** -- real-time via Matrix Timeline API with local echo, markdown formatting, inline images with lightbox, editing, deletion, forwarding, replies with context, mention pills, reactions, URL previews, read receipts, cross-message text selection with Ctrl+C copy
-- **Encryption** -- E2EE via vodozemac, SAS emoji verification, key backup/recovery, cross-signing, session management
+- **Messaging** -- real-time via Matrix Timeline API with local echo, markdown formatting (bold, italic, strike, code, headings), inline images with lightbox, editing, deletion, forwarding, replies with context, mention pills, reactions, URL previews, read receipts, cross-message text selection with Ctrl+C copy, `//` escape for sending literal `/commands` to rooms
+- **Encryption** -- E2EE via vodozemac, SAS emoji verification, manual user verification (for bots), key backup/recovery, cross-signing, session management
 - **Voice calls** -- MatrixRTC + LiveKit SFU, mic capture via cpal, in-call panel with participant tiles, PIP widget, mute/hangup
 - **Voice messages** -- record with mic button, Opus/OGG encoding, auto-normalization, preview before send, playback with progress bar
 - **Video** -- inline video player via GStreamer (iced_video_player), auto-generated thumbnails with rotation detection for bridged media, play/pause/seek controls
@@ -26,8 +26,8 @@ A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app wit
 - **Fonts** -- separate message and sidebar font selection from system fonts
 - **Code highlighting** -- 100+ languages via syntect, theme-aware colors for light/dark modes, collapsible code blocks
 - **Notifications** -- desktop notifications via notify-rust, per-room mute, mentions-only mode, invite notifications
-- **Profile & settings** -- Discord-style profile cards, power level management, banner/avatar editing, appearance/notification/security settings
-- **Slash commands** -- 57+ commands with Tab-cycling autocomplete, including /devtools (room state viewer + raw event sender), /html, /plain, /unban, /upgraderoom
+- **Profile & settings** -- Discord-style profile cards, power level management, banner/avatar editing, appearance/notification/security settings, interactive and manual identity verification from profile modal
+- **Slash commands** -- 57+ commands with Tab-cycling autocomplete, `//` escape for literal messages, including /devtools (room state viewer + raw event sender), /html, /plain, /unban, /upgraderoom
 - **Dev tools** -- /devtools modal with room state inspector and raw state/message event sender
 - **Auth** -- password and SSO/OIDC with provider auto-detection, session persistence
 - **Reliability** -- sync auto-reconnect with timeline re-subscription, cache eviction limits (avatar/image/gif/preview), temp file cleanup

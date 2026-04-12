@@ -486,6 +486,40 @@ impl FluxChat {
                 Some(Task::done(Message::SelectRoom(room_id)))
             }
 
+            // --- Manual verification ---
+            Message::ManualVerifyUser(user_id) => {
+                let core = self.core.clone();
+                let uid = user_id.clone();
+                Some(Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::verification::manual_verify_user(&client, &uid).await
+                            .map_err(|e| e.to_string())?;
+                        Ok(uid)
+                    },
+                    move |result: Result<String, String>| match result {
+                        Ok(uid) => Message::ManualVerifyResult(uid, Ok(())),
+                        Err(e) => Message::ManualVerifyResult(user_id, Err(e)),
+                    },
+                ))
+            }
+            Message::ManualVerifyResult(user_id, result) => {
+                match &result {
+                    Ok(()) => {
+                        self.profile_user_verified = Some(true);
+                        self.help_text = Some(format!("Verified {user_id}"));
+                    }
+                    Err(e) => {
+                        self.help_text = Some(format!("Verify failed: {e}"));
+                    }
+                }
+                Some(Task::none())
+            }
+            Message::UserVerifiedStatus(_user_id, verified) => {
+                self.profile_user_verified = Some(verified);
+                Some(Task::none())
+            }
+
             // --- Power levels ---
             Message::SetPowerLevel(room_id, user_id, level) => {
                 let core = self.core.clone();

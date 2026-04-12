@@ -1559,7 +1559,21 @@ impl FluxChat {
                         .map(|m| m.power_level)
                         .unwrap_or(0);
                     self.profile_power_input = power.to_string();
-                    Task::none()
+                    // Load verification status
+                    self.profile_user_verified = None;
+                    let core = self.core.clone();
+                    let uid = user_id.clone();
+                    let uid2 = user_id.clone();
+                    Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            fluxchat_core::verification::is_user_verified(&client, &uid).await.ok()
+                        },
+                        move |result| match result {
+                            Some(verified) => Message::UserVerifiedStatus(uid2, verified),
+                            None => Message::Noop,
+                        },
+                    )
                 } else if matches!(&modal, crate::state::Modal::CreateDm) {
                     self.dm_search.clear();
                     self.dm_results.clear();
@@ -1597,6 +1611,36 @@ impl FluxChat {
                 };
                 self.modal = Some(modal);
                 return task;
+            }
+            Message::StartVerification(user_id) => {
+                let core = self.core.clone();
+                let tx = self.timeline_tx.clone();
+                let tx2 = self.timeline_tx.clone();
+                // Show a "waiting" verification modal immediately
+                self.modal = Some(crate::state::Modal::Verification {
+                    info: fluxchat_core::VerificationInfo {
+                        flow_id: String::new(),
+                        other_user_id: user_id.clone(),
+                        is_self_verification: false,
+                        state: "requesting...".into(),
+                        emojis: None,
+                    },
+                });
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::verification::request_verification(
+                            &client, &user_id,
+                            move |info| {
+                                let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(info)));
+                            },
+                            move || {
+                                let _ = tx2.send(Message::CloseModal);
+                            },
+                        ).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
             }
             Message::VerificationAccept(user_id, flow_id) => {
                 let core = self.core.clone();
@@ -2080,6 +2124,8 @@ impl FluxChat {
                 | Message::ToggleIgnoreUser(_) | Message::ProfilePowerInputChanged(_)
                 | Message::ProfileSetPowerLevel | Message::SendDmToUser(_)
                 | Message::DmCreated(_)
+                | Message::ManualVerifyUser(_) | Message::ManualVerifyResult(_, _)
+                | Message::UserVerifiedStatus(_, _)
                 | Message::SetPowerLevel(_, _, _)) => {
                 if let Some(task) = self.handle_settings_message(msg) {
                     return task;
@@ -3338,8 +3384,34 @@ impl FluxChat {
                     // Clear stale typing indicators (timeout after 10s)
                     self.typing_by_room.retain(|_, (_, updated)| updated.elapsed().as_secs() < 10);
 
-                    // Read receipts now come from each MessageInfo via the
-                    // SDK timeline item — no polling needed.
+                    // Periodic timeline refresh for the active room.
+                    // The diff stream watcher handles live updates, but this
+                    // acts as a reliable fallback that also picks up reaction
+                    // changes and read receipt movements.
+                    if let Some(ref room_id) = self.selected_room_id {
+                        if !room_id.starts_with("thread::") {
+                            let core_tl = self.core.clone();
+                            let rid_tl = room_id.clone();
+                            tasks.push(Task::perform(
+                                async move {
+                                    let client = core_tl.get_client().await.ok()?;
+                                    let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid_tl).ok()?;
+                                    let timeline = fluxchat_core::timeline::get_or_create_timeline(
+                                        &client, &core_tl.timelines, &room_id_parsed,
+                                    ).await.ok()?;
+                                    let items = timeline.items().await;
+                                    let msgs = fluxchat_core::timeline::timeline_items_to_messages(
+                                        &items.into_iter().collect::<Vec<_>>(),
+                                    );
+                                    Some((rid_tl, msgs))
+                                },
+                                |result| match result {
+                                    Some((rid, msgs)) => Message::SyncEvent(SyncEvent::MessagesUpdated(rid, msgs)),
+                                    None => Message::Noop,
+                                },
+                            ));
+                        }
+                    }
 
                     // Refresh member list for active room
                     if let Some(ref room_id) = self.selected_room_id {

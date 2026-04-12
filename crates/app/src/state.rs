@@ -280,6 +280,8 @@ pub struct FluxChat {
 
     // Profile modal state
     pub profile_power_input: String,
+    /// Whether the user shown in profile modal is verified (None = not yet loaded)
+    pub profile_user_verified: Option<bool>,
 
     // Forward modal state
     pub forward_search: String,
@@ -496,6 +498,7 @@ impl FluxChat {
             room_settings_name: String::new(),
             room_settings_topic: String::new(),
             profile_power_input: String::new(),
+            profile_user_verified: None,
             forward_search: String::new(),
             invite_search: String::new(),
             dm_search: String::new(),

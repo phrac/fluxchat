@@ -297,6 +297,10 @@ pub enum Message {
     ToggleIgnoreUser(String), // user_id
     SendDmToUser(String),     // user_id
     DmCreated(Box<fluxchat_core::RoomInfo>),
+    StartVerification(String),          // user_id — interactive SAS
+    ManualVerifyUser(String),           // user_id — force-trust master key
+    ManualVerifyResult(String, Result<(), String>), // user_id, result
+    UserVerifiedStatus(String, bool),  // user_id, is_verified
     ProfilePowerInputChanged(String),
     ProfileSetPowerLevel,     // apply power level from profile_power_input
 

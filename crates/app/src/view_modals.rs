@@ -973,6 +973,45 @@ impl FluxChat {
             None
         };
 
+        // --- Verification status ---
+        let verify_section: Option<Element<Message>> = if uid != self.user_id {
+            let is_verified = self.profile_user_verified.unwrap_or(false);
+            if is_verified {
+                Some(
+                    row![
+                        text("\u{2713} Verified").font(MONO).size(12).color(theme::colors().green),
+                    ].into()
+                )
+            } else {
+                Some(
+                    row![
+                        button(text("Start Verification").font(MONO).size(12).color(theme::colors().accent))
+                            .on_press(Message::StartVerification(uid.clone()))
+                            .padding([5, 14])
+                            .width(Fill)
+                            .style(|_, _| button::Style {
+                                background: Some(theme::colors().bg_light.into()),
+                                text_color: theme::colors().accent,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                        button(text("Manually Verify").font(MONO).size(12).color(theme::colors().text_muted))
+                            .on_press(Message::ManualVerifyUser(uid.clone()))
+                            .padding([5, 14])
+                            .width(Fill)
+                            .style(|_, _| button::Style {
+                                background: Some(theme::colors().bg_light.into()),
+                                text_color: theme::colors().text_muted,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    ].spacing(6).into()
+                )
+            }
+        } else {
+            None
+        };
+
         // --- Action buttons ---
         let ignore_label = if is_ignored { "Unignore" } else { "Ignore" };
         let ignore_color = if is_ignored { theme::colors().green } else { theme::colors().red };
@@ -1016,6 +1055,9 @@ impl FluxChat {
             card = card.push(container(roles).padding([6, 12]));
         }
 
+        if let Some(verify_el) = verify_section {
+            card = card.push(container(verify_el).padding([4, 12]));
+        }
         card = card.push(container(rule::horizontal(1)).padding([2, 16]));
         card = card.push(container(actions_row).padding([8, 12]));
 
