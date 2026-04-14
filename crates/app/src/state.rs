@@ -299,8 +299,16 @@ pub struct FluxChat {
     pub space_detail_rooms: Vec<fluxchat_core::RoomInfo>,
     pub space_detail_members: Vec<fluxchat_core::MemberInfo>,
 
+    // Last real (non-synthetic) message count reported by the Timeline per room.
+    // Used to detect lag-recovery shrinkage — when the SDK's state.items drops
+    // back-paginated history, aggregations (reaction redactions etc.) can no
+    // longer be applied to the dropped events, so we auto-rebuild.
+    pub last_timeline_real_count: HashMap<String, usize>,
+
     // Scroll tracking — true when messages scrollable is at/near bottom
     pub messages_at_bottom: bool,
+    // Previous scroll offset — used to distinguish user scroll-up from content growth
+    pub last_scroll_offset: f32,
     // Whether a back-pagination request is currently in flight
     pub paginating: bool,
     // Message count when pagination was triggered — to detect when new messages arrive
@@ -507,7 +515,9 @@ impl FluxChat {
             invite_target_id: None,
             space_detail_rooms: Vec::new(),
             space_detail_members: Vec::new(),
+            last_timeline_real_count: HashMap::new(),
             messages_at_bottom: true,
+            last_scroll_offset: 0.0,
             paginating: false,
             paginate_msg_count: 0,
             pre_paginate_offset: 0.0,

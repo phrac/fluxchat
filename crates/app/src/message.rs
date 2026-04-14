@@ -298,6 +298,7 @@ pub enum Message {
     SendDmToUser(String),     // user_id
     DmCreated(Box<fluxchat_core::RoomInfo>),
     StartVerification(String),          // user_id — interactive SAS
+    StartDeviceVerification(String),    // device_id — verify specific session
     ManualVerifyUser(String),           // user_id — force-trust master key
     ManualVerifyResult(String, Result<(), String>), // user_id, result
     UserVerifiedStatus(String, bool),  // user_id, is_verified
@@ -324,6 +325,9 @@ pub enum Message {
     // --- Room notifications ---
     MuteRoom,
     UnmuteRoom,
+
+    // --- Diagnostic: drop + rebuild Timeline for current room ---
+    RefreshTimeline,
 
     // --- Giphy ---
     SetGiphyKey(String),

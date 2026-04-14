@@ -275,6 +275,107 @@ pub async fn is_user_verified(client: &matrix_sdk::Client, user_id: &str) -> Res
     Ok(identity.map(|i| i.is_verified()).unwrap_or(false))
 }
 
+/// Request interactive (SAS) verification with a specific device.
+/// Used from the sessions settings tab to verify an unverified session.
+pub async fn request_device_verification(
+    client: &matrix_sdk::Client,
+    device_id: &str,
+    on_emojis: impl Fn(VerificationInfo) + Send + 'static,
+    on_cancelled: impl Fn() + Send + 'static,
+) -> Result<String, AppError> {
+    let own_user_id = client.user_id()
+        .ok_or_else(|| AppError::Other("Not logged in".into()))?;
+    let did: &matrix_sdk::ruma::DeviceId = device_id.into();
+    let device = client.encryption().get_device(own_user_id, did).await
+        .map_err(|e| AppError::Other(format!("Failed to get device: {e}")))?
+        .ok_or_else(|| AppError::Other(format!("Device {device_id} not found")))?;
+
+    let request = device.request_verification().await
+        .map_err(|e| AppError::Other(format!("Failed to request device verification: {e}")))?;
+
+    let flow_id = request.flow_id().to_string();
+    let flow_id_ret = flow_id.clone();
+    let other_user = own_user_id.to_string();
+
+    tokio::spawn(async move {
+        let mut stream = request.changes();
+        while let Some(state) = stream.next().await {
+            match state {
+                VerificationRequestState::Ready { .. } => {
+                    tracing::info!("Device verification request Ready, starting SAS...");
+                    match request.start_sas().await {
+                        Ok(Some(sas)) => {
+                            for _ in 0..60 {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                if sas.can_be_presented() {
+                                    if let Some(emojis) = sas.emoji() {
+                                        on_emojis(VerificationInfo {
+                                            flow_id: flow_id.clone(),
+                                            other_user_id: other_user.clone(),
+                                            is_self_verification: true,
+                                            state: "emojis_ready".into(),
+                                            emojis: Some(emojis.iter().map(|e| EmojiInfo {
+                                                symbol: e.symbol.to_string(),
+                                                description: e.description.to_string(),
+                                            }).collect()),
+                                        });
+                                    }
+                                    return;
+                                }
+                                if sas.is_cancelled() {
+                                    tracing::warn!("Device SAS cancelled");
+                                    on_cancelled();
+                                    return;
+                                }
+                            }
+                            tracing::warn!("Device emoji polling timed out");
+                        }
+                        Ok(None) => tracing::error!("Device start_sas() returned None"),
+                        Err(e) => tracing::error!("Device start_sas() failed: {e}"),
+                    }
+                    return;
+                }
+                VerificationRequestState::Transitioned { verification } => {
+                    if let Some(sas) = verification.sas() {
+                        if let Err(e) = sas.accept().await {
+                            tracing::error!("Failed to accept device SAS: {e}");
+                            return;
+                        }
+                        for _ in 0..60 {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            if sas.can_be_presented() {
+                                if let Some(emojis) = sas.emoji() {
+                                    on_emojis(VerificationInfo {
+                                        flow_id: flow_id.clone(),
+                                        other_user_id: other_user.clone(),
+                                        is_self_verification: true,
+                                        state: "emojis_ready".into(),
+                                        emojis: Some(emojis.iter().map(|e| EmojiInfo {
+                                            symbol: e.symbol.to_string(),
+                                            description: e.description.to_string(),
+                                        }).collect()),
+                                    });
+                                }
+                                return;
+                            }
+                            if sas.is_cancelled() { on_cancelled(); return; }
+                        }
+                    }
+                    return;
+                }
+                VerificationRequestState::Cancelled(_) => {
+                    on_cancelled();
+                    return;
+                }
+                VerificationRequestState::Done => return,
+                _ => {}
+            }
+        }
+    });
+
+    Ok(flow_id_ret)
+}
+
 pub async fn cancel_verification(client: &matrix_sdk::Client, user_id: &str, flow_id: &str) -> Result<(), AppError> {
     let user_id = matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| AppError::Other("Invalid user ID".into()))?;
     if let Some(v) = client.encryption().get_verification(&user_id, flow_id).await {

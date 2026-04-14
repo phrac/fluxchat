@@ -951,7 +951,9 @@ impl FluxChat {
 
             // Truncate long reply bodies
             let preview_text = if reply_body.len() > 100 {
-                format!("{}...", &reply_body[..100])
+                let mut end = 100;
+                while !reply_body.is_char_boundary(end) { end -= 1; }
+                format!("{}...", &reply_body[..end])
             } else {
                 reply_body
             };
@@ -1442,7 +1444,11 @@ impl FluxChat {
         }
 
         if let Some(ref desc) = preview.description {
-            let short = if desc.len() > 150 { &desc[..150] } else { desc };
+            let short = if desc.len() > 150 {
+                let mut end = 150;
+                while !desc.is_char_boundary(end) { end -= 1; }
+                &desc[..end]
+            } else { desc };
             content_col = content_col.push(
                 text(short)
                     .font(self.msg_font()).size(13).color(theme::colors().text_muted)

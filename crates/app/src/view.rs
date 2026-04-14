@@ -490,7 +490,9 @@ impl FluxChat {
                 let nick_col = theme::nick_color(&result.sender_name);
                 let body_line = result.body.lines().next().unwrap_or("");
                 let body_trunc = if body_line.len() > 100 {
-                    format!("{}...", &body_line[..97])
+                    let mut end = 97;
+                    while !body_line.is_char_boundary(end) { end -= 1; }
+                    format!("{}...", &body_line[..end])
                 } else {
                     body_line.to_string()
                 };

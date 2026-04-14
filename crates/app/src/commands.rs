@@ -56,6 +56,7 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "/pins", usage: "", description: "Toggle pinned messages", needs_room: true },
         Command { name: "/files", usage: "", description: "Toggle files panel", needs_room: true },
         Command { name: "/clear", usage: "", description: "Clear scrollback", needs_room: true },
+        Command { name: "/refresh", usage: "", description: "Drop cached Timeline and rebuild from event cache", needs_room: true },
         Command { name: "/shrug", usage: "[text]", description: r"Append ¯\_(ツ)_/¯", needs_room: true },
         Command { name: "/tableflip", usage: "[text]", description: "Append (╯°□°)╯︵ ┻━┻", needs_room: true },
         Command { name: "/unflip", usage: "[text]", description: "Append ┬─┬ノ( º _ ºノ)", needs_room: true },
@@ -512,6 +513,15 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 CommandResult::Messages(vec![Message::SyncEvent(
                     crate::message::SyncEvent::MessagesUpdated(room_id.clone(), Vec::new()),
                 )])
+            } else {
+                CommandResult::Noop
+            }
+        }
+
+        // --- Refresh (drop + rebuild Timeline for current room) ---
+        "/refresh" => {
+            if state.selected_room_id.is_some() {
+                CommandResult::Messages(vec![Message::RefreshTimeline])
             } else {
                 CommandResult::Noop
             }

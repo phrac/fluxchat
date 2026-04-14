@@ -389,6 +389,27 @@ impl FluxChat {
                         })
                         .collect();
 
+                    // Detect Timeline drift: if the SDK's state.items has shrunk
+                    // substantially vs. what it reported last time (e.g. due to
+                    // a lagged-subscriber recovery that replaced items with just
+                    // the current event-cache memory window), older messages lose
+                    // their aggregation tracking and reactions on them get stuck.
+                    // Trigger an automatic rebuild when this happens.
+                    let new_real_count = new_messages.iter()
+                        .filter(|m| !m.event_id.starts_with("~"))
+                        .count();
+                    let last_count = self.last_timeline_real_count.get(&room_id).copied().unwrap_or(0);
+                    let shrunk = last_count >= 10 && new_real_count * 2 < last_count;
+                    let is_active = self.selected_room_id.as_deref() == Some(&room_id);
+                    self.last_timeline_real_count.insert(room_id.clone(), new_real_count);
+                    if shrunk && is_active {
+                        tracing::warn!(
+                            "Timeline drift detected for {} ({} -> {} real items) — auto-rebuilding",
+                            room_id, last_count, new_real_count,
+                        );
+                        return Task::done(Message::RefreshTimeline);
+                    }
+
                     // Merge: keep old messages the SDK trimmed from its window,
                     // but always use SDK version for matching IDs (edits applied).
                     let merged = if let Some(existing) = self.messages_by_room.get(&room_id) {
@@ -400,18 +421,28 @@ impl FluxChat {
                                 .iter()
                                 .map(|m| m.event_id.as_str())
                                 .collect();
-                            let oldest_new_ts = new_messages.iter()
-                                .filter(|m| !m.event_id.starts_with("~"))
+                            let real_msgs = || new_messages.iter()
+                                .filter(|m| !m.event_id.starts_with("~"));
+                            let oldest_new_ts = real_msgs()
                                 .map(|m| m.timestamp)
                                 .min()
                                 .unwrap_or(0);
-                            // Keep old messages that are older than the SDK window
-                            // and not replaced by a newer version from the SDK
+                            let newest_new_ts = real_msgs()
+                                .map(|m| m.timestamp)
+                                .max()
+                                .unwrap_or(u64::MAX);
+                            // Keep old messages that are:
+                            // - older than the SDK window (back-pagination preservation), OR
+                            // - newer than the SDK window (protects against stale snapshots
+                            //   from Tick/diff-stream races overwriting recent messages)
+                            // Messages within the SDK window that aren't in new_ids are
+                            // intentionally dropped (redactions, edits replacing event IDs).
                             let mut merged: Vec<fluxchat_core::MessageInfo> = existing
                                 .iter()
                                 .filter(|m| {
                                     !new_ids.contains(m.event_id.as_str())
-                                        && m.timestamp < oldest_new_ts
+                                        && (m.timestamp < oldest_new_ts
+                                            || m.timestamp > newest_new_ts)
                                 })
                                 .cloned()
                                 .collect();
@@ -621,10 +652,13 @@ impl FluxChat {
                                         let msgs = fluxchat_core::timeline::timeline_items_to_messages(
                                             &items.into_iter().collect::<Vec<_>>(),
                                         );
-                                        let _ = tx.send(Message::SyncEvent(
+                                        if tx.send(Message::SyncEvent(
                                             SyncEvent::MessagesUpdated(rid.clone(), msgs),
-                                        ));
+                                        )).is_err() {
+                                            break; // Channel closed
+                                        }
                                     }
+                                    tracing::warn!("Diff stream watcher ended for room {}", rid);
                                 });
                             }
 
@@ -1025,10 +1059,17 @@ impl FluxChat {
                             ).await.ok()?;
                             let eid = fluxchat_core::ruma::EventId::parse(&event_id).ok()?.to_owned();
                             let item_id = fluxchat_core::TimelineEventItemId::EventId(eid);
-                            timeline.toggle_reaction(&item_id, &emoji).await.ok()?;
-                            Some(())
+                            // If the Timeline has drifted and no longer has this
+                            // event in its state.items, toggle_reaction returns
+                            // FailedToToggleReaction — signal up so we can rebuild.
+                            Some(timeline.toggle_reaction(&item_id, &emoji).await.is_err())
                         },
-                        |_| Message::Noop,
+                        |failed| if failed.unwrap_or(false) {
+                            tracing::warn!("toggle_reaction failed — Timeline drift, auto-rebuilding");
+                            Message::RefreshTimeline
+                        } else {
+                            Message::Noop
+                        },
                     );
                 }
             }
@@ -1643,6 +1684,35 @@ impl FluxChat {
                         let client = core.get_client().await.ok()?;
                         fluxchat_core::verification::request_verification(
                             &client, &user_id,
+                            move |info| {
+                                let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(info)));
+                            },
+                            move || {
+                                let _ = tx2.send(Message::CloseModal);
+                            },
+                        ).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::StartDeviceVerification(device_id) => {
+                let core = self.core.clone();
+                let tx = self.timeline_tx.clone();
+                let tx2 = self.timeline_tx.clone();
+                self.modal = Some(crate::state::Modal::Verification {
+                    info: fluxchat_core::VerificationInfo {
+                        flow_id: String::new(),
+                        other_user_id: self.user_id.clone(),
+                        is_self_verification: true,
+                        state: "requesting...".into(),
+                        emojis: None,
+                    },
+                });
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        fluxchat_core::verification::request_device_verification(
+                            &client, &device_id,
                             move |info| {
                                 let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(info)));
                             },
@@ -3114,6 +3184,101 @@ impl FluxChat {
                     );
                 }
             }
+            Message::RefreshTimeline => {
+                // Rebuild the Timeline in-place without clearing the view:
+                // drop the cached Timeline, build a fresh one from the current
+                // event cache, subscribe + paginate + respawn the diff watcher,
+                // then swap messages_by_room atomically via TimelineLoaded.
+                // Works around SDK state drift (e.g. lagged-subscriber recovery
+                // dropping old messages from Timeline.state.items, leaving
+                // aggregations unapplicable and reactions stuck).
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    if room_id.starts_with("thread::") {
+                        return Task::none();
+                    }
+                    // Reset drift counter so the post-refresh MessagesUpdated
+                    // doesn't falsely re-trigger a rebuild.
+                    self.last_timeline_real_count.remove(&room_id);
+                    let core = self.core.clone();
+                    let rid = room_id.clone();
+                    let tx = self.timeline_tx.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid).ok()?;
+
+                            // Drop the cached Timeline so get_or_create builds fresh.
+                            fluxchat_core::timeline::remove_timeline(
+                                &core.timelines, &room_id_parsed,
+                            ).await;
+
+                            let members = fluxchat_core::messages::get_room_members(&client, &rid)
+                                .await
+                                .ok();
+
+                            let timeline = fluxchat_core::timeline::get_or_create_timeline(
+                                &client, &core.timelines, &room_id_parsed,
+                            ).await.ok()?;
+
+                            let (initial_items, stream) = timeline.subscribe().await;
+                            let msgs = fluxchat_core::timeline::timeline_items_to_messages(
+                                &initial_items.into_iter().collect::<Vec<_>>(),
+                            );
+
+                            let real_count = msgs.iter()
+                                .filter(|m| !m.event_id.starts_with("~state-"))
+                                .count();
+                            if real_count < 30 {
+                                let _ = timeline.paginate_backwards(30).await;
+                            }
+
+                            // Respawn the diff watcher against the new Timeline.
+                            {
+                                let timeline = timeline.clone();
+                                let rid = rid.clone();
+                                let tx = tx.clone();
+                                tokio::spawn(async move {
+                                    use futures_util::StreamExt;
+                                    futures_util::pin_mut!(stream);
+                                    while let Some(_diffs) = stream.next().await {
+                                        {
+                                            use std::task::{Context, Poll};
+                                            let waker = futures_util::task::noop_waker();
+                                            let mut cx = Context::from_waker(&waker);
+                                            while let Poll::Ready(Some(_)) = futures_util::Stream::poll_next(stream.as_mut(), &mut cx) {}
+                                        }
+                                        let items = timeline.items().await;
+                                        let msgs = fluxchat_core::timeline::timeline_items_to_messages(
+                                            &items.into_iter().collect::<Vec<_>>(),
+                                        );
+                                        if tx.send(Message::SyncEvent(
+                                            SyncEvent::MessagesUpdated(rid.clone(), msgs),
+                                        )).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    tracing::warn!("Diff stream watcher ended for room {}", rid);
+                                });
+                            }
+
+                            // Re-read post-pagination so TimelineLoaded carries
+                            // the full restored set.
+                            let items = timeline.items().await;
+                            let final_msgs = fluxchat_core::timeline::timeline_items_to_messages(
+                                &items.into_iter().collect::<Vec<_>>(),
+                            );
+
+                            Some((rid, final_msgs, members))
+                        },
+                        |result| match result {
+                            Some((room_id, messages, members)) => Message::TimelineLoaded {
+                                room_id, messages, members,
+                            },
+                            None => Message::Noop,
+                        },
+                    );
+                }
+            }
 
             // --- Giphy ---
             Message::SetGiphyKey(key) => {
@@ -3267,7 +3432,22 @@ impl FluxChat {
                 let max_scroll = (content_h - viewport_h).max(0.0);
                 let near_top = offset < 100.0;
                 let near_bottom = (max_scroll - offset) < 50.0;
+                // Distinguish user scroll-up from content growth (image/preview loads).
+                // Content growth: offset stays same or increases, max_scroll grows.
+                // User scroll-up: offset decreases.
+                // If we were at bottom and content grew, snap back instead of
+                // marking messages_at_bottom = false (which would stop auto-scroll).
+                if self.messages_at_bottom && !near_bottom
+                    && offset >= self.last_scroll_offset - 1.0
+                {
+                    // Content grew while we were at the bottom — snap back
+                    self.last_scroll_offset = offset;
+                    return iced::widget::operation::snap_to_end(
+                        crate::view::messages_scrollable_id(),
+                    );
+                }
                 self.messages_at_bottom = near_bottom;
+                self.last_scroll_offset = offset;
                 if near_bottom {
                     self.new_messages_below = false;
                 }

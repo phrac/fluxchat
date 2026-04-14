@@ -1699,7 +1699,21 @@ impl FluxChat {
                 );
             } else {
                 let did = device.device_id.clone();
-                device_col = device_col.push(
+                let mut action_row = row![].spacing(8).align_y(iced::Alignment::Center);
+                if !device.is_verified {
+                    let did_verify = did.clone();
+                    action_row = action_row.push(
+                        button(text("Verify").font(MONO).size(12).color(theme::colors().green))
+                            .on_press(Message::StartDeviceVerification(did_verify))
+                            .padding([2, 8])
+                            .style(|_, _| button::Style {
+                                background: None,
+                                text_color: theme::colors().green,
+                                ..Default::default()
+                            }),
+                    );
+                }
+                action_row = action_row.push(
                     button(text("Sign out").font(MONO).size(12).color(theme::colors().red))
                         .on_press(Message::SettingsSignOutDevice(did))
                         .padding([2, 8])
@@ -1709,6 +1723,7 @@ impl FluxChat {
                             ..Default::default()
                         }),
                 );
+                device_col = device_col.push(action_row);
             }
         }
 
@@ -2046,7 +2061,9 @@ impl FluxChat {
                     let type_label = text(event_type)
                         .font(MONO).size(12).color(theme::colors().accent);
                     let json_preview = if json.len() > 500 {
-                        format!("{}...", &json[..500])
+                        let mut end = 500;
+                        while !json.is_char_boundary(end) { end -= 1; }
+                        format!("{}...", &json[..end])
                     } else {
                         json.clone()
                     };

@@ -23,6 +23,18 @@ pub async fn create_sync_service(client: &Client) -> Result<SyncService, AppErro
     Ok(service)
 }
 
+/// Upgrade the sliding-sync subscription for a specific room so we receive
+/// more than the default 1 timeline event per sync response. Without this,
+/// bursts of rapid events (e.g. a bot redacting a reaction and sending a
+/// replacement in the same tick) get truncated — the redact gets dropped,
+/// leaving stale aggregation state on the in-memory Timeline.
+pub async fn subscribe_to_room(
+    sync_service: &SyncService,
+    room_id: &matrix_sdk::ruma::RoomId,
+) {
+    sync_service.room_list_service().subscribe_to_rooms(&[room_id]).await;
+}
+
 /// Spawn a background task that watches the RoomListService for changes
 /// and calls the provided callback with updated room lists.
 pub async fn spawn_room_list_watcher<F>(
