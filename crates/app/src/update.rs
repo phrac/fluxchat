@@ -21,6 +21,69 @@ fn evict_cache<K: std::hash::Hash + Eq + Clone, V>(cache: &mut std::collections:
     }
 }
 
+/// Transcode animated WebP bytes into GIF bytes so they can be fed into
+/// `iced_gif::Frames`, which only understands GIF. Returns None if the input
+/// isn't an animated WebP (static WebPs stay on the static image path).
+/// Heavy CPU work — always run under `spawn_blocking`.
+fn webp_to_gif_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    use image_webp::WebPDecoder;
+    use gif::{Encoder, Frame, Repeat};
+
+    let mut decoder = match WebPDecoder::new(std::io::Cursor::new(data)) {
+        Ok(d) => d,
+        Err(e) => { tracing::warn!("webp decode init failed: {e}"); return None; }
+    };
+    if !decoder.is_animated() || decoder.num_frames() < 2 {
+        return None;
+    }
+    let (w_u32, h_u32) = decoder.dimensions();
+    let (w, h): (u16, u16) = (w_u32.try_into().ok()?, h_u32.try_into().ok()?);
+    let has_alpha = decoder.has_alpha();
+    let buf_size = match decoder.output_buffer_size() {
+        Some(s) => s,
+        None => { tracing::warn!("webp output_buffer_size returned None"); return None; }
+    };
+
+    let mut out = Vec::new();
+    {
+        let mut encoder = match Encoder::new(&mut out, w, h, &[]) {
+            Ok(e) => e,
+            Err(e) => { tracing::warn!("gif encoder init failed: {e}"); return None; }
+        };
+        let _ = encoder.set_repeat(Repeat::Infinite);
+
+        for i in 0..decoder.num_frames() {
+            let mut frame_buf = vec![0u8; buf_size];
+            let duration_ms = match decoder.read_frame(&mut frame_buf) {
+                Ok(d) => d,
+                Err(e) => { tracing::warn!("webp read_frame {i} failed: {e}"); return None; }
+            };
+            let mut rgba = if has_alpha {
+                frame_buf
+            } else {
+                let mut r = Vec::with_capacity(w as usize * h as usize * 4);
+                for chunk in frame_buf.chunks_exact(3) {
+                    r.extend_from_slice(chunk);
+                    r.push(255);
+                }
+                r
+            };
+            // Speed 30 = fastest NeuQuant quantization (default is 1 = slowest).
+            // For animated stickers we want snappy loading, color fidelity can
+            // take the hit. Large animated WebPs (600x400, 20+ frames) go from
+            // tens of seconds to sub-second with speed=30.
+            let mut frame = Frame::from_rgba_speed(w, h, &mut rgba, 30);
+            // GIF delay is in units of 10ms; floor at 2 to avoid 0-delay frames.
+            frame.delay = ((duration_ms / 10) as u16).max(2);
+            if let Err(e) = encoder.write_frame(&frame) {
+                tracing::warn!("gif write_frame {i} failed: {e}");
+                return None;
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Global voice recording handle (cpal::Stream isn't Send, can't store in async state).
 /// Safety: only accessed from the main UI thread.
 struct SendHandle(Option<fluxchat_core::voice::RecordingHandle>);
@@ -399,9 +462,17 @@ impl FluxChat {
                         .filter(|m| !m.event_id.starts_with("~"))
                         .count();
                     let last_count = self.last_timeline_real_count.get(&room_id).copied().unwrap_or(0);
-                    let shrunk = last_count >= 10 && new_real_count * 2 < last_count;
+                    // Require new_real_count > 0: a transient empty snapshot
+                    // (e.g. during room setup or bridge churn) is not drift.
+                    let shrunk = last_count >= 10
+                        && new_real_count > 0
+                        && new_real_count * 2 < last_count;
                     let is_active = self.selected_room_id.as_deref() == Some(&room_id);
-                    self.last_timeline_real_count.insert(room_id.clone(), new_real_count);
+                    // Only remember counts we'd actually compare against, so a
+                    // transient 0 doesn't become the new baseline.
+                    if new_real_count > 0 {
+                        self.last_timeline_real_count.insert(room_id.clone(), new_real_count);
+                    }
                     if shrunk && is_active {
                         tracing::warn!(
                             "Timeline drift detected for {} ({} -> {} real items) — auto-rebuilding",
@@ -2230,16 +2301,46 @@ impl FluxChat {
                 use base64::Engine;
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                 self.core.db.cache_media(&format!("iced_img:{mxc}"), &b64);
-                // Try to decode as animated GIF
+                // Try to decode as animated GIF (native) or animated WebP (via transcode).
                 let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
-                if is_gif {
+                let is_webp = data.len() >= 12
+                    && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP";
+                if is_gif || is_webp {
                     let mxc_clone = mxc.clone();
                     let data_clone = data.clone();
+                    let core_task = self.core.clone();
                     let handle = iced::widget::image::Handle::from_bytes(data);
                     self.image_cache.insert(mxc.clone(), handle);
                     return Task::perform(
                         async move {
-                            let frames = iced_gif::Frames::from_bytes(data_clone).ok()?;
+                            let mxc_log = mxc_clone.clone();
+                            let mxc_inner = mxc_clone.clone();
+                            let frames = match tokio::task::spawn_blocking(move || {
+                                let gif_bytes = if is_webp {
+                                    let gb = webp_to_gif_bytes(&data_clone)?;
+                                    // Cache the transcoded GIF so we don't repeat
+                                    // the expensive NeuQuant quantization on restart.
+                                    let encoded = base64::engine::general_purpose::STANDARD.encode(&gb);
+                                    core_task.db.cache_media(&format!("iced_gif:{mxc_inner}"), &encoded);
+                                    gb
+                                } else {
+                                    data_clone
+                                };
+                                match iced_gif::Frames::from_bytes(gif_bytes) {
+                                    Ok(f) => Some(f),
+                                    Err(e) => {
+                                        tracing::warn!("iced_gif Frames::from_bytes failed: {e}");
+                                        None
+                                    }
+                                }
+                            }).await {
+                                Ok(Some(f)) => f,
+                                Ok(None) => return None,
+                                Err(e) => {
+                                    tracing::warn!("transcode task for {mxc_log} failed: {e}");
+                                    return None;
+                                }
+                            };
                             Some((mxc_clone, std::sync::Arc::new(frames)))
                         },
                         |result| match result {
@@ -3833,13 +3934,67 @@ impl FluxChat {
                             self.core.db.cache_media(&format!("iced_img:{mxc}"), "");
                         } else {
                         let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
+                        let is_webp = data.len() >= 12
+                            && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP";
                         let handle = iced::widget::image::Handle::from_bytes(data.clone());
                         self.image_cache.insert(mxc.clone(), handle);
-                        if is_gif && !self.gif_frames_cache.contains_key(mxc) {
+                        if (is_gif || is_webp) && !self.gif_frames_cache.contains_key(mxc) {
                             let mxc_clone = mxc.clone();
+                            // Fast path for previously-transcoded WebPs: cached
+                            // GIF bytes skip the NeuQuant pass entirely.
+                            let cached_gif_b64 = if is_webp {
+                                self.core.db.get_cached_media(&format!("iced_gif:{mxc}"))
+                            } else {
+                                None
+                            };
+                            let core_task = self.core.clone();
                             tasks.push(Task::perform(
                                 async move {
-                                    let frames = iced_gif::Frames::from_bytes(data).ok()?;
+                                    let mxc_log = mxc_clone.clone();
+                                    let mxc_inner = mxc_clone.clone();
+                                    let frames = match tokio::task::spawn_blocking(move || {
+                                        let gif_bytes = if is_webp {
+                                            if let Some(b64) = cached_gif_b64 {
+                                                match base64::Engine::decode(
+                                                    &base64::engine::general_purpose::STANDARD, &b64
+                                                ) {
+                                                    Ok(bytes) if bytes.len() >= 3
+                                                        && &bytes[..3] == b"GIF" => bytes,
+                                                    _ => {
+                                                        let gb = webp_to_gif_bytes(&data)?;
+                                                        let enc = base64::Engine::encode(
+                                                            &base64::engine::general_purpose::STANDARD, &gb
+                                                        );
+                                                        core_task.db.cache_media(&format!("iced_gif:{mxc_inner}"), &enc);
+                                                        gb
+                                                    }
+                                                }
+                                            } else {
+                                                let gb = webp_to_gif_bytes(&data)?;
+                                                let enc = base64::Engine::encode(
+                                                    &base64::engine::general_purpose::STANDARD, &gb
+                                                );
+                                                core_task.db.cache_media(&format!("iced_gif:{mxc_inner}"), &enc);
+                                                gb
+                                            }
+                                        } else {
+                                            data
+                                        };
+                                        match iced_gif::Frames::from_bytes(gif_bytes) {
+                                            Ok(f) => Some(f),
+                                            Err(e) => {
+                                                tracing::warn!("iced_gif Frames::from_bytes failed: {e}");
+                                                None
+                                            }
+                                        }
+                                    }).await {
+                                        Ok(Some(f)) => f,
+                                        Ok(None) => return None,
+                                        Err(e) => {
+                                            tracing::warn!("transcode task for {mxc_log} failed: {e}");
+                                            return None;
+                                        }
+                                    };
                                     Some((mxc_clone, std::sync::Arc::new(frames)))
                                 },
                                 |result| match result {
