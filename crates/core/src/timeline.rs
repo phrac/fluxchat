@@ -296,9 +296,41 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     read_receipt_user_ids: read_receipt_user_ids.clone(),
                 })
             } else {
+                // Distinguish encryption failures (missing key) from genuinely
+                // unknown content types — users have a shot at fixing UTDs
+                // (recover backup, etc.), but "[unsupported]" is dead-end.
+                let body = match &msg_like.kind {
+                    matrix_sdk_ui::timeline::MsgLikeKind::UnableToDecrypt(enc) => {
+                        use matrix_sdk_ui::timeline::EncryptedMessage;
+                        #[allow(deprecated)]
+                        match enc {
+                            EncryptedMessage::MegolmV1AesSha2 { session_id, cause, .. } => {
+                                // Log each unique session at most once per process
+                                // to avoid spamming on every timeline re-read.
+                                static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+                                    std::sync::OnceLock::new();
+                                let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+                                let first_time = seen.lock().map(|mut s| s.insert(session_id.clone())).unwrap_or(true);
+                                if first_time {
+                                    tracing::warn!("UTD: session={session_id} cause={cause:?}");
+                                }
+                                format!("🔒 [can't decrypt — missing session key {}]",
+                                    session_id.chars().take(8).collect::<String>())
+                            }
+                            _ => "🔒 [can't decrypt]".into(),
+                        }
+                    }
+                    _ => {
+                        if let Some(raw) = ev.original_json().or_else(|| ev.latest_json()) {
+                            let preview: String = raw.json().get().chars().take(400).collect();
+                            tracing::warn!("unsupported msglike content: {preview}");
+                        }
+                        "[unsupported]".into()
+                    }
+                };
                 Some(MessageInfo {
                     event_id, sender, sender_name,
-                    body: "[unsupported]".into(), formatted_body: None,
+                    body, formatted_body: None,
                     transformed_body: None, image_mxc: None, reactions, reply_to_id,
                     reply_to_sender: reply_to_sender.clone(), reply_to_body: reply_to_body.clone(), timestamp, avatar_url,
                     thread_root, thread_count, image_width: None, image_height: None, poll: None,
