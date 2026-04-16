@@ -119,7 +119,7 @@ pub enum Message {
 
     // --- Room commands (async) ---
     JoinRoom(String),                           // room_id or alias
-    RoomCreated(String, String, bool, Option<String>), // room_id, name, encrypted, space_id
+    RoomCreated(String, String, bool, bool, Option<String>), // room_id, name, encrypted, is_space, space_id
     LeaveRoom(String),                          // room_id
     InviteUser(String, String),                 // room_id, user_id
     SpaceInvite(String),                        // space_id — opens invite modal targeting space
@@ -191,6 +191,12 @@ pub enum Message {
     SecurityRecoveryKeyInputChanged(String),
     SecurityRecover,
     SecurityRecoverResult(Result<(), String>),
+    // Reset-identity flow (throw away existing backup + cross-signing, start fresh)
+    SecurityResetIdentityConfirm,                        // first click: arm destructive action
+    SecurityResetPasswordChanged(String),
+    SecurityResetIdentityCancel,
+    SecurityResetIdentitySubmit,                         // user entered password + confirmed
+    SecurityResetIdentityResult(Result<Option<String>, String>), // new recovery key or error
 
     // --- Verification ---
     VerificationAccept(String, String),  // user_id, flow_id
@@ -276,6 +282,7 @@ pub enum Message {
     CreateRoomTopicChanged(String),
     CreateRoomTogglePublic,
     CreateRoomToggleEncrypted,
+    CreateRoomToggleSpace,
     CreateRoomSelectSpace(Option<String>),
     CreateRoomSubmit,
 

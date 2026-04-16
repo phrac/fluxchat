@@ -574,8 +574,11 @@ impl FluxChat {
                     if is_active && self.messages_at_bottom {
                         tasks.push(self.update(Message::SendReadReceipt));
                     }
-                    // Refocus input bar (new messages can steal focus)
-                    if is_active {
+                    // Refocus input bar (new messages can steal focus) — but
+                    // not while a modal is open, or we steal focus from modal
+                    // text inputs (settings password prompts, forward picker,
+                    // room create dialog, etc.).
+                    if is_active && self.modal.is_none() {
                         tasks.push(iced::widget::operation::focus(crate::view::input_id()));
                     }
                     return Task::batch(tasks);
@@ -2274,6 +2277,9 @@ impl FluxChat {
                 | Message::SecurityEnableBackup | Message::SecurityBackupEnabled(_)
                 | Message::SecurityRecoveryKeyInputChanged(_) | Message::SecurityRecover
                 | Message::SecurityRecoverResult(_)
+                | Message::SecurityResetIdentityConfirm | Message::SecurityResetIdentityCancel
+                | Message::SecurityResetPasswordChanged(_) | Message::SecurityResetIdentitySubmit
+                | Message::SecurityResetIdentityResult(_)
                 | Message::ToggleIgnoreUser(_) | Message::ProfilePowerInputChanged(_)
                 | Message::ProfileSetPowerLevel | Message::SendDmToUser(_)
                 | Message::DmCreated(_)
@@ -2989,6 +2995,9 @@ impl FluxChat {
             Message::CreateRoomToggleEncrypted => {
                 self.create_room_encrypted = !self.create_room_encrypted;
             }
+            Message::CreateRoomToggleSpace => {
+                self.create_room_is_space = !self.create_room_is_space;
+            }
             Message::CreateRoomSelectSpace(space_id) => {
                 self.create_room_space = space_id;
             }
@@ -3000,34 +3009,60 @@ impl FluxChat {
                 let topic = if self.create_room_topic.trim().is_empty() { None } else { Some(self.create_room_topic.clone()) };
                 let is_public = self.create_room_public;
                 let encrypted = self.create_room_encrypted;
+                let is_space = self.create_room_is_space;
                 let space_id = self.create_room_space.clone();
                 self.modal = None;
                 self.create_room_name.clear();
                 self.create_room_topic.clear();
                 self.create_room_public = false;
                 self.create_room_encrypted = false;
+                self.create_room_is_space = false;
                 self.create_room_space = None;
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
                         let room_id = fluxchat_core::rooms::create_room(
-                            &client, &name, topic.as_deref(), is_public, encrypted, &[], space_id.as_deref(),
+                            &client, &name, topic.as_deref(), is_public, encrypted, is_space, &[], space_id.as_deref(),
                         ).await.ok()?;
-                        Some((room_id, name, encrypted, space_id))
+                        Some((room_id, name, encrypted, is_space, space_id))
                     },
                     |result| match result {
-                        Some((room_id, name, encrypted, space_id)) => Message::RoomCreated(room_id, name, encrypted, space_id),
+                        Some((room_id, name, encrypted, is_space, space_id)) => Message::RoomCreated(room_id, name, encrypted, is_space, space_id),
                         None => Message::Noop,
                     },
                 );
             }
-            Message::RoomCreated(room_id, name, encrypted, space_id) => {
+            Message::RoomCreated(room_id, name, encrypted, is_space, space_id) => {
                 // Add to local room list immediately so sidebar updates
                 let space_name = space_id.as_ref().and_then(|sid|
                     self.spaces.iter().find(|s| s.room_id == *sid).map(|s| s.name.clone())
                 );
-                if !self.rooms.iter().any(|r| r.room_id == room_id) {
+                if is_space {
+                    let info = fluxchat_core::RoomInfo {
+                        room_id: room_id.clone(),
+                        name,
+                        is_encrypted: encrypted,
+                        is_space: true,
+                        is_direct: false,
+                        unread_count: 0,
+                        highlight_count: 0,
+                        avatar_url: None,
+                        topic: None,
+                        space_name: None,
+                        space_id: None,
+                        is_favourite: false,
+                    };
+                    if !self.spaces.iter().any(|s| s.room_id == room_id) {
+                        self.spaces.push(info.clone());
+                    }
+                    if !self.space_tree.iter().any(|n| n.info.room_id == room_id) {
+                        self.space_tree.push(fluxchat_core::rooms::SpaceNode {
+                            info,
+                            depth: 0,
+                        });
+                    }
+                } else if !self.rooms.iter().any(|r| r.room_id == room_id) {
                     self.rooms.push(fluxchat_core::RoomInfo {
                         room_id: room_id.clone(),
                         name,
@@ -3043,7 +3078,9 @@ impl FluxChat {
                         is_favourite: false,
                     });
                 }
-                return self.update(Message::SelectRoom(room_id));
+                if !is_space {
+                    return self.update(Message::SelectRoom(room_id));
+                }
             }
 
             // --- Room settings ---

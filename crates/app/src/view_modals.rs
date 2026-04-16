@@ -497,6 +497,76 @@ impl FluxChat {
                     ].spacing(6)
                 );
 
+                // Reset identity (for when recovery key is lost)
+                col = col.push(Space::new().height(16));
+                col = col.push(rule::horizontal(1));
+                col = col.push(
+                    text("LOST YOUR RECOVERY KEY?").font(MONO).size(12).color(theme::colors().text_dim)
+                );
+                col = col.push(
+                    text("Resetting identity discards the existing key backup on the server and \
+                        generates a new recovery key. Messages encrypted to session keys that \
+                        aren't on this device will stay unreadable. All your other devices will \
+                        need to re-verify with this one.")
+                        .font(MONO).size(12).color(theme::colors().text_muted)
+                );
+                if !self.security_reset_confirm {
+                    col = col.push(
+                        button(text("reset identity").font(MONO).size(13).color(theme::colors().red))
+                            .on_press(Message::SecurityResetIdentityConfirm)
+                            .padding([4, 12])
+                            .style(|_, _| button::Style {
+                                background: None,
+                                text_color: theme::colors().red,
+                                border: iced::Border {
+                                    color: theme::colors().red,
+                                    width: 1.0,
+                                    radius: 4.0.into(),
+                                },
+                                ..Default::default()
+                            }),
+                    );
+                } else {
+                    col = col.push(
+                        text("Enter your account password to confirm the reset:")
+                            .font(MONO).size(13).color(theme::colors().yellow)
+                    );
+                    col = col.push(
+                        row![
+                            text_input("Account password", &self.security_reset_password)
+                                .secure(true)
+                                .on_input(Message::SecurityResetPasswordChanged)
+                                .on_submit(Message::SecurityResetIdentitySubmit)
+                                .font(MONO).size(14).padding(6),
+                            button(text(if self.security_resetting { "resetting…" } else { "confirm reset" })
+                                .font(MONO).size(13).color(theme::colors().red))
+                                .on_press_maybe(
+                                    if self.security_resetting { None }
+                                    else { Some(Message::SecurityResetIdentitySubmit) }
+                                )
+                                .padding([6, 12])
+                                .style(|_, _| button::Style {
+                                    background: None,
+                                    text_color: theme::colors().red,
+                                    border: iced::Border {
+                                        color: theme::colors().red,
+                                        width: 1.0,
+                                        radius: 4.0.into(),
+                                    },
+                                    ..Default::default()
+                                }),
+                            button(text("cancel").font(MONO).size(13).color(theme::colors().text_muted))
+                                .on_press(Message::SecurityResetIdentityCancel)
+                                .padding([6, 12])
+                                .style(|_, _| button::Style {
+                                    background: None,
+                                    text_color: theme::colors().text_muted,
+                                    ..Default::default()
+                                }),
+                        ].spacing(6)
+                    );
+                }
+
                 // Status message
                 if let Some(ref status) = self.settings_status {
                     col = col.push(text(status.as_str()).font(MONO).size(13).color(theme::colors().text_muted));
@@ -687,6 +757,7 @@ impl FluxChat {
     fn view_create_room_modal(&self) -> Element<Message> {
         let public_label = if self.create_room_public { "\u{25c9} Public" } else { "\u{25cb} Public" };
         let encrypted_label = if self.create_room_encrypted { "\u{25c9} Encrypted" } else { "\u{25cb} Encrypted" };
+        let is_space_label = if self.create_room_is_space { "\u{25c9} Space" } else { "\u{25cb} Space" };
 
         // Space selector
         let space_label = self.create_room_space.as_ref()
@@ -723,39 +794,65 @@ impl FluxChat {
             );
         }
 
-        column![
+        let mut col = column![
             row![
-                text("Create Room").font(MONO).size(16).color(theme::colors().text_bright),
+                text(if self.create_room_is_space { "Create Space" } else { "Create Room" }).font(MONO).size(16).color(theme::colors().text_bright),
                 Space::new().width(Fill),
                 button(text("\u{00d7}").font(MONO).size(18).color(theme::colors().text_dim))
                     .on_press(Message::CloseModal)
                     .padding([2, 6])
                     .style(theme::button_transparent),
             ].align_y(iced::Alignment::Center),
-            text("Room Name").font(MONO).size(13).color(theme::colors().text_dim),
+            text(if self.create_room_is_space { "Space Name" } else { "Room Name" }).font(MONO).size(13).color(theme::colors().text_dim),
             text_input("e.g. my-room", &self.create_room_name)
                 .on_input(Message::CreateRoomNameChanged)
                 .on_submit(Message::CreateRoomSubmit)
                 .font(MONO).size(14).padding(8),
             text("Topic (optional)").font(MONO).size(13).color(theme::colors().text_dim),
-            text_input("Room topic...", &self.create_room_topic)
+            text_input(
+                if self.create_room_is_space { "Space topic..." } else { "Room topic..." },
+                &self.create_room_topic
+            )
                 .on_input(Message::CreateRoomTopicChanged)
                 .font(MONO).size(14).padding(8),
-            text(format!("Space: {space_label}")).font(MONO).size(13).color(theme::colors().text_dim),
-            scrollable(space_buttons)
-                .direction(iced::widget::scrollable::Direction::Horizontal(
-                    iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0),
-                )),
-            row![
-                button(text(public_label).font(MONO).size(14).color(theme::colors().text_muted))
-                    .on_press(Message::CreateRoomTogglePublic)
-                    .padding([4, 8])
-                    .style(theme::button_transparent),
+        ].spacing(10).width(450);
+
+        // Room-only options (hidden when creating a space)
+        if !self.create_room_is_space {
+            col = col.push(
+                text(format!("Space: {space_label}")).font(MONO).size(13).color(theme::colors().text_dim)
+            );
+            col = col.push(
+                scrollable(space_buttons)
+                    .direction(iced::widget::scrollable::Direction::Horizontal(
+                        iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0),
+                    ))
+            );
+        }
+
+        let mut toggles = row![
+            button(text(public_label).font(MONO).size(14).color(theme::colors().text_muted))
+                .on_press(Message::CreateRoomTogglePublic)
+                .padding([4, 8])
+                .style(theme::button_transparent),
+        ].spacing(12);
+        if !self.create_room_is_space {
+            toggles = toggles.push(
                 button(text(encrypted_label).font(MONO).size(14).color(theme::colors().text_muted))
                     .on_press(Message::CreateRoomToggleEncrypted)
                     .padding([4, 8])
                     .style(theme::button_transparent),
-            ].spacing(12),
+            );
+        }
+        toggles = toggles.push(
+            button(text(is_space_label).font(MONO).size(14).color(theme::colors().text_muted))
+                .on_press(Message::CreateRoomToggleSpace)
+                .padding([4, 8])
+                .style(theme::button_transparent),
+        );
+        col = col.push(toggles);
+
+        col = col.push(
             button(text("Create").font(MONO).size(14).color(theme::colors().bg_deep))
                 .on_press(Message::CreateRoomSubmit)
                 .padding([8, 24])
@@ -765,10 +862,8 @@ impl FluxChat {
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
-        ]
-        .spacing(10)
-        .width(450)
-        .into()
+        );
+        col.into()
     }
 
     fn view_profile_modal<'a>(&'a self, user_id: &'a str) -> Element<'a, Message> {

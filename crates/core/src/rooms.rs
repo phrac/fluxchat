@@ -481,6 +481,7 @@ pub async fn create_room(
     topic: Option<&str>,
     is_public: bool,
     is_encrypted: bool,
+    is_space: bool,
     invite_user_ids: &[String],
     space_id: Option<&str>,
 ) -> Result<String, AppError> {
@@ -490,6 +491,16 @@ pub async fn create_room(
     request.preset = Some(if is_public { RoomPreset::PublicChat } else { RoomPreset::PrivateChat });
     if is_public {
         request.visibility = matrix_sdk::ruma::api::client::room::Visibility::Public;
+    }
+    if is_space {
+        // Set creation_content.type = "m.space" to create a space.
+        let mut creation = serde_json::Map::new();
+        creation.insert("type".into(), serde_json::Value::String("m.space".into()));
+        let json_str = serde_json::to_string(&creation).unwrap();
+        let raw_value = serde_json::value::RawValue::from_string(json_str).unwrap();
+        request.creation_content = Some(
+            matrix_sdk::ruma::serde::Raw::from_json(raw_value),
+        );
     }
     for uid in invite_user_ids {
         if let Ok(user_id) = matrix_sdk::ruma::UserId::parse(uid) {

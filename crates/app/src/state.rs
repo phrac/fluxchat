@@ -273,6 +273,7 @@ pub struct FluxChat {
     pub create_room_public: bool,
     pub create_room_encrypted: bool,
     pub create_room_space: Option<String>, // space room_id to create in
+    pub create_room_is_space: bool,
 
     // Room settings modal state
     pub room_settings_name: String,
@@ -334,6 +335,10 @@ pub struct FluxChat {
     pub security_state: Option<SecurityState>,
     pub security_recovery_key_input: String,
     pub security_shown_recovery_key: Option<String>,
+    // Reset-identity flow (when recovery key is lost)
+    pub security_reset_confirm: bool,          // one-click confirmation gate
+    pub security_reset_password: String,       // UIAA password
+    pub security_resetting: bool,              // in-flight flag
 
     // --- Call/RTC state ---
     pub expanded_previews: HashSet<String>, // event_ids with all URL previews shown
@@ -503,6 +508,7 @@ impl FluxChat {
             create_room_public: false,
             create_room_encrypted: false,
             create_room_space: None,
+            create_room_is_space: false,
             room_settings_name: String::new(),
             room_settings_topic: String::new(),
             profile_power_input: String::new(),
@@ -540,6 +546,9 @@ impl FluxChat {
             security_state: None,
             security_recovery_key_input: String::new(),
             security_shown_recovery_key: None,
+            security_reset_confirm: false,
+            security_reset_password: String::new(),
+            security_resetting: false,
             expanded_previews: HashSet::new(),
             calls_supported: false,
             call_state: fluxchat_core::rtc::CallConnectionState::Disconnected,

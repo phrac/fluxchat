@@ -433,6 +433,86 @@ impl FluxChat {
                     }
                 }
             }
+            Message::SecurityResetIdentityConfirm => {
+                self.security_reset_confirm = true;
+                self.security_reset_password.clear();
+                Some(Task::none())
+            }
+            Message::SecurityResetIdentityCancel => {
+                self.security_reset_confirm = false;
+                self.security_reset_password.clear();
+                Some(Task::none())
+            }
+            Message::SecurityResetPasswordChanged(s) => {
+                self.security_reset_password = s;
+                Some(Task::none())
+            }
+            Message::SecurityResetIdentitySubmit => {
+                if self.security_reset_password.is_empty() {
+                    self.settings_status = Some("password required".into());
+                    return Some(Task::none());
+                }
+                self.security_resetting = true;
+                self.settings_status = Some("resetting identity...".into());
+                let password = self.security_reset_password.clone();
+                let user_id = self.user_id.clone();
+                let core = self.core.clone();
+                Some(Task::perform(
+                    async move {
+                        use matrix_sdk::ruma::api::client::uiaa;
+                        use matrix_sdk::encryption::CrossSigningResetAuthType;
+                        let client = core.get_client().await.map_err(|e| format!("{e}"))?;
+                        // Parse our @user:server into a real UserId for UIAA.
+                        let uid_parsed = matrix_sdk::ruma::UserId::parse(&user_id)
+                            .map_err(|e| format!("bad user id: {e}"))?;
+                        let recovery = client.encryption().recovery();
+                        let handle = recovery.reset_identity().await
+                            .map_err(|e| format!("reset_identity: {e}"))?;
+                        let Some(handle) = handle else {
+                            // No auth required — backup already re-enabled by SDK.
+                            // Try to enable recovery fresh and surface the new key.
+                            return recovery.enable().await
+                                .map(Some)
+                                .map_err(|e| format!("enable: {e}"));
+                        };
+                        match handle.auth_type() {
+                            CrossSigningResetAuthType::Uiaa(uiaa_info) => {
+                                let mut pw = uiaa::Password::new(uid_parsed.into(), password);
+                                pw.session = uiaa_info.session.clone();
+                                handle.reset(Some(uiaa::AuthData::Password(pw))).await
+                                    .map_err(|e| format!("reset: {e}"))?;
+                            }
+                            CrossSigningResetAuthType::OAuth(_) => {
+                                return Err("this account requires OAuth reset — \
+                                    use Element's reset flow and then sign in again".into());
+                            }
+                        }
+                        // After reset, enable fresh backup + recovery and return the new key.
+                        recovery.enable().await
+                            .map(Some)
+                            .map_err(|e| format!("post-reset enable: {e}"))
+                    },
+                    Message::SecurityResetIdentityResult,
+                ))
+            }
+            Message::SecurityResetIdentityResult(result) => {
+                self.security_resetting = false;
+                self.security_reset_password.clear();
+                self.security_reset_confirm = false;
+                match result {
+                    Ok(new_key) => {
+                        self.settings_status = Some(
+                            "identity reset. old backup discarded; new recovery key below — SAVE IT".into()
+                        );
+                        self.security_shown_recovery_key = new_key;
+                        Some(self.update(Message::SecurityLoadState))
+                    }
+                    Err(e) => {
+                        self.settings_status = Some(format!("reset failed: {e}"));
+                        Some(Task::none())
+                    }
+                }
+            }
 
             // --- Profile actions ---
             Message::ToggleIgnoreUser(user_id) => {
