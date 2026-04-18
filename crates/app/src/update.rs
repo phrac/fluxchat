@@ -712,16 +712,6 @@ impl FluxChat {
                                     use futures_util::StreamExt;
                                     futures_util::pin_mut!(stream);
                                     while let Some(_diffs) = stream.next().await {
-                                        // Drain any queued diffs before re-reading — avoids
-                                        // redundant full timeline reads when many diffs arrive
-                                        // in rapid succession (e.g. bot editing + reacting).
-                                        {
-                                            use std::task::{Context, Poll};
-                                            let waker = futures_util::task::noop_waker();
-                                            let mut cx = Context::from_waker(&waker);
-                                            while let Poll::Ready(Some(_)) = futures_util::Stream::poll_next(stream.as_mut(), &mut cx) {}
-                                        }
-                                        // Re-read full timeline items after coalescing diffs
                                         let items = timeline.items().await;
                                         let msgs = fluxchat_core::timeline::timeline_items_to_messages(
                                             &items.into_iter().collect::<Vec<_>>(),
@@ -3379,12 +3369,6 @@ impl FluxChat {
                                     use futures_util::StreamExt;
                                     futures_util::pin_mut!(stream);
                                     while let Some(_diffs) = stream.next().await {
-                                        {
-                                            use std::task::{Context, Poll};
-                                            let waker = futures_util::task::noop_waker();
-                                            let mut cx = Context::from_waker(&waker);
-                                            while let Poll::Ready(Some(_)) = futures_util::Stream::poll_next(stream.as_mut(), &mut cx) {}
-                                        }
                                         let items = timeline.items().await;
                                         let msgs = fluxchat_core::timeline::timeline_items_to_messages(
                                             &items.into_iter().collect::<Vec<_>>(),

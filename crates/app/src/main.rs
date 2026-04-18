@@ -42,7 +42,7 @@ fn init_core() -> Arc<AppState> {
 fn main() -> iced::Result {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::new("warn,fluxchat=info,matrix_sdk_crypto=error"),
+            tracing_subscriber::EnvFilter::new("warn,fluxchat=info,matrix_sdk_crypto=error,html5ever=error"),
         )
         .init();
 
