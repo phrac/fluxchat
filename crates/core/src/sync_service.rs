@@ -1,5 +1,7 @@
 use matrix_sdk::Client;
-use matrix_sdk_ui::sync_service::SyncService;
+use matrix_sdk::ruma::api::client::error::ErrorKind;
+use matrix_sdk_ui::sync_service::{Error as SyncServiceError, SyncService};
+use matrix_sdk_ui::room_list_service::Error as RoomListError;
 use tracing::info;
 
 use std::collections::HashMap;
@@ -21,6 +23,16 @@ pub async fn create_sync_service(client: &Client) -> Result<SyncService, AppErro
 
 
     Ok(service)
+}
+
+/// Returns true if a sync-service error was caused by the server rejecting
+/// our access token (`M_UNKNOWN_TOKEN`). Such errors are terminal — no amount
+/// of reconnecting will fix them; the session must be logged out.
+pub fn is_invalid_token_error(err: &SyncServiceError) -> bool {
+    let SyncServiceError::RoomList(RoomListError::SlidingSync(sdk_err)) = err else {
+        return false;
+    };
+    matches!(sdk_err.client_api_error_kind(), Some(ErrorKind::UnknownToken { .. }))
 }
 
 /// Upgrade the sliding-sync subscription for a specific room so we receive
@@ -56,7 +68,14 @@ pub async fn spawn_room_list_watcher<F>(
             }
         };
 
-        let (stream, _controller) = all_rooms.entries_with_dynamic_adapters(100);
+        // The stream only yields after set_filter is called on the controller.
+        // Use `new_filter_non_left` (everything we're still a member of) —
+        // this is the natural "all rooms" set. The controller must be kept
+        // alive for the lifetime of the stream.
+        let (stream, controller) = all_rooms.entries_with_dynamic_adapters(100);
+        controller.set_filter(Box::new(
+            matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
+        ));
 
         use futures_util::StreamExt;
         futures_util::pin_mut!(stream);
@@ -70,6 +89,8 @@ pub async fn spawn_room_list_watcher<F>(
             let (space_tree, space_descendants) = crate::rooms::get_space_tree(&client).await;
             on_update(rooms, spaces, invited, knocked, space_tree, space_descendants);
         }
+        drop(controller);
+        tracing::warn!("Room list watcher stream ended");
     });
 
     info!("Room list watcher spawned");

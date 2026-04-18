@@ -368,6 +368,12 @@ impl FluxChat {
                     }
                 }
                 SyncEvent::MessagesUpdated(room_id, new_messages) => {
+                    tracing::debug!(
+                        "MessagesUpdated {}: {} msgs arrived, existing={:?}",
+                        room_id,
+                        new_messages.len(),
+                        self.messages_by_room.get(&room_id).map(|v| v.len()),
+                    );
                     // Detect truly new messages for notifications
                     // Detect new messages by comparing against the last seen timestamp
                     let last_ts = self.last_seen_timestamp.get(&room_id).copied().unwrap_or(0);
@@ -428,7 +434,24 @@ impl FluxChat {
                     }
 
                     // Filter out empty messages upfront instead of per-render.
+                    let before_filter = new_messages.len();
                     let new_messages: Vec<fluxchat_core::MessageInfo> = new_messages.into_iter()
+                        .inspect(|m| {
+                            if m.body.trim().is_empty()
+                                && m.formatted_body.as_ref().map(|f| f.trim().is_empty()).unwrap_or(true)
+                                && !m.event_id.starts_with("~")
+                                && !m.is_emote
+                                && m.image_mxc.is_none()
+                                && !m.is_video
+                                && m.poll.is_none()
+                                && m.reactions.is_empty()
+                            {
+                                tracing::warn!(
+                                    "filtering empty message: id={} sender={} ts={}",
+                                    m.event_id, m.sender, m.timestamp,
+                                );
+                            }
+                        })
                         .filter(|m| {
                             // Always keep system events, emotes, images, videos, polls, reactions
                             if m.event_id.starts_with("~") || m.is_emote || m.image_mxc.is_some()
@@ -451,6 +474,12 @@ impl FluxChat {
                             false
                         })
                         .collect();
+                    if new_messages.len() != before_filter {
+                        tracing::debug!(
+                            "MessagesUpdated {} filter: {} -> {}",
+                            room_id, before_filter, new_messages.len(),
+                        );
+                    }
 
                     // Detect Timeline drift: if the SDK's state.items has shrunk
                     // substantially vs. what it reported last time (e.g. due to
@@ -615,6 +644,22 @@ impl FluxChat {
                     self.open_tabs.retain(|(id, _, _, _)| !id.starts_with("thread::"));
                 }
                 self.selected_room_id = Some(room_id.clone());
+                // Upgrade the sliding-sync subscription for this room. Without
+                // this, each sync response carries only a tiny timeline window,
+                // and the SDK trims Timeline.state.items to match — causing
+                // messages to silently vanish from the view until the room is
+                // re-selected. Only meaningful for real rooms (not thread tabs).
+                if !room_id.starts_with("thread::") {
+                    let core_sub = self.core.clone();
+                    let rid_sub = room_id.clone();
+                    tokio::spawn(async move {
+                        if let Ok(parsed) = fluxchat_core::ruma::RoomId::parse(&rid_sub) {
+                            if let Some(svc) = core_sub.sync_service.lock().await.as_ref() {
+                                fluxchat_core::sync_service::subscribe_to_room(svc, &parsed).await;
+                            }
+                        }
+                    });
+                }
                 self.messages_at_bottom = true;
                 self.pinned_messages.clear();
                 crate::view::set_scroll_room(&room_id);
@@ -703,18 +748,41 @@ impl FluxChat {
                                 let _ = timeline.paginate_backwards(30).await;
                             }
 
-                            // Spawn a background task to watch the diff stream
+                            // Spawn a background task to watch the diff stream.
+                            // Each iteration checks that this watcher's Timeline
+                            // is still the canonical one in core.timelines; if
+                            // RefreshTimeline has replaced it, we exit as an
+                            // orphan to avoid posting stale MessagesUpdated events
+                            // (which otherwise trigger a drift-rebuild feedback
+                            // loop against the new Timeline).
                             {
                                 let timeline = timeline.clone();
                                 let rid = rid.clone();
                                 let tx = tx.clone();
+                                let core_watch = core.clone();
+                                let rid_parsed = room_id_parsed.to_owned();
                                 tokio::spawn(async move {
                                     use futures_util::StreamExt;
                                     futures_util::pin_mut!(stream);
                                     while let Some(_diffs) = stream.next().await {
+                                        let is_current = core_watch.timelines.lock().await
+                                            .get(&rid_parsed)
+                                            .map(|tl| std::sync::Arc::ptr_eq(tl, &timeline))
+                                            .unwrap_or(false);
+                                        if !is_current {
+                                            tracing::info!("Orphan diff watcher exiting for {}", rid);
+                                            break;
+                                        }
                                         let items = timeline.items().await;
                                         let msgs = fluxchat_core::timeline::timeline_items_to_messages(
                                             &items.into_iter().collect::<Vec<_>>(),
+                                        );
+                                        tracing::debug!(
+                                            "diff watcher {} fired: {} items, last_sender={:?}, last_body_len={:?}",
+                                            rid,
+                                            msgs.len(),
+                                            msgs.last().map(|m| &m.sender),
+                                            msgs.last().map(|m| m.body.len()),
                                         );
                                         if tx.send(Message::SyncEvent(
                                             SyncEvent::MessagesUpdated(rid.clone(), msgs),
@@ -722,7 +790,6 @@ impl FluxChat {
                                             break; // Channel closed
                                         }
                                     }
-                                    tracing::warn!("Diff stream watcher ended for room {}", rid);
                                 });
                             }
 
@@ -3361,14 +3428,26 @@ impl FluxChat {
                             }
 
                             // Respawn the diff watcher against the new Timeline.
+                            // Orphan check: exits if another RefreshTimeline
+                            // replaces this Timeline in core.timelines.
                             {
                                 let timeline = timeline.clone();
                                 let rid = rid.clone();
                                 let tx = tx.clone();
+                                let core_watch = core.clone();
+                                let rid_parsed = room_id_parsed.to_owned();
                                 tokio::spawn(async move {
                                     use futures_util::StreamExt;
                                     futures_util::pin_mut!(stream);
                                     while let Some(_diffs) = stream.next().await {
+                                        let is_current = core_watch.timelines.lock().await
+                                            .get(&rid_parsed)
+                                            .map(|tl| std::sync::Arc::ptr_eq(tl, &timeline))
+                                            .unwrap_or(false);
+                                        if !is_current {
+                                            tracing::info!("Orphan diff watcher exiting for {}", rid);
+                                            break;
+                                        }
                                         let items = timeline.items().await;
                                         let msgs = fluxchat_core::timeline::timeline_items_to_messages(
                                             &items.into_iter().collect::<Vec<_>>(),
@@ -3379,7 +3458,6 @@ impl FluxChat {
                                             break;
                                         }
                                     }
-                                    tracing::warn!("Diff stream watcher ended for room {}", rid);
                                 });
                             }
 
@@ -4259,6 +4337,11 @@ impl FluxChat {
                                     let current = state_sub.get();
                                     match current {
                                         SyncState::Error(ref e) => {
+                                            if fluxchat_core::sync_service::is_invalid_token_error(e) {
+                                                tracing::warn!("Sync error: access token rejected by server (M_UNKNOWN_TOKEN), logging out");
+                                                let _ = tx_reconnect.send(Message::Logout);
+                                                break;
+                                            }
                                             tracing::warn!("Sync error: {e}, reconnecting in 5s...");
                                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                             if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
