@@ -10,6 +10,12 @@ const AVATAR_CACHE_LIMIT: usize = 1000;
 const IMAGE_CACHE_LIMIT: usize = 500;
 const URL_PREVIEW_LIMIT: usize = 200;
 const GIF_CACHE_LIMIT: usize = 100;
+/// How long to wait before retrying an avatar that failed to download.
+const AVATAR_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+/// Parallel avatar downloads per batch.
+const AVATAR_FETCH_CONCURRENCY: usize = 8;
+/// Tick runs every 5s; slower housekeeping (member presence, call scan) runs every Nth tick.
+const SLOW_TICK_EVERY: u64 = 6;
 
 /// Evict entries from a HashMap when it exceeds the limit.
 fn evict_cache<K: std::hash::Hash + Eq + Clone, V>(cache: &mut std::collections::HashMap<K, V>, limit: usize) {
@@ -91,6 +97,32 @@ unsafe impl Send for SendHandle {}
 unsafe impl Sync for SendHandle {}
 static VOICE_HANDLE: std::sync::Mutex<SendHandle> = std::sync::Mutex::new(SendHandle(None));
 
+/// Whether any room's display name differs between two room lists.
+fn room_names_changed(old: &[fluxchat_core::RoomInfo], new: &[fluxchat_core::RoomInfo]) -> bool {
+    if old.len() != new.len() {
+        return true;
+    }
+    let old_names: std::collections::HashMap<&str, &str> = old.iter()
+        .map(|r| (r.room_id.as_str(), r.name.as_str()))
+        .collect();
+    new.iter().any(|r| old_names.get(r.room_id.as_str()) != Some(&r.name.as_str()))
+}
+
+/// Show a desktop notification without blocking the UI thread (`show()` does a
+/// synchronous D-Bus round trip on Linux).
+fn show_notification(summary: String, body: String) {
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = notify_rust::Notification::new()
+            .summary(&summary)
+            .body(&body)
+            .timeout(5000)
+            .show()
+        {
+            tracing::debug!("Desktop notification failed: {e}");
+        }
+    });
+}
+
 impl FluxChat {
     /// Create state and return an initial task (attempt session restore).
     pub fn new_with_init(
@@ -101,17 +133,22 @@ impl FluxChat {
         // Try to restore a saved session on startup
         let task = Task::perform(
             async move {
-                match fluxchat_core::auth::restore_session(&core).await {
-                    Ok(Some((_, result))) => Some(LoginSuccess {
+                fluxchat_core::auth::restore_session(&core).await
+                    .map(|restored| restored.map(|(_, result)| LoginSuccess {
                         user_id: result.user_id,
                         display_name: result.display_name,
-                    }),
-                    _ => None,
-                }
+                    }))
             },
             |result| match result {
-                Some(success) => Message::SessionRestored(success),
-                None => Message::Noop,
+                Ok(Some(success)) => Message::SessionRestored(success),
+                Ok(None) => Message::NoSavedSession,
+                Err(e) => {
+                    tracing::warn!("{e}");
+                    Message::LoginResult(Err(format!(
+                        "{e}. If another FluxChat window is open, close it and restart; \
+                         otherwise sign in again."
+                    )))
+                }
             },
         );
 
@@ -191,6 +228,10 @@ impl FluxChat {
             Message::LoginResult(Err(e)) => {
                 self.login_error = Some(e);
                 self.login_submitting = false;
+                self.loading = false;
+            }
+            Message::NoSavedSession => {
+                self.loading = false;
             }
             Message::SessionRestored(success) => {
                 return self.finish_login(success);
@@ -206,7 +247,10 @@ impl FluxChat {
                 self.sync_running = false;
                 let core = self.core.clone();
                 return Task::perform(
-                    async move { let _ = fluxchat_core::auth::logout(&core).await; },
+                    async move {
+                        core.timelines.clear().await;
+                        let _ = fluxchat_core::auth::logout(&core).await;
+                    },
                     |_| Message::Noop,
                 );
             }
@@ -216,31 +260,20 @@ impl FluxChat {
                 self.sync_running = true;
             }
             Message::SyncReconnected => {
-                tracing::info!("Sync reconnected — clearing cached timelines");
-                // Clear cached timelines so they get re-created with fresh subscriptions
-                let core = self.core.clone();
-                let clear_task = Task::perform(
-                    async move {
-                        core.timelines.lock().await.clear();
-                    },
-                    |_| Message::Noop,
-                );
-                // Clear cached messages so the active room reloads from fresh timeline
-                self.messages_by_room.clear();
-                // Re-select the active room to re-subscribe its timeline
-                if let Some(ref room_id) = self.selected_room_id.clone() {
-                    return Task::batch([
-                        clear_task,
-                        Task::done(Message::SelectRoom(room_id.clone())),
-                    ]);
-                }
-                return clear_task;
+                // Timelines survive a sync restart: the event cache handles the
+                // gap and pushes the result through each room's diff stream.
+                // Just make sure the active room's subscription is in place.
+                tracing::info!("Sync reconnected");
+                self.subscribe_active_room();
             }
             Message::InitialRoomsLoaded(rooms, spaces, invited, knocked, space_tree, space_descendants) => {
                 let mut mxc_uris: Vec<String> = spaces.iter()
                     .filter_map(|s| s.avatar_url.clone())
                     .collect();
                 mxc_uris.extend(rooms.iter().filter_map(|r| r.avatar_url.clone()));
+                if room_names_changed(&self.rooms, &rooms) {
+                    self.body_cache.clear();
+                }
                 self.rooms = rooms;
                 self.spaces = spaces;
                 self.space_tree = space_tree;
@@ -310,6 +343,10 @@ impl FluxChat {
                 SyncEvent::RoomListUpdate(rooms, spaces, invited, knocked, space_tree, space_descendants) => {
                     // Zero unread for rooms we've marked as read or the currently selected room
                     let selected = self.selected_room_id.clone();
+                    // Room pills in cached message bodies bake in room names.
+                    if room_names_changed(&self.rooms, &rooms) {
+                        self.body_cache.clear();
+                    }
                     self.rooms = rooms
                         .into_iter()
                         .filter(|r| !self.leaving_rooms.contains(&r.room_id))
@@ -352,11 +389,10 @@ impl FluxChat {
                         // Fire desktop notifications for new invites
                         if self.notifications_enabled {
                             for invite in &new_invites {
-                                let _ = notify_rust::Notification::new()
-                                    .summary("Room Invite")
-                                    .body(&format!("You've been invited to {}", invite.name))
-                                    .timeout(5000)
-                                    .show();
+                                show_notification(
+                                    "Room Invite".into(),
+                                    format!("You've been invited to {}", invite.name),
+                                );
                             }
                         }
                     }
@@ -378,7 +414,8 @@ impl FluxChat {
                     // Detect new messages by comparing against the last seen timestamp
                     let last_ts = self.last_seen_timestamp.get(&room_id).copied().unwrap_or(0);
                     let brand_new: Vec<&fluxchat_core::MessageInfo> = new_messages.iter()
-                        .filter(|m| m.timestamp > last_ts
+                        .filter(|m| last_ts > 0
+                            && m.timestamp > last_ts
                             && !m.event_id.starts_with("~")
                             && m.sender != self.user_id)
                         .collect();
@@ -425,11 +462,7 @@ impl FluxChat {
                                 "New message".into()
                             };
 
-                            let _ = notify_rust::Notification::new()
-                                .summary(&title)
-                                .body(&body_text)
-                                .timeout(5000)
-                                .show();
+                            show_notification(title, body_text);
                         }
                     }
 
@@ -481,78 +514,23 @@ impl FluxChat {
                         );
                     }
 
-                    // Detect Timeline drift: if the SDK's state.items has shrunk
-                    // substantially vs. what it reported last time (e.g. due to
-                    // a lagged-subscriber recovery that replaced items with just
-                    // the current event-cache memory window), older messages lose
-                    // their aggregation tracking and reactions on them get stuck.
-                    // Trigger an automatic rebuild when this happens.
-                    let new_real_count = new_messages.iter()
-                        .filter(|m| !m.event_id.starts_with("~"))
-                        .count();
-                    let last_count = self.last_timeline_real_count.get(&room_id).copied().unwrap_or(0);
-                    // Require new_real_count > 0: a transient empty snapshot
-                    // (e.g. during room setup or bridge churn) is not drift.
-                    let shrunk = last_count >= 10
-                        && new_real_count > 0
-                        && new_real_count * 2 < last_count;
-                    let is_active = self.selected_room_id.as_deref() == Some(&room_id);
-                    // Only remember counts we'd actually compare against, so a
-                    // transient 0 doesn't become the new baseline.
-                    if new_real_count > 0 {
-                        self.last_timeline_real_count.insert(room_id.clone(), new_real_count);
-                    }
-                    if shrunk && is_active {
-                        tracing::warn!(
-                            "Timeline drift detected for {} ({} -> {} real items) — auto-rebuilding",
-                            room_id, last_count, new_real_count,
-                        );
-                        return Task::done(Message::RefreshTimeline);
-                    }
-
-                    // Merge: keep old messages the SDK trimmed from its window,
-                    // but always use SDK version for matching IDs (edits applied).
-                    let merged = if let Some(existing) = self.messages_by_room.get(&room_id) {
-                        if new_messages.is_empty() {
-                            // SDK sent empty timeline (e.g. bridge state event) — keep existing
-                            existing.clone()
-                        } else {
-                            let new_ids: std::collections::HashSet<&str> = new_messages
-                                .iter()
-                                .map(|m| m.event_id.as_str())
-                                .collect();
-                            let real_msgs = || new_messages.iter()
-                                .filter(|m| !m.event_id.starts_with("~"));
-                            let oldest_new_ts = real_msgs()
-                                .map(|m| m.timestamp)
-                                .min()
-                                .unwrap_or(0);
-                            let newest_new_ts = real_msgs()
-                                .map(|m| m.timestamp)
-                                .max()
-                                .unwrap_or(u64::MAX);
-                            // Keep old messages that are:
-                            // - older than the SDK window (back-pagination preservation), OR
-                            // - newer than the SDK window (protects against stale snapshots
-                            //   from Tick/diff-stream races overwriting recent messages)
-                            // Messages within the SDK window that aren't in new_ids are
-                            // intentionally dropped (redactions, edits replacing event IDs).
-                            let mut merged: Vec<fluxchat_core::MessageInfo> = existing
-                                .iter()
-                                .filter(|m| {
-                                    !new_ids.contains(m.event_id.as_str())
-                                        && (m.timestamp < oldest_new_ts
-                                            || m.timestamp > newest_new_ts)
-                                })
-                                .cloned()
-                                .collect();
-                            merged.extend(new_messages);
-                            merged.sort_by_key(|m| m.timestamp);
-                            merged
-                        }
-                    } else {
-                        new_messages
+                    // A new membership/state event in the active room means the
+                    // member list may have changed.
+                    let state_events = |msgs: &[fluxchat_core::MessageInfo]| {
+                        msgs.iter().filter(|m| m.event_id.starts_with("~state-")).count()
                     };
+                    let members_stale = is_active
+                        && self.messages_by_room.get(&room_id)
+                            .is_some_and(|old| state_events(&new_messages) > state_events(old));
+
+                    // The watcher sends the Timeline's complete, ordered state,
+                    // so it replaces what we had outright — except messages we
+                    // deleted whose redaction hasn't reached the timeline yet.
+                    let mut merged = new_messages;
+                    if let Some(pending) = self.pending_redactions.get_mut(&room_id) {
+                        pending.retain(|id| merged.iter().any(|m| &m.event_id == id));
+                        merged.retain(|m| !pending.contains(&m.event_id));
+                    }
 
                     // Compute thread reply counts once here instead of per-render
                     let mut tc: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
@@ -576,15 +554,20 @@ impl FluxChat {
                     let preview_task = self.resolve_url_previews(&merged);
                     let image_task = self.resolve_images(&merged);
                     let new_count = merged.len();
+                    let members_task = if members_stale {
+                        self.reload_members(room_id.clone())
+                    } else {
+                        Task::none()
+                    };
                     self.messages_by_room.insert(room_id, merged);
                     // Clear paginating when messages arrive from diff stream
                     if is_active && self.paginating && new_count != self.paginate_msg_count {
-                        let added = new_count - self.paginate_msg_count;
+                        let added = new_count.saturating_sub(self.paginate_msg_count);
                         // Keep paginating=true until scroll correction settles
                         self.paginate_msg_count = new_count;
                         self.paginate_added_count = added;
                     }
-                    let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task];
+                    let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task, members_task];
                     if is_active && self.paginate_added_count > 0 {
                         // Scroll down to keep old messages in view after prepending
                         let estimated_height = self.paginate_added_count as f32 * 40.0;
@@ -599,8 +582,7 @@ impl FluxChat {
                             crate::view::messages_scrollable_id(),
                         ));
                     }
-                    // Send read receipt for active room when at bottom
-                    if is_active && self.messages_at_bottom {
+                    if is_active {
                         tasks.push(self.update(Message::SendReadReceipt));
                     }
                     // Refocus input bar (new messages can steal focus) — but
@@ -644,22 +626,7 @@ impl FluxChat {
                     self.open_tabs.retain(|(id, _, _, _)| !id.starts_with("thread::"));
                 }
                 self.selected_room_id = Some(room_id.clone());
-                // Upgrade the sliding-sync subscription for this room. Without
-                // this, each sync response carries only a tiny timeline window,
-                // and the SDK trims Timeline.state.items to match — causing
-                // messages to silently vanish from the view until the room is
-                // re-selected. Only meaningful for real rooms (not thread tabs).
-                if !room_id.starts_with("thread::") {
-                    let core_sub = self.core.clone();
-                    let rid_sub = room_id.clone();
-                    tokio::spawn(async move {
-                        if let Ok(parsed) = fluxchat_core::ruma::RoomId::parse(&rid_sub) {
-                            if let Some(svc) = core_sub.sync_service.lock().await.as_ref() {
-                                fluxchat_core::sync_service::subscribe_to_room(svc, &parsed).await;
-                            }
-                        }
-                    });
-                }
+                self.subscribe_active_room();
                 self.messages_at_bottom = true;
                 self.pinned_messages.clear();
                 crate::view::set_scroll_room(&room_id);
@@ -687,7 +654,6 @@ impl FluxChat {
                     )
                 };
 
-                // Load timeline + members if not cached
                 let needs_messages = !self.messages_by_room.contains_key(&room_id);
                 let needs_members = !self.members_by_room.contains_key(&room_id);
 
@@ -709,104 +675,40 @@ impl FluxChat {
                     )
                 };
 
-                if needs_messages || needs_members {
+                if !room_id.starts_with("thread::") && (needs_messages || needs_members) {
+                    // Messages arrive only through the room's watcher (created
+                    // together with its Timeline), never from this task — so a
+                    // snapshot taken here can't race with and clobber a newer one.
                     let core = self.core.clone();
                     let rid = room_id.clone();
-                    let tx = self.timeline_tx.clone();
                     let load = Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
-                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid).ok()?;
-
-                            // Load members
-                            let members = fluxchat_core::messages::get_room_members(&client, &rid)
-                                .await
-                                .ok();
-
-                            // Get or create timeline
-                            let timeline = fluxchat_core::timeline::get_or_create_timeline(
-                                &client,
-                                &core.timelines,
-                                &room_id_parsed,
-                            )
-                            .await
-                            .ok()?;
-
-                            // Subscribe to get initial items + live stream
-                            let (initial_items, stream) = timeline.subscribe().await;
-
-                            // Convert initial items
-                            let msgs = fluxchat_core::timeline::timeline_items_to_messages(
-                                &initial_items.into_iter().collect::<Vec<_>>(),
-                            );
-
-                            // Paginate backwards if not enough messages
-                            let real_count = msgs.iter()
-                                .filter(|m| !m.event_id.starts_with("~state-"))
-                                .count();
-                            if real_count < 30 {
-                                let _ = timeline.paginate_backwards(30).await;
-                            }
-
-                            // Spawn a background task to watch the diff stream.
-                            // Each iteration checks that this watcher's Timeline
-                            // is still the canonical one in core.timelines; if
-                            // RefreshTimeline has replaced it, we exit as an
-                            // orphan to avoid posting stale MessagesUpdated events
-                            // (which otherwise trigger a drift-rebuild feedback
-                            // loop against the new Timeline).
-                            {
-                                let timeline = timeline.clone();
-                                let rid = rid.clone();
-                                let tx = tx.clone();
-                                let core_watch = core.clone();
-                                let rid_parsed = room_id_parsed.to_owned();
-                                tokio::spawn(async move {
-                                    use futures_util::StreamExt;
-                                    futures_util::pin_mut!(stream);
-                                    while let Some(_diffs) = stream.next().await {
-                                        let is_current = core_watch.timelines.lock().await
-                                            .get(&rid_parsed)
-                                            .map(|tl| std::sync::Arc::ptr_eq(tl, &timeline))
-                                            .unwrap_or(false);
-                                        if !is_current {
-                                            tracing::info!("Orphan diff watcher exiting for {}", rid);
-                                            break;
-                                        }
-                                        let items = timeline.items().await;
-                                        let msgs = fluxchat_core::timeline::timeline_items_to_messages(
-                                            &items.into_iter().collect::<Vec<_>>(),
-                                        );
-                                        tracing::debug!(
-                                            "diff watcher {} fired: {} items, last_sender={:?}, last_body_len={:?}",
-                                            rid,
-                                            msgs.len(),
-                                            msgs.last().map(|m| &m.sender),
-                                            msgs.last().map(|m| m.body.len()),
-                                        );
-                                        if tx.send(Message::SyncEvent(
-                                            SyncEvent::MessagesUpdated(rid.clone(), msgs),
-                                        )).is_err() {
-                                            break; // Channel closed
-                                        }
+                            if needs_messages {
+                                let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid).ok()?;
+                                if !core.timelines.request_snapshot(&room_id_parsed).await {
+                                    if let Err(e) = fluxchat_core::timeline::get_or_create_timeline(
+                                        &client, &core.timelines, &room_id_parsed,
+                                    ).await {
+                                        tracing::warn!("Failed to open timeline for {rid}: {e}");
                                     }
-                                });
-                            }
-
-                            Some((rid, msgs, members))
-                        },
-                        |result| match result {
-                            Some((room_id, msgs, members)) => {
-                                Message::TimelineLoaded {
-                                    room_id,
-                                    messages: msgs,
-                                    members,
                                 }
                             }
+                            if !needs_members {
+                                return None;
+                            }
+                            let members = fluxchat_core::messages::get_room_members(&client, &rid)
+                                .await
+                                .map_err(|e| tracing::warn!("Failed to load members for {rid}: {e}"))
+                                .ok()?;
+                            Some((rid, members))
+                        },
+                        |result| match result {
+                            Some((rid, members)) => Message::SyncEvent(SyncEvent::MembersUpdated(rid, members)),
                             None => Message::Noop,
                         },
                     );
-                    return Task::batch([load, focus, call_check, pin_load]);
+                    return Task::batch([load, focus, call_check, pin_load, Task::done(Message::ScrollToBottom)]);
                 }
                 // Re-resolve images for already-cached messages (clear pending to allow retries)
                 self.image_cache_pending.clear();
@@ -817,7 +719,8 @@ impl FluxChat {
                 let image_task = self.resolve_images(&cached_msgs);
                 // Use ScrollToBottom message instead of direct snap_to_end —
                 // goes through the update loop, giving iced a frame to render first
-                return Task::batch([focus, call_check, image_task, Task::done(Message::ScrollToBottom), pin_load]);
+                let read_task = self.update(Message::SendReadReceipt);
+                return Task::batch([focus, call_check, image_task, Task::done(Message::ScrollToBottom), pin_load, read_task]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -1190,39 +1093,56 @@ impl FluxChat {
                             ).await.ok()?;
                             let eid = fluxchat_core::ruma::EventId::parse(&event_id).ok()?.to_owned();
                             let item_id = fluxchat_core::TimelineEventItemId::EventId(eid);
-                            // If the Timeline has drifted and no longer has this
-                            // event in its state.items, toggle_reaction returns
-                            // FailedToToggleReaction — signal up so we can rebuild.
-                            Some(timeline.toggle_reaction(&item_id, &emoji).await.is_err())
-                        },
-                        |failed| if failed.unwrap_or(false) {
-                            tracing::warn!("toggle_reaction failed — Timeline drift, auto-rebuilding");
-                            Message::RefreshTimeline
-                        } else {
-                            Message::Noop
-                        },
-                    );
-                }
-            }
-            Message::DeleteMessage(event_id) => {
-                if let Some(room_id) = self.selected_room_id.clone() {
-                    // Remove from local state immediately
-                    if let Some(msgs) = self.messages_by_room.get_mut(&room_id) {
-                        msgs.retain(|m| m.event_id != event_id);
-                    }
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            let _ = fluxchat_core::messages::delete_message(
-                                &client, &room_id, &event_id,
-                            )
-                            .await;
+                            if let Err(e) = timeline.toggle_reaction(&item_id, &emoji).await {
+                                tracing::warn!("toggle_reaction failed for {event_id}: {e}");
+                            }
                             Some(())
                         },
                         |_| Message::Noop,
                     );
                 }
+            }
+            Message::DeleteMessage(event_id) => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    // Hide immediately; stays hidden until the timeline shows
+                    // the redaction (see MessagesUpdated) or the request fails.
+                    if let Some(msgs) = self.messages_by_room.get_mut(&room_id) {
+                        msgs.retain(|m| m.event_id != event_id);
+                    }
+                    self.pending_redactions.entry(room_id.clone()).or_default().insert(event_id.clone());
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.ok()?;
+                            match fluxchat_core::messages::delete_message(&client, &room_id, &event_id).await {
+                                Ok(()) => None,
+                                Err(e) => {
+                                    tracing::warn!("Failed to delete {event_id}: {e}");
+                                    Some((room_id, event_id))
+                                }
+                            }
+                        },
+                        |failed| match failed {
+                            Some((room_id, event_id)) => Message::RedactionFailed(room_id, event_id),
+                            None => Message::Noop,
+                        },
+                    );
+                }
+            }
+            Message::RedactionFailed(room_id, event_id) => {
+                if let Some(pending) = self.pending_redactions.get_mut(&room_id) {
+                    pending.remove(&event_id);
+                }
+                // Have the watcher re-send the room so the message reappears.
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        if let Ok(parsed) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                            core.timelines.request_snapshot(&parsed).await;
+                        }
+                    },
+                    |_| Message::Noop,
+                );
             }
             Message::PinMessage(event_id) => {
                 if let Some(room_id) = self.selected_room_id.clone() {
@@ -1624,7 +1544,7 @@ impl FluxChat {
                 self.dm_results = results;
             }
             Message::OpenContextMenu(menu) => {
-                self.context_menu_position = self.cursor_position;
+                self.context_menu_position = crate::view::cursor_position();
                 self.context_menu = Some(menu);
             }
             Message::CloseContextMenu => {
@@ -1945,6 +1865,7 @@ impl FluxChat {
             Message::SetTheme(name) => {
                 if let Some(theme) = self.available_themes.iter().find(|t| t.name == name) {
                     crate::theme::set_active_theme(theme.clone());
+                self.body_cache.clear();
                     self.active_theme_name = name.clone();
                     let _ = self.core.db.set_setting("theme", &name);
                 }
@@ -1969,6 +1890,9 @@ impl FluxChat {
             }
             Message::WindowFocusChanged(focused) => {
                 self.app_focused = focused;
+                if focused {
+                    return self.update(Message::SendReadReceipt);
+                }
             }
 
             // --- Room commands ---
@@ -2351,8 +2275,17 @@ impl FluxChat {
             // --- Avatars ---
             Message::AvatarsResolved(entries) => {
                 for (mxc, data) in entries {
-                    let handle = iced::widget::image::Handle::from_bytes(data);
-                    self.avatar_cache.insert(mxc, handle);
+                    self.avatar_pending.remove(&mxc);
+                    match data {
+                        Some(data) => {
+                            self.avatar_failed.remove(&mxc);
+                            let handle = iced::widget::image::Handle::from_bytes(data);
+                            self.avatar_cache.insert(mxc, handle);
+                        }
+                        None => {
+                            self.avatar_failed.insert(mxc, std::time::Instant::now());
+                        }
+                    }
                 }
                 evict_cache(&mut self.avatar_cache, AVATAR_CACHE_LIMIT);
             }
@@ -3380,107 +3313,29 @@ impl FluxChat {
                 }
             }
             Message::RefreshTimeline => {
-                // Rebuild the Timeline in-place without clearing the view:
-                // drop the cached Timeline, build a fresh one from the current
-                // event cache, subscribe + paginate + respawn the diff watcher,
-                // then swap messages_by_room atomically via TimelineLoaded.
-                // Works around SDK state drift (e.g. lagged-subscriber recovery
-                // dropping old messages from Timeline.state.items, leaving
-                // aggregations unapplicable and reactions stuck).
+                // Manual rebuild: drop the Timeline (aborting its watcher) and
+                // open a fresh one; the new watcher replaces the view's messages.
                 if let Some(room_id) = self.selected_room_id.clone() {
                     if room_id.starts_with("thread::") {
                         return Task::none();
                     }
-                    // Reset drift counter so the post-refresh MessagesUpdated
-                    // doesn't falsely re-trigger a rebuild.
-                    self.last_timeline_real_count.remove(&room_id);
                     let core = self.core.clone();
-                    let rid = room_id.clone();
-                    let tx = self.timeline_tx.clone();
                     return Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
-                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid).ok()?;
-
-                            // Drop the cached Timeline so get_or_create builds fresh.
-                            fluxchat_core::timeline::remove_timeline(
-                                &core.timelines, &room_id_parsed,
-                            ).await;
-
-                            let members = fluxchat_core::messages::get_room_members(&client, &rid)
-                                .await
-                                .ok();
-
-                            let timeline = fluxchat_core::timeline::get_or_create_timeline(
+                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                            core.timelines.remove(&room_id_parsed).await;
+                            if let Err(e) = fluxchat_core::timeline::get_or_create_timeline(
                                 &client, &core.timelines, &room_id_parsed,
-                            ).await.ok()?;
-
-                            let (initial_items, stream) = timeline.subscribe().await;
-                            let msgs = fluxchat_core::timeline::timeline_items_to_messages(
-                                &initial_items.into_iter().collect::<Vec<_>>(),
-                            );
-
-                            let real_count = msgs.iter()
-                                .filter(|m| !m.event_id.starts_with("~state-"))
-                                .count();
-                            if real_count < 30 {
-                                let _ = timeline.paginate_backwards(30).await;
+                            ).await {
+                                tracing::warn!("Failed to rebuild timeline for {room_id}: {e}");
                             }
-
-                            // Respawn the diff watcher against the new Timeline.
-                            // Orphan check: exits if another RefreshTimeline
-                            // replaces this Timeline in core.timelines.
-                            {
-                                let timeline = timeline.clone();
-                                let rid = rid.clone();
-                                let tx = tx.clone();
-                                let core_watch = core.clone();
-                                let rid_parsed = room_id_parsed.to_owned();
-                                tokio::spawn(async move {
-                                    use futures_util::StreamExt;
-                                    futures_util::pin_mut!(stream);
-                                    while let Some(_diffs) = stream.next().await {
-                                        let is_current = core_watch.timelines.lock().await
-                                            .get(&rid_parsed)
-                                            .map(|tl| std::sync::Arc::ptr_eq(tl, &timeline))
-                                            .unwrap_or(false);
-                                        if !is_current {
-                                            tracing::info!("Orphan diff watcher exiting for {}", rid);
-                                            break;
-                                        }
-                                        let items = timeline.items().await;
-                                        let msgs = fluxchat_core::timeline::timeline_items_to_messages(
-                                            &items.into_iter().collect::<Vec<_>>(),
-                                        );
-                                        if tx.send(Message::SyncEvent(
-                                            SyncEvent::MessagesUpdated(rid.clone(), msgs),
-                                        )).is_err() {
-                                            break;
-                                        }
-                                    }
-                                });
-                            }
-
-                            // Re-read post-pagination so TimelineLoaded carries
-                            // the full restored set.
-                            let items = timeline.items().await;
-                            let final_msgs = fluxchat_core::timeline::timeline_items_to_messages(
-                                &items.into_iter().collect::<Vec<_>>(),
-                            );
-
-                            Some((rid, final_msgs, members))
+                            Some(())
                         },
-                        |result| match result {
-                            Some((room_id, messages, members)) => Message::TimelineLoaded {
-                                room_id, messages, members,
-                            },
-                            None => Message::Noop,
-                        },
+                        |_| Message::Noop,
                     );
                 }
             }
-
-            // --- Giphy ---
             Message::SetGiphyKey(key) => {
                 self.giphy_api_key = key.clone();
                 let _ = self.core.db.set_setting("giphy_api_key", &key);
@@ -3564,18 +3419,23 @@ impl FluxChat {
 
             // --- Read receipts ---
             Message::SendReadReceipt => {
-                if let Some(room_id) = self.selected_room_id.clone() {
-                    if let Some(event_id) = self.last_read_event.get(&room_id).cloned() {
-                        let core = self.core.clone();
-                        return Task::perform(
-                            async move {
-                                let client = core.get_client().await.ok()?;
-                                fluxchat_core::messages::send_read_receipt(&client, &room_id, &event_id).await.ok()
-                            },
-                            |_| Message::Noop,
-                        );
-                    }
+                // Only mark read what the user can actually see: the active
+                // room, scrolled to the bottom, with the window focused.
+                let Some(room_id) = self.selected_room_id.clone() else { return Task::none() };
+                if room_id.starts_with("thread::") || !self.messages_at_bottom || !self.app_focused {
+                    return Task::none();
                 }
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                        if let Err(e) = fluxchat_core::timeline::mark_as_read(&core.timelines, &room_id_parsed).await {
+                            tracing::warn!("Failed to mark {room_id} as read: {e}");
+                        }
+                        Some(())
+                    },
+                    |_| Message::Noop,
+                );
             }
 
             // --- Misc ---
@@ -3583,11 +3443,8 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let timeline = {
-                            let timelines = core.timelines.lock().await;
-                            let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
-                            timelines.get(&*room_id_parsed)?.clone()
-                        };
+                        let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
+                        let timeline = core.timelines.get(&room_id_parsed).await?;
                         // First call may just adjust lazy-loading window; second call
                         // actually fetches from server if needed.
                         let r1 = timeline.paginate_backwards(20).await;
@@ -3619,9 +3476,10 @@ impl FluxChat {
             Message::ScrollToBottom => {
                 self.messages_at_bottom = true;
                 self.new_messages_below = false;
-                return iced::widget::operation::snap_to_end(
-                    crate::view::messages_scrollable_id(),
-                );
+                return Task::batch([
+                    iced::widget::operation::snap_to_end(crate::view::messages_scrollable_id()),
+                    self.update(Message::SendReadReceipt),
+                ]);
             }
             Message::MessagesScrolled(viewport) => {
                 // absolute_offset().y = 0 at bottom, increases scrolling up
@@ -3646,10 +3504,14 @@ impl FluxChat {
                         crate::view::messages_scrollable_id(),
                     );
                 }
+                let reached_bottom = near_bottom && !self.messages_at_bottom;
                 self.messages_at_bottom = near_bottom;
                 self.last_scroll_offset = offset;
                 if near_bottom {
                     self.new_messages_below = false;
+                }
+                if reached_bottom {
+                    return self.update(Message::SendReadReceipt);
                 }
                 // Clear paginating once scroll correction has settled
                 if self.paginating && !near_top {
@@ -3673,8 +3535,7 @@ impl FluxChat {
             Message::SidebarDragEnd => {
                 self.sidebar_dragging = false;
             }
-            Message::CursorMoved(x, y) => {
-                self.cursor_position = (x, y);
+            Message::CursorMoved(x, _y) => {
                 if self.sidebar_dragging {
                     let new_width = (x - 56.0).clamp(150.0, 400.0);
                     self.sidebar_width = new_width;
@@ -3776,56 +3637,19 @@ impl FluxChat {
                     // Clear stale typing indicators (timeout after 10s)
                     self.typing_by_room.retain(|_, (_, updated)| updated.elapsed().as_secs() < 10);
 
-                    // Periodic timeline refresh for the active room.
-                    // The diff stream watcher handles live updates, but this
-                    // acts as a reliable fallback that also picks up reaction
-                    // changes and read receipt movements.
-                    if let Some(ref room_id) = self.selected_room_id {
-                        if !room_id.starts_with("thread::") {
-                            let core_tl = self.core.clone();
-                            let rid_tl = room_id.clone();
-                            tasks.push(Task::perform(
-                                async move {
-                                    let client = core_tl.get_client().await.ok()?;
-                                    let room_id_parsed = fluxchat_core::ruma::RoomId::parse(&rid_tl).ok()?;
-                                    let timeline = fluxchat_core::timeline::get_or_create_timeline(
-                                        &client, &core_tl.timelines, &room_id_parsed,
-                                    ).await.ok()?;
-                                    let items = timeline.items().await;
-                                    let msgs = fluxchat_core::timeline::timeline_items_to_messages(
-                                        &items.into_iter().collect::<Vec<_>>(),
-                                    );
-                                    Some((rid_tl, msgs))
-                                },
-                                |result| match result {
-                                    Some((rid, msgs)) => Message::SyncEvent(SyncEvent::MessagesUpdated(rid, msgs)),
-                                    None => Message::Noop,
-                                },
-                            ));
-                        }
-                    }
+                    self.tick_count = self.tick_count.wrapping_add(1);
+                    let slow_tick = self.tick_count % SLOW_TICK_EVERY == 0;
 
-                    // Refresh member list for active room
-                    if let Some(ref room_id) = self.selected_room_id {
-                        if !room_id.starts_with("thread::") {
-                            let core_m = self.core.clone();
-                            let rid_m = room_id.clone();
-                            tasks.push(Task::perform(
-                                async move {
-                                    let client = core_m.get_client().await.ok()?;
-                                    let members = fluxchat_core::messages::get_room_members(&client, &rid_m).await.ok()?;
-                                    Some((rid_m, members))
-                                },
-                                |result| match result {
-                                    Some((rid, members)) => Message::SyncEvent(SyncEvent::MembersUpdated(rid, members)),
-                                    None => Message::Noop,
-                                },
-                            ));
+                    // Refresh member list for presence/status changes. Joins and
+                    // leaves trigger an immediate reload from MessagesUpdated.
+                    if slow_tick {
+                        if let Some(room_id) = self.selected_room_id.clone() {
+                            tasks.push(self.reload_members(room_id));
                         }
                     }
 
                     // Scan all rooms for active calls (sidebar indicators)
-                    {
+                    if slow_tick {
                         let core3 = self.core.clone();
                         let room_ids: Vec<String> = self.rooms.iter().map(|r| r.room_id.clone()).collect();
                         tasks.push(Task::perform(
@@ -3907,52 +3731,98 @@ impl FluxChat {
     }
 
     /// Spawn background avatar resolution for any uncached MXC URIs.
-    fn resolve_avatars(&self, mxc_uris: Vec<String>) -> Task<Message> {
-        let uncached: Vec<String> = mxc_uris
-            .into_iter()
-            .filter(|mxc| !self.avatar_cache.contains_key(mxc))
-            .collect();
+    /// Reload a room's member list in the background.
+    fn reload_members(&self, room_id: String) -> Task<Message> {
+        if room_id.starts_with("thread::") {
+            return Task::none();
+        }
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let client = core.get_client().await.ok()?;
+                let members = fluxchat_core::messages::get_room_members(&client, &room_id).await.ok()?;
+                Some((room_id, members))
+            },
+            |result| match result {
+                Some((rid, members)) => Message::SyncEvent(SyncEvent::MembersUpdated(rid, members)),
+                None => Message::Noop,
+            },
+        )
+    }
+
+    /// Point the sliding-sync room subscription at the active room so it gets
+    /// full timeline batches instead of the room list's tiny window.
+    fn subscribe_active_room(&self) {
+        let Some(room_id) = self.selected_room_id.as_deref() else { return };
+        if room_id.starts_with("thread::") {
+            return;
+        }
+        let core = self.core.clone();
+        let room_id = room_id.to_string();
+        tokio::spawn(async move {
+            if let Ok(parsed) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                if let Some(svc) = core.sync_service.lock().await.as_ref() {
+                    fluxchat_core::sync_service::subscribe_to_room(svc, &parsed).await;
+                }
+            }
+        });
+    }
+
+    fn resolve_avatars(&mut self, mxc_uris: Vec<String>) -> Task<Message> {
+        // Skip avatars that are cached, already being fetched, or failed
+        // recently — callers pass every avatar in a room on every update.
+        let mut uncached: Vec<String> = Vec::new();
+        for mxc in mxc_uris {
+            if self.avatar_cache.contains_key(&mxc) || self.avatar_pending.contains(&mxc) {
+                continue;
+            }
+            if self.avatar_failed.get(&mxc).is_some_and(|t| t.elapsed() < AVATAR_RETRY_AFTER) {
+                continue;
+            }
+            self.avatar_pending.insert(mxc.clone());
+            uncached.push(mxc);
+        }
         if uncached.is_empty() {
             return Task::none();
         }
         let core = self.core.clone();
         Task::perform(
             async move {
+                use futures_util::StreamExt;
                 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
                 use matrix_sdk::ruma::events::room::MediaSource;
                 use matrix_sdk::ruma::MxcUri;
 
                 let client = match core.get_client().await {
                     Ok(c) => c,
-                    Err(_) => return Vec::new(),
+                    Err(_) => return uncached.into_iter().map(|mxc| (mxc, None)).collect(),
                 };
-                let mut resolved = Vec::new();
-                for mxc in uncached {
-                    let mxc_uri = <&MxcUri>::from(mxc.as_str());
-                    let req = MediaRequestParameters {
-                        source: MediaSource::Plain(mxc_uri.to_owned()),
-                        format: MediaFormat::Thumbnail(matrix_sdk::media::MediaThumbnailSettings::new(
-                            matrix_sdk::ruma::UInt::new(40).unwrap(),
-                            matrix_sdk::ruma::UInt::new(40).unwrap(),
-                        )),
-                    };
-                    // Try thumbnail first, fall back to full file
-                    let data = match client.media().get_media_content(&req, true).await {
-                        Ok(d) => d,
-                        Err(_) => {
-                            let req_full = MediaRequestParameters {
-                                source: MediaSource::Plain(mxc_uri.to_owned()),
-                                format: MediaFormat::File,
+                futures_util::stream::iter(uncached)
+                    .map(|mxc| {
+                        let client = client.clone();
+                        async move {
+                            let source = MediaSource::Plain(<&MxcUri>::from(mxc.as_str()).to_owned());
+                            let thumb = MediaRequestParameters {
+                                source: source.clone(),
+                                format: MediaFormat::Thumbnail(matrix_sdk::media::MediaThumbnailSettings::new(
+                                    matrix_sdk::ruma::UInt::new(40).unwrap(),
+                                    matrix_sdk::ruma::UInt::new(40).unwrap(),
+                                )),
                             };
-                            match client.media().get_media_content(&req_full, true).await {
-                                Ok(d) => d,
-                                Err(_) => continue,
-                            }
+                            // Try thumbnail first, fall back to full file
+                            let data = match client.media().get_media_content(&thumb, true).await {
+                                Ok(d) => Some(d),
+                                Err(_) => {
+                                    let full = MediaRequestParameters { source, format: MediaFormat::File };
+                                    client.media().get_media_content(&full, true).await.ok()
+                                }
+                            };
+                            (mxc, data)
                         }
-                    };
-                    resolved.push((mxc.clone(), data));
-                }
-                resolved
+                    })
+                    .buffer_unordered(AVATAR_FETCH_CONCURRENCY)
+                    .collect::<Vec<_>>()
+                    .await
             },
             Message::AvatarsResolved,
         )
@@ -4429,6 +4299,7 @@ impl FluxChat {
             self.active_theme_name = val.clone();
             if let Some(theme) = self.available_themes.iter().find(|t| t.name == val) {
                 crate::theme::set_active_theme(theme.clone());
+                self.body_cache.clear();
             }
         }
         if let Some(key) = self.core.db.get_setting("giphy_api_key") {

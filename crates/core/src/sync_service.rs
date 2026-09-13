@@ -1,5 +1,5 @@
 use matrix_sdk::Client;
-use matrix_sdk::ruma::api::client::error::ErrorKind;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk_ui::sync_service::{Error as SyncServiceError, SyncService};
 use matrix_sdk_ui::room_list_service::Error as RoomListError;
 use tracing::info;
@@ -7,6 +7,9 @@ use tracing::info;
 use std::collections::HashMap;
 
 use crate::error::AppError;
+
+/// How long the room list watcher waits for further changes before rebuilding.
+const ROOM_LIST_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
 use crate::models::RoomInfo;
 use crate::rooms::SpaceNode;
 
@@ -21,7 +24,6 @@ pub async fn create_sync_service(client: &Client) -> Result<SyncService, AppErro
     service.start().await;
     info!("SyncService started");
 
-
     Ok(service)
 }
 
@@ -32,7 +34,7 @@ pub fn is_invalid_token_error(err: &SyncServiceError) -> bool {
     let SyncServiceError::RoomList(RoomListError::SlidingSync(sdk_err)) = err else {
         return false;
     };
-    matches!(sdk_err.client_api_error_kind(), Some(ErrorKind::UnknownToken { .. }))
+    matches!(sdk_err.client_api_error_kind(), Some(ErrorKind::UnknownToken(_)))
 }
 
 /// Upgrade the sliding-sync subscription for a specific room so we receive
@@ -81,13 +83,29 @@ pub async fn spawn_room_list_watcher<F>(
         futures_util::pin_mut!(stream);
 
         while let Some(_diffs) = stream.next().await {
-            // On any room list change, rebuild from current client state
+            // A single sync response usually yields several diff batches (and
+            // the list re-sorts on every message in any room). Rebuilding reads
+            // state for every room, so collect a burst and rebuild once.
+            let debounce = tokio::time::sleep(ROOM_LIST_DEBOUNCE);
+            tokio::pin!(debounce);
+            let mut ended = false;
+            loop {
+                tokio::select! {
+                    _ = &mut debounce => break,
+                    more = stream.next() => if more.is_none() { ended = true; break; },
+                }
+            }
+
+            // Rebuild from current client state
             let rooms = crate::rooms::get_rooms(&client).await.unwrap_or_default();
             let spaces = crate::rooms::get_spaces(&client).await.unwrap_or_default();
             let invited = crate::rooms::get_invited_rooms(&client).await.unwrap_or_default();
             let knocked = crate::rooms::get_knocked_rooms(&client).await.unwrap_or_default();
             let (space_tree, space_descendants) = crate::rooms::get_space_tree(&client).await;
             on_update(rooms, spaces, invited, knocked, space_tree, space_descendants);
+            if ended {
+                break;
+            }
         }
         drop(controller);
         tracing::warn!("Room list watcher stream ended");

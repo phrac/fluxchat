@@ -148,7 +148,6 @@ pub struct FluxChat {
     pub create_menu_open: bool,
     pub context_menu: Option<ContextMenu>,
     pub context_menu_position: (f32, f32),
-    pub cursor_position: (f32, f32),
     /// Rooms we're in the process of leaving (filter from sync updates)
     pub leaving_rooms: HashSet<String>,
     pub hovered_message: Option<String>, // event_id of hovered message
@@ -207,6 +206,10 @@ pub struct FluxChat {
 
     // Media/avatar cache — maps MXC URI to stable image handles (avoids flicker on re-render)
     pub avatar_cache: HashMap<String, iced::widget::image::Handle>,
+    /// Avatar MXC URIs with a fetch in flight.
+    pub avatar_pending: std::collections::HashSet<String>,
+    /// Avatar MXC URIs whose last fetch failed, and when.
+    pub avatar_failed: HashMap<String, std::time::Instant>,
 
     // Inline image cache — maps MXC URI to image handle (full size for message images)
     pub image_cache: HashMap<String, iced::widget::image::Handle>,
@@ -304,7 +307,12 @@ pub struct FluxChat {
     // Used to detect lag-recovery shrinkage — when the SDK's state.items drops
     // back-paginated history, aggregations (reaction redactions etc.) can no
     // longer be applied to the dropped events, so we auto-rebuild.
-    pub last_timeline_real_count: HashMap<String, usize>,
+    /// Number of 5s Ticks since startup, for slower periodic work.
+    pub tick_count: u64,
+    /// Messages deleted locally whose redaction the timeline hasn't shown yet, per room.
+    pub pending_redactions: HashMap<String, std::collections::HashSet<String>>,
+    /// Parsed message bodies, so view() doesn't re-parse HTML every frame.
+    pub body_cache: crate::html::BodyCache,
 
     // Scroll tracking — true when messages scrollable is at/near bottom
     pub messages_at_bottom: bool,
@@ -364,6 +372,14 @@ pub struct SecurityState {
 impl FluxChat {
     pub fn new(core: Arc<AppState>) -> Self {
         let (timeline_tx, timeline_rx) = tokio::sync::mpsc::unbounded_channel();
+        {
+            let tx: TimelineUpdateTx = timeline_tx.clone();
+            core.timelines.set_sink(Arc::new(move |room_id, messages| {
+                let _ = tx.send(crate::message::Message::SyncEvent(
+                    crate::message::SyncEvent::MessagesUpdated(room_id, messages),
+                ));
+            }));
+        }
         let _ = TIMELINE_RX.set(std::sync::Mutex::new(Some(timeline_rx)));
         let (call_event_tx, call_event_rx) = tokio::sync::mpsc::unbounded_channel();
         let _ = CALL_RX.set(std::sync::Mutex::new(Some(call_event_rx)));
@@ -398,7 +414,6 @@ impl FluxChat {
             create_menu_open: false,
             context_menu: None,
             context_menu_position: (0.0, 0.0),
-            cursor_position: (0.0, 0.0),
             leaving_rooms: HashSet::new(),
             hovered_message: None,
             devtools_state_events: Vec::new(),
@@ -474,6 +489,8 @@ impl FluxChat {
             sidebar_dragging: false,
             device_id: None,
             avatar_cache: HashMap::new(),
+            avatar_pending: Default::default(),
+            avatar_failed: HashMap::new(),
             login_homeserver: "matrix.org".into(),
             login_username: String::new(),
             login_password: String::new(),
@@ -521,7 +538,9 @@ impl FluxChat {
             invite_target_id: None,
             space_detail_rooms: Vec::new(),
             space_detail_members: Vec::new(),
-            last_timeline_real_count: HashMap::new(),
+            tick_count: 0,
+            body_cache: Default::default(),
+            pending_redactions: HashMap::new(),
             messages_at_bottom: true,
             last_scroll_offset: 0.0,
             paginating: false,

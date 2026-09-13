@@ -50,7 +50,7 @@ pub(crate) fn extract_message_content(msgtype: &MessageType) -> (String, Option<
 
 fn extract_reply_info(relates_to: &Option<Relation<RoomMessageEventContentWithoutRelation>>) -> Option<String> {
     match relates_to {
-        Some(Relation::Reply { in_reply_to }) => Some(in_reply_to.event_id.to_string()),
+        Some(Relation::Reply(reply)) => Some(reply.in_reply_to.event_id.to_string()),
         Some(Relation::Thread(thread)) => thread.in_reply_to.as_ref().map(|r| r.event_id.to_string()),
         _ => None,
     }
@@ -151,12 +151,12 @@ pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str
     if let Some(emote_body) = body.strip_prefix("/me ") {
         let content = build_emote_content(&room, emote_body).await;
         let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
-        return Ok(result.event_id.to_string());
+        return Ok(result.response.event_id.to_string());
     }
 
     let content = build_message_content(&room, body).await;
     let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
-    Ok(result.event_id.to_string())
+    Ok(result.response.event_id.to_string())
 }
 
 /// Send a message as raw HTML (for /html command).
@@ -175,7 +175,7 @@ pub async fn send_html(client: &matrix_sdk::Client, room_id: &str, html: &str) -
     let plain = plain_stripped;
     let content = RoomMessageEventContent::text_html(&plain, html);
     let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
-    Ok(result.event_id.to_string())
+    Ok(result.response.event_id.to_string())
 }
 
 /// Send a plain text message without any markdown processing (for /plain command).
@@ -184,7 +184,7 @@ pub async fn send_plain(client: &matrix_sdk::Client, room_id: &str, text: &str) 
     let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let content = RoomMessageEventContent::text_plain(text);
     let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
-    Ok(result.event_id.to_string())
+    Ok(result.response.event_id.to_string())
 }
 
 /// Send a voice message as OGG Opus audio with MSC3245 voice marker.
@@ -215,7 +215,8 @@ pub async fn report_message(client: &matrix_sdk::Client, room_id: &str, event_id
     use matrix_sdk::ruma::api::client::room::report_content;
     let rid = parse_room_id(room_id)?;
     let eid = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
-    let request = report_content::v3::Request::new(rid, eid, None, Some(reason.to_string()));
+    let mut request = report_content::v3::Request::new(rid, eid);
+    request.reason = Some(reason.to_string());
     client.send(request).await.map_err(|e| AppError::Other(format!("Report failed: {e}")))?;
     Ok(())
 }
@@ -232,7 +233,7 @@ pub async fn send_location(client: &matrix_sdk::Client, room_id: &str, geo_uri: 
         ),
     );
     let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send location: {e}")))?;
-    Ok(result.event_id.to_string())
+    Ok(result.response.event_id.to_string())
 }
 
 /// Build message content with mention resolution, markdown formatting,
@@ -442,9 +443,9 @@ pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, 
         }
         _ => RoomMessageEventContentWithoutRelation::text_plain(body),
     };
-    let reply = Reply { event_id, enforce_thread: matrix_sdk::room::reply::EnforceThread::Unthreaded };
+    let reply = Reply { event_id, enforce_thread: matrix_sdk::room::reply::EnforceThread::Unthreaded, add_mentions: matrix_sdk::ruma::events::room::message::AddMentions::Yes };
     let reply_content = room.make_reply_event(content, reply).await.map_err(|e| AppError::Other(format!("Failed to create reply: {e}")))?;
-    Ok(room.send(reply_content).await?.event_id.to_string())
+    Ok(room.send(reply_content).await?.response.event_id.to_string())
 }
 
 /// Send a message as a threaded reply (creates/continues a thread).
@@ -465,9 +466,9 @@ pub async fn send_thread_reply(client: &matrix_sdk::Client, room_id: &str, body:
     };
     let reply = Reply { event_id, enforce_thread: matrix_sdk::room::reply::EnforceThread::Threaded(
         matrix_sdk::ruma::events::room::message::ReplyWithinThread::No,
-    ) };
+    ), add_mentions: matrix_sdk::ruma::events::room::message::AddMentions::Yes };
     let reply_content = room.make_reply_event(content, reply).await.map_err(|e| AppError::Other(format!("Failed to create reply: {e}")))?;
-    Ok(room.send(reply_content).await?.event_id.to_string())
+    Ok(room.send(reply_content).await?.response.event_id.to_string())
 }
 
 /// Edit an existing message in a room.

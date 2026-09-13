@@ -2469,7 +2469,10 @@ impl FluxChat {
                     Some(Message::WindowFocusChanged(false))
                 }
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-                    Some(Message::CursorMoved(position.x, position.y))
+                    // Record without emitting a Message: every Message triggers
+                    // a full view rebuild, and the cursor moves constantly.
+                    set_cursor_position(position.x, position.y);
+                    None
                 }
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                     Some(Message::SidebarDragEnd)
@@ -2484,7 +2487,19 @@ impl FluxChat {
         // Call events from LiveKit session
         let call_sub = Subscription::run(call_event_stream);
 
-        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub, audio_tick])
+        // Only stream cursor movement into update() while resizing the sidebar.
+        let sidebar_drag = if self.sidebar_dragging {
+            iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::CursorMoved(position.x, position.y))
+                }
+                _ => None,
+            })
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub, audio_tick, sidebar_drag])
     }
 
     /// Application theme — dark.
@@ -2495,6 +2510,22 @@ impl FluxChat {
             Theme::Light
         }
     }
+}
+
+static CURSOR_X: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static CURSOR_Y: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn set_cursor_position(x: f32, y: f32) {
+    CURSOR_X.store(x.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    CURSOR_Y.store(y.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Last known window cursor position, tracked outside the update loop.
+pub(crate) fn cursor_position() -> (f32, f32) {
+    (
+        f32::from_bits(CURSOR_X.load(std::sync::atomic::Ordering::Relaxed)),
+        f32::from_bits(CURSOR_Y.load(std::sync::atomic::Ordering::Relaxed)),
+    )
 }
 
 /// Convert a Unix timestamp (seconds) to local time-of-day in seconds.

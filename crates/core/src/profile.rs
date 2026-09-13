@@ -61,9 +61,7 @@ pub async fn change_password(client: &matrix_sdk::Client, old_password: &str, ne
     // Provide old password as auth for UIAA
     request.auth = Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
         matrix_sdk::ruma::api::client::uiaa::Password::new(
-            matrix_sdk::ruma::api::client::uiaa::UserIdentifier::UserIdOrLocalpart(
-                client.user_id().ok_or(AppError::NotLoggedIn)?.localpart().to_owned(),
-            ),
+            matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(client.user_id().ok_or(AppError::NotLoggedIn)?.localpart().to_owned())),
             old_password.to_owned(),
         ),
     ));
@@ -77,9 +75,7 @@ pub async fn deactivate_account(client: &matrix_sdk::Client, password: &str) -> 
     let mut request = DeactivateRequest::new();
     request.auth = Some(matrix_sdk::ruma::api::client::uiaa::AuthData::Password(
         matrix_sdk::ruma::api::client::uiaa::Password::new(
-            matrix_sdk::ruma::api::client::uiaa::UserIdentifier::UserIdOrLocalpart(
-                client.user_id().ok_or(AppError::NotLoggedIn)?.localpart().to_owned(),
-            ),
+            matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new(client.user_id().ok_or(AppError::NotLoggedIn)?.localpart().to_owned())),
             password.to_owned(),
         ),
     ));

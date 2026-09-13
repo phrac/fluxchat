@@ -56,6 +56,7 @@ struct Style {
 }
 
 /// A part of a rendered message — either text spans, a code block, or a table.
+#[derive(Clone)]
 pub enum MessagePart {
     /// Normal text (may include inline code, links, mentions, etc.)
     Text(Vec<Span<'static, String>>),
@@ -66,6 +67,50 @@ pub enum MessagePart {
         headers: Vec<Vec<Span<'static, String>>>,
         rows: Vec<Vec<Vec<Span<'static, String>>>>,
     },
+}
+
+/// A message body converted to spans, ready to hand to widgets.
+pub enum RenderedBody {
+    Spans(Vec<Span<'static, String>>),
+    Parts(Vec<MessagePart>),
+}
+
+/// Max parsed bodies kept before the cache is reset.
+const BODY_CACHE_LIMIT: usize = 4000;
+
+/// Memoizes message body parsing. `view()` runs after every update, and
+/// re-parsing HTML with html5ever + syntax-highlighting every visible message
+/// each time is the dominant render cost. Entries are keyed by the source text
+/// and every input that affects the output; theme or room-list changes must
+/// call `clear()` since spans bake in colors and room names.
+#[derive(Default)]
+pub struct BodyCache {
+    map: RefCell<std::collections::HashMap<u64, std::rc::Rc<RenderedBody>>>,
+}
+
+impl BodyCache {
+    pub fn get_or_insert(
+        &self,
+        key: impl std::hash::Hash,
+        build: impl FnOnce() -> RenderedBody,
+    ) -> std::rc::Rc<RenderedBody> {
+        use std::hash::{BuildHasher, BuildHasherDefault};
+        let hash = BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().hash_one(key);
+        if let Some(hit) = self.map.borrow().get(&hash) {
+            return hit.clone();
+        }
+        let body = std::rc::Rc::new(build());
+        let mut map = self.map.borrow_mut();
+        if map.len() >= BODY_CACHE_LIMIT {
+            map.clear();
+        }
+        map.insert(hash, body.clone());
+        body
+    }
+
+    pub fn clear(&self) {
+        self.map.borrow_mut().clear();
+    }
 }
 
 /// Parse Matrix HTML into a list of Iced Spans.

@@ -19,7 +19,7 @@ impl AppState {
             client: Arc::new(Mutex::new(None)),
             db,
             media_cache: std::sync::Mutex::new(HashMap::new()),
-            timelines: tokio::sync::Mutex::new(HashMap::new()),
+            timelines: Default::default(),
             sync_service: Mutex::new(None),
         }
     }

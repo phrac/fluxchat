@@ -15,6 +15,8 @@ pub enum Message {
     LoginResult(Result<LoginSuccess, String>),
     LoginCapsLoaded(Option<LoginCapabilities>),
     SessionRestored(LoginSuccess),
+    /// Startup found no saved session — show the login form.
+    NoSavedSession,
     Logout,
 
     // --- Post-login startup ---
@@ -204,7 +206,7 @@ pub enum Message {
     VerificationCancel(String, String),  // user_id, flow_id
 
     // --- Avatars ---
-    AvatarsResolved(Vec<(String, Vec<u8>)>), // vec of (mxc_uri, image_bytes)
+    AvatarsResolved(Vec<(String, Option<Vec<u8>>)>), // (mxc_uri, image bytes or None if the fetch failed)
 
     // --- Inline images ---
     ImageResolved(String, Vec<u8>), // (mxc_uri, image_bytes)
@@ -347,6 +349,8 @@ pub enum Message {
 
     // --- Read receipts ---
     SendReadReceipt,
+    /// Deleting a message failed: (room_id, event_id).
+    RedactionFailed(String, String),
 
     // --- Sidebar resize ---
     SidebarDragStart,

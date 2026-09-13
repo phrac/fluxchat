@@ -228,15 +228,13 @@ pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginRe
         tokens: SessionTokens { access_token, refresh_token },
     };
 
-    match client.restore_session(matrix_session).await {
-        Ok(()) => info!("Session restored"),
-        Err(e) => {
-            warn!("Session restore failed: {e}, clearing stale data");
-            state.db.delete_session();
-            if matrix_store.exists() { let _ = std::fs::remove_dir_all(&matrix_store); }
-            return Ok(None);
-        }
-    }
+    // Never delete the session or crypto store here: restore can fail for
+    // transient reasons (e.g. another FluxChat instance holding the store
+    // lock), and wiping would destroy this device's keys. Logging in again
+    // replaces the store explicitly; an invalid token is handled by sync.
+    client.restore_session(matrix_session).await
+        .map_err(|e| AppError::Other(format!("Session restore failed: {e}")))?;
+    info!("Session restored");
 
     // Enable event cache for Timeline API
     if let Err(e) = client.event_cache().subscribe() {

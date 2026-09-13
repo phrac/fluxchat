@@ -1,33 +1,109 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use futures_util::{FutureExt, StreamExt};
+use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::OwnedRoomId;
+use matrix_sdk_ui::eyeball_im::{Vector, VectorDiff};
 use matrix_sdk_ui::timeline::{
     Timeline, TimelineBuilder, TimelineItem, TimelineItemKind, TimelineItemContent,
     EventTimelineItem,
 };
+use tokio::sync::Notify;
 
 use crate::models::{MessageInfo, PollInfo, ReactionInfo};
 
-/// Store of Timeline instances per room.
-pub type RoomTimelines = tokio::sync::Mutex<HashMap<OwnedRoomId, Arc<Timeline>>>;
+/// Back-paginate a freshly opened timeline until it has at least this many
+/// non-state items, so a room never opens to a near-empty view.
+const INITIAL_BACKFILL: u16 = 30;
 
-/// Get or create a Timeline for a room.
+/// Receives a room's complete, ordered message list every time its Timeline
+/// changes. Called only from that room's watcher task, so updates for a room
+/// are always delivered in order.
+pub type TimelineSink = Arc<dyn Fn(String, Vec<MessageInfo>) + Send + Sync>;
+
+struct RoomTimeline {
+    timeline: Arc<Timeline>,
+    /// Wakes the watcher to re-emit its current snapshot.
+    resend: Arc<Notify>,
+    watcher: tokio::task::AbortHandle,
+}
+
+impl Drop for RoomTimeline {
+    fn drop(&mut self) {
+        self.watcher.abort();
+    }
+}
+
+/// Store of Timeline instances per room. Every Timeline is created together
+/// with exactly one watcher task that streams its changes to the sink, and the
+/// watcher is aborted when the Timeline is removed — so there is never a
+/// Timeline without a watcher, or two watchers for one Timeline.
+#[derive(Default)]
+pub struct RoomTimelines {
+    map: tokio::sync::Mutex<HashMap<OwnedRoomId, RoomTimeline>>,
+    sink: std::sync::Mutex<Option<TimelineSink>>,
+}
+
+impl RoomTimelines {
+    /// Set the callback that receives message-list updates for all rooms.
+    pub fn set_sink(&self, sink: TimelineSink) {
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
+
+    /// Get a room's Timeline if one is open, without creating it.
+    pub async fn get(&self, room_id: &matrix_sdk::ruma::RoomId) -> Option<Arc<Timeline>> {
+        self.map.lock().await.get(room_id).map(|rt| rt.timeline.clone())
+    }
+
+    /// Ask a room's watcher to re-send its current message list.
+    /// Returns false if the room has no open Timeline.
+    pub async fn request_snapshot(&self, room_id: &matrix_sdk::ruma::RoomId) -> bool {
+        match self.map.lock().await.get(room_id) {
+            Some(rt) => {
+                rt.resend.notify_one();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop a room's Timeline and stop its watcher.
+    pub async fn remove(&self, room_id: &matrix_sdk::ruma::RoomId) {
+        self.map.lock().await.remove(room_id);
+    }
+
+    /// Drop all Timelines and stop all watchers (logout).
+    pub async fn clear(&self) {
+        self.map.lock().await.clear();
+    }
+}
+
+/// Get or create a Timeline for a room. Creating one also spawns its watcher.
 pub async fn get_or_create_timeline(
     client: &matrix_sdk::Client,
     timelines: &RoomTimelines,
     room_id: &matrix_sdk::ruma::RoomId,
 ) -> Result<Arc<Timeline>, crate::error::AppError> {
-    let mut map = timelines.lock().await;
-    if let Some(tl) = map.get(room_id) {
-        return Ok(tl.clone());
+    let mut map = timelines.map.lock().await;
+    if let Some(rt) = map.get(room_id) {
+        if !rt.watcher.is_finished() {
+            return Ok(rt.timeline.clone());
+        }
+        tracing::warn!("Timeline watcher for {room_id} had stopped — rebuilding timeline");
+        map.remove(room_id);
     }
+    let sink = timelines.sink.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        .ok_or_else(|| crate::error::AppError::Other("Timeline sink not set".into()))?;
     let room = client.get_room(room_id)
         .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
-    let timeline = TimelineBuilder::new(&room).build().await
-        .map_err(|e| crate::error::AppError::Other(format!("Failed to build timeline: {e}")))?;
-    let tl = Arc::new(timeline);
-    map.insert(room_id.to_owned(), tl.clone());
-    Ok(tl)
+    let timeline = Arc::new(TimelineBuilder::new(&room).build().await
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to build timeline: {e}")))?);
+    let resend = Arc::new(Notify::new());
+    let watcher = tokio::spawn(watch_timeline(
+        room_id.to_string(), timeline.clone(), resend.clone(), sink,
+    )).abort_handle();
+    map.insert(room_id.to_owned(), RoomTimeline { timeline: timeline.clone(), resend, watcher });
+    Ok(timeline)
 }
 
 /// Remove a timeline when a room tab is closed.
@@ -35,7 +111,98 @@ pub async fn remove_timeline(
     timelines: &RoomTimelines,
     room_id: &matrix_sdk::ruma::RoomId,
 ) {
-    timelines.lock().await.remove(room_id);
+    timelines.remove(room_id).await;
+}
+
+/// Send read receipt + fully-read marker up to the latest event of a room's
+/// Timeline. The SDK skips the request when nothing new would be covered, so
+/// this is cheap to call often.
+pub async fn mark_as_read(
+    timelines: &RoomTimelines,
+    room_id: &matrix_sdk::ruma::RoomId,
+) -> Result<(), crate::error::AppError> {
+    let Some(timeline) = timelines.get(room_id).await else { return Ok(()) };
+    for receipt_type in [ReceiptType::Read, ReceiptType::FullyRead] {
+        timeline.mark_as_read(receipt_type).await
+            .map_err(|e| crate::error::AppError::Other(format!("Failed to send receipt: {e}")))?;
+    }
+    Ok(())
+}
+
+/// The single consumer of a Timeline's diff stream. Keeps a converted mirror of
+/// the SDK's item list by applying each diff to it (so only changed items are
+/// re-converted), and emits the full message list after each burst of diffs.
+async fn watch_timeline(
+    room_id: String,
+    timeline: Arc<Timeline>,
+    resend: Arc<Notify>,
+    sink: TimelineSink,
+) {
+    let (initial, stream) = timeline.subscribe().await;
+    let mut items: Vector<Option<MessageInfo>> = initial.iter()
+        .map(|item| timeline_item_to_message_info(item))
+        .collect();
+    sink(room_id.clone(), flatten_messages(&items));
+
+    let loaded = items.iter().flatten().filter(|m| !m.event_id.starts_with("~state-")).count();
+    if loaded < INITIAL_BACKFILL as usize {
+        let timeline = timeline.clone();
+        let room_id = room_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = timeline.paginate_backwards(INITIAL_BACKFILL).await {
+                tracing::warn!("Initial back-pagination failed for {room_id}: {e}");
+            }
+        });
+    }
+
+    futures_util::pin_mut!(stream);
+    loop {
+        tokio::select! {
+            batch = stream.next() => {
+                let Some(batch) = batch else { break };
+                apply_diffs(&mut items, batch);
+                // Coalesce diffs that are already queued into one emit.
+                let mut ended = false;
+                loop {
+                    match stream.next().now_or_never() {
+                        Some(Some(more)) => apply_diffs(&mut items, more),
+                        Some(None) => { ended = true; break; }
+                        None => break,
+                    }
+                }
+                sink(room_id.clone(), flatten_messages(&items));
+                if ended { break; }
+            }
+            _ = resend.notified() => {
+                sink(room_id.clone(), flatten_messages(&items));
+            }
+        }
+    }
+    tracing::warn!("Timeline diff stream ended for {room_id}");
+}
+
+fn apply_diffs(items: &mut Vector<Option<MessageInfo>>, diffs: Vec<VectorDiff<Arc<TimelineItem>>>) {
+    for diff in diffs {
+        diff.map(|item| timeline_item_to_message_info(&item)).apply(items);
+    }
+}
+
+/// Collect the displayable messages and derive thread reply counts from the
+/// replies present in the timeline.
+fn flatten_messages(items: &Vector<Option<MessageInfo>>) -> Vec<MessageInfo> {
+    let mut msgs: Vec<MessageInfo> = items.iter().flatten().cloned().collect();
+    let mut thread_counts: HashMap<String, u32> = HashMap::new();
+    for msg in &msgs {
+        if let Some(ref root) = msg.thread_root {
+            *thread_counts.entry(root.clone()).or_insert(0) += 1;
+        }
+    }
+    for msg in &mut msgs {
+        if let Some(&count) = thread_counts.get(&msg.event_id) {
+            msg.thread_count = Some(msg.thread_count.unwrap_or(0).max(count));
+        }
+    }
+    msgs
 }
 
 /// Convert a TimelineItem to our MessageInfo. Returns None for items we skip (date dividers, etc).
@@ -96,7 +263,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
 
     // Extract reply info (on TimelineItemContent)
     let reply_details = content.in_reply_to();
-    let mut reply_to_id = reply_details.as_ref().map(|r| r.event_id.to_string());
+    let reply_to_id = reply_details.as_ref().map(|r| r.event_id.to_string());
     let (reply_to_sender, reply_to_body) = reply_details
         .and_then(|r| {
             if let matrix_sdk_ui::timeline::TimelineDetails::Ready(ref event) = r.event {
@@ -112,44 +279,14 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
         .map(|(s, b)| (Some(s), Some(b)))
         .unwrap_or((None, None));
 
-    // SDK v0.16 doesn't populate thread_root or reply_to reliably.
-    // Parse raw event JSON once for both reply and thread info as fallback.
-    let mut thread_root_from_json: Option<String> = None;
-    if reply_to_id.is_none() {
-        let raw_json = ev.original_json().or_else(|| ev.latest_json());
-        if let Some(raw) = raw_json {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.json().get()) {
-                if let Some(relates_to) = val.get("content").and_then(|c| c.get("m.relates_to")) {
-                    // Reply: m.in_reply_to.event_id
-                    if let Some(eid) = relates_to.get("m.in_reply_to")
-                        .and_then(|r| r.get("event_id"))
-                        .and_then(|e| e.as_str())
-                    {
-                        reply_to_id = Some(eid.to_string());
-                    }
-                    // Thread: rel_type == m.thread
-                    if relates_to.get("rel_type").and_then(|r| r.as_str()) == Some("m.thread") {
-                        if let Some(eid) = relates_to.get("event_id").and_then(|e| e.as_str()) {
-                            thread_root_from_json = Some(eid.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     match content {
         TimelineItemContent::MsgLike(msg_like) => {
             if content.is_redacted() {
                 return None;
             }
 
-            let mut thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
+            let thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
             let thread_count = msg_like.thread_summary.as_ref().map(|s| s.num_replies);
-            if thread_root.is_none() {
-                thread_root = thread_root_from_json
-                    .or_else(|| content.thread_root().map(|tr| tr.to_string()));
-            }
 
 
             if let Some(message) = content.as_message() {
@@ -383,21 +520,21 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
         }
 
         TimelineItemContent::OtherState(state) => {
-            use matrix_sdk_ui::timeline::AnyOtherFullStateEventContent;
+            use matrix_sdk_ui::timeline::AnyOtherStateEventContentChange;
             let body = match state.content() {
-                AnyOtherFullStateEventContent::RoomPowerLevels(_) => {
+                AnyOtherStateEventContentChange::RoomPowerLevels(_) => {
                     format!("{sender_name} changed room power levels")
                 }
-                AnyOtherFullStateEventContent::RoomName(_) => {
+                AnyOtherStateEventContentChange::RoomName(_) => {
                     format!("{sender_name} changed the room name")
                 }
-                AnyOtherFullStateEventContent::RoomTopic(_) => {
+                AnyOtherStateEventContentChange::RoomTopic(_) => {
                     format!("{sender_name} changed the room topic")
                 }
-                AnyOtherFullStateEventContent::RoomAvatar(_) => {
+                AnyOtherStateEventContentChange::RoomAvatar(_) => {
                     format!("{sender_name} changed the room avatar")
                 }
-                AnyOtherFullStateEventContent::_Custom { ref event_type }
+                AnyOtherStateEventContentChange::_Custom { ref event_type }
                     if event_type.contains("call") || event_type.contains("rtc") =>
                 {
                     return None; // Suppress call/RTC state events
@@ -435,31 +572,4 @@ pub async fn create_thread_timeline(
         .await
         .map_err(|e| crate::error::AppError::Other(format!("Failed to build thread timeline: {e}")))?;
     Ok(Arc::new(timeline))
-}
-
-/// Batch convert timeline items to MessageInfo vec.
-/// Derives thread_count from thread_root references since the SDK
-/// doesn't populate thread_summary.
-pub fn timeline_items_to_messages(
-    items: &[Arc<TimelineItem>],
-) -> Vec<MessageInfo> {
-    let mut msgs: Vec<MessageInfo> = items.iter()
-        .filter_map(|item| timeline_item_to_message_info(item))
-        .collect();
-
-    // Count thread replies per root event_id
-    let mut thread_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    for msg in &msgs {
-        if let Some(ref root) = msg.thread_root {
-            *thread_counts.entry(root.clone()).or_insert(0) += 1;
-        }
-    }
-    // Apply counts to root messages
-    for msg in &mut msgs {
-        if let Some(&count) = thread_counts.get(&msg.event_id) {
-            msg.thread_count = Some(count);
-        }
-    }
-
-    msgs
 }

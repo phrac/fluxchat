@@ -677,23 +677,34 @@ impl FluxChat {
             let has_table = formatted.contains("<table");
             let is_expanded = self.expanded_code_blocks.contains(&msg.event_id);
 
-            // Collapse code blocks: truncate <pre> content to ~5 lines if not expanded
-            let mut display_html = if has_code_block && !is_expanded {
-                collapse_code_blocks(formatted, 5)
-            } else {
-                formatted.clone()
-            };
+            let rendered = self.body_cache.get_or_insert(
+                ("html", formatted.as_str(), is_expanded, fs.to_bits()),
+                || {
+                    // Collapse code blocks: truncate <pre> content to ~5 lines if not expanded
+                    let mut display_html = if has_code_block && !is_expanded {
+                        collapse_code_blocks(formatted, 5)
+                    } else {
+                        formatted.clone()
+                    };
 
-            // Convert markdown-style bullets and headings to HTML
-            // (some bots send * bullets and ### headings in formatted_body)
-            if !display_html.contains("<ul>") && !display_html.contains("<ol>") {
-                display_html = convert_markdown_bullets(&display_html);
-            }
-            display_html = convert_markdown_headings(&display_html);
+                    // Convert markdown-style bullets and headings to HTML
+                    // (some bots send * bullets and ### headings in formatted_body)
+                    if !display_html.contains("<ul>") && !display_html.contains("<ol>") {
+                        display_html = convert_markdown_bullets(&display_html);
+                    }
+                    display_html = convert_markdown_headings(&display_html);
 
-            if has_code_block || has_table {
+                    if has_code_block || has_table {
+                        crate::html::RenderedBody::Parts(crate::html::html_to_parts(&display_html, &self.rooms, fs))
+                    } else {
+                        crate::html::RenderedBody::Spans(crate::html::html_to_spans_with_rooms(&display_html, &self.rooms, fs))
+                    }
+                },
+            );
+
+            if let crate::html::RenderedBody::Parts(parts) = &*rendered {
                 // Use structured parts to render code blocks in containers
-                let parts = crate::html::html_to_parts(&display_html, &self.rooms, fs);
+                let parts = parts.clone();
                 let mut body_col = column![].spacing(4).width(Fill);
                 let mut part_idx = 0usize;
 
@@ -885,7 +896,10 @@ impl FluxChat {
                 };
                 let sel_range = self.selection_range_for(&wid);
                 let sel_active = self.selection.active;
-                let spans = crate::html::html_to_spans_with_rooms(&display_html, &self.rooms, fs);
+                let spans = match &*rendered {
+                    crate::html::RenderedBody::Spans(spans) => spans.clone(),
+                    crate::html::RenderedBody::Parts(_) => Vec::new(),
+                };
                 selectable_rich_text(spans)
                     .font(self.msg_font())
                     .size(fs)
@@ -909,7 +923,13 @@ impl FluxChat {
             let sel_range = self.selection_range_for(&wid);
             let sel_active = self.selection.active;
             // Parse basic markdown in plain text bodies
-            let spans = crate::html::plain_text_to_spans(&msg.body);
+            let rendered = self.body_cache.get_or_insert(("plain", msg.body.as_str()), || {
+                crate::html::RenderedBody::Spans(crate::html::plain_text_to_spans(&msg.body))
+            });
+            let spans = match &*rendered {
+                crate::html::RenderedBody::Spans(spans) => spans.clone(),
+                crate::html::RenderedBody::Parts(_) => Vec::new(),
+            };
             selectable_rich_text(spans)
                 .font(self.msg_font())
                 .size(fs)

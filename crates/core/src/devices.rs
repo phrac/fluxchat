@@ -89,7 +89,7 @@ pub async fn delete_devices(client: &Client, device_ids: &[String], password: &s
         .ok_or(AppError::Other("No user ID".into()))?;
 
     let mut pw_auth = uiaa::Password::new(
-        uiaa::UserIdentifier::UserIdOrLocalpart(user_id.localpart().to_string()),
+        uiaa::UserIdentifier::Matrix(uiaa::MatrixUserIdentifier::new(user_id.localpart().to_string())),
         password.to_string(),
     );
     pw_auth.session = uiaa_info.session.clone();
