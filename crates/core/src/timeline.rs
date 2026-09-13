@@ -2,10 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use futures_util::{FutureExt, StreamExt};
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
-use matrix_sdk::ruma::OwnedRoomId;
 use matrix_sdk_ui::eyeball_im::{Vector, VectorDiff};
 use matrix_sdk_ui::timeline::{
-    Timeline, TimelineBuilder, TimelineItem, TimelineItemKind, TimelineItemContent,
+    Timeline, TimelineBuilder, TimelineFocus, TimelineItem, TimelineItemKind, TimelineItemContent,
     EventTimelineItem,
 };
 use tokio::sync::Notify;
@@ -16,10 +15,27 @@ use crate::models::{MessageInfo, PollInfo, ReactionInfo};
 /// non-state items, so a room never opens to a near-empty view.
 const INITIAL_BACKFILL: u16 = 30;
 
-/// Receives a room's complete, ordered message list every time its Timeline
-/// changes. Called only from that room's watcher task, so updates for a room
+/// Receives a view's complete, ordered message list every time its Timeline
+/// changes. Called only from that view's watcher task, so updates for a view
 /// are always delivered in order.
 pub type TimelineSink = Arc<dyn Fn(String, Vec<MessageInfo>) + Send + Sync>;
+
+/// Timelines are keyed by view: a room ID for the live room timeline, or
+/// `thread::{room_id}::{root_event_id}` for a thread.
+pub fn thread_key(room_id: &str, root_event_id: &str) -> String {
+    format!("thread::{room_id}::{root_event_id}")
+}
+
+/// Split a thread key into (room_id, root_event_id).
+pub fn parse_thread_key(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix("thread::")?;
+    rest.split_once("::")
+}
+
+/// The room a view key belongs to.
+pub fn real_room_id(key: &str) -> &str {
+    parse_thread_key(key).map(|(room, _)| room).unwrap_or(key)
+}
 
 struct RoomTimeline {
     timeline: Arc<Timeline>,
@@ -34,31 +50,31 @@ impl Drop for RoomTimeline {
     }
 }
 
-/// Store of Timeline instances per room. Every Timeline is created together
-/// with exactly one watcher task that streams its changes to the sink, and the
-/// watcher is aborted when the Timeline is removed — so there is never a
-/// Timeline without a watcher, or two watchers for one Timeline.
+/// Store of Timeline instances per view key. Every Timeline is created
+/// together with exactly one watcher task that streams its changes to the
+/// sink, and the watcher is aborted when the Timeline is removed — so there is
+/// never a Timeline without a watcher, or two watchers for one Timeline.
 #[derive(Default)]
 pub struct RoomTimelines {
-    map: tokio::sync::Mutex<HashMap<OwnedRoomId, RoomTimeline>>,
+    map: tokio::sync::Mutex<HashMap<String, RoomTimeline>>,
     sink: std::sync::Mutex<Option<TimelineSink>>,
 }
 
 impl RoomTimelines {
-    /// Set the callback that receives message-list updates for all rooms.
+    /// Set the callback that receives message-list updates for all views.
     pub fn set_sink(&self, sink: TimelineSink) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
 
-    /// Get a room's Timeline if one is open, without creating it.
-    pub async fn get(&self, room_id: &matrix_sdk::ruma::RoomId) -> Option<Arc<Timeline>> {
-        self.map.lock().await.get(room_id).map(|rt| rt.timeline.clone())
+    /// Get a view's Timeline if one is open, without creating it.
+    pub async fn get(&self, key: &str) -> Option<Arc<Timeline>> {
+        self.map.lock().await.get(key).map(|rt| rt.timeline.clone())
     }
 
-    /// Ask a room's watcher to re-send its current message list.
-    /// Returns false if the room has no open Timeline.
-    pub async fn request_snapshot(&self, room_id: &matrix_sdk::ruma::RoomId) -> bool {
-        match self.map.lock().await.get(room_id) {
+    /// Ask a view's watcher to re-send its current message list.
+    /// Returns false if the view has no open Timeline.
+    pub async fn request_snapshot(&self, key: &str) -> bool {
+        match self.map.lock().await.get(key) {
             Some(rt) => {
                 rt.resend.notify_one();
                 true
@@ -67,9 +83,9 @@ impl RoomTimelines {
         }
     }
 
-    /// Drop a room's Timeline and stop its watcher.
-    pub async fn remove(&self, room_id: &matrix_sdk::ruma::RoomId) {
-        self.map.lock().await.remove(room_id);
+    /// Drop a view's Timeline and stop its watcher.
+    pub async fn remove(&self, key: &str) {
+        self.map.lock().await.remove(key);
     }
 
     /// Drop all Timelines and stop all watchers (logout).
@@ -78,55 +94,96 @@ impl RoomTimelines {
     }
 }
 
-/// Get or create a Timeline for a room. Creating one also spawns its watcher.
+/// Get or create the Timeline for a view key (room or thread). Creating one
+/// also spawns its watcher.
+pub async fn get_or_create_for_key(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+) -> Result<Arc<Timeline>, crate::error::AppError> {
+    let room_id = crate::rooms::parse_room_id(real_room_id(key))?;
+    let root = match parse_thread_key(key) {
+        Some((_, root)) => Some(matrix_sdk::ruma::EventId::parse(root)
+            .map_err(|_| crate::error::AppError::Other(format!("Invalid thread root in {key}")))?),
+        None => None,
+    };
+    let mut map = timelines.map.lock().await;
+    if let Some(rt) = map.get(key) {
+        if !rt.watcher.is_finished() {
+            return Ok(rt.timeline.clone());
+        }
+        tracing::warn!("Timeline watcher for {key} had stopped — rebuilding timeline");
+        map.remove(key);
+    }
+    let sink = timelines.sink.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        .ok_or_else(|| crate::error::AppError::Other("Timeline sink not set".into()))?;
+    let room = client.get_room(&room_id)
+        .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
+    let mut builder = TimelineBuilder::new(&room);
+    if let Some(root_event_id) = root {
+        builder = builder.with_focus(TimelineFocus::Thread { root_event_id });
+    }
+    let timeline = Arc::new(builder.build().await
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to build timeline: {e}")))?);
+    let resend = Arc::new(Notify::new());
+    let watcher = tokio::spawn(watch_timeline(
+        key.to_string(), timeline.clone(), resend.clone(), sink,
+    )).abort_handle();
+    map.insert(key.to_string(), RoomTimeline { timeline: timeline.clone(), resend, watcher });
+    Ok(timeline)
+}
+
+/// Get or create the live Timeline for a room.
 pub async fn get_or_create_timeline(
     client: &matrix_sdk::Client,
     timelines: &RoomTimelines,
     room_id: &matrix_sdk::ruma::RoomId,
 ) -> Result<Arc<Timeline>, crate::error::AppError> {
-    let mut map = timelines.map.lock().await;
-    if let Some(rt) = map.get(room_id) {
-        if !rt.watcher.is_finished() {
-            return Ok(rt.timeline.clone());
-        }
-        tracing::warn!("Timeline watcher for {room_id} had stopped — rebuilding timeline");
-        map.remove(room_id);
-    }
-    let sink = timelines.sink.lock().unwrap_or_else(|e| e.into_inner()).clone()
-        .ok_or_else(|| crate::error::AppError::Other("Timeline sink not set".into()))?;
-    let room = client.get_room(room_id)
-        .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
-    let timeline = Arc::new(TimelineBuilder::new(&room).build().await
-        .map_err(|e| crate::error::AppError::Other(format!("Failed to build timeline: {e}")))?);
-    let resend = Arc::new(Notify::new());
-    let watcher = tokio::spawn(watch_timeline(
-        room_id.to_string(), timeline.clone(), resend.clone(), sink,
-    )).abort_handle();
-    map.insert(room_id.to_owned(), RoomTimeline { timeline: timeline.clone(), resend, watcher });
-    Ok(timeline)
+    get_or_create_for_key(client, timelines, room_id.as_str()).await
 }
 
-/// Remove a timeline when a room tab is closed.
-pub async fn remove_timeline(
-    timelines: &RoomTimelines,
-    room_id: &matrix_sdk::ruma::RoomId,
-) {
-    timelines.remove(room_id).await;
-}
-
-/// Send read receipt + fully-read marker up to the latest event of a room's
-/// Timeline. The SDK skips the request when nothing new would be covered, so
-/// this is cheap to call often.
+/// Send read receipt + fully-read marker up to the latest event of a view's
+/// Timeline (threaded receipts for thread views). The SDK skips the request
+/// when nothing new would be covered, so this is cheap to call often.
 pub async fn mark_as_read(
     timelines: &RoomTimelines,
-    room_id: &matrix_sdk::ruma::RoomId,
+    key: &str,
 ) -> Result<(), crate::error::AppError> {
-    let Some(timeline) = timelines.get(room_id).await else { return Ok(()) };
+    let Some(timeline) = timelines.get(key).await else { return Ok(()) };
     for receipt_type in [ReceiptType::Read, ReceiptType::FullyRead] {
         timeline.mark_as_read(receipt_type).await
             .map_err(|e| crate::error::AppError::Other(format!("Failed to send receipt: {e}")))?;
     }
     Ok(())
+}
+
+/// Send a text message (or `/me` emote) into a view through its Timeline, so
+/// it gets a local echo, the send queue's retries, and — for thread views or
+/// replies to threaded messages — the right `m.thread` relation.
+pub async fn send_text(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+    body: &str,
+    reply_to: Option<&str>,
+) -> Result<(), crate::error::AppError> {
+    let room_id = crate::rooms::parse_room_id(real_room_id(key))?;
+    let room = client.get_room(&room_id)
+        .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
+    let content = match body.strip_prefix("/me ") {
+        Some(emote) => crate::messages::build_emote_content(&room, emote).await,
+        None => crate::messages::build_message_content(&room, body).await,
+    };
+    let timeline = get_or_create_for_key(client, timelines, key).await?;
+    let result = match reply_to {
+        Some(event_id) => {
+            let event_id = matrix_sdk::ruma::EventId::parse(event_id)
+                .map_err(|_| crate::error::AppError::Other("Invalid event ID".into()))?;
+            timeline.send_reply(content.into(), event_id).await
+        }
+        None => timeline.send(content.into()).await.map(|_| ()),
+    };
+    result.map_err(|e| crate::error::AppError::Other(format!("Failed to send: {e}")))
 }
 
 /// The single consumer of a Timeline's diff stream. Keeps a converted mirror of
@@ -217,10 +274,9 @@ pub fn timeline_item_to_message_info(item: &TimelineItem) -> Option<MessageInfo>
 fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     let event_id = if let Some(eid) = ev.event_id() {
         eid.to_string()
-    } else if let Some(txn_id) = ev.transaction_id() {
-        format!("~local-{}", txn_id)
     } else {
-        return None;
+        let txn_id = ev.transaction_id()?;
+        format!("~local-{}", txn_id)
     };
 
     let sender = ev.sender().to_string();
@@ -353,7 +409,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                         } else {
                             file_mxc = mxc;
                             file_mimetype = mimetype;
-                            file_size = file.info.as_ref().and_then(|i| i.size).and_then(|s| u64::try_from(s).ok());
+                            file_size = file.info.as_ref().and_then(|i| i.size).map(u64::from);
                         }
                     }
                     matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
@@ -557,19 +613,3 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     }
 }
 
-/// Create a thread-focused timeline for a specific thread root.
-pub async fn create_thread_timeline(
-    client: &matrix_sdk::Client,
-    room_id: &matrix_sdk::ruma::RoomId,
-    thread_root_id: &matrix_sdk::ruma::EventId,
-) -> Result<Arc<Timeline>, crate::error::AppError> {
-    use matrix_sdk_ui::timeline::TimelineFocus;
-    let room = client.get_room(room_id)
-        .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
-    let timeline = TimelineBuilder::new(&room)
-        .with_focus(TimelineFocus::Thread { root_event_id: thread_root_id.to_owned() })
-        .build()
-        .await
-        .map_err(|e| crate::error::AppError::Other(format!("Failed to build thread timeline: {e}")))?;
-    Ok(Arc::new(timeline))
-}

@@ -1095,7 +1095,7 @@ impl FluxChat {
         } else {
             let report_room = self.selected_room_id.clone().unwrap_or_default();
             let report_room = if report_room.starts_with("thread::") {
-                report_room.splitn(3, "::").nth(1).unwrap_or(&report_room).to_string()
+                report_room.split("::").nth(1).unwrap_or(&report_room).to_string()
             } else {
                 report_room
             };

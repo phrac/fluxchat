@@ -105,7 +105,7 @@ pub async fn get_spaces(client: &matrix_sdk::Client) -> Result<Vec<RoomInfo>, Ap
             spaces.push(room_to_info(&room, None).await);
         }
     }
-    spaces.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    spaces.sort_by_key(|a| a.name.to_lowercase());
     Ok(spaces)
 }
 
@@ -272,7 +272,7 @@ pub async fn get_knocked_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
 pub async fn knock_room(client: &matrix_sdk::Client, room_id_or_alias: &str, reason: Option<&str>) -> Result<String, AppError> {
     let id = matrix_sdk::ruma::RoomOrAliasId::parse(room_id_or_alias)
         .map_err(|_| AppError::Other("Invalid room ID or alias".into()))?;
-    let room = client.knock(id.into(), reason.map(|s| s.to_string()), Vec::new())
+    let room = client.knock(id, reason.map(|s| s.to_string()), Vec::new())
         .await
         .map_err(|e| AppError::Other(format!("Failed to knock: {e}")))?;
     Ok(room.room_id().to_string())
@@ -339,7 +339,7 @@ pub async fn get_space_rooms(client: &matrix_sdk::Client, space_id: &str) -> Res
             }
         }
     }
-    rooms.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rooms.sort_by_key(|a| a.name.to_lowercase());
     Ok(rooms)
 }
 
@@ -475,6 +475,7 @@ pub async fn set_room_topic(client: &matrix_sdk::Client, room_id: &str, topic: &
 }
 
 /// Create a new room with optional encryption, space association, and invites.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_room(
     client: &matrix_sdk::Client,
     name: &str,

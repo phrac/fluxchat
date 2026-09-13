@@ -139,10 +139,8 @@ impl FluxChat {
                 }
                 let in_active_call = self.call_room_id.as_deref() == Some(room_id.as_str())
                     && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
-                if !in_active_call {
-                    if self.selected_room_id.as_deref() == Some(room_id.as_str()) {
-                        self.call_participants = participants;
-                    }
+                if !in_active_call && self.selected_room_id.as_deref() == Some(room_id.as_str()) {
+                    self.call_participants = participants;
                 }
                 Some(Task::none())
             }

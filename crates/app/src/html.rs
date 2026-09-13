@@ -1150,14 +1150,10 @@ fn styled_span(text: String, style: &Style, base_size: f32) -> Span<'static, Str
 /// Try to convert a matrix.to room link into a pill span.
 /// Handles both room IDs (`!roomid:server`) and aliases (`#alias:server`).
 fn try_room_pill(url: &str, rooms: &[fluxchat_core::RoomInfo]) -> Option<Span<'static, String>> {
-    // Extract room ID or alias from matrix.to URL
-    let room_id = if let Some(rest) = url.strip_prefix("https://matrix.to/#/") {
-        let decoded = rest.replace("%3A", ":").replace("%23", "#");
-        // Strip query params (?via=...)
-        decoded.split('?').next().unwrap_or(&decoded).to_string()
-    } else {
-        return None;
-    };
+    // Extract room ID or alias from matrix.to URL, dropping query params (?via=...)
+    let rest = url.strip_prefix("https://matrix.to/#/")?;
+    let decoded = rest.replace("%3A", ":").replace("%23", "#");
+    let room_id = decoded.split('?').next().unwrap_or(&decoded).to_string();
 
     // Must start with ! (room ID) or # (alias)
     if !room_id.starts_with('!') && !room_id.starts_with('#') {

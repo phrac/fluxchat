@@ -16,7 +16,7 @@ pub struct RoomInfo {
     pub is_favourite: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct MessageInfo {
     pub event_id: String,
     pub sender: String,

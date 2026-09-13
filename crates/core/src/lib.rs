@@ -12,7 +12,6 @@ pub mod rooms;
 pub mod state;
 pub mod sync_service;
 pub mod voice;
-pub mod threads;
 pub mod timeline;
 pub mod rtc;
 pub mod rtc_audio;

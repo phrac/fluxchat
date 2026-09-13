@@ -5,6 +5,7 @@ use fluxchat_core::rooms::SpaceNode;
 
 /// Top-level message enum for the Iced Elm architecture.
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum Message {
     // --- Auth ---
     LoginHomeserverChanged(String),
@@ -23,11 +24,6 @@ pub enum Message {
     SyncStarted,
     SyncReconnected,
     InitialRoomsLoaded(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<SpaceNode>, HashMap<String, Vec<String>>), // rooms, spaces, invited, knocked, space_tree, space_descendants
-    TimelineLoaded {
-        room_id: String,
-        messages: Vec<MessageInfo>,
-        members: Option<Vec<MemberInfo>>,
-    },
 
     // --- Sync events (from subscription) ---
     SyncEvent(SyncEvent),
@@ -395,10 +391,22 @@ pub struct LoginSuccess {
 /// Events coming from the Matrix sync subscription.
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
+    /// A message the server's push rules say should notify.
+    Notify(NotificationInfo),
     RoomListUpdate(Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<RoomInfo>, Vec<SpaceNode>, HashMap<String, Vec<String>>), // rooms, spaces, invited, knocked, space_tree, space_descendants
     MessagesUpdated(String, Vec<MessageInfo>), // room_id, messages
     MembersUpdated(String, Vec<MemberInfo>),   // room_id, members
     TypingUpdate(String, Vec<String>),         // room_id, user_ids
     VerificationRequest(VerificationInfo),
     SyncLag(u64), // ms
+}
+
+/// A message that matched the user's push rules (notify / highlight).
+#[derive(Debug, Clone)]
+pub struct NotificationInfo {
+    pub room_id: String,
+    pub room_name: String,
+    pub sender_name: String,
+    pub body: String,
+    pub is_mention: bool,
 }

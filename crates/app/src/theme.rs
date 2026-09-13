@@ -204,7 +204,7 @@ pub fn discover_themes() -> Vec<ThemeColors> {
         }
     }
     // Sort alphabetically, but keep FluxChat first
-    themes[1..].sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    themes[1..].sort_by_key(|t| t.name.to_lowercase());
     themes
 }
 

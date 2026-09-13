@@ -38,9 +38,10 @@ pub(crate) struct GlobalSelectionAnchor {
 }
 
 /// What portion of a widget's text is selected.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SelectionRange {
     /// No selection in this widget.
+    #[default]
     None,
     /// Partial selection between start and end (line, byte_index).
     Partial { start: (usize, usize), end: (usize, usize) },
@@ -48,9 +49,6 @@ pub enum SelectionRange {
     Full,
 }
 
-impl Default for SelectionRange {
-    fn default() -> Self { SelectionRange::None }
-}
 
 /// Events emitted by SelectableRichText for parent-managed selection.
 pub enum SelectionEvent {
@@ -446,12 +444,8 @@ where
         let was_hovered = state.hovered_link.is_some();
         if let Some(position) = cursor.position_in(bounds) {
             state.hovered_link =
-                state.paragraph.hit_span(position).and_then(|span| {
-                    if spans.get(span)?.link.is_some() {
-                        Some(span)
-                    } else {
-                        None
-                    }
+                state.paragraph.hit_span(position).filter(|&span| {
+                    spans.get(span).is_some_and(|s| s.link.is_some())
                 });
         } else {
             state.hovered_link = None;
@@ -471,13 +465,7 @@ where
                         state.span_pressed = state
                             .paragraph
                             .hit_span(position)
-                            .and_then(|span| {
-                                if spans.get(span)?.link.is_some() {
-                                    Some(span)
-                                } else {
-                                    None
-                                }
-                            });
+                            .filter(|&span| spans.get(span).is_some_and(|s| s.link.is_some()));
 
                         // Emit selection started event
                         if let (Some(on_sel), Some(wid)) = (&self.on_selection, &self.widget_id) {
@@ -534,28 +522,26 @@ where
                     }
                 }
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                if state.mouse_pressed {
-                    state.mouse_pressed = false;
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.mouse_pressed => {
+                state.mouse_pressed = false;
 
-                    // If a link span was pressed and no drag occurred, treat as link click.
-                    // span_pressed is cleared on drag, so Some means a clean click.
-                    if let Some(span_idx) = state.span_pressed.take() {
-                        if let Some(on_link_click) = &self.on_link_click {
-                            if let Some(link) = spans
-                                .get(span_idx)
-                                .and_then(|s| s.link.clone())
-                            {
-                                shell.publish(on_link_click(link));
-                            }
+                // If a link span was pressed and no drag occurred, treat as link click.
+                // span_pressed is cleared on drag, so Some means a clean click.
+                if let Some(span_idx) = state.span_pressed.take() {
+                    if let Some(on_link_click) = &self.on_link_click {
+                        if let Some(link) = spans
+                            .get(span_idx)
+                            .and_then(|s| s.link.clone())
+                        {
+                            shell.publish(on_link_click(link));
                         }
                     }
-                    state.span_pressed = None;
+                }
+                state.span_pressed = None;
 
-                    // Emit selection ended
-                    if let Some(on_sel) = &self.on_selection {
-                        shell.publish(on_sel(SelectionEvent::Ended));
-                    }
+                // Emit selection ended
+                if let Some(on_sel) = &self.on_selection {
+                    shell.publish(on_sel(SelectionEvent::Ended));
                 }
             }
             // Ctrl+C and Ctrl+A now handled at the app level

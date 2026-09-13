@@ -1,6 +1,6 @@
 use matrix_sdk::{
     attachment::AttachmentConfig,
-    room::{edit::EditedContent, reply::Reply, MessagesOptions},
+    room::{edit::EditedContent, MessagesOptions},
     ruma::events::{
         reaction::ReactionEventContent,
         relation::Annotation,
@@ -100,8 +100,8 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                     event_id: format!("~state-{}", member_ev.event_id), sender: String::new(), sender_name: String::new(),
                     body, formatted_body: None, transformed_body: None, image_mxc: None, reactions: Vec::new(),
                     reply_to_id: None, reply_to_sender: None, reply_to_body: None,
-                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
-                    read_receipt_user_ids: Vec::new(),
+                    timestamp: member_ev.origin_server_ts.as_secs().into(), avatar_url: None,
+                    ..Default::default()
                 });
             }
         }
@@ -134,8 +134,8 @@ pub async fn get_room_messages(client: &matrix_sdk::Client, room_id: &str, from_
                 transformed_body: None, // Will be populated by UI if needed
                 image_mxc,
                 reactions, reply_to_id, reply_to_sender: None, reply_to_body: None,
-                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url, thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
-                read_receipt_user_ids: Vec::new(),
+                timestamp: msg.origin_server_ts.as_secs().into(), avatar_url,
+                ..Default::default()
             });
         }
     }
@@ -239,10 +239,12 @@ pub async fn send_location(client: &matrix_sdk::Client, room_id: &str, geo_uri: 
 /// Build message content with mention resolution, markdown formatting,
 /// and MSC3952 intentional mentions (m.mentions).
 /// Build emote content (for /me commands). Uses m.emote msgtype.
-async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
+pub async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
     let has_markdown = body.contains("**") || body.contains('`') || body.contains("~~");
 
-    let content = if has_markdown {
+    
+
+    if has_markdown {
         let html = simple_markdown(body);
         if html != body {
             let mut final_html = html;
@@ -255,12 +257,10 @@ async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMessag
         }
     } else {
         RoomMessageEventContent::emote_plain(body)
-    };
-
-    content
+    }
 }
 
-async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
+pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
     // Only attempt mention resolution if body contains @
     let has_mentions = body.contains('@');
     let has_headings = body.lines().any(parse_heading_line_is_heading);
@@ -297,7 +297,7 @@ async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessa
                     (name, user_id)
                 })
                 .collect();
-            member_names.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+            member_names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
 
             for (display_name, user_id) in &member_names {
                 let mention = format!("@{display_name}");
@@ -310,7 +310,7 @@ async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessa
                     changed = true;
                     // Track for m.mentions (MSC3952)
                     if let Ok(uid) = matrix_sdk::ruma::UserId::parse(user_id) {
-                        mentioned_user_ids.insert(uid.into());
+                        mentioned_user_ids.insert(uid);
                     }
                 }
             }
@@ -426,57 +426,13 @@ fn simple_markdown(text: &str) -> String {
     result
 }
 
-/// Reply to a specific message in a room.
-pub async fn send_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, reply_to_event_id: &str) -> Result<String, AppError> {
-    let room_id_parsed = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    let event_id = matrix_sdk::ruma::EventId::parse(reply_to_event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
-    // Build content with mention/markdown support
-    let msg_content = build_message_content(&room, body).await;
-    let content = match msg_content.msgtype {
-        matrix_sdk::ruma::events::room::message::MessageType::Text(t) => {
-            if let Some(formatted) = t.formatted {
-                RoomMessageEventContentWithoutRelation::text_html(t.body, formatted.body)
-            } else {
-                RoomMessageEventContentWithoutRelation::text_plain(t.body)
-            }
-        }
-        _ => RoomMessageEventContentWithoutRelation::text_plain(body),
-    };
-    let reply = Reply { event_id, enforce_thread: matrix_sdk::room::reply::EnforceThread::Unthreaded, add_mentions: matrix_sdk::ruma::events::room::message::AddMentions::Yes };
-    let reply_content = room.make_reply_event(content, reply).await.map_err(|e| AppError::Other(format!("Failed to create reply: {e}")))?;
-    Ok(room.send(reply_content).await?.response.event_id.to_string())
-}
-
-/// Send a message as a threaded reply (creates/continues a thread).
-pub async fn send_thread_reply(client: &matrix_sdk::Client, room_id: &str, body: &str, thread_root_event_id: &str) -> Result<String, AppError> {
-    let room_id_parsed = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    let event_id = matrix_sdk::ruma::EventId::parse(thread_root_event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
-    let msg_content = build_message_content(&room, body).await;
-    let content = match msg_content.msgtype {
-        matrix_sdk::ruma::events::room::message::MessageType::Text(t) => {
-            if let Some(formatted) = t.formatted {
-                RoomMessageEventContentWithoutRelation::text_html(t.body, formatted.body)
-            } else {
-                RoomMessageEventContentWithoutRelation::text_plain(t.body)
-            }
-        }
-        _ => RoomMessageEventContentWithoutRelation::text_plain(body),
-    };
-    let reply = Reply { event_id, enforce_thread: matrix_sdk::room::reply::EnforceThread::Threaded(
-        matrix_sdk::ruma::events::room::message::ReplyWithinThread::No,
-    ), add_mentions: matrix_sdk::ruma::events::room::message::AddMentions::Yes };
-    let reply_content = room.make_reply_event(content, reply).await.map_err(|e| AppError::Other(format!("Failed to create reply: {e}")))?;
-    Ok(room.send(reply_content).await?.response.event_id.to_string())
-}
-
 /// Edit an existing message in a room.
 pub async fn edit_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str, new_body: &str) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
-    let content = RoomMessageEventContentWithoutRelation::text_plain(new_body);
+    // Same markdown / mention processing as a new message.
+    let content: RoomMessageEventContentWithoutRelation = build_message_content(&room, new_body).await.into();
     let edit = room.make_edit_event(&event_id, EditedContent::RoomMessage(content)).await.map_err(|e| AppError::Other(format!("Failed to edit: {e}")))?;
     room.send(edit).await?;
     Ok(())
@@ -547,8 +503,7 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
                 reply_to_id: None, reply_to_sender: None, reply_to_body: None,
                 timestamp: msg.origin_server_ts.as_secs().into(),
                 avatar_url: member.as_ref().and_then(|m| m.avatar_url()).map(|mxc| mxc.to_string()),
-                thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None, geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
-                read_receipt_user_ids: Vec::new(),
+                ..Default::default()
             });
         }
     }

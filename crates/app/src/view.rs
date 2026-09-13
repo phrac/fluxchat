@@ -130,7 +130,7 @@ pub fn discover_system_fonts() -> Vec<String> {
         }
     }
     let mut sorted: Vec<String> = families.into_iter().collect();
-    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    sorted.sort_by_key(|a| a.to_lowercase());
     sorted
 }
 
@@ -1009,7 +1009,7 @@ impl FluxChat {
             // Filter by selected space (includes rooms from descendant sub-spaces)
             if let Some(ref selected_sid) = self.selected_space_id {
                 let dominated = self.space_descendants.get(selected_sid.as_str())
-                    .map_or(false, |desc| room.space_id.as_ref().map_or(false, |rid| desc.contains(rid)));
+                    .is_some_and(|desc| room.space_id.as_ref().is_some_and(|rid| desc.contains(rid)));
                 if !dominated {
                     continue;
                 }
@@ -1283,7 +1283,7 @@ impl FluxChat {
                 let header_el: Element<Message> = if indent_px > 0 {
                     container(header).padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: indent_px as f32 }).into()
                 } else {
-                    header.into()
+                    header
                 };
                 col = col.push(header_el);
 
@@ -1651,9 +1651,7 @@ impl FluxChat {
                 .on_press(msg)
                 .padding([4, 6])
                 .style(move |_, status| button::Style {
-                    background: if active {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                    } else if matches!(status, button::Status::Hovered) {
+                    background: if active || matches!(status, button::Status::Hovered) {
                         Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
                     } else {
                         None
@@ -1732,9 +1730,7 @@ impl FluxChat {
                 .on_press(Message::TogglePins)
                 .padding([4, 6])
                 .style(move |_, status| button::Style {
-                    background: if pin_active {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                    } else if matches!(status, button::Status::Hovered) {
+                    background: if pin_active || matches!(status, button::Status::Hovered) {
                         Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
                     } else {
                         None
@@ -2082,6 +2078,8 @@ impl FluxChat {
                 let show_divider = last_read.as_ref().is_some_and(|lr| {
                     msgs.last().map(|m| &m.event_id) != Some(lr)
                 });
+                let limit = self.render_limit.get(room_id).copied().unwrap_or(crate::update::RENDER_WINDOW);
+                let visible = &msgs[msgs.len().saturating_sub(limit)..];
                 let is_thread_view = room_id.starts_with("thread::");
                 // Thread counts precomputed in update.rs
                 let empty_tc = std::collections::HashMap::new();
@@ -2090,7 +2088,7 @@ impl FluxChat {
                 } else {
                     &empty_tc
                 };
-                for msg in msgs.iter() {
+                for msg in visible.iter() {
                     if self.ignored_users.contains(&msg.sender) {
                         continue;
                     }
@@ -2408,7 +2406,7 @@ impl FluxChat {
                 if modifiers.alt() {
                     if let iced::keyboard::Key::Character(ref c) = key {
                         if let Ok(n) = c.as_str().parse::<usize>() {
-                            if n >= 1 && n <= 9 {
+                            if (1..=9).contains(&n) {
                                 return Message::SwitchTab(n - 1);
                             }
                         }
@@ -2421,11 +2419,6 @@ impl FluxChat {
                 }
                 if key == iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) && !modifiers.alt() {
                     return Message::SearchArrowUp;
-                }
-
-                // Escape: close modals/panels/completions
-                if key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) {
-                    return Message::Escape;
                 }
             }
             Message::Noop
@@ -2452,9 +2445,11 @@ impl FluxChat {
                         }
                     }
                 }
-                // Escape while quick switcher is open — intercept before text_input consumes it
+                // Escape: close the topmost modal/panel/completion. Handled
+                // here (all events) rather than in `keyboard::listen` (ignored
+                // events only) so it also works while a text input has focus —
+                // and only here, so one press closes one thing.
                 if *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) {
-                    // Always emit Escape — the handler will check quick_switcher_open
                     return Some(Message::Escape);
                 }
             }

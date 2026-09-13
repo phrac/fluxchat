@@ -233,7 +233,7 @@ impl FluxChat {
                         );
                         banner_actions = banner_actions.push(
                             iced::widget::slider(0.0..=1.0, self.settings_banner_offset, Message::SettingsBannerOffsetChanged)
-                                .step(0.01)
+                                .step(0.01_f32)
                                 .width(80),
                         );
                         banner_actions = banner_actions.push(
@@ -633,7 +633,7 @@ impl FluxChat {
                     text("MESSAGE FONT SIZE").font(MONO).size(11).color(theme::colors().text_dim),
                     row![
                         iced::widget::slider(10.0..=24.0, fs, Message::SetMsgFontSize)
-                            .step(1.0)
+                            .step(1.0_f32)
                             .width(200),
                         text(format!("{:.0}px", fs)).font(MONO).size(13).color(theme::colors().text_normal),
                     ].spacing(12).align_y(iced::Alignment::Center),
@@ -1336,7 +1336,7 @@ impl FluxChat {
                     }),
             ]
             .align_y(iced::Alignment::Center),
-            text(format!("Message: {}", &body.chars().take(80).collect::<String>()))
+            text(format!("Message: {}", body.chars().take(80).collect::<String>()))
                 .font(MONO).size(13).color(theme::colors().text_muted),
             rule::horizontal(1),
             text("Send to:").font(MONO).size(13).color(theme::colors().text_dim),
@@ -1630,7 +1630,7 @@ impl FluxChat {
             col = col.push(rule::horizontal(1));
             col = col.push(
                 button(
-                    text(format!("Invite {}", &self.invite_search)).font(MONO).size(14).color(theme::colors().green)
+                    text(format!("Invite {}", self.invite_search)).font(MONO).size(14).color(theme::colors().green)
                 )
                 .on_press(Message::InviteUserFromModal(uid))
                 .padding([6, 10])
@@ -1709,7 +1709,7 @@ impl FluxChat {
             col = col.push(rule::horizontal(1));
             col = col.push(
                 button(
-                    text(format!("Message {}", &self.dm_search)).font(MONO).size(14).color(theme::colors().green)
+                    text(format!("Message {}", self.dm_search)).font(MONO).size(14).color(theme::colors().green)
                 )
                 .on_press(Message::SendDmToUser(uid))
                 .padding([6, 10])

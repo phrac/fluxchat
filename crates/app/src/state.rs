@@ -303,10 +303,10 @@ pub struct FluxChat {
     pub space_detail_rooms: Vec<fluxchat_core::RoomInfo>,
     pub space_detail_members: Vec<fluxchat_core::MemberInfo>,
 
-    // Last real (non-synthetic) message count reported by the Timeline per room.
-    // Used to detect lag-recovery shrinkage — when the SDK's state.items drops
-    // back-paginated history, aggregations (reaction redactions etc.) can no
-    // longer be applied to the dropped events, so we auto-rebuild.
+    /// How many of a view's newest messages are rendered; grows as the user
+    /// scrolls up. Rendering every loaded message rebuilt thousands of widgets
+    /// per frame in long-lived rooms.
+    pub render_limit: HashMap<String, usize>,
     /// Number of 5s Ticks since startup, for slower periodic work.
     pub tick_count: u64,
     /// Messages deleted locally whose redaction the timeline hasn't shown yet, per room.
@@ -539,6 +539,7 @@ impl FluxChat {
             space_detail_rooms: Vec::new(),
             space_detail_members: Vec::new(),
             tick_count: 0,
+            render_limit: HashMap::new(),
             body_cache: Default::default(),
             pending_redactions: HashMap::new(),
             messages_at_bottom: true,

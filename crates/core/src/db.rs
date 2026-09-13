@@ -67,7 +67,7 @@ impl AppDb {
     pub fn cache_media(&self, key: &str, data_uri: &str) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO media_cache (key, data) VALUES (?1, ?2)",
+            "INSERT OR REPLACE INTO media_cache (key, data) VALUES (?1, ?2)",
             params![key, data_uri],
         );
     }
@@ -104,21 +104,28 @@ impl AppDb {
         ).ok()
     }
 
-    // ── Message cache ──
-
-    /// Cache serialized room messages for offline access.
-    pub fn cache_room_messages(&self, room_id: &str, messages_json: &str) {
-        let _ = self.set_setting(&format!("msgs:{room_id}"), messages_json);
-    }
-
-    /// Load cached room messages, if available.
-    pub fn get_cached_room_messages(&self, room_id: &str) -> Option<String> {
-        self.get_setting(&format!("msgs:{room_id}"))
-    }
-
-    /// Remove cached messages for a room.
-    pub fn clear_cached_room_messages(&self, room_id: &str) {
+    /// Drop a cached media entry (e.g. corrupt data from a failed fetch).
+    pub fn remove_cached_media(&self, key: &str) {
         let conn = self.conn.lock().unwrap();
-        let _ = conn.execute("DELETE FROM settings WHERE key = ?1", params![format!("msgs:{room_id}")]);
+        let _ = conn.execute("DELETE FROM media_cache WHERE key = ?1", params![key]);
+    }
+
+    /// Keep the media cache bounded: drop everything but the `keep` most
+    /// recently written entries, then reclaim the file space.
+    pub fn prune_media_cache(&self, keep: usize) {
+        let conn = self.conn.lock().unwrap();
+        let removed = conn.execute(
+            "DELETE FROM media_cache WHERE rowid NOT IN \
+             (SELECT rowid FROM media_cache ORDER BY rowid DESC LIMIT ?1)",
+            params![keep as i64],
+        ).unwrap_or(0);
+        // Message snapshots from an old version were stored under settings.
+        let removed_msgs = conn.execute("DELETE FROM settings WHERE key LIKE 'msgs:%'", []).unwrap_or(0);
+        if removed + removed_msgs > 0 {
+            tracing::info!("Pruned {removed} media cache entries, {removed_msgs} stale message caches");
+            if let Err(e) = conn.execute_batch("VACUUM") {
+                tracing::warn!("VACUUM failed: {e}");
+            }
+        }
     }
 }

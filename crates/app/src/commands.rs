@@ -453,7 +453,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         // --- Highlight ---
         "/highlight" => {
             if args.is_empty() {
-                let words: Vec<_> = state.highlight_words.iter().cloned().collect();
+                let words: Vec<_> = state.highlight_words.to_vec();
                 if words.is_empty() {
                     CommandResult::Help("No highlight words. Usage: /highlight <word>".into())
                 } else {
