@@ -23,7 +23,7 @@ impl FluxChat {
             crate::state::Modal::Profile { user_id } => self.view_profile_modal(user_id),
             crate::state::Modal::Verification { info } => self.view_verification_modal(info),
             crate::state::Modal::Lightbox { url } => self.view_lightbox_modal(url),
-            crate::state::Modal::Forward { body, .. } => self.view_forward_modal(body),
+            crate::state::Modal::Forward { body, sender_name, .. } => self.view_forward_modal(body, sender_name.as_deref()),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
             crate::state::Modal::Invite => self.view_invite_modal(),
             crate::state::Modal::CreateDm => self.view_create_dm_modal(),
@@ -1319,10 +1319,14 @@ impl FluxChat {
         .into()
     }
 
-    fn view_forward_modal(&self, body: &str) -> Element<Message> {
+    fn view_forward_modal(&self, body: &str, sender_name: Option<&str>) -> Element<Message> {
+        let title = match sender_name {
+            Some(name) => format!("Forward message from {name}"),
+            None => "Forward Message".to_string(),
+        };
         column![
             row![
-                text("Forward Message")
+                text(title)
                     .font(MONO)
                     .size(16)
                     .color(theme::colors().text_bright),

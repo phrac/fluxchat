@@ -674,8 +674,10 @@ impl FluxChat {
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
             }
-            Message::CloseTab(_) | Message::SwitchTab(_) => {
-                // Tabs removed — these are no-ops now
+            Message::SwitchTab(n) => {
+                if let Some(room_id) = self.sidebar_room_order().get(n).cloned() {
+                    return self.update(Message::SelectRoom(room_id));
+                }
             }
             Message::ToggleSection(section) => {
                 if !self.collapsed_sections.remove(&section) {
@@ -1157,7 +1159,6 @@ impl FluxChat {
             Message::OpenThread(room_id, thread_root_id) => {
                 let synthetic_id = fluxchat_core::timeline::thread_key(&room_id, &thread_root_id);
                 self.threads_open = false;
-                self.overflow_menu_open = false;
                 // Track open thread in sidebar
                 if !self.open_tabs.iter().any(|(id, _, _, _)| id == &synthetic_id) {
                     let parent_name = self.rooms.iter()
@@ -1197,7 +1198,6 @@ impl FluxChat {
             }
             Message::TogglePins => {
                 self.pins_open = !self.pins_open;
-                self.overflow_menu_open = false;
                 if self.pins_open {
                     if let Some(room_id) = self.selected_room_id.clone() {
                         let core = self.core.clone();
@@ -1216,7 +1216,6 @@ impl FluxChat {
             }
             Message::ToggleThreads => {
                 self.threads_open = !self.threads_open;
-                self.overflow_menu_open = false;
                 if self.threads_open {
                     // Collect thread roots from loaded messages.
                     // Find them two ways: messages with thread_count > 0, OR
@@ -1243,16 +1242,13 @@ impl FluxChat {
             }
             Message::ToggleFiles => {
                 self.files_open = !self.files_open;
-                self.overflow_menu_open = false;
             }
             Message::ToggleNotices => {
                 self.notices_open = !self.notices_open;
-                self.overflow_menu_open = false;
             }
             Message::ToggleGifs => {
                 self.gifs_open = !self.gifs_open;
                 self.emoji_open = false;
-                self.overflow_menu_open = false;
                 if self.gifs_open {
                     return iced::widget::operation::focus(crate::view::gif_search_id());
                 }
@@ -1260,7 +1256,6 @@ impl FluxChat {
             Message::ToggleEmojiPicker => {
                 self.emoji_open = !self.emoji_open;
                 self.gifs_open = false;
-                self.overflow_menu_open = false;
                 if self.emoji_open {
                     self.emoji_mode = crate::state::EmojiPickerMode::Insert;
                     self.emoji_query.clear();
@@ -1274,7 +1269,6 @@ impl FluxChat {
                 self.emoji_query.clear();
                 self.emoji_category = 0;
                 self.gifs_open = false;
-                self.overflow_menu_open = false;
                 return iced::widget::operation::focus(crate::view::emoji_search_id());
             }
             Message::EmojiQueryChanged(query) => {
@@ -1301,9 +1295,6 @@ impl FluxChat {
                         return self.update(Message::ToggleReaction(eid, emoji));
                     }
                 }
-            }
-            Message::ToggleOverflowMenu => {
-                self.overflow_menu_open = !self.overflow_menu_open;
             }
             Message::InvitesRefreshed(invited) => {
                 self.invited_rooms = invited;
@@ -1403,8 +1394,24 @@ impl FluxChat {
                     "leave" => {
                         return self.update(Message::LeaveRoom(target_id));
                     }
+                    "copy_link" => {
+                        return iced::clipboard::write(format!("https://matrix.to/#/{target_id}"));
+                    }
                     "mark_read" => {
-                        self.read_rooms.insert(target_id);
+                        self.read_rooms.insert(target_id.clone());
+                        // Tell the server too, so other devices clear the badge.
+                        let core = self.core.clone();
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                fluxchat_core::timeline::get_or_create_for_key(&client, &core.timelines, &target_id).await.ok()?;
+                                if let Err(e) = fluxchat_core::timeline::mark_as_read(&core.timelines, &target_id).await {
+                                    tracing::warn!("Failed to mark {target_id} as read: {e}");
+                                }
+                                Some(())
+                            },
+                            |_| Message::Noop,
+                        );
                     }
                     "space_invite" => {
                         self.invite_target_id = Some(target_id);
@@ -1431,9 +1438,6 @@ impl FluxChat {
                     }
                     _ => {}
                 }
-            }
-            Message::SetRightPanel(panel) => {
-                self.right_panel = panel;
             }
 
             // --- Modals ---
@@ -2239,7 +2243,6 @@ impl FluxChat {
 
             // --- Overflow menu actions ---
             Message::ToggleFavourite => {
-                self.overflow_menu_open = false;
                 if let Some(room_id) = self.selected_room_id.clone() {
                     // Toggle local state immediately for snappy UI
                     if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
@@ -2255,13 +2258,6 @@ impl FluxChat {
                         },
                         |_| Message::Noop,
                     );
-                }
-            }
-            Message::CopyRoomLink => {
-                self.overflow_menu_open = false;
-                if let Some(room_id) = &self.selected_room_id {
-                    let link = format!("https://matrix.to/#/{room_id}");
-                    return iced::clipboard::write(link);
                 }
             }
 
@@ -2767,9 +2763,6 @@ impl FluxChat {
             // --- Panels data ---
             Message::PinsLoaded(msgs) => {
                 self.pinned_messages = msgs;
-            }
-            Message::ThreadsLoaded(msgs) => {
-                self.thread_messages = msgs;
             }
 
             // --- Room creation ---
@@ -3341,15 +3334,19 @@ impl FluxChat {
             }
             Message::SidebarDragEnd => {
                 self.sidebar_dragging = false;
+                self.layout_dirty = true;
+            }
+            Message::WindowResized(w, h) => {
+                if self.window_size != (w, h) {
+                    self.window_size = (w, h);
+                    self.layout_dirty = true;
+                }
             }
             Message::CursorMoved(x, _y) => {
                 if self.sidebar_dragging {
                     let new_width = (x - 56.0).clamp(150.0, 400.0);
                     self.sidebar_width = new_width;
                 }
-            }
-            Message::SidebarDrag(_) => {
-                // Legacy — now handled by CursorMoved
             }
             Message::OpenUrl(url) => {
                 // Handle matrix.to room links by navigating to the room
@@ -3388,8 +3385,6 @@ impl FluxChat {
                     self.selection = Default::default();
                 } else if self.context_menu.is_some() {
                     self.context_menu = None;
-                } else if self.overflow_menu_open {
-                    self.overflow_menu_open = false;
                 } else if !self.cmd_completions.is_empty() {
                     self.cmd_completions.clear();
                 } else if !self.mention_completions.is_empty() {
@@ -3419,6 +3414,12 @@ impl FluxChat {
                 }
             }
             Message::Tick => {
+                if self.layout_dirty {
+                    self.layout_dirty = false;
+                    let (w, h) = self.window_size;
+                    let _ = self.core.db.set_setting("window_size", &format!("{w:.0}x{h:.0}"));
+                    let _ = self.core.db.set_setting("sidebar_width", &format!("{:.0}", self.sidebar_width));
+                }
                 if self.sync_running {
                     let mut tasks = Vec::new();
 
@@ -3453,6 +3454,23 @@ impl FluxChat {
                         if let Some(room_id) = self.selected_room_id.clone() {
                             tasks.push(self.reload_members(room_id));
                         }
+                    }
+
+                    // Lag meter: time a trivial authenticated request.
+                    if slow_tick {
+                        let core = self.core.clone();
+                        tasks.push(Task::perform(
+                            async move {
+                                let client = core.get_client().await.ok()?;
+                                let start = std::time::Instant::now();
+                                client.whoami().await.ok()?;
+                                Some(start.elapsed().as_millis() as u64)
+                            },
+                            |ms| match ms {
+                                Some(ms) => Message::SyncEvent(SyncEvent::SyncLag(ms.max(1))),
+                                None => Message::Noop,
+                            },
+                        ));
                     }
 
                     // Scan all rooms for active calls (sidebar indicators)
@@ -3568,7 +3586,7 @@ impl FluxChat {
     }
 
     /// The room the current view belongs to (a thread view's parent room).
-    fn active_real_room(&self) -> Option<&str> {
+    pub(crate) fn active_real_room(&self) -> Option<&str> {
         self.selected_room_id.as_deref().map(fluxchat_core::timeline::real_room_id)
     }
 
@@ -4135,6 +4153,9 @@ impl FluxChat {
     /// Load persisted settings from SQLite into state.
     fn load_persisted_settings(&mut self) {
         // read_rooms is session-only — SDK notification_count is authoritative on startup
+        if let Some(w) = self.core.db.get_setting("sidebar_width").and_then(|v| v.parse::<f32>().ok()) {
+            self.sidebar_width = w.clamp(150.0, 400.0);
+        }
         if let Some(json) = self.core.db.get_setting("collapsed_sections") {
             if let Ok(sections) = serde_json::from_str::<Vec<String>>(&json) {
                 self.collapsed_sections = sections.into_iter().collect();

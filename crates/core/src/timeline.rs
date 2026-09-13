@@ -613,3 +613,17 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_keys_round_trip() {
+        let key = thread_key("!room:example.org", "$root");
+        assert_eq!(parse_thread_key(&key), Some(("!room:example.org", "$root")));
+        assert_eq!(real_room_id(&key), "!room:example.org");
+        assert_eq!(real_room_id("!room:example.org"), "!room:example.org");
+        assert_eq!(parse_thread_key("!room:example.org"), None);
+    }
+}

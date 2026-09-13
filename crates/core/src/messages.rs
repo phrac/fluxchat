@@ -245,8 +245,9 @@ pub async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMe
     
 
     if has_markdown {
-        let html = simple_markdown(body);
-        if html != body {
+        let escaped = html_escape(body);
+        let html = simple_markdown(&escaped);
+        if html != escaped {
             let mut final_html = html;
             if final_html.contains('\n') {
                 final_html = final_html.replace('\n', "<br>");
@@ -270,7 +271,9 @@ pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomM
         return RoomMessageEventContent::text_plain(body);
     }
 
-    let mut html = body.to_string();
+    // Everything below builds HTML, so the raw text must be escaped first —
+    // otherwise `Vec<u8>` or `a < b` corrupt the formatted body.
+    let mut html = html_escape(body);
     let mut changed = false;
     let mut mentioned_user_ids: std::collections::BTreeSet<matrix_sdk::ruma::OwnedUserId> =
         std::collections::BTreeSet::new();
@@ -300,6 +303,7 @@ pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomM
             member_names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
 
             for (display_name, user_id) in &member_names {
+                let display_name = html_escape(display_name);
                 let mention = format!("@{display_name}");
                 if html.contains(&mention) {
                     let encoded_uid = user_id.replace('@', "%40").replace(':', "%3A");
@@ -421,9 +425,87 @@ fn simple_markdown(text: &str) -> String {
             break;
         }
     }
+    // Italic (*...*) — after bold so `**` pairs are already consumed.
+    result = apply_italics(&result);
     // Headings (`# ` … `###### ` at line start) — applied last so we can skip <pre> regions
     result = apply_headings(&result);
     result
+}
+
+/// Escape `&`, `<`, `>` and `"` for safe inclusion in a formatted body.
+pub fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Wrap `*text*` in `<em>`. Requires non-space characters directly inside
+/// the markers and no newline between them, so `5 * 3 * 2` is left alone.
+fn apply_italics(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'*' {
+            let inner_ok = |b: u8| !b.is_ascii_whitespace() && b != b'*';
+            if let Some(len) = text[i + 1..].find('*') {
+                let inner = &text[i + 1..i + 1 + len];
+                if len > 0
+                    && inner_ok(inner.as_bytes()[0])
+                    && inner_ok(inner.as_bytes()[len - 1])
+                    && !inner.contains('\n')
+                {
+                    out.push_str("<em>");
+                    out.push_str(inner);
+                    out.push_str("</em>");
+                    i += len + 2;
+                    continue;
+                }
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_spans_keep_angle_brackets_intact() {
+        let html = simple_markdown(&html_escape("use `Vec<u8>` here"));
+        assert_eq!(html, "use <code>Vec&lt;u8&gt;</code> here");
+    }
+
+    #[test]
+    fn bold_strike_italic_and_headings() {
+        assert_eq!(simple_markdown("**b** ~~s~~ *i*"), "<strong>b</strong> <del>s</del> <em>i</em>");
+        assert_eq!(simple_markdown("# Title\nbody"), "<h1>Title</h1>\nbody");
+    }
+
+    #[test]
+    fn italics_ignore_arithmetic_and_unclosed() {
+        assert_eq!(apply_italics("5 * 3 * 2"), "5 * 3 * 2");
+        assert_eq!(apply_italics("a *b"), "a *b");
+        assert_eq!(apply_italics("**"), "**");
+    }
+
+    #[test]
+    fn headings_skip_code_blocks() {
+        let html = simple_markdown("```\n# not a heading\n```");
+        assert_eq!(html, "<pre><code>\n# not a heading\n</code></pre>");
+    }
 }
 
 /// Edit an existing message in a room.

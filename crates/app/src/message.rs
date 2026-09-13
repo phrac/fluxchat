@@ -18,6 +18,8 @@ pub enum Message {
     SessionRestored(LoginSuccess),
     /// Startup found no saved session — show the login form.
     NoSavedSession,
+    /// The window was resized (logical width, height).
+    WindowResized(f32, f32),
     Logout,
 
     // --- Post-login startup ---
@@ -31,8 +33,7 @@ pub enum Message {
     // --- Room navigation ---
     SelectRoom(String),
     SelectSpace(Option<String>),
-    CloseTab(String),
-    SwitchTab(usize), // Alt+1-9
+    SwitchTab(usize), // Alt+1-9: Nth room in sidebar order
     ToggleSection(String), // collapse/expand room list section
 
     // --- Message input ---
@@ -82,7 +83,6 @@ pub enum Message {
     EmojiQueryChanged(String),
     EmojiCategoryChanged(u8),
     EmojiSelect(String),           // emoji character
-    ToggleOverflowMenu,
     RefreshRoomList,
     InvitesRefreshed(Vec<fluxchat_core::RoomInfo>),
     ToggleCreateMenu,
@@ -92,7 +92,6 @@ pub enum Message {
     OpenContextMenu(super::state::ContextMenu),
     CloseContextMenu,
     ContextMenuAction(String, String), // action, target_id (room_id or space_id)
-    SetRightPanel(Option<super::state::RightPanel>),
 
     // --- Modals ---
     OpenModal(super::state::Modal),
@@ -221,7 +220,6 @@ pub enum Message {
 
     // --- Overflow menu actions ---
     ToggleFavourite,
-    CopyRoomLink,
 
     // --- Invites ---
     AcceptInvite(String), // room_id
@@ -273,7 +271,6 @@ pub enum Message {
 
     // --- Panels data ---
     PinsLoaded(Vec<fluxchat_core::MessageInfo>),
-    ThreadsLoaded(Vec<fluxchat_core::MessageInfo>),
 
     // --- Room creation ---
     CreateRoomNameChanged(String),
@@ -351,7 +348,6 @@ pub enum Message {
     // --- Sidebar resize ---
     SidebarDragStart,
     SidebarDragEnd,
-    SidebarDrag(f32), // new x position
     CursorMoved(f32, f32), // x, y
 
     // --- Scroll ---

@@ -100,11 +100,17 @@ pub fn all_commands() -> Vec<Command> {
 
 /// Dispatch a slash command from the input text.
 pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
+    // Room commands act on the parent room when a thread tab is open.
+    let current_room: Option<String> = state.active_real_room().map(str::to_string);
     let trimmed = input.trim();
     let (cmd, args) = match trimmed.split_once(' ') {
         Some((c, a)) => (c, a.trim()),
         None => (trimmed, ""),
     };
+
+    if current_room.is_none() && all_commands().iter().any(|c| c.name == cmd && c.needs_room) {
+        return CommandResult::Help(format!("{cmd} needs a room selected"));
+    }
 
     match cmd {
         "/help" => {
@@ -231,13 +237,13 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             }
             let mut parts = args.splitn(2, ' ');
             let event_id = parts.next().unwrap().to_string();
-            let room_id = state.selected_room_id.clone().unwrap_or_default();
+            let room_id = current_room.clone().unwrap_or_default();
             CommandResult::Messages(vec![Message::OpenModal(crate::state::Modal::Report {
                 event_id, room_id,
             })])
         }
         "/leave" | "/part" => {
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 CommandResult::Messages(vec![Message::LeaveRoom(room_id.clone())])
             } else {
                 CommandResult::Help("No room selected".into())
@@ -247,7 +253,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 return CommandResult::Help("Usage: /invite <user>".into());
             }
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 CommandResult::Messages(vec![Message::InviteUser(room_id.clone(), args.to_string())])
             } else {
                 CommandResult::Help("No room selected".into())
@@ -260,7 +266,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             let (user, reason) = args.split_once(' ')
                 .map(|(u, r)| (u, Some(r.to_string())))
                 .unwrap_or((args, None));
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 let user_id = resolve_user_id(user, room_id, state);
                 CommandResult::Messages(vec![Message::KickUser(room_id.clone(), user_id, reason)])
             } else {
@@ -274,7 +280,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             let (user, reason) = args.split_once(' ')
                 .map(|(u, r)| (u, Some(r.to_string())))
                 .unwrap_or((args, None));
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 let user_id = resolve_user_id(user, room_id, state);
                 CommandResult::Messages(vec![Message::BanUser(room_id.clone(), user_id, reason)])
             } else {
@@ -282,7 +288,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             }
         }
         "/topic" => {
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 if args.is_empty() {
                     // Show current topic
                     let topic = state.rooms.iter()
@@ -348,7 +354,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             let (user, level) = args.split_once(' ')
                 .map(|(u, l)| (u.to_string(), l.parse::<i64>().unwrap_or(50)))
                 .unwrap_or((args.to_string(), 50));
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 // Resolve display name to user_id
                 let user_id = resolve_user_id(&user, room_id, state);
                 CommandResult::Messages(vec![Message::SetPowerLevel(room_id.clone(), user_id, level)])
@@ -360,7 +366,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 return CommandResult::Help("Usage: /deop <user>".into());
             }
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 let user_id = resolve_user_id(args, room_id, state);
                 CommandResult::Messages(vec![Message::SetPowerLevel(room_id.clone(), user_id, 0)])
             } else {
@@ -509,7 +515,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         // --- Clear ---
         "/clear" => {
-            if let Some(room_id) = &state.selected_room_id {
+            if let Some(room_id) = &current_room {
                 CommandResult::Messages(vec![Message::SyncEvent(
                     crate::message::SyncEvent::MessagesUpdated(room_id.clone(), Vec::new()),
                 )])
@@ -579,18 +585,6 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         _ => CommandResult::Help(format!("Unknown command: {cmd}. Type /help for commands.")),
     }
-}
-
-/// Get autocomplete matches for a partial command.
-pub fn autocomplete(prefix: &str) -> Vec<&'static str> {
-    let commands = all_commands();
-    // Leak the vec to get 'static references (it's a small, fixed list)
-    let commands: &'static [Command] = Box::leak(commands.into_boxed_slice());
-    commands
-        .iter()
-        .filter(|c| c.name.starts_with(prefix))
-        .map(|c| c.name)
-        .collect()
 }
 
 /// Get autocomplete entries for display (name + description).

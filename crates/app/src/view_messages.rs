@@ -1084,6 +1084,11 @@ impl FluxChat {
                 )));
             }
         }
+        action_row = action_row.push(make_msg_action(SVG_FORWARD, Message::ForwardMessage(
+            msg.body.clone(),
+            msg.formatted_body.clone().unwrap_or_default(),
+            Some(msg.sender_name.clone()),
+        )));
         action_row = action_row.push(make_msg_action(SVG_PIN, Message::PinMessage(event_id.clone())));
 
         if is_own {

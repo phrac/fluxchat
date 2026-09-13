@@ -85,8 +85,6 @@ pub(crate) const MONO_BOLD: Font = Font {
     weight: iced::font::Weight::Bold,
     ..Font::MONOSPACE
 };
-pub(crate) const SANS: Font = Font::DEFAULT;
-pub(crate) const SANS_BOLD: Font = Font { weight: iced::font::Weight::Bold, ..Font::DEFAULT };
 
 /// Leaked font family names for 'static lifetime requirement.
 /// We only leak unique names the user has actually selected.
@@ -139,17 +137,9 @@ impl FluxChat {
     pub(crate) fn msg_font(&self) -> Font {
         font_by_name(&self.msg_font_family)
     }
-    /// Get the user's chosen message font (bold).
-    pub(crate) fn msg_font_bold(&self) -> Font {
-        font_bold_by_name(&self.msg_font_family)
-    }
     /// Get the user's chosen sidebar font.
     pub(crate) fn sidebar_font(&self) -> Font {
         font_by_name(&self.sidebar_font_family)
-    }
-    /// Get the user's chosen sidebar font (bold).
-    pub(crate) fn sidebar_font_bold(&self) -> Font {
-        font_bold_by_name(&self.sidebar_font_family)
     }
 
     /// Top-level view — dispatches to login or main layout.
@@ -756,6 +746,9 @@ impl FluxChat {
                 col = col.push(self.context_menu_item(
                     fav_label, SVG_STAR, rid.clone(), "favourite",
                 ));
+                col = col.push(self.context_menu_item(
+                    "Copy Link", SVG_LINK, rid.clone(), "copy_link",
+                ));
                 if !is_dm {
                     col = col.push(self.context_menu_item(
                         "Invite", SVG_USER_PLUS, rid.clone(), "invite",
@@ -990,21 +983,9 @@ impl FluxChat {
             .into()
     }
 
-    /// Room list panel with grouped sections.
-    fn view_room_list(&self) -> Element<Message> {
-        let selected_space_name: Option<String> = self
-            .selected_space_id
-            .as_ref()
-            .and_then(|sid| self.spaces.iter().find(|s| s.room_id == *sid))
-            .map(|s| s.name.clone());
-
-        // Group rooms into sections
-        let mut favourites: Vec<&fluxchat_core::RoomInfo> = Vec::new();
-        let mut ungrouped: Vec<&fluxchat_core::RoomInfo> = Vec::new();
-        let mut by_space_id: std::collections::HashMap<String, Vec<&fluxchat_core::RoomInfo>> =
-            std::collections::HashMap::new();
-        let mut dms: Vec<&fluxchat_core::RoomInfo> = Vec::new();
-
+    /// Split the rooms visible in the current space into sidebar sections.
+    fn group_rooms(&self) -> RoomGroups<'_> {
+        let mut groups = RoomGroups::default();
         for room in &self.rooms {
             // Filter by selected space (includes rooms from descendant sub-spaces)
             if let Some(ref selected_sid) = self.selected_space_id {
@@ -1015,16 +996,62 @@ impl FluxChat {
                 }
             }
             if room.is_favourite {
-                favourites.push(room);
+                groups.favourites.push(room);
             }
             if room.is_direct {
-                dms.push(room);
+                groups.dms.push(room);
             } else if let Some(ref sid) = room.space_id {
-                by_space_id.entry(sid.clone()).or_default().push(room);
+                groups.by_space_id.entry(sid.clone()).or_default().push(room);
             } else {
-                ungrouped.push(room);
+                groups.ungrouped.push(room);
             }
         }
+        groups
+    }
+
+    /// Space sections for rooms whose space isn't in the hierarchy tree, in a
+    /// stable (name-sorted) order — HashMap order would reshuffle every frame.
+    fn orphan_space_sections<'m, 'r>(
+        &self,
+        by_space_id: &'m std::collections::HashMap<String, Vec<&'r fluxchat_core::RoomInfo>>,
+    ) -> Vec<(&'m String, &'m Vec<&'r fluxchat_core::RoomInfo>)> {
+        let mut sections: Vec<_> = by_space_id.iter()
+            .filter(|(sid, _)| !self.space_tree.iter().any(|n| n.info.room_id == **sid))
+            .collect();
+        sections.sort_by_key(|(_, rooms)| rooms.first().and_then(|r| r.space_name.clone()));
+        sections
+    }
+
+    /// Room IDs in the order the sidebar shows them (Alt+1-9 targets).
+    pub(crate) fn sidebar_room_order(&self) -> Vec<String> {
+        let groups = self.group_rooms();
+        let mut order: Vec<String> = Vec::new();
+        let mut push = |rooms: &[&fluxchat_core::RoomInfo]| {
+            order.extend(rooms.iter().map(|r| r.room_id.clone()));
+        };
+        push(&groups.favourites);
+        push(&groups.ungrouped);
+        for node in &self.space_tree {
+            if let Some(rooms) = groups.by_space_id.get(&node.info.room_id) {
+                push(rooms);
+            }
+        }
+        for (_, rooms) in self.orphan_space_sections(&groups.by_space_id) {
+            push(rooms);
+        }
+        push(&groups.dms);
+        order
+    }
+
+    /// Room list panel with grouped sections.
+    fn view_room_list(&self) -> Element<Message> {
+        let selected_space_name: Option<String> = self
+            .selected_space_id
+            .as_ref()
+            .and_then(|sid| self.spaces.iter().find(|s| s.room_id == *sid))
+            .map(|s| s.name.clone());
+
+        let RoomGroups { favourites, ungrouped, by_space_id, dms } = self.group_rooms();
 
         // Header
         let header_text: String = selected_space_name
@@ -1305,10 +1332,7 @@ impl FluxChat {
         }
 
         // Render any rooms whose space_id wasn't in the tree (fallback)
-        for (sid, rooms) in &by_space_id {
-            if self.space_tree.iter().any(|n| n.info.room_id == *sid) {
-                continue; // already rendered above
-            }
+        for (sid, rooms) in self.orphan_space_sections(&by_space_id) {
             let space_name = rooms.first()
                 .and_then(|r| r.space_name.as_deref())
                 .unwrap_or("Other");
@@ -2457,6 +2481,9 @@ impl FluxChat {
                 iced::Event::Window(iced::window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(path))
                 }
+                iced::Event::Window(iced::window::Event::Resized(size)) => {
+                    Some(Message::WindowResized(size.width, size.height))
+                }
                 iced::Event::Window(iced::window::Event::Focused) => {
                     Some(Message::WindowFocusChanged(true))
                 }
@@ -2505,6 +2532,15 @@ impl FluxChat {
             Theme::Light
         }
     }
+}
+
+/// Rooms of the current space bucketed into sidebar sections.
+#[derive(Default)]
+struct RoomGroups<'a> {
+    favourites: Vec<&'a fluxchat_core::RoomInfo>,
+    ungrouped: Vec<&'a fluxchat_core::RoomInfo>,
+    by_space_id: std::collections::HashMap<String, Vec<&'a fluxchat_core::RoomInfo>>,
+    dms: Vec<&'a fluxchat_core::RoomInfo>,
 }
 
 static CURSOR_X: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

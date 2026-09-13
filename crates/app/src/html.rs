@@ -375,13 +375,6 @@ impl<'a> WalkCtx<'a> {
         }
     }
 
-    /// Get the local element name, lowercased.
-    fn element_name(&self, id: NodeId) -> Option<&str> {
-        match &self.nodes[id].data {
-            NodeData::Element { name, .. } => Some(&*name.local),
-            _ => None,
-        }
-    }
 
     /// Collect all text content from a subtree (stripping tags).
     fn collect_text(&self, id: NodeId) -> String {
@@ -401,17 +394,6 @@ impl<'a> WalkCtx<'a> {
         }
     }
 
-    /// Check if any ancestor (inclusive) has a given element name.
-    fn has_ancestor(&self, id: NodeId, name: &str) -> bool {
-        let mut cur = Some(id);
-        while let Some(nid) = cur {
-            if self.is_element(nid, name) {
-                return true;
-            }
-            cur = self.nodes[nid].parent;
-        }
-        false
-    }
 
     /// Check if this node is inside a `<li>` (for suppressing p/div line breaks).
     fn inside_li(&self, id: NodeId) -> bool {
@@ -768,11 +750,6 @@ fn parse_html(html: &str) -> Vec<Segment> {
     }
 
     ctx.segments
-}
-
-/// Convert Segments into Iced Spans.
-fn segments_to_spans(segments: Vec<Segment>) -> Vec<Span<'static, String>> {
-    segments_to_spans_with_rooms(segments, &[], 14.0)
 }
 
 fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo], base_size: f32) -> Vec<Span<'static, String>> {
@@ -1363,3 +1340,52 @@ fn convert_inline_latex(text: &str) -> String {
     result
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(spans: &[Span<'static, String>]) -> Vec<String> {
+        spans.iter().map(|s| s.text.to_string()).collect()
+    }
+
+    #[test]
+    fn inline_formatting_splits_spans() {
+        let spans = html_to_spans("<b>bold</b> plain <code>x</code>");
+        assert_eq!(texts(&spans), ["bold", " plain ", "x"]);
+        assert_eq!(spans[0].font.map(|f| f.weight), Some(font::Weight::Bold));
+    }
+
+    #[test]
+    fn links_carry_their_url() {
+        let spans = html_to_spans("see <a href=\"https://example.org\">here</a>");
+        assert_eq!(spans[1].link.as_deref(), Some("https://example.org"));
+    }
+
+    #[test]
+    fn mention_pills_get_at_prefix_and_user_id() {
+        let spans = html_to_spans("<a href=\"https://matrix.to/#/@alice:example.org\">Alice</a>");
+        assert_eq!(texts(&spans), ["@Alice"]);
+    }
+
+    #[test]
+    fn code_blocks_and_tables_become_parts() {
+        let parts = html_to_parts("<p>intro</p><pre><code>let x = 1;</code></pre>", &[], 14.0);
+        assert!(matches!(parts[0], MessagePart::Text(_)));
+        assert!(matches!(parts[1], MessagePart::CodeBlock(_)));
+        let parts = html_to_parts("<table><tr><th>h</th></tr><tr><td>c</td></tr></table>", &[], 14.0);
+        assert!(parts.iter().any(|p| matches!(p, MessagePart::Table { headers, rows } if headers.len() == 1 && rows.len() == 1)));
+    }
+
+    #[test]
+    fn body_cache_memoizes_by_key() {
+        let cache = BodyCache::default();
+        let mut builds = 0;
+        for _ in 0..3 {
+            cache.get_or_insert(("k", 1u8), || { builds += 1; RenderedBody::Spans(Vec::new()) });
+        }
+        assert_eq!(builds, 1);
+        cache.get_or_insert(("k", 2u8), || { builds += 1; RenderedBody::Spans(Vec::new()) });
+        assert_eq!(builds, 2);
+    }
+}

@@ -658,65 +658,6 @@ pub(crate) fn compute_selection_rects(
     rects
 }
 
-/// Extract the selected text between two anchors.
-pub(crate) fn extract_selected_text(
-    paragraph: &ConcreteParagraph,
-    anchor: SelectionAnchor,
-    cursor: SelectionAnchor,
-) -> String {
-    let (start, end) = if anchor.line < cursor.line
-        || (anchor.line == cursor.line && anchor.index <= cursor.index)
-    {
-        (anchor, cursor)
-    } else {
-        (cursor, anchor)
-    };
-
-    let buffer = paragraph.buffer();
-    let mut result = String::new();
-
-    for (i, line) in buffer.lines.iter().enumerate() {
-        if i < start.line {
-            continue;
-        }
-        if i > end.line {
-            break;
-        }
-
-        let text = line.text();
-        let line_start = if i == start.line { start.index } else { 0 };
-        let line_end = if i == end.line {
-            end.index.min(text.len())
-        } else {
-            text.len()
-        };
-
-        if line_start < line_end && line_start < text.len() {
-            // Ensure we don't slice in the middle of a UTF-8 character
-            let safe_start = text
-                .char_indices()
-                .map(|(idx, _)| idx)
-                .find(|&idx| idx >= line_start)
-                .unwrap_or(text.len());
-            let safe_end = text
-                .char_indices()
-                .map(|(idx, _)| idx)
-                .find(|&idx| idx >= line_end)
-                .unwrap_or(text.len());
-
-            if safe_start < safe_end {
-                result.push_str(&text[safe_start..safe_end]);
-            }
-        }
-
-        if i < end.line {
-            result.push('\n');
-        }
-    }
-
-    result
-}
-
 /// Get anchors representing the entire text (for Ctrl+A).
 pub(crate) fn select_all_anchors(
     paragraph: &ConcreteParagraph,

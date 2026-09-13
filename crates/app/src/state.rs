@@ -6,6 +6,17 @@ use fluxchat_core::{
 };
 
 /// Channel for timeline diff stream watcher to send updates back to the Iced event loop.
+pub const DEFAULT_WINDOW_WIDTH: f32 = 1200.0;
+pub const DEFAULT_WINDOW_HEIGHT: f32 = 800.0;
+
+/// Read the persisted window size ("WxH"), if any.
+pub fn saved_window_size(db: &fluxchat_core::AppDb) -> Option<(f32, f32)> {
+    let value = db.get_setting("window_size")?;
+    let (w, h) = value.split_once('x')?;
+    let (w, h) = (w.parse::<f32>().ok()?, h.parse::<f32>().ok()?);
+    (w >= 400.0 && h >= 300.0).then_some((w, h))
+}
+
 pub type TimelineUpdateTx = tokio::sync::mpsc::UnboundedSender<crate::message::Message>;
 pub type TimelineUpdateRx = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
 
@@ -23,15 +34,6 @@ pub static CALL_RX: std::sync::OnceLock<std::sync::Mutex<Option<CallEventRx>>> =
 
 /// Tab entry: (room_id, room_name, space_name, space_avatar_mxc)
 pub type TabEntry = (String, String, Option<String>, Option<String>);
-
-/// Which panel is open on the right side.
-#[derive(Debug, Clone, PartialEq)]
-pub enum RightPanel {
-    Pins,
-    Search,
-    Threads,
-    Invites,
-}
 
 #[derive(Debug, Clone)]
 pub enum ContextMenu {
@@ -107,7 +109,6 @@ pub struct FluxChat {
     pub upload_pending: Option<(String, String, Vec<u8>)>, // (filename, mime, data)
 
     // UI panels
-    pub right_panel: Option<RightPanel>,
     pub show_member_list: bool,
     pub search_open: bool,
     pub pins_open: bool,
@@ -144,7 +145,6 @@ pub struct FluxChat {
     pub emoji_query: String,
     pub emoji_category: u8, // 0=frequent, 1-9=emojis::Group
     pub emoji_freq: std::collections::HashMap<String, u32>,
-    pub overflow_menu_open: bool,
     pub create_menu_open: bool,
     pub context_menu: Option<ContextMenu>,
     pub context_menu_position: (f32, f32),
@@ -202,6 +202,10 @@ pub struct FluxChat {
     pub sync_lag_ms: u64,
     pub sidebar_width: f32,
     pub sidebar_dragging: bool,
+    /// Layout values changed since they were last written to SQLite;
+    /// flushed on the next Tick so resize drags don't hammer the database.
+    pub layout_dirty: bool,
+    pub window_size: (f32, f32),
     pub device_id: Option<String>,
 
     // Media/avatar cache — maps MXC URI to stable image handles (avoids flicker on re-render)
@@ -403,14 +407,12 @@ impl FluxChat {
             reply_to: None,
             edit_event: None,
             upload_pending: None,
-            right_panel: None,
             show_member_list: true,
             search_open: false,
             pins_open: false,
             threads_open: false,
             files_open: false,
             notices_open: false,
-            overflow_menu_open: false,
             create_menu_open: false,
             context_menu: None,
             context_menu_position: (0.0, 0.0),
@@ -487,6 +489,8 @@ impl FluxChat {
             sync_lag_ms: 0,
             sidebar_width: 220.0,
             sidebar_dragging: false,
+            layout_dirty: false,
+            window_size: (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
             device_id: None,
             avatar_cache: HashMap::new(),
             avatar_pending: Default::default(),

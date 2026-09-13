@@ -224,24 +224,6 @@ fn active() -> std::sync::RwLockReadGuard<'static, ThemeColors> {
 
 // --- Public color accessors (drop-in replacements for the old constants) ---
 
-// Keep the old constants for backward compatibility in const contexts (closures, style fns).
-// Non-const code can use `theme::colors()` to get the active theme.
-pub const BG_DEEP: Color = Color::from_rgb(0x1a as f32 / 255.0, 0x1b as f32 / 255.0, 0x1e as f32 / 255.0);
-pub const BG_DARK: Color = Color::from_rgb(0x22 as f32 / 255.0, 0x23 as f32 / 255.0, 0x27 as f32 / 255.0);
-pub const BG_MID: Color = Color::from_rgb(0x2a as f32 / 255.0, 0x2c as f32 / 255.0, 0x31 as f32 / 255.0);
-pub const BG_LIGHT: Color = Color::from_rgb(0x32 as f32 / 255.0, 0x35 as f32 / 255.0, 0x3b as f32 / 255.0);
-pub const BG_HOVER: Color = Color::from_rgb(0x3a as f32 / 255.0, 0x3d as f32 / 255.0, 0x44 as f32 / 255.0);
-pub const TEXT_BRIGHT: Color = Color::from_rgb(0xe4 as f32 / 255.0, 0xe4 as f32 / 255.0, 0xe7 as f32 / 255.0);
-pub const TEXT_NORMAL: Color = Color::from_rgb(0xc8 as f32 / 255.0, 0xc9 as f32 / 255.0, 0xcd as f32 / 255.0);
-pub const TEXT_MUTED: Color = Color::from_rgb(0x8b as f32 / 255.0, 0x8d as f32 / 255.0, 0x93 as f32 / 255.0);
-pub const TEXT_DIM: Color = Color::from_rgb(0x5c as f32 / 255.0, 0x5e as f32 / 255.0, 0x66 as f32 / 255.0);
-pub const ACCENT: Color = Color::from_rgb(0x3b as f32 / 255.0, 0x82 as f32 / 255.0, 0xf6 as f32 / 255.0);
-pub const GREEN: Color = Color::from_rgb(0x22 as f32 / 255.0, 0xc5 as f32 / 255.0, 0x5e as f32 / 255.0);
-pub const YELLOW: Color = Color::from_rgb(0xea as f32 / 255.0, 0xb3 as f32 / 255.0, 0x08 as f32 / 255.0);
-pub const RED: Color = Color::from_rgb(0xef as f32 / 255.0, 0x44 as f32 / 255.0, 0x44 as f32 / 255.0);
-pub const PURPLE: Color = Color::from_rgb(0xa8 as f32 / 255.0, 0x55 as f32 / 255.0, 0xf7 as f32 / 255.0);
-pub const BORDER: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.06);
-
 /// Get the active theme's colors for use in non-const contexts.
 pub fn colors() -> ThemeColors {
     active().clone()
@@ -291,19 +273,6 @@ pub fn button_transparent(_: &Theme, _: button::Status) -> button::Style {
     button::Style { background: None, ..Default::default() }
 }
 
-/// Button that shows a subtle highlight on hover.
-pub fn button_subtle(_: &Theme, status: button::Status) -> button::Style {
-    button::Style {
-        background: if matches!(status, button::Status::Hovered) {
-            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
-        } else {
-            None
-        },
-        border: Border { radius: 4.0.into(), ..Default::default() },
-        ..Default::default()
-    }
-}
-
 /// Panel container with BG_DARK background and BORDER.
 pub fn container_panel(_: &Theme) -> container::Style {
     let t = active();
@@ -311,41 +280,6 @@ pub fn container_panel(_: &Theme) -> container::Style {
         background: Some(t.bg_dark.into()),
         border: Border { color: t.border, width: 1.0, radius: 0.0.into() },
         ..Default::default()
-    }
-}
-
-/// Theme-aware text_input style.
-pub fn text_input_style(_: &Theme, status: iced::widget::text_input::Status) -> iced::widget::text_input::Style {
-    let t = active();
-    let is_focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
-    iced::widget::text_input::Style {
-        background: iced::Background::Color(t.bg_mid),
-        border: Border {
-            color: if is_focused { t.accent } else { t.border },
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        icon: t.text_dim,
-        placeholder: t.text_dim,
-        value: t.text_bright,
-        selection: Color::from_rgba(0.23, 0.51, 0.99, 0.3),
-    }
-}
-
-/// Theme-aware pick_list style.
-pub fn pick_list_style(_: &Theme, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
-    let t = active();
-    let is_hovered = matches!(status, iced::widget::pick_list::Status::Hovered);
-    iced::widget::pick_list::Style {
-        background: iced::Background::Color(if is_hovered { t.bg_light } else { t.bg_mid }),
-        text_color: t.text_bright,
-        placeholder_color: t.text_dim,
-        handle_color: t.text_muted,
-        border: Border {
-            color: t.border,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
     }
 }
 

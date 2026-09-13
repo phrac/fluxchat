@@ -1,4 +1,4 @@
-#![allow(dead_code, mismatched_lifetime_syntaxes)]
+#![allow(mismatched_lifetime_syntaxes)]
 
 mod commands;
 mod html;
@@ -51,6 +51,8 @@ fn main() -> iced::Result {
     { let _ = notify_rust::set_application("com.apple.Terminal"); }
 
     let core = init_core();
+    let (win_w, win_h) = state::saved_window_size(&core.db)
+        .unwrap_or((state::DEFAULT_WINDOW_WIDTH, state::DEFAULT_WINDOW_HEIGHT));
 
     let core2 = core.clone();
     iced::application(
@@ -67,7 +69,7 @@ fn main() -> iced::Result {
         ..iced::Font::MONOSPACE
     })
     .window(window::Settings {
-        size: Size::new(1200.0, 800.0),
+        size: Size::new(win_w, win_h),
         min_size: Some(Size::new(800.0, 400.0)),
         decorations: cfg!(target_os = "macos"),
         icon: load_icon(),
