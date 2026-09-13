@@ -12,25 +12,25 @@ A Matrix chat client built entirely in Rust. Native GPU-rendered desktop app wit
 
 ## Features
 
-- **Messaging** -- real-time via Matrix Timeline API with local echo, markdown formatting (bold, italic, strike, code, headings), inline images with lightbox, editing, deletion, forwarding, replies with context, mention pills, reactions, URL previews, read receipts, cross-message text selection with Ctrl+C copy, `//` escape for sending literal `/commands` to rooms
-- **Encryption** -- E2EE via vodozemac, SAS emoji verification, manual user verification (for bots), key backup/recovery, cross-signing, session management
+- **Messaging** -- real-time via Matrix Timeline API with local echo and send state (sending / failed + retry), markdown formatting (bold, italic, strike, code, headings), `(edited)` markers, day dividers, inline images with lightbox, editing, deletion, forwarding, replies with context, mention pills, `:shortcode` emoji completion, reactions, URL previews, read receipts, cross-message text selection with Ctrl+C copy, per-room drafts, right-click menu (copy link / event ID / view source), `//` escape for sending literal `/commands` to rooms
+- **Encryption** -- E2EE via vodozemac, SAS emoji verification, manual user verification (for bots), key backup/recovery, cross-signing, session management, per-message decryption diagnostics (why a key is missing, device key changes)
 - **Voice calls** -- MatrixRTC + LiveKit SFU, mic capture via cpal, in-call panel with participant tiles, PIP widget, mute/hangup
-- **Voice messages** -- record with mic button, Opus/OGG encoding, auto-normalization, preview before send, playback with progress bar
+- **Voice messages** -- record with mic button, Opus/OGG encoding, auto-normalization, preview before send, in-process Opus playback with progress bar
 - **Video** -- inline video player via GStreamer (iced_video_player), auto-generated thumbnails with rotation detection for bridged media, play/pause/seek controls
-- **Threads** -- indicators with reply counts, dedicated thread view, thread entries in sidebar
-- **Rooms & spaces** -- grouped room list with indented space hierarchy, Ctrl+K quick room switcher, room creation, settings, invitations, gold star favourites, notifications (all/mentions/mute), aliases, space details modal, right-click context menus, persistent collapsed sections, unread dot + badge indicators
+- **Threads** -- indicators with reply counts, live thread views (SDK thread timelines), thread entries in sidebar
+- **Rooms & spaces** -- grouped room list with indented space hierarchy, ranked Ctrl+K quick room switcher, Alt+1-9 / Alt+Up/Down room hotkeys (Alt+Shift+Up/Down for unread), room creation, settings, invitations, gold star favourites, notifications (all/mentions/mute), aliases, space details modal, right-click context menus, persistent collapsed sections, unread dot + badge indicators
 - **Search** -- server-side with client-side fallback, overlay with arrow key navigation, scroll-to-highlight
 - **Polls** -- create/vote/end with progress bars (MSC3381)
-- **Files & media** -- upload via button/drag-drop/paste, thumbnails, GIF search via Giphy (50MB download limit), stickers, location sharing, file download cards
+- **Files & media** -- upload via button/drag-drop/clipboard paste (Ctrl+V screenshots), server upload-limit check, thumbnails, GIF search via Giphy (50MB download limit), stickers, location sharing, file download cards
 - **Themes** -- 9 built-in themes (FluxChat, Nord, Nord Light, Dracula, Night Owl, Tokyo Night, Atom One Dark, Catppuccin Mocha/Latte), custom TOML theme files, light/dark mode, theme-aware code blocks (code_bg/code_text)
 - **Fonts** -- separate message and sidebar font selection from system fonts
 - **Code highlighting** -- 100+ languages via syntect, theme-aware colors for light/dark modes, collapsible code blocks
-- **Notifications** -- desktop notifications via notify-rust, per-room mute, mentions-only mode, invite notifications
+- **Notifications** -- desktop notifications driven by your server push rules (mute, mentions-only, keywords), click to open the room, invite notifications, unread count in the window title
 - **Profile & settings** -- Discord-style profile cards, power level management, banner/avatar editing, appearance/notification/security settings, interactive and manual identity verification from profile modal
 - **Slash commands** -- 57+ commands with Tab-cycling autocomplete, `//` escape for literal messages, including /devtools (room state viewer + raw event sender), /html, /plain, /unban, /upgraderoom
 - **Dev tools** -- /devtools modal with room state inspector and raw state/message event sender
 - **Auth** -- password and SSO/OIDC with provider auto-detection, session persistence
-- **Reliability** -- sync auto-reconnect with timeline re-subscription, cache eviction limits (avatar/image/gif/preview), temp file cleanup
+- **Reliability** -- one watcher per room timeline (no client-side merging), sync auto-reconnect with status-bar indicator, virtualized message list (only visible rows are built), bounded on-disk media cache, cache eviction limits (avatar/image/gif/preview), temp file cleanup, window size/sidebar width persistence
 
 ## Architecture
 
@@ -61,7 +61,7 @@ Both crates are pure Rust with zero JS/TS dependencies.
 
 ## Building
 
-Requires Rust 1.77+, GPU support (wgpu), and GStreamer (for video playback).
+Requires Rust 1.93+ (matrix-sdk 0.18), GPU support (wgpu), GStreamer (for video playback), and libopus + PulseAudio/PipeWire headers on Linux (voice).
 
 ```bash
 # macOS: install GStreamer

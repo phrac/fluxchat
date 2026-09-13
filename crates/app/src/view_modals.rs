@@ -1352,9 +1352,22 @@ impl FluxChat {
             text("Loading...").font(MONO).size(14).color(theme::colors().text_dim).into()
         };
 
+        let small_btn = |label: &'static str, msg: Message| {
+            button(text(label).font(MONO).size(12).color(theme::colors().accent))
+                .on_press(msg)
+                .padding([4, 10])
+                .style(|_, _| button::Style {
+                    background: Some(theme::colors().bg_light.into()),
+                    text_color: theme::colors().accent,
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+        };
         column![
             row![
                 Space::new().width(Fill),
+                small_btn("Copy", Message::CopyImage(url.to_string())),
+                small_btn("Save", Message::SaveImage(url.to_string())),
                 button(text("\u{00d7}").font(MONO).size(20).color(theme::colors().text_bright))
                     .on_press(Message::CloseModal)
                     .padding([4, 10])

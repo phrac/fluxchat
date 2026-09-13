@@ -46,6 +46,10 @@ pub enum Message {
     ScrollMessagesBy(f32),
     /// Member list filter text changed.
     MemberFilterChanged(String),
+    /// Lightbox: save the image (by MXC URI) via a file dialog.
+    SaveImage(String),
+    /// Lightbox: copy the image (by MXC URI) to the clipboard.
+    CopyImage(String),
     /// Server's max upload size in bytes (from /media/v1/config), if known.
     MaxUploadSizeLoaded(Option<u64>),
     /// Diagnostics for undecryptable sessions: (session_id, hint).

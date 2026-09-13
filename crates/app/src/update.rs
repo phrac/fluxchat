@@ -101,6 +101,14 @@ static VOICE_HANDLE: std::sync::Mutex<SendHandle> = std::sync::Mutex::new(SendHa
 /// In-process audio playback currently running, if any.
 static AUDIO_PLAYBACK: std::sync::Mutex<Option<fluxchat_core::voice::PlaybackHandle>> = std::sync::Mutex::new(None);
 
+/// Bytes of an inline image from the SQLite media cache (the in-memory
+/// cache only holds opaque `image::Handle`s).
+async fn cached_image_bytes(core: &fluxchat_core::AppState, mxc: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let b64 = core.db.get_cached_media(&format!("iced_img:{mxc}"))?;
+    base64::engine::general_purpose::STANDARD.decode(b64).ok().filter(|d| !d.is_empty())
+}
+
 /// Whether any room's display name differs between two room lists.
 fn room_names_changed(old: &[fluxchat_core::RoomInfo], new: &[fluxchat_core::RoomInfo]) -> bool {
     if old.len() != new.len() {
@@ -1910,6 +1918,56 @@ impl FluxChat {
                         Err(e) => Message::ShowError(format!("Join failed: {e}")),
                     },
                 ).chain(Task::done(Message::RefreshRoomList));
+            }
+            Message::SaveImage(mxc) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let data = cached_image_bytes(&core, &mxc).await.ok_or("image not available")?;
+                        let ext = match data.get(..4) {
+                            Some([0x89, b'P', b'N', b'G']) => "png",
+                            Some([0xFF, 0xD8, 0xFF, _]) => "jpg",
+                            Some([b'G', b'I', b'F', _]) => "gif",
+                            Some([b'R', b'I', b'F', b'F']) => "webp",
+                            _ => "bin",
+                        };
+                        let name = mxc.rsplit('/').next().unwrap_or("image");
+                        let handle = rfd::AsyncFileDialog::new()
+                            .set_file_name(format!("{name}.{ext}"))
+                            .save_file()
+                            .await
+                            .ok_or("cancelled")?;
+                        handle.write(&data).await.map_err(|e| e.to_string())?;
+                        Ok::<_, String>(())
+                    },
+                    |r| match r {
+                        Ok(()) => Message::Noop,
+                        Err(e) if e == "cancelled" => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Save failed: {e}")),
+                    },
+                );
+            }
+            Message::CopyImage(mxc) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let data = cached_image_bytes(&core, &mxc).await.ok_or("image not available".to_string())?;
+                        tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            let img = image::load_from_memory(&data).map_err(|e| e.to_string())?.to_rgba8();
+                            let (w, h) = img.dimensions();
+                            let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+                            clipboard.set_image(arboard::ImageData {
+                                width: w as usize,
+                                height: h as usize,
+                                bytes: std::borrow::Cow::Owned(img.into_raw()),
+                            }).map_err(|e| e.to_string())
+                        }).await.map_err(|e| e.to_string())?
+                    },
+                    |r| match r {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Copy failed: {e}")),
+                    },
+                );
             }
             Message::ScrollMessagesBy(fraction) => {
                 let delta = self.messages_viewport_h * fraction;
