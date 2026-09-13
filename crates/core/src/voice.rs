@@ -179,3 +179,150 @@ fn resample(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
     }
     result
 }
+
+// ── Playback ──
+
+/// Handle to an in-progress playback; dropping it does not stop playback.
+pub struct PlaybackHandle {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PlaybackHandle {
+    pub fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Decode OGG Opus bytes to interleaved f32 PCM at 48 kHz. Returns (samples, channels).
+pub fn decode_ogg_opus(bytes: &[u8]) -> Result<(Vec<f32>, usize), String> {
+    use ogg::reading::PacketReader;
+
+    let mut reader = PacketReader::new(std::io::Cursor::new(bytes));
+    let mut channels = 1usize;
+    let mut pre_skip = 0usize;
+    let mut decoder: Option<opus::Decoder> = None;
+    let mut pcm: Vec<f32> = Vec::new();
+    // Max Opus frame is 120ms at 48kHz, stereo.
+    let mut out = vec![0i16; 5760 * 2];
+    let mut index = 0usize;
+
+    while let Some(packet) = reader.read_packet().map_err(|e| format!("OGG read error: {e}"))? {
+        let data = packet.data;
+        match index {
+            0 => {
+                // OpusHead: version, channel count, pre-skip, ...
+                if data.len() >= 19 && &data[..8] == b"OpusHead" {
+                    channels = (data[9] as usize).clamp(1, 2);
+                    pre_skip = u16::from_le_bytes([data[10], data[11]]) as usize;
+                }
+                index += 1;
+                continue;
+            }
+            1 => {
+                // OpusTags
+                index += 1;
+                continue;
+            }
+            _ => index += 1,
+        }
+        let dec = match decoder.as_mut() {
+            Some(d) => d,
+            None => {
+                let ch = if channels == 1 { opus::Channels::Mono } else { opus::Channels::Stereo };
+                decoder = Some(opus::Decoder::new(48000, ch).map_err(|e| format!("Opus decoder init failed: {e}"))?);
+                decoder.as_mut().unwrap()
+            }
+        };
+        let frames = dec.decode(&data, &mut out, false).map_err(|e| format!("Opus decode error: {e}"))?;
+        pcm.extend(out[..frames * channels].iter().map(|&s| s as f32 / 32768.0));
+    }
+
+    if pcm.is_empty() {
+        return Err("No audio in OGG Opus data".into());
+    }
+    let skip = (pre_skip * channels).min(pcm.len());
+    pcm.drain(..skip);
+    Ok((pcm, channels))
+}
+
+/// Play interleaved f32 PCM on the default output device from a dedicated
+/// thread (cpal streams aren't `Send`). `on_finished` runs when playback ends
+/// or is stopped.
+pub fn play_pcm(
+    samples: Vec<f32>,
+    channels: usize,
+    sample_rate: u32,
+    on_finished: Box<dyn FnOnce() + Send>,
+) -> Result<PlaybackHandle, String> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = stop.clone();
+    std::thread::Builder::new()
+        .name("voice-playback".into())
+        .spawn(move || {
+            let result = (|| -> Result<(), String> {
+                let host = cpal::default_host();
+                let device = host.default_output_device().ok_or("No audio output device")?;
+                let config = device.default_output_config().map_err(|e| format!("No output config: {e}"))?;
+                let out_rate = config.sample_rate().0;
+                let out_channels = config.channels() as usize;
+                let stream_config: cpal::StreamConfig = config.into();
+
+                // Resample and map channels to the device format.
+                let frames = samples.len() / channels.max(1);
+                if frames == 0 {
+                    return Ok(());
+                }
+                let ratio = out_rate as f64 / sample_rate as f64;
+                let out_frames = (frames as f64 * ratio) as usize;
+                let mut buf = Vec::with_capacity(out_frames * out_channels);
+                for i in 0..out_frames {
+                    let src = i as f64 / ratio;
+                    let idx = (src as usize).min(frames - 1);
+                    let next = (idx + 1).min(frames - 1);
+                    let frac = (src - idx as f64) as f32;
+                    for c in 0..out_channels {
+                        let sc = c.min(channels - 1);
+                        let a = samples[idx * channels + sc];
+                        let b = samples[next * channels + sc];
+                        buf.push(a + frac * (b - a));
+                    }
+                }
+
+                let total = buf.len();
+                let pos = Arc::new(AtomicUsize::new(0));
+                let pos_cb = pos.clone();
+                let stream = device.build_output_stream(
+                    &stream_config,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let p = pos_cb.load(Ordering::Relaxed);
+                        let n = (total - p).min(data.len());
+                        data[..n].copy_from_slice(&buf[p..p + n]);
+                        for s in &mut data[n..] {
+                            *s = 0.0;
+                        }
+                        pos_cb.store(p + n, Ordering::Relaxed);
+                    },
+                    |err| tracing::warn!("Audio output error: {err}"),
+                    None,
+                ).map_err(|e| format!("Failed to build output stream: {e}"))?;
+                stream.play().map_err(|e| format!("Failed to start playback: {e}"))?;
+
+                while pos.load(Ordering::Relaxed) < total && !stop_flag.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                // Let the last buffer drain before tearing the stream down.
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                drop(stream);
+                Ok(())
+            })();
+            if let Err(e) = result {
+                tracing::warn!("Voice playback failed: {e}");
+            }
+            on_finished();
+        })
+        .map_err(|e| format!("Failed to spawn playback thread: {e}"))?;
+
+    Ok(PlaybackHandle { stop })
+}

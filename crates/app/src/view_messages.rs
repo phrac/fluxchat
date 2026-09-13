@@ -947,6 +947,15 @@ impl FluxChat {
                 .into()
         };
 
+        // Decryption diagnostics under undecryptable messages
+        if let Some(hint) = msg.utd.as_ref().and_then(|u| self.utd_hints.get(&u.session_id)) {
+            body_element = column![
+                body_element,
+                text(hint.clone()).font(self.msg_font()).size((fs - 2.0).max(10.0)).color(theme::colors().text_dim)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            ].spacing(2).width(Fill).into();
+        }
+
         // Reply context — colored left bar with sender name + quoted text
         // If SDK didn't resolve the reply, try local message cache
         let (resolved_reply_sender, resolved_reply_body) = if msg.reply_to_body.is_some() {

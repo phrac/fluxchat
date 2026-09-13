@@ -3,6 +3,7 @@
 mod commands;
 mod html;
 mod icons;
+mod measured;
 mod message;
 mod primary_clipboard;
 mod selectable_text;

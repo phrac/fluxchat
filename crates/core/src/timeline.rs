@@ -244,6 +244,20 @@ fn apply_diffs(items: &mut Vector<Option<MessageInfo>>, diffs: Vec<VectorDiff<Ar
     }
 }
 
+/// Short user-facing explanation for an SDK `UtdCause` (by its Debug name).
+fn utd_cause_text(cause: &str) -> &'static str {
+    match cause {
+        "SentBeforeWeJoined" => "sent before you joined",
+        "VerificationViolation" | "UnsignedDevice" | "UnknownDevice" =>
+            "sender's client won't share keys with an unverified session",
+        "HistoricalMessageAndBackupIsDisabled" | "HistoricalMessageAndDeviceIsUnverified" =>
+            "older message; key backup isn't set up",
+        "WithheldForUnverifiedOrInsecureDevice" => "sender withheld the key: verify this session",
+        "WithheldBySender" => "sender withheld the key",
+        _ => "missing session key",
+    }
+}
+
 /// Collect the displayable messages and derive thread reply counts from the
 /// replies present in the timeline.
 fn flatten_messages(items: &Vector<Option<MessageInfo>>) -> Vec<MessageInfo> {
@@ -442,6 +456,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     thread_root, thread_count, image_width, image_height, poll: None, geo_uri,
                     audio_mxc, duration_ms, file_mxc, file_mimetype, file_size, video_mxc, is_emote, is_video, is_voice: is_voice_msg,
                     read_receipt_user_ids: read_receipt_user_ids.clone(),
+                    utd: None,
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -459,6 +474,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     thread_root, thread_count, image_width: w, image_height: h, poll: None,
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                     read_receipt_user_ids: read_receipt_user_ids.clone(),
+                    utd: None,
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -487,17 +503,19 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     }),
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                     read_receipt_user_ids: read_receipt_user_ids.clone(),
+                    utd: None,
                 })
             } else {
                 // Distinguish encryption failures (missing key) from genuinely
                 // unknown content types — users have a shot at fixing UTDs
                 // (recover backup, etc.), but "[unsupported]" is dead-end.
+                let mut utd = None;
                 let body = match &msg_like.kind {
                     matrix_sdk_ui::timeline::MsgLikeKind::UnableToDecrypt(enc) => {
                         use matrix_sdk_ui::timeline::EncryptedMessage;
                         #[allow(deprecated)]
                         match enc {
-                            EncryptedMessage::MegolmV1AesSha2 { session_id, cause, .. } => {
+                            EncryptedMessage::MegolmV1AesSha2 { session_id, cause, sender_key, device_id } => {
                                 // Log each unique session at most once per process
                                 // to avoid spamming on every timeline re-read.
                                 static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
@@ -505,10 +523,17 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                                 let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
                                 let first_time = seen.lock().map(|mut s| s.insert(session_id.clone())).unwrap_or(true);
                                 if first_time {
-                                    tracing::warn!("UTD: session={session_id} cause={cause:?}");
+                                    tracing::warn!("UTD: session={session_id} cause={cause:?} device={device_id:?}");
                                 }
-                                format!("🔒 [can't decrypt — missing session key {}]",
-                                    session_id.chars().take(8).collect::<String>())
+                                let cause_str = format!("{cause:?}");
+                                utd = Some(crate::models::UtdInfo {
+                                    session_id: session_id.clone(),
+                                    sender_key: sender_key.clone(),
+                                    device_id: device_id.as_ref().map(|d| d.to_string()),
+                                    cause: cause_str.clone(),
+                                });
+                                let short: String = session_id.chars().take(8).collect();
+                                format!("🔒 [can't decrypt — {} ({short})]", utd_cause_text(&cause_str))
                             }
                             _ => "🔒 [can't decrypt]".into(),
                         }
@@ -529,6 +554,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     thread_root, thread_count, image_width: None, image_height: None, poll: None,
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                     read_receipt_user_ids,
+                    utd,
                 })
             }
         }
@@ -560,6 +586,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                 read_receipt_user_ids: Vec::new(),
+                utd: None,
             })
         }
 
@@ -575,6 +602,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                 read_receipt_user_ids: Vec::new(),
+                utd: None,
             })
         }
 
@@ -609,6 +637,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 thread_root: None, thread_count: None, image_width: None, image_height: None, poll: None,
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                 read_receipt_user_ids: Vec::new(),
+                utd: None,
             })
         }
 

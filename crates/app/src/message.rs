@@ -20,6 +20,10 @@ pub enum Message {
     NoSavedSession,
     /// The window was resized (logical width, height).
     WindowResized(f32, f32),
+    /// The user clicked a desktop notification for this room.
+    NotificationClicked(String),
+    /// Diagnostics for undecryptable sessions: (session_id, hint).
+    UtdHintsResolved(Vec<(String, String)>),
     Logout,
 
     // --- Post-login startup ---

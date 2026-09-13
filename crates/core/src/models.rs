@@ -53,6 +53,20 @@ pub struct MessageInfo {
     /// by the SDK timeline item. Authoritative; replaces polled receipts.
     #[serde(default)]
     pub read_receipt_user_ids: Vec<String>,
+    /// Set when the event couldn't be decrypted, for diagnostics in the UI.
+    #[serde(default)]
+    pub utd: Option<UtdInfo>,
+}
+
+/// Why an event couldn't be decrypted.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct UtdInfo {
+    pub session_id: String,
+    /// Curve25519 key the sender claims to have used (from the event; unverified).
+    pub sender_key: Option<String>,
+    pub device_id: Option<String>,
+    /// SDK `UtdCause` as a string, e.g. "Unknown", "WithheldBySender".
+    pub cause: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

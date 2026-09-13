@@ -129,7 +129,6 @@ pub struct FluxChat {
     pub audio_progress: f32,                // 0.0..1.0 playback progress
     pub audio_start_time: Option<std::time::Instant>, // when playback started
     pub audio_duration_ms: u64,             // duration of current audio
-    pub audio_pid: Option<u32>,             // PID of audio player process
     pub selection: crate::selectable_text::CrossMessageSelection,
     pub video_thumb_sizes: HashMap<String, (u32, u32)>,  // thumb_key -> (width, height)
     pub video_player: Option<iced_video_player::Video>, // inline video player
@@ -307,10 +306,19 @@ pub struct FluxChat {
     pub space_detail_rooms: Vec<fluxchat_core::RoomInfo>,
     pub space_detail_members: Vec<fluxchat_core::MemberInfo>,
 
-    /// How many of a view's newest messages are rendered; grows as the user
-    /// scrolls up. Rendering every loaded message rebuilt thousands of widgets
-    /// per frame in long-lived rooms.
-    pub render_limit: HashMap<String, usize>,
+    /// Measured height of each message row (by event ID), filled in by the
+    /// `Measured` wrapper during layout. Unmeasured rows use an estimate.
+    pub row_heights: crate::measured::RowHeights,
+    /// Height of the message scrollable's viewport (from the last scroll event).
+    pub messages_viewport_h: f32,
+    /// The first row intersecting the viewport at the last render and its
+    /// offset from the top of the list, so height changes above it (rows
+    /// getting measured, history prepended) can be compensated.
+    pub virt_anchor: std::cell::RefCell<Option<(String, f32)>>,
+    /// Diagnostic hints for undecryptable sessions, keyed by session ID.
+    pub utd_hints: HashMap<String, String>,
+    /// Session IDs whose diagnostics have been (or are being) computed.
+    pub utd_checked: HashSet<String>,
     /// Number of 5s Ticks since startup, for slower periodic work.
     pub tick_count: u64,
     /// Messages deleted locally whose redaction the timeline hasn't shown yet, per room.
@@ -326,10 +334,6 @@ pub struct FluxChat {
     pub paginating: bool,
     // Message count when pagination was triggered — to detect when new messages arrive
     pub paginate_msg_count: usize,
-    // Scroll offset when pagination was triggered — to restore position after prepend
-    pub pre_paginate_offset: f32,
-    // Number of messages added by last pagination — for scroll correction estimate
-    pub paginate_added_count: usize,
 
     // Animated GIF cache for inline messages
     pub gif_frames_cache: HashMap<String, std::sync::Arc<iced_gif::Frames>>,
@@ -443,7 +447,6 @@ impl FluxChat {
             audio_progress: 0.0,
             audio_start_time: None,
             audio_duration_ms: 0,
-            audio_pid: None,
             selection: Default::default(),
             video_thumb_sizes: HashMap::new(),
             video_player: None,
@@ -543,15 +546,17 @@ impl FluxChat {
             space_detail_rooms: Vec::new(),
             space_detail_members: Vec::new(),
             tick_count: 0,
-            render_limit: HashMap::new(),
+            row_heights: Default::default(),
+            messages_viewport_h: 700.0,
+            virt_anchor: Default::default(),
+            utd_hints: HashMap::new(),
+            utd_checked: HashSet::new(),
             body_cache: Default::default(),
             pending_redactions: HashMap::new(),
             messages_at_bottom: true,
             last_scroll_offset: 0.0,
             paginating: false,
             paginate_msg_count: 0,
-            pre_paginate_offset: 0.0,
-            paginate_added_count: 0,
             gif_frames_cache: HashMap::new(),
             gif_results: Vec::new(),
             gif_searching: false,

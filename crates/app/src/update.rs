@@ -10,12 +10,6 @@ const AVATAR_CACHE_LIMIT: usize = 1000;
 const IMAGE_CACHE_LIMIT: usize = 500;
 const URL_PREVIEW_LIMIT: usize = 200;
 const GIF_CACHE_LIMIT: usize = 100;
-/// Newest messages rendered per view before the user scrolls up.
-pub const RENDER_WINDOW: usize = 200;
-/// How many more already-loaded messages to reveal per scroll-to-top.
-const RENDER_WINDOW_STEP: usize = 200;
-/// Rough message row height for scroll correction after prepending rows.
-const ESTIMATED_MSG_HEIGHT: f32 = 40.0;
 /// Max entries kept in the SQLite media cache (avatars, inline images, GIFs).
 const MEDIA_DB_CACHE_LIMIT: usize = 1500;
 /// How long to wait before retrying an avatar that failed to download.
@@ -104,6 +98,8 @@ struct SendHandle(Option<fluxchat_core::voice::RecordingHandle>);
 unsafe impl Send for SendHandle {}
 unsafe impl Sync for SendHandle {}
 static VOICE_HANDLE: std::sync::Mutex<SendHandle> = std::sync::Mutex::new(SendHandle(None));
+/// In-process audio playback currently running, if any.
+static AUDIO_PLAYBACK: std::sync::Mutex<Option<fluxchat_core::voice::PlaybackHandle>> = std::sync::Mutex::new(None);
 
 /// Whether any room's display name differs between two room lists.
 fn room_names_changed(old: &[fluxchat_core::RoomInfo], new: &[fluxchat_core::RoomInfo]) -> bool {
@@ -118,7 +114,15 @@ fn room_names_changed(old: &[fluxchat_core::RoomInfo], new: &[fluxchat_core::Roo
 
 /// Show a desktop notification without blocking the UI thread (`show()` does a
 /// synchronous D-Bus round trip on Linux).
-fn show_notification(summary: String, body: String, sound: bool) {
+///
+/// `on_click` names a room to open when the notification is activated
+/// (freedesktop/D-Bus only — macOS and Windows backends don't report clicks).
+fn show_notification(
+    summary: String,
+    body: String,
+    sound: bool,
+    on_click: Option<(crate::state::TimelineUpdateTx, String)>,
+) {
     tokio::task::spawn_blocking(move || {
         let mut notification = notify_rust::Notification::new();
         notification.summary(&summary).body(&body).timeout(5000);
@@ -126,8 +130,27 @@ fn show_notification(summary: String, body: String, sound: bool) {
             // Standard freedesktop sound-theme name; macOS uses the default alert.
             notification.sound_name("message-new-instant");
         }
-        if let Err(e) = notification.show() {
-            tracing::debug!("Desktop notification failed: {e}");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if on_click.is_some() {
+            notification.action("default", "Open");
+        }
+        match notification.show() {
+            Err(e) => tracing::debug!("Desktop notification failed: {e}"),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            Ok(handle) => {
+                if let Some((tx, room_id)) = on_click {
+                    // Blocks this pool thread until the notification is acted on or closed.
+                    handle.wait_for_action(|action| {
+                        if action == "default" {
+                            let _ = tx.send(Message::NotificationClicked(room_id));
+                        }
+                    });
+                }
+            }
+            #[cfg(not(all(unix, not(target_os = "macos"))))]
+            Ok(_) => {
+                let _ = on_click;
+            }
         }
     });
 }
@@ -265,7 +288,10 @@ impl FluxChat {
                 self.last_seen_timestamp.clear();
                 self.thread_counts.clear();
                 self.pending_redactions.clear();
-                self.render_limit.clear();
+                self.row_heights.borrow_mut().clear();
+                *self.virt_anchor.borrow_mut() = None;
+                self.utd_hints.clear();
+                self.utd_checked.clear();
                 self.typing_by_room.clear();
                 self.modal = None;
                 self.sync_running = false;
@@ -388,6 +414,7 @@ impl FluxChat {
                                     "Room Invite".into(),
                                     format!("You've been invited to {}", invite.name),
                                     self.notify_sound,
+                                    None,
                                 );
                             }
                         }
@@ -530,25 +557,16 @@ impl FluxChat {
                     } else {
                         Task::none()
                     };
-                    self.messages_by_room.insert(room_id, merged);
-                    // Clear paginating when messages arrive from diff stream
+                    self.messages_by_room.insert(room_id.clone(), merged);
+                    // Pagination delivered; the prepended rows shift content and
+                    // the viewport anchor correction in MessagesScrolled compensates.
                     if is_active && self.paginating && new_count != self.paginate_msg_count {
-                        let added = new_count.saturating_sub(self.paginate_msg_count);
-                        // Keep paginating=true until scroll correction settles
+                        self.paginating = false;
                         self.paginate_msg_count = new_count;
-                        self.paginate_added_count = added;
                     }
-                    let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task, members_task];
-                    if is_active && self.paginate_added_count > 0 {
-                        // Scroll down to keep old messages in view after prepending
-                        let estimated_height = self.paginate_added_count as f32 * ESTIMATED_MSG_HEIGHT;
-                        let new_offset = self.pre_paginate_offset + estimated_height;
-                        self.paginate_added_count = 0;
-                        tasks.push(iced::widget::operation::scroll_to(
-                            crate::view::messages_scrollable_id(),
-                            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: new_offset },
-                        ));
-                    } else if is_active && self.messages_at_bottom {
+                    let utd_task = if is_active { self.check_utd_reasons(&room_id) } else { Task::none() };
+                    let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task, members_task, utd_task];
+                    if is_active && self.messages_at_bottom {
                         tasks.push(iced::widget::operation::snap_to_end(
                             crate::view::messages_scrollable_id(),
                         ));
@@ -568,7 +586,12 @@ impl FluxChat {
                         } else {
                             "New message".into()
                         };
-                        show_notification(format!("{} - {}", n.sender_name, n.room_name), body, self.notify_sound);
+                        show_notification(
+                            format!("{} - {}", n.sender_name, n.room_name),
+                            body,
+                            self.notify_sound,
+                            Some((self.timeline_tx.clone(), n.room_id.clone())),
+                        );
                     }
                 }
                 SyncEvent::MembersUpdated(room_id, members) => {
@@ -609,6 +632,8 @@ impl FluxChat {
                 crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
                 self.paginate_msg_count = 0;
+                self.last_scroll_offset = 0.0;
+                *self.virt_anchor.borrow_mut() = None;
                 // Mark as read (session-only, SDK handles server-side)
                 self.read_rooms.insert(room_id.clone());
                 // Load pins in background for pin icon state
@@ -2366,6 +2391,10 @@ impl FluxChat {
                     .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
                     .and_then(|m| m.duration_ms)
                     .unwrap_or(5000);
+                let is_voice = self.messages_by_room
+                    .get(&room_id)
+                    .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                    .is_some_and(|m| m.is_voice);
                 self.audio_playing = Some(event_id.clone());
                 self.audio_start_time = Some(std::time::Instant::now());
                 self.audio_duration_ms = duration;
@@ -2380,7 +2409,27 @@ impl FluxChat {
                         let (bytes, _mime) = fluxchat_core::media::get_event_media_bytes(
                             &client, &real_room, &event_id,
                         ).await.ok()?;
-                        // Write to temp file and play with system audio player
+                        // Voice messages (OGG Opus) decode and play in-process.
+                        if is_voice || _mime.contains("ogg") || _mime.contains("opus") {
+                            match fluxchat_core::voice::decode_ogg_opus(&bytes) {
+                                Ok((pcm, channels)) => {
+                                    let tx_done = tx.clone();
+                                    let started = fluxchat_core::voice::play_pcm(
+                                        pcm, channels, 48000,
+                                        Box::new(move || { let _ = tx_done.send(Message::AudioFinished); }),
+                                    );
+                                    match started {
+                                        Ok(handle) => {
+                                            *AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+                                            return Some(());
+                                        }
+                                        Err(e) => tracing::warn!("In-process playback failed, using system player: {e}"),
+                                    }
+                                }
+                                Err(e) => tracing::warn!("Opus decode failed, using system player: {e}"),
+                            }
+                        }
+                        // Other formats: write to a temp file and use a system player
                         let ext = if _mime.contains("ogg") { "ogg" }
                             else if _mime.contains("mp3") || _mime.contains("mpeg") { "mp3" }
                             else if _mime.contains("wav") { "wav" }
@@ -2429,6 +2478,9 @@ impl FluxChat {
                 );
             }
             Message::StopAudio => {
+                if let Some(handle) = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    handle.stop();
+                }
                 // Kill audio player processes playing our temp file
                 #[cfg(unix)]
                 { let _ = std::process::Command::new("pkill").arg("-f").arg("fluxchat_audio").status(); }
@@ -2437,7 +2489,6 @@ impl FluxChat {
                 self.audio_playing = None;
                 self.audio_progress = 0.0;
                 self.audio_start_time = None;
-                self.audio_pid = None;
             }
             Message::DownloadFile(event_id, room_id) => {
                 // Get the filename from the message
@@ -2565,6 +2616,7 @@ impl FluxChat {
                 self.video_thumb_sizes.insert(key, (w, h));
             }
             Message::AudioFinished => {
+                AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).take();
                 self.audio_playing = None;
                 self.audio_progress = 0.0;
                 self.audio_start_time = None;
@@ -2658,12 +2710,16 @@ impl FluxChat {
                 self.highlight_event_id = Some(event_id.clone());
                 if let Some(room_id) = &self.selected_room_id {
                     if let Some(msgs) = self.messages_by_room.get(room_id) {
-                        if let Some(pos) = msgs.iter().position(|m| m.event_id == event_id) {
-                            let offset = (pos as f32) * 40.0;
-                            return iced::widget::operation::scroll_to(
-                                crate::view::messages_scrollable_id(),
-                                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: offset },
-                            );
+                        if msgs.iter().any(|m| m.event_id == event_id) {
+                            if let Some(top) = self.row_top(&event_id) {
+                                let y = (top - 80.0).max(0.0);
+                                self.messages_at_bottom = false;
+                                self.last_scroll_offset = y;
+                                return iced::widget::operation::scroll_to(
+                                    crate::view::messages_scrollable_id(),
+                                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+                                );
+                            }
                         }
                     }
                 }
@@ -3291,23 +3347,38 @@ impl FluxChat {
                 ]);
             }
             Message::MessagesScrolled(viewport) => {
-                // absolute_offset().y = 0 at bottom, increases scrolling up
-                // No anchor_bottom: offset=0 at top (oldest), increases scrolling down
+                // Fires on user scrolling and whenever the content size changes.
+                // offset = 0 at the top (oldest), increases scrolling down.
                 let offset = viewport.absolute_offset().y;
                 let content_h = viewport.content_bounds().height;
                 let viewport_h = viewport.bounds().height;
+                self.messages_viewport_h = viewport_h;
                 let max_scroll = (content_h - viewport_h).max(0.0);
                 let near_top = offset < 100.0;
                 let near_bottom = (max_scroll - offset) < 50.0;
-                // Distinguish user scroll-up from content growth (image/preview loads).
-                // Content growth: offset stays same or increases, max_scroll grows.
-                // User scroll-up: offset decreases.
-                // If we were at bottom and content grew, snap back instead of
-                // marking messages_at_bottom = false (which would stop auto-scroll).
-                if self.messages_at_bottom && !near_bottom
-                    && offset >= self.last_scroll_offset - 1.0
-                {
-                    // Content grew while we were at the bottom — snap back
+
+                // Keep the row that was at the top of the viewport in place when
+                // content above it changes height: rows above got measured (they
+                // were spacer estimates), or history was prepended.
+                let anchor = self.virt_anchor.borrow().clone();
+                if let Some((key, recorded_top)) = anchor {
+                    if let Some(now_top) = self.row_top(&key) {
+                        let delta = now_top - recorded_top;
+                        if delta.abs() > 0.5 && !(self.messages_at_bottom && near_bottom) {
+                            let y = (offset + delta).clamp(0.0, max_scroll);
+                            *self.virt_anchor.borrow_mut() = Some((key, now_top));
+                            self.last_scroll_offset = y;
+                            return iced::widget::operation::scroll_to(
+                                crate::view::messages_scrollable_id(),
+                                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+                            );
+                        }
+                    }
+                }
+
+                // Content grew while we were at the bottom (new message, image
+                // loaded) — stay pinned to the bottom.
+                if self.messages_at_bottom && !near_bottom && offset >= self.last_scroll_offset - 1.0 {
                     self.last_scroll_offset = offset;
                     return iced::widget::operation::snap_to_end(
                         crate::view::messages_scrollable_id(),
@@ -3322,30 +3393,15 @@ impl FluxChat {
                 if reached_bottom {
                     return self.update(Message::SendReadReceipt);
                 }
-                // Clear paginating once scroll correction has settled
+                // Clear paginating once scrolled away from the top
                 if self.paginating && !near_top {
                     self.paginating = false;
                 }
-                // When near the top (oldest messages) and not already paginating
+                // At the top of everything loaded: fetch older history
                 if near_top && !self.paginating {
                     if let Some(room_id) = self.selected_room_id.clone() {
-                        let msg_count = self.messages_by_room
+                        self.paginate_msg_count = self.messages_by_room
                             .get(&room_id).map(|m| m.len()).unwrap_or(0);
-                        // Reveal already-loaded history before asking the server.
-                        let limit = self.render_limit.get(&room_id).copied().unwrap_or(RENDER_WINDOW);
-                        if msg_count > limit {
-                            let added = (msg_count - limit).min(RENDER_WINDOW_STEP);
-                            self.render_limit.insert(room_id, limit + added);
-                            return iced::widget::operation::scroll_to(
-                                crate::view::messages_scrollable_id(),
-                                iced::widget::scrollable::AbsoluteOffset {
-                                    x: 0.0,
-                                    y: offset + added as f32 * ESTIMATED_MSG_HEIGHT,
-                                },
-                            );
-                        }
-                        self.paginate_msg_count = msg_count;
-                        self.pre_paginate_offset = offset;
                         self.paginating = true;
                         return self.update(Message::PaginateBack(room_id));
                     }
@@ -3357,6 +3413,16 @@ impl FluxChat {
             Message::SidebarDragEnd => {
                 self.sidebar_dragging = false;
                 self.layout_dirty = true;
+            }
+            Message::NotificationClicked(room_id) => {
+                let select = self.update(Message::SelectRoom(room_id));
+                let focus = iced::window::oldest().and_then(iced::window::gain_focus);
+                return Task::batch([select, focus]);
+            }
+            Message::UtdHintsResolved(hints) => {
+                for (session_id, hint) in hints {
+                    self.utd_hints.insert(session_id, hint);
+                }
             }
             Message::WindowResized(w, h) => {
                 if self.window_size != (w, h) {
@@ -3579,6 +3645,68 @@ impl FluxChat {
     }
 
     /// Spawn background avatar resolution for any uncached MXC URIs.
+    /// For undecryptable messages with an unexplained cause, work out whether
+    /// the sender's device is unknown or has changed its identity keys (a
+    /// reset client reusing a device ID), which the SDK reports only as
+    /// "Unknown". Runs once per session ID.
+    fn check_utd_reasons(&mut self, room_id: &str) -> Task<Message> {
+        let mut pending: Vec<(String, String, Option<String>, Option<String>)> = Vec::new();
+        if let Some(msgs) = self.messages_by_room.get(room_id) {
+            for m in msgs {
+                let Some(utd) = &m.utd else { continue };
+                if utd.cause != "Unknown" || !self.utd_checked.insert(utd.session_id.clone()) {
+                    continue;
+                }
+                pending.push((utd.session_id.clone(), m.sender.clone(), utd.device_id.clone(), utd.sender_key.clone()));
+            }
+        }
+        if pending.is_empty() {
+            return Task::none();
+        }
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let Ok(client) = core.get_client().await else { return Vec::new() };
+                let mut hints = Vec::new();
+                for (session_id, sender, device_id, sender_key) in pending {
+                    let Ok(user_id) = fluxchat_core::ruma::UserId::parse(&sender) else { continue };
+                    let Some(device_id) = device_id else {
+                        hints.push((session_id, "The key for this message was never received.".to_string()));
+                        continue;
+                    };
+                    let device = client.encryption()
+                        .get_device(&user_id, device_id.as_str().into())
+                        .await
+                        .ok()
+                        .flatten();
+                    let hint = match device {
+                        None => format!(
+                            "Sender's device {device_id} is unknown to this client (deleted, or never announced). \
+                             The sender needs to sign in again."
+                        ),
+                        Some(device) => {
+                            let known_key = device.curve25519_key().map(|k| k.to_base64());
+                            if sender_key.is_some() && known_key != sender_key {
+                                format!(
+                                    "Sender's device {device_id} changed its encryption keys — their client was \
+                                     reset while keeping the device ID, so its keys are rejected. \
+                                     The sender needs to sign in as a new device."
+                                )
+                            } else {
+                                "The key for this message was never shared with this session. \
+                                 Ask the sender to resend, or verify this session so their client trusts it."
+                                    .to_string()
+                            }
+                        }
+                    };
+                    hints.push((session_id, hint));
+                }
+                hints
+            },
+            Message::UtdHintsResolved,
+        )
+    }
+
     /// Recompute the slash-command and @mention completion lists for the input.
     fn update_completions(&mut self, text: &str) {
         // Skip escaped `//` literal messages

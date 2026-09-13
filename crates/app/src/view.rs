@@ -983,6 +983,70 @@ impl FluxChat {
             .into()
     }
 
+    /// The rows the message list would show for a view, in order — hidden
+    /// senders and (outside thread views) thread replies removed.
+    pub(crate) fn visible_rows<'m>(&self, room_id: &str, msgs: &'m [fluxchat_core::MessageInfo]) -> Vec<&'m fluxchat_core::MessageInfo> {
+        let is_thread_view = room_id.starts_with("thread::");
+        msgs.iter()
+            .filter(|m| !self.ignored_users.contains(&m.sender))
+            .filter(|m| is_thread_view || m.thread_root.is_none())
+            .collect()
+    }
+
+    /// Measured height of a row, or the estimate if it hasn't been laid out yet.
+    pub(crate) fn row_height(&self, msg: &fluxchat_core::MessageInfo) -> f32 {
+        self.row_heights.borrow().get(&msg.event_id).copied().unwrap_or(ESTIMATED_ROW_HEIGHT)
+    }
+
+    /// Which rows to build widgets for, and the spacer heights above/below:
+    /// `(start, end, top_spacer, bottom_spacer)`.
+    fn virtual_window(&self, rows: &[&fluxchat_core::MessageInfo]) -> (usize, usize, f32, f32) {
+        let heights: Vec<f32> = rows.iter().map(|m| self.row_height(m)).collect();
+        let total: f32 = heights.iter().sum();
+        let vh = self.messages_viewport_h.max(200.0);
+        let (lo, hi) = if self.messages_at_bottom {
+            (total - vh - VIRTUAL_OVERSCAN, total)
+        } else {
+            let offset = self.last_scroll_offset;
+            (offset - VIRTUAL_OVERSCAN, offset + vh + VIRTUAL_OVERSCAN)
+        };
+        window_for(&heights, lo, hi)
+    }
+
+    /// The first row intersecting the viewport and its distance from the top
+    /// of the list, using the current height map.
+    fn viewport_anchor(&self, rows: &[&fluxchat_core::MessageInfo]) -> Option<(String, f32)> {
+        let offset = if self.messages_at_bottom {
+            let total: f32 = rows.iter().map(|m| self.row_height(m)).sum();
+            (total - self.messages_viewport_h).max(0.0)
+        } else {
+            self.last_scroll_offset
+        };
+        let mut acc = 0.0f32;
+        for msg in rows {
+            let h = self.row_height(msg);
+            if acc + h > offset {
+                return Some((msg.event_id.clone(), acc));
+            }
+            acc += h;
+        }
+        None
+    }
+
+    /// Distance from the top of the current view's list to a row.
+    pub(crate) fn row_top(&self, event_id: &str) -> Option<f32> {
+        let room_id = self.selected_room_id.as_deref()?;
+        let msgs = self.messages_by_room.get(room_id)?;
+        let mut acc = 0.0f32;
+        for msg in self.visible_rows(room_id, msgs) {
+            if msg.event_id == event_id {
+                return Some(acc);
+            }
+            acc += self.row_height(msg);
+        }
+        None
+    }
+
     /// Split the rooms visible in the current space into sidebar sections.
     fn group_rooms(&self) -> RoomGroups<'_> {
         let mut groups = RoomGroups::default();
@@ -2102,8 +2166,6 @@ impl FluxChat {
                 let show_divider = last_read.as_ref().is_some_and(|lr| {
                     msgs.last().map(|m| &m.event_id) != Some(lr)
                 });
-                let limit = self.render_limit.get(room_id).copied().unwrap_or(crate::update::RENDER_WINDOW);
-                let visible = &msgs[msgs.len().saturating_sub(limit)..];
                 let is_thread_view = room_id.starts_with("thread::");
                 // Thread counts precomputed in update.rs
                 let empty_tc = std::collections::HashMap::new();
@@ -2112,25 +2174,28 @@ impl FluxChat {
                 } else {
                     &empty_tc
                 };
-                for msg in visible.iter() {
-                    if self.ignored_users.contains(&msg.sender) {
-                        continue;
-                    }
-                    // Hide thread replies from the main room (they show in thread view)
-                    if !is_thread_view && msg.thread_root.is_some() {
-                        continue;
-                    }
+
+                // Virtualized list: only rows near the viewport become widgets;
+                // everything else is a spacer sized from measured (or estimated)
+                // row heights. See `virtual_window` / `MessagesScrolled`.
+                let rows = self.visible_rows(room_id, msgs);
+                let (start, end, top_spacer, bottom_spacer) = self.virtual_window(&rows);
+                *self.virt_anchor.borrow_mut() = self.viewport_anchor(&rows);
+                if top_spacer > 0.0 {
+                    msg_col = msg_col.push(Space::new().width(Fill).height(top_spacer));
+                }
+                for msg in &rows[start..end] {
+                    let mut row_col = column![self.view_message(msg)].spacing(0).width(Fill);
                     // Unread divider: show after the last-read message
-                    if show_divider && !divider_shown {
-                        if let Some(ref lr) = last_read {
-                            if msg.event_id == *lr {
-                                divider_shown = true;
-                                msg_col = msg_col.push(self.view_message(msg));
-                                // Read receipts for this message
-                                if let Some(receipt_row) = self.view_read_receipts(msg) {
-                                    msg_col = msg_col.push(receipt_row);
-                                }
-                                msg_col = msg_col.push(
+                    let is_last_read = show_divider && !divider_shown
+                        && last_read.as_deref() == Some(msg.event_id.as_str());
+                    if is_last_read {
+                        divider_shown = true;
+                        // Read receipts for this message
+                        if let Some(receipt_row) = self.view_read_receipts(msg) {
+                            row_col = row_col.push(receipt_row);
+                        }
+                                row_col = row_col.push(
                                     container(
                                         row![
                                             rule::horizontal(1).style(|_: &Theme| rule::Style {
@@ -2149,11 +2214,7 @@ impl FluxChat {
                                         ].spacing(8).align_y(iced::Alignment::Center)
                                     ).padding([4.0, 8.0])
                                 );
-                                continue;
-                            }
-                        }
-                    }
-                    msg_col = msg_col.push(self.view_message(msg));
+                    } else {
                     // Thread indicator from derived counts (not relying on msg.thread_count)
                     if !is_thread_view {
                         if let Some(&count) = thread_counts.get(msg.event_id.as_str()) {
@@ -2161,7 +2222,7 @@ impl FluxChat {
                             let handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_THREAD);
                             let current_room = room_id.to_string();
                             let eid = msg.event_id.clone();
-                            msg_col = msg_col.push(
+                            row_col = row_col.push(
                                 row![
                                     Space::new().width(Length::Fixed(196.0)),
                                     button(
@@ -2187,10 +2248,17 @@ impl FluxChat {
                             );
                         }
                     }
-                    // Read receipts for this message
-                    if let Some(receipt_row) = self.view_read_receipts(msg) {
-                        msg_col = msg_col.push(receipt_row);
+                        // Read receipts for this message
+                        if let Some(receipt_row) = self.view_read_receipts(msg) {
+                            row_col = row_col.push(receipt_row);
+                        }
                     }
+                    msg_col = msg_col.push(crate::measured::Measured::new(
+                        msg.event_id.clone(), &self.row_heights, row_col.into(),
+                    ));
+                }
+                if bottom_spacer > 0.0 {
+                    msg_col = msg_col.push(Space::new().width(Fill).height(bottom_spacer));
                 }
             } else {
                 msg_col = msg_col.push(
@@ -2531,6 +2599,59 @@ impl FluxChat {
         } else {
             Theme::Light
         }
+    }
+}
+
+/// Height assumed for a message row that hasn't been laid out yet.
+pub(crate) const ESTIMATED_ROW_HEIGHT: f32 = 40.0;
+/// Extra content built above and below the viewport so scrolling doesn't
+/// reveal blank space before the next frame.
+const VIRTUAL_OVERSCAN: f32 = 600.0;
+
+/// Rows whose [top, bottom) range intersects the pixel range [lo, hi], plus
+/// the summed heights of the rows before and after them.
+fn window_for(heights: &[f32], lo: f32, hi: f32) -> (usize, usize, f32, f32) {
+    let mut start = heights.len();
+    let mut end = heights.len();
+    let mut acc = 0.0f32;
+    for (i, h) in heights.iter().enumerate() {
+        let row_end = acc + h;
+        if start == heights.len() && row_end > lo {
+            start = i;
+        }
+        if acc > hi {
+            end = i;
+            break;
+        }
+        acc = row_end;
+    }
+    let end = end.max(start);
+    let top: f32 = heights[..start].iter().sum();
+    let bottom: f32 = heights[end..].iter().sum();
+    (start, end, top, bottom)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_for;
+
+    #[test]
+    fn window_covers_requested_range_with_exact_spacers() {
+        let heights = vec![10.0; 100]; // 1000px of rows
+        let (start, end, top, bottom) = window_for(&heights, 250.0, 400.0);
+        assert_eq!((start, end), (25, 41));
+        assert_eq!(top, 250.0);
+        assert_eq!(bottom, (100 - 41) as f32 * 10.0);
+        assert_eq!(top + heights[start..end].iter().sum::<f32>() + bottom, 1000.0);
+    }
+
+    #[test]
+    fn window_clamps_to_list_edges() {
+        let heights = vec![30.0, 50.0, 20.0];
+        assert_eq!(window_for(&heights, -600.0, 5000.0), (0, 3, 0.0, 0.0));
+        // Range entirely below the content: nothing rendered, all in the top spacer.
+        assert_eq!(window_for(&heights, 500.0, 900.0), (3, 3, 100.0, 0.0));
+        assert_eq!(window_for(&[], 0.0, 100.0), (0, 0, 0.0, 0.0));
     }
 }
 
