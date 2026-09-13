@@ -46,8 +46,12 @@ A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI. U
 - UTD diagnostics: `MessageInfo.utd` carries session/device/cause; `check_utd_reasons()` compares the sender device's cached identity key with the event's `sender_key` and shows a hint under the message (unknown device / device keys changed / key never shared)
 - DRY: `parse_room_id()`/`parse_user_id()` helpers in rooms.rs, `extract_message_content()` shared helper, `HudPanel` reusable wrapper, index-based room list grouping
 - GIF search: Giphy API via `crates/core/src/gif.rs`, `/gif` and `/giphy` commands open GifsHud above input bar, click sends GIF as image upload. API key persisted to SQLite via `/giphykey`, falls back to `GIPHY_API_KEY` env var. GifsHud renders above MessageInput (not top like other HUDs) with 50vh max-height, 3-column grid with 4:3 aspect ratio thumbnails.
+- Failed room operations (join/invite/kick/ban/rename/topic/power level) surface via `Message::ShowError` in the notice line above the input
+- Per-view input drafts (`drafts`): unsent text is saved/restored when switching rooms; PageUp/PageDown scroll the message list from the input bar, Ctrl+End jumps to the bottom
+- Member list has a filter box (`member_filter`, name or user ID substring)
+- Runtime: iced tasks run on `BigStackExecutor` (tokio, 16 MB worker stacks) because matrix-sdk crypto futures overflowed the default 2 MB stacks
 - Header action bar: room avatar + name, Search, Pins (red icon when pins exist), Threads, Members, Settings, Favourite (star) — all with tooltips. No overflow menu.
-- Right-click context menus on rooms (mark read/favourite/copy link/invite/settings/leave) and spaces (details/invite/leave)
+- Right-click context menus on rooms (mark read/favourite/copy link/invite/settings/leave — leave asks for confirmation via `Modal::ConfirmLeave`), spaces, and messages (copy message link / copy event ID / view source JSON via `get_event_source`) and spaces (details/invite/leave)
 - Space details modal: room list, members, homeserver info
 - Room invitations: red bell icon header with badge, desktop notification on new invite, accept navigates to room, instant UI removal on accept/reject
 - Typing indicators: auto-expire after 10s, clear immediately on empty list

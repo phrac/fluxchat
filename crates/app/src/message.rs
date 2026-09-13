@@ -42,6 +42,10 @@ pub enum Message {
     AskLeaveRoom(String),
     /// Raw event JSON fetched for "View source": (event_id, json).
     EventSourceLoaded(String, String),
+    /// Scroll the message list by a fraction of the viewport (+down / -up).
+    ScrollMessagesBy(f32),
+    /// Member list filter text changed.
+    MemberFilterChanged(String),
     /// Server's max upload size in bytes (from /media/v1/config), if known.
     MaxUploadSizeLoaded(Option<u64>),
     /// Diagnostics for undecryptable sessions: (session_id, hint).

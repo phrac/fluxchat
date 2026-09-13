@@ -494,6 +494,12 @@ impl FluxChat {
                         Key::Named(Named::Tab) | Key::Named(Named::Enter) if has_emoji => {
                             Some(Binding::Custom(Message::InputChanged(":\t".into())))
                         }
+                        // Page through history from the input bar
+                        Key::Named(Named::PageUp) => Some(Binding::Custom(Message::ScrollMessagesBy(-0.9))),
+                        Key::Named(Named::PageDown) => Some(Binding::Custom(Message::ScrollMessagesBy(0.9))),
+                        Key::Named(Named::End) if key_press.modifiers.control() => {
+                            Some(Binding::Custom(Message::ScrollToBottom))
+                        }
                         // Alt+Up/Down: room switching (the editor would otherwise eat the arrows)
                         Key::Named(Named::ArrowUp) if key_press.modifiers.alt() => {
                             Some(Binding::Custom(if key_press.modifiers.shift() { Message::SwitchUnread(-1) } else { Message::SwitchRoomRelative(-1) }))

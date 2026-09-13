@@ -59,11 +59,30 @@ impl FluxChat {
 
         let mut col = column![header].spacing(0);
 
+        // Filter box — big rooms are unusable without one
+        col = col.push(
+            container(
+                iced::widget::text_input("Filter members…", &self.member_filter)
+                    .on_input(Message::MemberFilterChanged)
+                    .font(self.sidebar_font())
+                    .size(12)
+                    .padding([4, 8]),
+            )
+            .padding([0, 8])
+            .width(Fill),
+        );
+
         if let Some(members) = members {
+            let filter = self.member_filter.trim().to_lowercase();
+            let matches = |m: &&fluxchat_core::MemberInfo| {
+                filter.is_empty()
+                    || m.display_name.to_lowercase().contains(&filter)
+                    || m.user_id.to_lowercase().contains(&filter)
+            };
             // Group by role
-            let admins: Vec<_> = members.iter().filter(|m| m.role == "Admin").collect();
-            let mods: Vec<_> = members.iter().filter(|m| m.role == "Moderator").collect();
-            let regular: Vec<_> = members.iter().filter(|m| m.role == "Member").collect();
+            let admins: Vec<_> = members.iter().filter(|m| m.role == "Admin").filter(matches).collect();
+            let mods: Vec<_> = members.iter().filter(|m| m.role == "Moderator").filter(matches).collect();
+            let regular: Vec<_> = members.iter().filter(|m| m.role == "Member").filter(matches).collect();
 
             if !admins.is_empty() {
                 col = col.push(self.view_member_section("@ Admins", &admins));

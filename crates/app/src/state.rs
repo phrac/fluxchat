@@ -263,6 +263,10 @@ pub struct FluxChat {
     pub sync_status: Option<String>,
     /// Homeserver upload limit in bytes, if it reported one.
     pub max_upload_size: Option<u64>,
+    /// Unsent input text per view, restored when switching back.
+    pub drafts: HashMap<String, String>,
+    /// Member list filter (name / user ID substring).
+    pub member_filter: String,
 
     // Settings modal state
     pub settings_devices: Vec<fluxchat_core::devices::DeviceInfo>,
@@ -531,6 +535,8 @@ impl FluxChat {
             emoji_completion_idx: 0,
             sync_status: None,
             max_upload_size: None,
+            drafts: HashMap::new(),
+            member_filter: String::new(),
             settings_devices: Vec::new(),
             settings_nick_input: String::new(),
             settings_status: None,

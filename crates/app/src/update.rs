@@ -635,6 +635,29 @@ impl FluxChat {
                 if !room_id.starts_with("thread::") {
                     self.open_tabs.retain(|(id, _, _, _)| !id.starts_with("thread::"));
                 }
+                // Keep unsent text per view so switching rooms doesn't lose
+                // (or misdirect) a half-written message.
+                if self.selected_room_id.as_deref() != Some(room_id.as_str()) {
+                    if let Some(prev) = self.selected_room_id.clone() {
+                        let draft = std::mem::take(&mut self.input_text);
+                        if draft.trim().is_empty() {
+                            self.drafts.remove(&prev);
+                        } else {
+                            self.drafts.insert(prev, draft);
+                        }
+                    }
+                    self.input_text = self.drafts.get(&room_id).cloned().unwrap_or_default();
+                    self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                    self.input_content.perform(iced::widget::text_editor::Action::Move(
+                        iced::widget::text_editor::Motion::DocumentEnd,
+                    ));
+                    self.reply_to = None;
+                    self.edit_event = None;
+                    self.cmd_completions.clear();
+                    self.mention_completions.clear();
+                    self.emoji_completions.clear();
+                    self.member_filter.clear();
+                }
                 self.selected_room_id = Some(room_id.clone());
                 self.subscribe_active_room();
                 self.messages_at_bottom = true;
@@ -839,6 +862,9 @@ impl FluxChat {
                 return iced::widget::operation::focus(crate::view::input_id());
             }
             Message::SendMessage => {
+                if let Some(rid) = &self.selected_room_id {
+                    self.drafts.remove(rid);
+                }
                 if self.input_text.trim().is_empty() {
                     return Task::none();
                 }
@@ -1884,6 +1910,19 @@ impl FluxChat {
                         Err(e) => Message::ShowError(format!("Join failed: {e}")),
                     },
                 ).chain(Task::done(Message::RefreshRoomList));
+            }
+            Message::ScrollMessagesBy(fraction) => {
+                let delta = self.messages_viewport_h * fraction;
+                let y = (self.last_scroll_offset + delta).max(0.0);
+                self.messages_at_bottom = false;
+                self.last_scroll_offset = y;
+                return iced::widget::operation::scroll_to(
+                    crate::view::messages_scrollable_id(),
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+                );
+            }
+            Message::MemberFilterChanged(filter) => {
+                self.member_filter = filter;
             }
             Message::EventSourceLoaded(event_id, json) => {
                 self.modal = Some(crate::state::Modal::EventSource { event_id, json });
