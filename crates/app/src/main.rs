@@ -43,7 +43,9 @@ fn init_core() -> Arc<AppState> {
 fn main() -> iced::Result {
     // RUST_LOG overrides the default filter (e.g. RUST_LOG=matrix_sdk_crypto=debug
     // to diagnose decryption failures).
-    let default_filter = "warn,fluxchat=info,matrix_sdk_crypto=warn,html5ever=error";
+    // matrix_sdk_crypto::backups warns on every received key while this
+    // session isn't connected to the server-side key backup — once is plenty.
+    let default_filter = "warn,fluxchat=info,matrix_sdk_crypto=warn,matrix_sdk_crypto::backups=error,html5ever=error";
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

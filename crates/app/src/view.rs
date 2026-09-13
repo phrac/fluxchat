@@ -2480,6 +2480,14 @@ impl FluxChat {
                     text("\u{2717} unverified").font(self.sidebar_font()).size(13).color(theme::colors().yellow)
                 );
             }
+            // A server-side key backup this session isn't using means missing
+            // keys for old messages that could simply be fetched.
+            if sec.backup_exists && !sec.backup_enabled {
+                bar = bar.push(sep());
+                bar = bar.push(
+                    text("key backup not connected").font(self.sidebar_font()).size(13).color(theme::colors().yellow)
+                );
+            }
         }
 
         // Device ID
@@ -2575,6 +2583,11 @@ impl FluxChat {
                         }
                         if c.as_str() == "u" || c.as_str() == "U" {
                             return Some(Message::ClearInput);
+                        }
+                        // Text paste is handled by the editor; this only picks
+                        // up images (screenshots) on the clipboard.
+                        if c.as_str() == "v" || c.as_str() == "V" {
+                            return Some(Message::PasteClipboardImage);
                         }
                     }
                 }

@@ -194,12 +194,19 @@ impl FluxChat {
             Message::LoginHomeserverChanged(s) => {
                 self.login_homeserver = s.clone();
                 self.login_caps = None;
-                // Fetch login capabilities for this homeserver
+                // Discover login types once typing pauses — each lookup does
+                // .well-known discovery, so not on every keystroke.
+                let homeserver = s.trim().to_string();
+                if homeserver.is_empty() {
+                    return Task::none();
+                }
                 return Task::perform(
                     async move {
-                        fluxchat_core::auth::get_login_capabilities(&s).await.ok()
+                        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                        let caps = fluxchat_core::auth::get_login_capabilities(&homeserver).await.ok();
+                        (homeserver, caps)
                     },
-                    Message::LoginCapsLoaded,
+                    |(homeserver, caps)| Message::LoginCapsLoaded(homeserver, caps),
                 );
             }
             Message::LoginUsernameChanged(s) => {
@@ -208,15 +215,17 @@ impl FluxChat {
             Message::LoginPasswordChanged(s) => {
                 self.login_password = s;
             }
-            Message::LoginCapsLoaded(caps) => {
-                self.login_caps = caps;
+            Message::LoginCapsLoaded(homeserver, caps) => {
+                if self.login_homeserver.trim() == homeserver {
+                    self.login_caps = caps;
+                }
             }
             Message::LoginSubmit => {
                 self.login_error = None;
                 self.login_submitting = true;
                 let core = self.core.clone();
-                let homeserver = self.login_homeserver.clone();
-                let username = self.login_username.clone();
+                let homeserver = self.login_homeserver.trim().to_string();
+                let username = self.login_username.trim().to_string();
                 let password = self.login_password.clone();
 
                 return Task::perform(
@@ -2158,7 +2167,46 @@ impl FluxChat {
                 );
             }
             Message::FileSelected(name, mime, data) => {
+                if let Some(limit) = self.max_upload_size {
+                    if data.len() as u64 > limit {
+                        self.help_text = Some(format!(
+                            "{name} is {:.1} MB; this server allows uploads up to {:.1} MB",
+                            data.len() as f64 / 1_048_576.0,
+                            limit as f64 / 1_048_576.0,
+                        ));
+                        return Task::none();
+                    }
+                }
                 self.upload_pending = Some((name, mime, data));
+            }
+            Message::PasteClipboardImage => {
+                if self.selected_room_id.is_none() || self.modal.is_some() {
+                    return Task::none();
+                }
+                return Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(|| -> Option<Vec<u8>> {
+                            let mut clipboard = arboard::Clipboard::new().ok()?;
+                            let img = clipboard.get_image().ok()?;
+                            let rgba = image::RgbaImage::from_raw(
+                                img.width as u32, img.height as u32, img.bytes.into_owned(),
+                            )?;
+                            let mut png = std::io::Cursor::new(Vec::new());
+                            rgba.write_to(&mut png, image::ImageFormat::Png).ok()?;
+                            Some(png.into_inner())
+                        }).await.ok().flatten()
+                    },
+                    |png| match png {
+                        Some(data) => {
+                            let name = format!("clipboard-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+                            Message::FileSelected(name, "image/png".into(), data)
+                        }
+                        None => Message::Noop,
+                    },
+                );
+            }
+            Message::MaxUploadSizeLoaded(limit) => {
+                self.max_upload_size = limit;
             }
             Message::CancelUpload => {
                 self.upload_pending = None;
@@ -3697,26 +3745,40 @@ impl FluxChat {
     }
 
     /// Get room IDs matching the quick switcher query (fuzzy match on room name).
+    /// Rooms for the Ctrl+K switcher: ranked by match quality (name prefix,
+    /// word prefix, substring, space name), unread rooms first on ties.
+    /// An empty query lists unread rooms, then the rest in sidebar order.
     pub(crate) fn quick_switcher_matches(&self) -> Vec<String> {
-        let query = self.quick_switcher_query.to_lowercase();
+        let query = self.quick_switcher_query.trim().to_lowercase();
+        let unread = |r: &fluxchat_core::RoomInfo| {
+            !self.read_rooms.contains(&r.room_id) && r.unread_count > 0
+        };
         if query.is_empty() {
-            // Show recent/all rooms when query is empty
-            return self.rooms.iter()
-                .take(10)
-                .map(|r| r.room_id.clone())
-                .collect();
+            let mut rooms: Vec<&fluxchat_core::RoomInfo> = self.rooms.iter().collect();
+            rooms.sort_by_key(|r| !unread(r));
+            return rooms.iter().take(10).map(|r| r.room_id.clone()).collect();
         }
-        self.rooms.iter()
-            .filter(|r| {
-                r.name.to_lowercase().contains(&query)
-                || r.space_name.as_ref().is_some_and(|s| s.to_lowercase().contains(&query))
+        let mut scored: Vec<(u8, bool, &fluxchat_core::RoomInfo)> = self.rooms.iter()
+            .filter_map(|r| {
+                let name = r.name.to_lowercase();
+                let score = if name.starts_with(&query) {
+                    0
+                } else if name.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&query)) {
+                    1
+                } else if name.contains(&query) || r.room_id.to_lowercase().contains(&query) {
+                    2
+                } else if r.space_name.as_ref().is_some_and(|s| s.to_lowercase().contains(&query)) {
+                    3
+                } else {
+                    return None;
+                };
+                Some((score, !unread(r), r))
             })
-            .take(10)
-            .map(|r| r.room_id.clone())
-            .collect()
+            .collect();
+        scored.sort_by_key(|(score, read, r)| (*score, *read, r.name.to_lowercase()));
+        scored.iter().take(10).map(|(_, _, r)| r.room_id.clone()).collect()
     }
 
-    /// Spawn background avatar resolution for any uncached MXC URIs.
     /// For undecryptable messages with an unexplained cause, work out whether
     /// the sender's device is unknown or has changed its identity keys (a
     /// reset client reusing a device ID), which the SDK reports only as
@@ -3739,6 +3801,16 @@ impl FluxChat {
         Task::perform(
             async move {
                 let Ok(client) = core.get_client().await else { return Vec::new() };
+                // A server-side key backup we haven't connected to may hold
+                // these keys — worth saying so instead of blaming the sender.
+                let backups = client.encryption().backups();
+                let backup_available = !matches!(backups.state(), matrix_sdk::encryption::backups::BackupState::Enabled)
+                    && backups.exists_on_server().await.unwrap_or(false);
+                let backup_hint = if backup_available {
+                    " A key backup exists on the server: connect it in Settings → Security with your recovery key to fetch missing keys."
+                } else {
+                    ""
+                };
                 let mut hints = Vec::new();
                 for (session_id, sender, device_id, sender_key) in pending {
                     let Ok(user_id) = fluxchat_core::ruma::UserId::parse(&sender) else { continue };
@@ -3771,7 +3843,7 @@ impl FluxChat {
                             }
                         }
                     };
-                    hints.push((session_id, hint));
+                    hints.push((session_id, format!("{hint}{backup_hint}")));
                 }
                 hints
             },
@@ -4207,6 +4279,21 @@ impl FluxChat {
         self.login_submitting = false;
         self.load_persisted_settings();
 
+        // Learn the server's upload limit so oversized files are rejected
+        // before a doomed upload.
+        let upload_limit = {
+            let core = self.core.clone();
+            Task::perform(
+                async move {
+                    let client = core.get_client().await.ok()?;
+                    use fluxchat_core::ruma::api::client::authenticated_media::get_media_config;
+                    let response = client.send(get_media_config::v1::Request::new()).await.ok()?;
+                    Some(u64::from(response.upload_size))
+                },
+                Message::MaxUploadSizeLoaded,
+            )
+        };
+
         // Bound the on-disk media cache (it grew without limit before).
         {
             let core = self.core.clone();
@@ -4216,7 +4303,7 @@ impl FluxChat {
         // Start sync and load initial rooms
         let core = self.core.clone();
         let tx = self.timeline_tx.clone();
-        Task::perform(
+        let start = Task::perform(
             async move {
                 let client = match core.get_client().await {
                     Ok(c) => c,
@@ -4394,7 +4481,8 @@ impl FluxChat {
                 }
                 None => Message::SyncStarted,
             },
-        )
+        );
+        Task::batch([start, upload_limit])
     }
 
     /// Load persisted settings from SQLite into state.

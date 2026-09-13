@@ -257,6 +257,8 @@ pub struct FluxChat {
     pub emoji_completion_idx: usize,
     /// Sync problem shown in the status bar (None = healthy).
     pub sync_status: Option<String>,
+    /// Homeserver upload limit in bytes, if it reported one.
+    pub max_upload_size: Option<u64>,
 
     // Settings modal state
     pub settings_devices: Vec<fluxchat_core::devices::DeviceInfo>,
@@ -524,6 +526,7 @@ impl FluxChat {
             emoji_completions: Vec::new(),
             emoji_completion_idx: 0,
             sync_status: None,
+            max_upload_size: None,
             settings_devices: Vec::new(),
             settings_nick_input: String::new(),
             settings_status: None,

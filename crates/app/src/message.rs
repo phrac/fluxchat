@@ -14,7 +14,9 @@ pub enum Message {
     LoginSubmit,
     LoginSso,
     LoginResult(Result<LoginSuccess, String>),
-    LoginCapsLoaded(Option<LoginCapabilities>),
+    /// Login types for a homeserver; carries the homeserver string the lookup
+    /// was for so stale results (user kept typing) can be ignored.
+    LoginCapsLoaded(String, Option<LoginCapabilities>),
     SessionRestored(LoginSuccess),
     /// Startup found no saved session — show the login form.
     NoSavedSession,
@@ -32,6 +34,10 @@ pub enum Message {
     SwitchUnread(i32),
     /// Accept the Nth `:shortcode` emoji completion.
     CompleteEmoji(usize),
+    /// Ctrl+V: if the clipboard holds an image, stage it as an upload.
+    PasteClipboardImage,
+    /// Server's max upload size in bytes (from /media/v1/config), if known.
+    MaxUploadSizeLoaded(Option<u64>),
     /// Diagnostics for undecryptable sessions: (session_id, hint).
     UtdHintsResolved(Vec<(String, String)>),
     Logout,
