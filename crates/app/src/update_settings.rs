@@ -605,10 +605,14 @@ impl FluxChat {
                 let core = self.core.clone();
                 Some(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::set_user_power_level(&client, &room_id, &user_id, level).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::set_user_power_level(&client, &room_id, &user_id, level).await
+                            .map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Changing power level failed: {e}")),
+                    },
                 ))
             }
 

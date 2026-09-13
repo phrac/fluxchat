@@ -1518,7 +1518,7 @@ impl FluxChat {
                         );
                     }
                     "leave" => {
-                        return self.update(Message::LeaveRoom(target_id));
+                        return self.update(Message::AskLeaveRoom(target_id));
                     }
                     "copy_link" => {
                         return iced::clipboard::write(format!("https://matrix.to/#/{target_id}"));
@@ -1850,22 +1850,40 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let result = fluxchat_core::rooms::join_room(&client, &room_or_alias).await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let result = fluxchat_core::rooms::join_room(&client, &room_or_alias).await
+                            .map_err(|e| e.to_string())?;
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        Some(result)
+                        Ok::<_, String>(result)
                     },
                     |result| match result {
-                        Some(room) => Message::SelectRoom(room.room_id),
-                        None => Message::Noop,
+                        Ok(room) => Message::SelectRoom(room.room_id),
+                        Err(e) => Message::ShowError(format!("Join failed: {e}")),
                     },
                 ).chain(Task::done(Message::RefreshRoomList));
             }
+            Message::ShowError(message) => {
+                tracing::warn!("{message}");
+                self.help_text = Some(message);
+            }
+            Message::AskLeaveRoom(room_id) => {
+                let name = self.rooms.iter()
+                    .find(|r| r.room_id == room_id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| room_id.clone());
+                self.context_menu = None;
+                self.modal = Some(crate::state::Modal::ConfirmLeave { room_id, name });
+            }
             Message::LeaveRoom(room_id) => {
                 self.modal = None;
-                self.open_tabs.retain(|(id, _, _, _)| id != &room_id);
-                if self.selected_room_id.as_deref() == Some(&room_id) {
-                    self.selected_room_id = self.open_tabs.last().map(|(id, _, _, _)| id.clone());
+                self.open_tabs.retain(|(id, _, _, _)| fluxchat_core::timeline::real_room_id(id) != room_id);
+                if self.active_real_room() == Some(room_id.as_str()) {
+                    // Move to the neighbouring room in the sidebar, if any.
+                    let order = self.sidebar_room_order();
+                    let next = order.iter().position(|r| *r == room_id)
+                        .and_then(|i| order.get(i + 1).or_else(|| i.checked_sub(1).and_then(|j| order.get(j))))
+                        .cloned();
+                    self.selected_room_id = next.filter(|r| *r != room_id);
                 }
                 // Remove from sidebar immediately and mark as leaving
                 self.leaving_rooms.insert(room_id.clone());
@@ -1896,30 +1914,42 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::invite_user(&client, &room_id, &user_id).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::invite_user(&client, &room_id, &user_id).await
+                            .map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Invite failed: {e}")),
+                    },
                 );
             }
             Message::KickUser(room_id, user_id, reason) => {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::kick_user(&client, &room_id, &user_id, reason.as_deref()).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::kick_user(&client, &room_id, &user_id, reason.as_deref()).await
+                            .map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Kick failed: {e}")),
+                    },
                 );
             }
             Message::BanUser(room_id, user_id, reason) => {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::ban_user(&client, &room_id, &user_id, reason.as_deref()).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::ban_user(&client, &room_id, &user_id, reason.as_deref()).await
+                            .map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Ban failed: {e}")),
+                    },
                 );
             }
             Message::UnbanUser(user_input) => {
@@ -1938,10 +1968,13 @@ impl FluxChat {
                     };
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::unban_user(&client, &room_id, &user_id).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::unban_user(&client, &room_id, &user_id).await.map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Unban failed: {e}")),
+                        },
                     );
                 }
             }
@@ -1950,10 +1983,13 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_room_name(&client, &room_id, &name).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::set_room_name(&client, &room_id, &name).await.map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Renaming room failed: {e}")),
+                        },
                     );
                 }
             }
@@ -2105,10 +2141,14 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::set_room_topic(&client, &room_id, &topic).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::set_room_topic(&client, &room_id, &topic).await
+                            .map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Setting topic failed: {e}")),
+                    },
                 );
             }
             Message::SetNick(name) => {
@@ -2476,10 +2516,14 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::knock_room(&client, &room_id_or_alias, reason.as_deref()).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::knock_room(&client, &room_id_or_alias, reason.as_deref()).await
+                            .map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Knock failed: {e}")),
+                    },
                 );
             }
             Message::CancelKnock(room_id) => {
@@ -3096,10 +3140,13 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_room_name(&client, &room_id, &name).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::set_room_name(&client, &room_id, &name).await.map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Renaming room failed: {e}")),
+                        },
                     );
                 }
             }
@@ -3113,10 +3160,13 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_room_topic(&client, &room_id, &topic).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::set_room_topic(&client, &room_id, &topic).await.map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Setting topic failed: {e}")),
+                        },
                     );
                 }
             }

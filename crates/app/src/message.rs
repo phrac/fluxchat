@@ -36,6 +36,10 @@ pub enum Message {
     CompleteEmoji(usize),
     /// Ctrl+V: if the clipboard holds an image, stage it as an upload.
     PasteClipboardImage,
+    /// Show a failure to the user (in the help/notice line above the input).
+    ShowError(String),
+    /// Open the "leave room?" confirmation for a room.
+    AskLeaveRoom(String),
     /// Server's max upload size in bytes (from /media/v1/config), if known.
     MaxUploadSizeLoaded(Option<u64>),
     /// Diagnostics for undecryptable sessions: (session_id, hint).

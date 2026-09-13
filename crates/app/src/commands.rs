@@ -244,7 +244,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         }
         "/leave" | "/part" => {
             if let Some(room_id) = &current_room {
-                CommandResult::Messages(vec![Message::LeaveRoom(room_id.clone())])
+                CommandResult::Messages(vec![Message::AskLeaveRoom(room_id.clone())])
             } else {
                 CommandResult::Help("No room selected".into())
             }

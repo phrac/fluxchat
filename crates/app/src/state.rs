@@ -54,6 +54,7 @@ pub enum Modal {
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
     Invite,
     Report { event_id: String, room_id: String },
+    ConfirmLeave { room_id: String, name: String },
     SpaceDetails { space_id: String },
     PendingInvites,
     DevTools,

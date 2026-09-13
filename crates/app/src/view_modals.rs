@@ -31,6 +31,40 @@ impl FluxChat {
             crate::state::Modal::PendingInvites => self.view_pending_invites_modal(),
             crate::state::Modal::DevTools => self.view_devtools_modal(),
             crate::state::Modal::Directory => self.view_directory_modal(),
+            crate::state::Modal::ConfirmLeave { room_id, name } => {
+                column![
+                    text(format!("Leave {name}?")).font(MONO).size(16).color(theme::colors().text_bright),
+                    rule::horizontal(1),
+                    text("You'll stop receiving messages and need an invite or a public link to rejoin.")
+                        .font(MONO).size(13).color(theme::colors().text_dim)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    row![
+                        Space::new().width(Fill),
+                        button(text("Cancel").font(MONO).size(13).color(theme::colors().text_dim))
+                            .on_press(Message::CloseModal)
+                            .padding([6, 14])
+                            .style(|_, status| button::Style {
+                                background: if matches!(status, button::Status::Hovered) {
+                                    Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                                } else { None },
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                        button(text("Leave").font(MONO).size(13).color(iced::Color::WHITE))
+                            .on_press(Message::LeaveRoom(room_id.clone()))
+                            .padding([6, 14])
+                            .style(|_, status| button::Style {
+                                background: Some(if matches!(status, button::Status::Hovered) {
+                                    iced::Color::from_rgba(0.9, 0.2, 0.2, 0.9)
+                                } else {
+                                    iced::Color::from_rgba(0.8, 0.2, 0.2, 0.8)
+                                }.into()),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                    ].spacing(8),
+                ].spacing(12).width(Length::Fixed(380.0)).into()
+            }
             crate::state::Modal::Report { .. } => {
                 let col = column![
                     text("Report Message").font(MONO).size(16).color(theme::colors().text_bright),
@@ -1552,7 +1586,7 @@ impl FluxChat {
                     let rid = room.room_id.clone();
                     info_col = info_col.push(
                         button(text("Leave Room").font(MONO).size(14).color(theme::colors().red))
-                            .on_press(Message::LeaveRoom(rid))
+                            .on_press(Message::AskLeaveRoom(rid))
                             .padding([6, 16])
                             .style(|_, _| button::Style {
                                 background: Some(theme::colors().bg_light.into()),

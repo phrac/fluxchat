@@ -1100,9 +1100,10 @@ impl FluxChat {
         let btn_size = (fs + 4.0).max(18.0);
         let icon_sz = btn_size - 6.0;
         let btn_pad = ((btn_size - icon_sz) / 2.0).floor() as u16;
-        let make_msg_action = move |svg_bytes: &'static [u8], msg_action: Message| -> Element<'a, Message> {
+        let tooltip_font = self.sidebar_font();
+        let make_msg_action = move |svg_bytes: &'static [u8], label: &'static str, msg_action: Message| -> Element<'a, Message> {
             let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
-            button(
+            let btn = button(
                 iced::widget::svg(handle)
                     .width(Length::Fixed(icon_sz)).height(Length::Fixed(icon_sz))
                     .content_fit(iced::ContentFit::Fill)
@@ -1120,16 +1121,28 @@ impl FluxChat {
                 },
                 border: iced::Border { radius: 4.0.into(), ..Default::default() },
                 ..Default::default()
+            });
+            iced::widget::tooltip(
+                btn,
+                text(label).font(tooltip_font).size(11).color(theme::colors().text_normal),
+                iced::widget::tooltip::Position::Top,
+            )
+            .gap(4)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().bg_dark.into()),
+                border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
             })
+            .padding(4)
             .into()
         };
 
         let is_own = msg.sender == self.user_id;
         let mut action_row = row![].spacing(2).align_y(iced::Alignment::Center);
 
-        action_row = action_row.push(make_msg_action(SVG_REACT, Message::OpenEmojiReact(event_id.clone())));
-        action_row = action_row.push(make_msg_action(SVG_CLIPBOARD, Message::CopyMessageText(msg.body.clone())));
-        action_row = action_row.push(make_msg_action(SVG_REPLY, Message::StartReply(
+        action_row = action_row.push(make_msg_action(SVG_REACT, "React", Message::OpenEmojiReact(event_id.clone())));
+        action_row = action_row.push(make_msg_action(SVG_CLIPBOARD, "Copy text", Message::CopyMessageText(msg.body.clone())));
+        action_row = action_row.push(make_msg_action(SVG_REPLY, "Reply", Message::StartReply(
             event_id.clone(),
             msg.sender_name.clone(),
             msg.body.chars().take(80).collect(),
@@ -1137,25 +1150,25 @@ impl FluxChat {
         if let Some(room_id) = &self.selected_room_id {
             if !room_id.starts_with("thread::") {
                 let thread_root = msg.thread_root.as_deref().unwrap_or(&msg.event_id);
-                action_row = action_row.push(make_msg_action(SVG_THREAD, Message::OpenThread(
+                action_row = action_row.push(make_msg_action(SVG_THREAD, "Reply in thread", Message::OpenThread(
                     room_id.clone(),
                     thread_root.to_string(),
                 )));
             }
         }
-        action_row = action_row.push(make_msg_action(SVG_FORWARD, Message::ForwardMessage(
+        action_row = action_row.push(make_msg_action(SVG_FORWARD, "Forward", Message::ForwardMessage(
             msg.body.clone(),
             msg.formatted_body.clone().unwrap_or_default(),
             Some(msg.sender_name.clone()),
         )));
-        action_row = action_row.push(make_msg_action(SVG_PIN, Message::PinMessage(event_id.clone())));
+        action_row = action_row.push(make_msg_action(SVG_PIN, "Pin", Message::PinMessage(event_id.clone())));
 
         if is_own {
-            action_row = action_row.push(make_msg_action(SVG_EDIT, Message::StartEdit(
+            action_row = action_row.push(make_msg_action(SVG_EDIT, "Edit", Message::StartEdit(
                 event_id.clone(),
                 msg.body.clone(),
             )));
-            action_row = action_row.push(make_msg_action(SVG_DELETE, Message::DeleteMessage(event_id.clone())));
+            action_row = action_row.push(make_msg_action(SVG_DELETE, "Delete", Message::DeleteMessage(event_id.clone())));
         } else {
             let report_room = self.selected_room_id.clone().unwrap_or_default();
             let report_room = if report_room.starts_with("thread::") {
@@ -1163,7 +1176,7 @@ impl FluxChat {
             } else {
                 report_room
             };
-            action_row = action_row.push(make_msg_action(SVG_FLAG, Message::OpenModal(
+            action_row = action_row.push(make_msg_action(SVG_FLAG, "Report", Message::OpenModal(
                 crate::state::Modal::Report { event_id: event_id.clone(), room_id: report_room },
             )));
         }
