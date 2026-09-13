@@ -4,8 +4,8 @@ use futures_util::{FutureExt, StreamExt};
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk_ui::eyeball_im::{Vector, VectorDiff};
 use matrix_sdk_ui::timeline::{
-    Timeline, TimelineBuilder, TimelineFocus, TimelineItem, TimelineItemKind, TimelineItemContent,
-    EventTimelineItem,
+    EventSendState, EventTimelineItem, Timeline, TimelineBuilder, TimelineFocus, TimelineItem,
+    TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
 };
 use tokio::sync::Notify;
 
@@ -201,7 +201,7 @@ async fn watch_timeline(
         .collect();
     sink(room_id.clone(), flatten_messages(&items));
 
-    let loaded = items.iter().flatten().filter(|m| !m.event_id.starts_with("~state-")).count();
+    let loaded = items.iter().flatten().filter(|m| !m.is_system()).count();
     if loaded < INITIAL_BACKFILL as usize {
         let timeline = timeline.clone();
         let room_id = room_id.clone();
@@ -280,7 +280,12 @@ fn flatten_messages(items: &Vector<Option<MessageInfo>>) -> Vec<MessageInfo> {
 pub fn timeline_item_to_message_info(item: &TimelineItem) -> Option<MessageInfo> {
     match item.kind() {
         TimelineItemKind::Event(ev) => event_to_message_info(ev),
-        TimelineItemKind::Virtual(_) => None, // skip date dividers etc for now
+        TimelineItemKind::Virtual(VirtualTimelineItem::DateDivider(ts)) => Some(MessageInfo {
+            event_id: format!("~date-{}", ts.0),
+            timestamp: ts.as_secs().into(),
+            ..Default::default()
+        }),
+        TimelineItemKind::Virtual(_) => None, // read marker / timeline start
     }
 }
 
@@ -309,6 +314,13 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
 
     let timestamp = ev.timestamp().as_secs().into();
     let content = ev.content();
+    let send_state = ev.send_state().and_then(|state| match state {
+        EventSendState::NotSentYet { .. } => Some(crate::models::SendState::Sending),
+        EventSendState::SendingFailed { is_recoverable, .. } =>
+            Some(crate::models::SendState::Failed { recoverable: *is_recoverable }),
+        EventSendState::Sent { .. } => None,
+    });
+    let is_edited = content.as_message().is_some_and(|m| m.is_edited());
 
     // Authoritative per-event read-receipt list from the SDK timeline item.
     // The SDK keeps this live; no polling needed.
@@ -457,6 +469,8 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     audio_mxc, duration_ms, file_mxc, file_mimetype, file_size, video_mxc, is_emote, is_video, is_voice: is_voice_msg,
                     read_receipt_user_ids: read_receipt_user_ids.clone(),
                     utd: None,
+                    is_edited,
+                    send_state: send_state.clone(),
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -475,6 +489,8 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                     read_receipt_user_ids: read_receipt_user_ids.clone(),
                     utd: None,
+                    is_edited,
+                    send_state: send_state.clone(),
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -504,6 +520,8 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                     read_receipt_user_ids: read_receipt_user_ids.clone(),
                     utd: None,
+                    is_edited,
+                    send_state: send_state.clone(),
                 })
             } else {
                 // Distinguish encryption failures (missing key) from genuinely
@@ -555,6 +573,8 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                     read_receipt_user_ids,
                     utd,
+                    is_edited: false,
+                    send_state,
                 })
             }
         }
@@ -587,6 +607,8 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                 read_receipt_user_ids: Vec::new(),
                 utd: None,
+            is_edited: false,
+            send_state: None,
             })
         }
 
@@ -603,6 +625,8 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                 read_receipt_user_ids: Vec::new(),
                 utd: None,
+            is_edited: false,
+            send_state: None,
             })
         }
 
@@ -638,6 +662,8 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 geo_uri: None, audio_mxc: None, duration_ms: None, file_mxc: None, file_mimetype: None, file_size: None, video_mxc: None, is_emote: false, is_video: false, is_voice: false,
                 read_receipt_user_ids: Vec::new(),
                 utd: None,
+            is_edited: false,
+            send_state: None,
             })
         }
 

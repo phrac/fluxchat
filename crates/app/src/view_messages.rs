@@ -131,8 +131,25 @@ impl FluxChat {
             }
         };
 
+        // Date divider
+        if msg.is_date_divider() {
+            let line = || iced::widget::rule::horizontal(1).style(|_: &Theme| iced::widget::rule::Style {
+                color: theme::colors().border,
+                radius: 0.0.into(),
+                fill_mode: iced::widget::rule::FillMode::Full,
+                snap: true,
+            });
+            return container(
+                row![
+                    line(),
+                    text(local_day_label(msg.timestamp)).font(self.sidebar_font()).size(12).color(theme::colors().text_muted),
+                    line(),
+                ].spacing(10).align_y(iced::Alignment::Center)
+            ).padding([8, 8]).width(Fill).into();
+        }
+
         // System messages (join/part/state changes)
-        if msg.event_id.starts_with("~") {
+        if msg.is_system() {
             return row![
                 text(time_str)
                     .font(self.msg_font())
@@ -947,6 +964,39 @@ impl FluxChat {
                 .into()
         };
 
+        // Edited marker and local-echo delivery state
+        let mut status_bits: Vec<Element<'a, Message>> = Vec::new();
+        if msg.is_edited {
+            status_bits.push(text("(edited)").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().text_dim).into());
+        }
+        match msg.send_state {
+            Some(fluxchat_core::SendState::Sending) => {
+                status_bits.push(text("sending…").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().text_dim).into());
+            }
+            Some(fluxchat_core::SendState::Failed { recoverable }) => {
+                status_bits.push(text("failed to send").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().red).into());
+                if recoverable {
+                    if let Some(room) = self.active_real_room() {
+                        status_bits.push(
+                            button(text("retry").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().accent))
+                                .on_press(Message::RetrySend(room.to_string()))
+                                .padding([0, 4])
+                                .style(|_, _| button::Style { background: None, ..Default::default() })
+                                .into(),
+                        );
+                    }
+                }
+            }
+            None => {}
+        }
+        if !status_bits.is_empty() {
+            let mut status_row = row![].spacing(6).align_y(iced::Alignment::Center);
+            for bit in status_bits {
+                status_row = status_row.push(bit);
+            }
+            body_element = column![body_element, status_row].spacing(2).width(Fill).into();
+        }
+
         // Decryption diagnostics under undecryptable messages
         if let Some(hint) = msg.utd.as_ref().and_then(|u| self.utd_hints.get(&u.session_id)) {
             body_element = column![
@@ -1672,4 +1722,9 @@ fn collapse_code_blocks(html: &str, max_lines: usize) -> String {
     }
     result.push_str(remaining);
     result
+}
+
+/// Day label for a date divider row.
+fn local_day_label(unix_secs: u64) -> String {
+    crate::view::format_day(unix_secs)
 }

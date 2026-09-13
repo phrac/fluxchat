@@ -65,6 +65,7 @@ fn main() -> iced::Result {
         FluxChat::update,
         FluxChat::view,
     )
+    .title(FluxChat::title)
     .subscription(FluxChat::subscription)
     .theme(FluxChat::theme)
     .font(include_bytes!("../fonts/JetBrainsMonoNerdFont-Regular.ttf").as_slice())

@@ -253,6 +253,10 @@ pub struct FluxChat {
     pub cmd_completion_idx: usize,
     pub mention_completions: Vec<(String, String)>, // (user_id, display_name)
     pub mention_completion_idx: usize,
+    pub emoji_completions: Vec<(String, String)>, // (emoji, shortcode)
+    pub emoji_completion_idx: usize,
+    /// Sync problem shown in the status bar (None = healthy).
+    pub sync_status: Option<String>,
 
     // Settings modal state
     pub settings_devices: Vec<fluxchat_core::devices::DeviceInfo>,
@@ -517,6 +521,9 @@ impl FluxChat {
             cmd_completion_idx: 0,
             mention_completions: Vec::new(),
             mention_completion_idx: 0,
+            emoji_completions: Vec::new(),
+            emoji_completion_idx: 0,
+            sync_status: None,
             settings_devices: Vec::new(),
             settings_nick_input: String::new(),
             settings_status: None,

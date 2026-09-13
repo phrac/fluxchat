@@ -347,6 +347,45 @@ impl FluxChat {
             );
         }
 
+        // :shortcode emoji autocomplete popup
+        if !self.emoji_completions.is_empty() {
+            let mut popup_col = column![].spacing(0);
+            for (i, (emoji, shortcode)) in self.emoji_completions.iter().take(8).enumerate() {
+                let bg = if i == self.emoji_completion_idx { theme::colors().bg_mid } else { theme::colors().bg_deep };
+                popup_col = popup_col.push(
+                    button(
+                        row![
+                            text(emoji.as_str()).size(16),
+                            text(format!(":{shortcode}:")).font(self.msg_font()).size(13).color(theme::colors().text_muted),
+                        ].spacing(10).align_y(iced::Alignment::Center),
+                    )
+                    .on_press(Message::CompleteEmoji(i))
+                    .width(Fill)
+                    .padding([3, 12])
+                    .style(move |_, _| button::Style {
+                        background: Some(bg.into()),
+                        text_color: theme::colors().text_normal,
+                        ..Default::default()
+                    }),
+                );
+            }
+            elements.push(
+                container(
+                    container(popup_col)
+                        .max_height(250)
+                        .padding([4, 0])
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::colors().bg_deep.into()),
+                            border: iced::Border { color: theme::colors().border, width: 1.0, radius: 6.0.into() },
+                            ..Default::default()
+                        }),
+                )
+                .width(Fill)
+                .padding([4, 8])
+                .into(),
+            );
+        }
+
         // @mention autocomplete popup
         if !self.mention_completions.is_empty() {
             let mut popup_col = column![].spacing(0);
@@ -434,6 +473,7 @@ impl FluxChat {
             .key_binding({
                 let has_completions = !self.cmd_completions.is_empty();
                 let has_mentions = !self.mention_completions.is_empty();
+                let has_emoji = !self.emoji_completions.is_empty();
                 let input_empty = self.input_text.trim().is_empty();
                 move |key_press| {
                     use iced::keyboard::Key;
@@ -450,6 +490,16 @@ impl FluxChat {
                         }
                         Key::Named(Named::Tab) if has_mentions => {
                             Some(Binding::Custom(Message::InputChanged("@\t".into())))
+                        }
+                        Key::Named(Named::Tab) | Key::Named(Named::Enter) if has_emoji => {
+                            Some(Binding::Custom(Message::InputChanged(":\t".into())))
+                        }
+                        // Alt+Up/Down: room switching (the editor would otherwise eat the arrows)
+                        Key::Named(Named::ArrowUp) if key_press.modifiers.alt() => {
+                            Some(Binding::Custom(if key_press.modifiers.shift() { Message::SwitchUnread(-1) } else { Message::SwitchRoomRelative(-1) }))
+                        }
+                        Key::Named(Named::ArrowDown) if key_press.modifiers.alt() => {
+                            Some(Binding::Custom(if key_press.modifiers.shift() { Message::SwitchUnread(1) } else { Message::SwitchRoomRelative(1) }))
                         }
                         // Up arrow on empty input = edit last message
                         Key::Named(Named::ArrowUp) if input_empty => {

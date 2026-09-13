@@ -311,6 +311,7 @@ impl FluxChat {
                 self.sync_running = true;
             }
             Message::SyncReconnected => {
+                self.sync_status = None;
                 // Timelines survive a sync restart: the event cache handles the
                 // gap and pushes the result through each room's diff stream.
                 // Just make sure the active room's subscription is in place.
@@ -774,6 +775,10 @@ impl FluxChat {
                     }
                     return iced::widget::operation::focus(crate::view::input_id());
                 }
+                if text == ":\t" {
+                    // Accept the highlighted :shortcode emoji completion
+                    return self.update(Message::CompleteEmoji(self.emoji_completion_idx));
+                }
                 if text == "\x1b[A" {
                     // Up arrow on empty input — edit last own message
                     if let Some(room_id) = &self.selected_room_id {
@@ -928,6 +933,70 @@ impl FluxChat {
                 }
                 return iced::widget::operation::focus(crate::view::input_id());
             }
+            Message::CompleteEmoji(idx) => {
+                if let Some((emoji, _)) = self.emoji_completions.get(idx).cloned() {
+                    if let Some(colon) = self.input_text.rfind(':') {
+                        self.input_text = format!("{}{emoji} ", &self.input_text[..colon]);
+                        self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                        self.input_content.perform(iced::widget::text_editor::Action::Move(
+                            iced::widget::text_editor::Motion::DocumentEnd,
+                        ));
+                    }
+                    self.emoji_completions.clear();
+                    self.emoji_completion_idx = 0;
+                }
+                return iced::widget::operation::focus(crate::view::input_id());
+            }
+            Message::SwitchRoomRelative(dir) => {
+                let order = self.sidebar_room_order();
+                if order.is_empty() {
+                    return Task::none();
+                }
+                let current = self.active_real_room()
+                    .and_then(|rid| order.iter().position(|r| r == rid));
+                let next = match current {
+                    Some(i) => (i as i64 + dir as i64).rem_euclid(order.len() as i64) as usize,
+                    None => 0,
+                };
+                return self.update(Message::SelectRoom(order[next].clone()));
+            }
+            Message::SwitchUnread(dir) => {
+                let order = self.sidebar_room_order();
+                let current = self.active_real_room()
+                    .and_then(|rid| order.iter().position(|r| r == rid))
+                    .unwrap_or(0);
+                let has_unread = |rid: &String| {
+                    !self.read_rooms.contains(rid)
+                        && self.rooms.iter().any(|r| &r.room_id == rid && r.unread_count > 0)
+                };
+                let n = order.len() as i64;
+                for step in 1..=n {
+                    let idx = (current as i64 + dir as i64 * step).rem_euclid(n) as usize;
+                    if has_unread(&order[idx]) {
+                        return self.update(Message::SelectRoom(order[idx].clone()));
+                    }
+                }
+            }
+            Message::RetrySend(room_id) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        // A failed send disables the queue; re-enabling retries it.
+                        client.send_queue().set_enabled(true).await;
+                        if let Ok(rid) = fluxchat_core::ruma::RoomId::parse(&room_id) {
+                            if let Some(room) = client.get_room(&rid) {
+                                room.send_queue().set_enabled(true);
+                            }
+                        }
+                        Some(())
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::SyncStatus(status) => {
+                self.sync_status = status;
+            }
             Message::StartReply(event_id, sender, body) => {
                 self.reply_to = Some((event_id, sender, body));
             }
@@ -988,6 +1057,7 @@ impl FluxChat {
                 self.edit_event = None;
                 self.cmd_completions.clear();
                 self.mention_completions.clear();
+                self.emoji_completions.clear();
             }
             Message::ToggleReaction(event_id, emoji) => {
                 if let Some(room_id) = self.selected_room_id.clone() {
@@ -3481,6 +3551,8 @@ impl FluxChat {
                     self.cmd_completions.clear();
                 } else if !self.mention_completions.is_empty() {
                     self.mention_completions.clear();
+                } else if !self.emoji_completions.is_empty() {
+                    self.emoji_completions.clear();
                 } else if self.modal.is_some() {
                     self.modal = None;
                 } else if self.pins_open {
@@ -3722,6 +3794,28 @@ impl FluxChat {
             .map(str::to_lowercase);
         let members = self.selected_room_id.as_ref()
             .and_then(|room_id| self.members_by_room.get(room_id));
+        // :shortcode emoji completion — at least two characters after a colon
+        // that starts the text or follows whitespace.
+        let emoji_query = text.rfind(':').and_then(|colon| {
+            let before_ok = colon == 0 || text[..colon].ends_with(char::is_whitespace);
+            let after = &text[colon + 1..];
+            (before_ok && after.len() >= 2 && after.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '+' || c == '-'))
+                .then(|| after.to_lowercase())
+        });
+        match emoji_query {
+            Some(query) => {
+                self.emoji_completions = emojis::iter()
+                    .filter_map(|e| {
+                        e.shortcodes().find(|sc| sc.starts_with(&query))
+                            .map(|sc| (e.as_str().to_string(), sc.to_string()))
+                    })
+                    .take(8)
+                    .collect();
+                self.emoji_completion_idx = 0;
+            }
+            None => self.emoji_completions.clear(),
+        }
+
         match (mention_query, members) {
             (Some(query), Some(members)) => {
                 self.mention_completions = members
@@ -4254,6 +4348,7 @@ impl FluxChat {
                                                 break;
                                             }
                                             tracing::warn!("Sync error: {e}, reconnecting in 5s...");
+                                            let _ = tx_reconnect.send(Message::SyncStatus(Some("reconnecting…".into())));
                                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                             if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
                                                 svc.start().await;
@@ -4263,6 +4358,7 @@ impl FluxChat {
                                         }
                                         SyncState::Terminated => {
                                             tracing::warn!("Sync terminated, reconnecting in 5s...");
+                                            let _ = tx_reconnect.send(Message::SyncStatus(Some("reconnecting…".into())));
                                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                             if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
                                                 svc.start().await;

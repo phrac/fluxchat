@@ -142,6 +142,26 @@ impl FluxChat {
         font_by_name(&self.sidebar_font_family)
     }
 
+    /// Window title: unread total and the current room.
+    pub fn title(&self) -> String {
+        if self.screen == Screen::Login {
+            return "FluxChat".to_string();
+        }
+        let unread: u64 = self.rooms.iter()
+            .filter(|r| !self.read_rooms.contains(&r.room_id))
+            .map(|r| r.unread_count)
+            .sum();
+        let room = self.active_real_room()
+            .and_then(|rid| self.rooms.iter().find(|r| r.room_id == rid))
+            .map(|r| r.name.as_str());
+        match (unread, room) {
+            (0, Some(name)) => format!("{name} — FluxChat"),
+            (n, Some(name)) => format!("({n}) {name} — FluxChat"),
+            (0, None) => "FluxChat".to_string(),
+            (n, None) => format!("({n}) FluxChat"),
+        }
+    }
+
     /// Top-level view — dispatches to login or main layout.
     pub fn view(&self) -> Element<Message> {
         match self.screen {
@@ -2431,14 +2451,20 @@ impl FluxChat {
 
         bar = bar.push(Space::new().width(Fill));
 
-        // Sync lag
-        let lag_label = if self.sync_lag_ms == 0 { "synced".to_string() } else { format!("{}ms", self.sync_lag_ms) };
-        let lag_color = if self.sync_lag_ms < 200 {
-            theme::colors().green
-        } else if self.sync_lag_ms < 1000 {
-            theme::colors().yellow
+        // Sync lag / connection state
+        let (lag_label, lag_color) = if let Some(status) = &self.sync_status {
+            (status.clone(), theme::colors().red)
+        } else if self.sync_lag_ms == 0 {
+            ("synced".to_string(), theme::colors().green)
         } else {
-            theme::colors().red
+            let color = if self.sync_lag_ms < 200 {
+                theme::colors().green
+            } else if self.sync_lag_ms < 1000 {
+                theme::colors().yellow
+            } else {
+                theme::colors().red
+            };
+            (format!("{}ms", self.sync_lag_ms), color)
         };
         bar = bar.push(text(lag_label).font(self.sidebar_font()).size(13).color(lag_color));
 
@@ -2494,6 +2520,21 @@ impl FluxChat {
                 key, modifiers, ..
             } = event
             {
+                // Alt+Up/Down: previous/next room; with Shift: previous/next unread
+                if modifiers.alt() {
+                    let dir = match key {
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => Some(-1),
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => Some(1),
+                        _ => None,
+                    };
+                    if let Some(dir) = dir {
+                        return if modifiers.shift() {
+                            Message::SwitchUnread(dir)
+                        } else {
+                            Message::SwitchRoomRelative(dir)
+                        };
+                    }
+                }
                 // Alt+1-9: switch tabs
                 if modifiers.alt() {
                     if let iced::keyboard::Key::Character(ref c) = key {
@@ -2678,6 +2719,25 @@ pub(crate) fn cursor_position() -> (f32, f32) {
         f32::from_bits(CURSOR_X.load(std::sync::atomic::Ordering::Relaxed)),
         f32::from_bits(CURSOR_Y.load(std::sync::atomic::Ordering::Relaxed)),
     )
+}
+
+/// Human-readable day for a date divider: "Today", "Yesterday", or the full date.
+pub(crate) fn format_day(unix_secs: u64) -> String {
+    use chrono::{Datelike, TimeZone};
+    let Some(day) = chrono::Utc.timestamp_opt(unix_secs as i64, 0).single()
+        .map(|utc| utc.with_timezone(&chrono::Local).date_naive()) else {
+        return String::new();
+    };
+    let today = chrono::Local::now().date_naive();
+    if day == today {
+        "Today".to_string()
+    } else if today.pred_opt() == Some(day) {
+        "Yesterday".to_string()
+    } else if day.year() == today.year() {
+        day.format("%A, %-d %B").to_string()
+    } else {
+        day.format("%A, %-d %B %Y").to_string()
+    }
 }
 
 /// Convert a Unix timestamp (seconds) to local time-of-day in seconds.

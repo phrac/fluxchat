@@ -56,6 +56,36 @@ pub struct MessageInfo {
     /// Set when the event couldn't be decrypted, for diagnostics in the UI.
     #[serde(default)]
     pub utd: Option<UtdInfo>,
+    /// The message has been edited (SDK applies the latest edit to `body`).
+    #[serde(default)]
+    pub is_edited: bool,
+    /// Local echo state; `None` once the server has accepted the event.
+    #[serde(default)]
+    pub send_state: Option<SendState>,
+}
+
+/// Delivery state of a message we sent.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum SendState {
+    Sending,
+    Failed { recoverable: bool },
+}
+
+impl MessageInfo {
+    /// Synthetic rows we generate (membership/state changes, date dividers).
+    pub fn is_system(&self) -> bool {
+        self.event_id.starts_with("~state-") || self.event_id.starts_with("~date-")
+    }
+
+    /// A day separator; `date_divider_ts()` gives the day's timestamp.
+    pub fn is_date_divider(&self) -> bool {
+        self.event_id.starts_with("~date-")
+    }
+
+    /// A message we sent that has no server event ID yet.
+    pub fn is_local_echo(&self) -> bool {
+        self.event_id.starts_with("~local-")
+    }
 }
 
 /// Why an event couldn't be decrypted.

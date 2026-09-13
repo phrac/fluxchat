@@ -22,6 +22,16 @@ pub enum Message {
     WindowResized(f32, f32),
     /// The user clicked a desktop notification for this room.
     NotificationClicked(String),
+    /// Re-enable the send queue and retry failed sends in a room.
+    RetrySend(String),
+    /// Sync connection status for the status bar (None = healthy).
+    SyncStatus(Option<String>),
+    /// Alt+Up/Down: move to the previous/next room in sidebar order.
+    SwitchRoomRelative(i32),
+    /// Alt+Shift+Up/Down: previous/next room with unread messages.
+    SwitchUnread(i32),
+    /// Accept the Nth `:shortcode` emoji completion.
+    CompleteEmoji(usize),
     /// Diagnostics for undecryptable sessions: (session_id, hint).
     UtdHintsResolved(Vec<(String, String)>),
     Logout,
