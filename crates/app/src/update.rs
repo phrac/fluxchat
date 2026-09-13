@@ -251,14 +251,30 @@ impl FluxChat {
                 self.display_name = None;
                 self.rooms.clear();
                 self.spaces.clear();
+                self.space_tree.clear();
+                self.space_descendants.clear();
+                self.invited_rooms.clear();
+                self.knocked_rooms.clear();
+                self.selected_room_id = None;
+                self.selected_space_id = None;
                 self.messages_by_room.clear();
+                self.members_by_room.clear();
                 self.open_tabs.clear();
+                self.read_rooms.clear();
+                self.last_read_event.clear();
+                self.last_seen_timestamp.clear();
+                self.thread_counts.clear();
+                self.pending_redactions.clear();
+                self.render_limit.clear();
+                self.typing_by_room.clear();
+                self.modal = None;
                 self.sync_running = false;
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        core.timelines.clear().await;
-                        let _ = fluxchat_core::auth::logout(&core).await;
+                        if let Err(e) = fluxchat_core::auth::logout(&core).await {
+                            tracing::warn!("Logout failed: {e}");
+                        }
                     },
                     |_| Message::Noop,
                 );
@@ -500,8 +516,14 @@ impl FluxChat {
                         .iter()
                         .filter_map(|m| m.avatar_url.clone())
                         .collect();
-                    let preview_task = self.resolve_url_previews(&merged);
-                    let image_task = self.resolve_images(&merged);
+                    // Only fetch media for the view on screen — background rooms
+                    // with open timelines (notifications, mark-as-read) would
+                    // otherwise download every image they receive.
+                    let (preview_task, image_task) = if is_active {
+                        (self.resolve_url_previews(&merged), self.resolve_images(&merged))
+                    } else {
+                        (Task::none(), Task::none())
+                    };
                     let new_count = merged.len();
                     let members_task = if members_stale {
                         self.reload_members(room_id.clone())
@@ -3354,8 +3376,11 @@ impl FluxChat {
                     let decoded = rest.replace("%3A", ":").replace("%23", "#");
                     let id = decoded.split('?').next().unwrap_or(&decoded);
                     if id.starts_with('!') {
-                        // Room ID — navigate directly
-                        return self.update(Message::SelectRoom(id.to_string()));
+                        // Room ID — open it if joined, otherwise join it
+                        if self.rooms.iter().any(|r| r.room_id == id) {
+                            return self.update(Message::SelectRoom(id.to_string()));
+                        }
+                        return self.update(Message::JoinRoom(id.to_string()));
                     } else if id.starts_with('#') {
                         // Room alias — find matching room by alias-like name
                         if let Some(room) = self.rooms.iter().find(|r| {
@@ -3365,6 +3390,7 @@ impl FluxChat {
                         }) {
                             return self.update(Message::SelectRoom(room.room_id.clone()));
                         }
+                        return self.update(Message::JoinRoom(id.to_string()));
                     } else if id.starts_with('@') {
                         // User mention — open profile modal
                         return self.update(Message::OpenModal(crate::state::Modal::Profile { user_id: id.to_string() }));
@@ -3422,12 +3448,12 @@ impl FluxChat {
                 }
                 if self.sync_running {
                     let mut tasks = Vec::new();
+                    self.tick_count = self.tick_count.wrapping_add(1);
+                    let slow_tick = self.tick_count.is_multiple_of(SLOW_TICK_EVERY);
 
-                    // Room list updates are now reactive via RoomListService watcher
-                    // Tick only handles read receipts and call presence polling
-
-                    // Refresh invites (sliding sync watcher may not trigger for invite state changes)
-                    {
+                    // Refresh invites as a fallback (the room list watcher
+                    // normally delivers them).
+                    if slow_tick {
                         let core_inv = self.core.clone();
                         tasks.push(Task::perform(
                             async move {
@@ -3444,9 +3470,6 @@ impl FluxChat {
 
                     // Clear stale typing indicators (timeout after 10s)
                     self.typing_by_room.retain(|_, (_, updated)| updated.elapsed().as_secs() < 10);
-
-                    self.tick_count = self.tick_count.wrapping_add(1);
-                    let slow_tick = self.tick_count.is_multiple_of(SLOW_TICK_EVERY);
 
                     // Refresh member list for presence/status changes. Joins and
                     // leaves trigger an immediate reload from MessagesUpdated.

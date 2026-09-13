@@ -71,6 +71,12 @@ pub async fn login(
 
 /// Log out, clearing the saved session and matrix store.
 pub async fn logout(state: &AppState) -> Result<(), AppError> {
+    // Stop syncing first, or the reconnect watcher would try to restart a
+    // client whose token is about to be invalidated.
+    if let Some(service) = state.sync_service.lock().await.take() {
+        service.stop().await;
+    }
+    state.timelines.clear().await;
     let mut lock = state.client.lock().await;
     if let Some(client) = lock.take() {
         let _ = client.logout().await;
