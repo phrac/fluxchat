@@ -67,6 +67,7 @@ fn main() -> iced::Result {
         FluxChat::update,
         FluxChat::view,
     )
+    .executor::<BigStackExecutor>()
     .title(FluxChat::title)
     .subscription(FluxChat::subscription)
     .theme(FluxChat::theme)
@@ -89,4 +90,34 @@ fn main() -> iced::Result {
 fn load_icon() -> Option<window::icon::Icon> {
     let bytes = include_bytes!("../../../assets/icons/icon_256x256.png");
     window::icon::from_file_data(bytes, None).ok()
+}
+
+/// Tokio runtime for iced tasks with 16 MB worker stacks. matrix-sdk's
+/// crypto/encryption futures are very large and have overflowed tokio's
+/// default 2 MB worker stacks ("thread 'tokio-rt-worker' has overflowed its
+/// stack"). Stack memory is reserved virtually, so the cost is negligible.
+struct BigStackExecutor(tokio::runtime::Runtime);
+
+impl iced::Executor for BigStackExecutor {
+    fn new() -> Result<Self, std::io::Error> {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("fluxchat-rt")
+            .thread_stack_size(16 * 1024 * 1024)
+            .build()
+            .map(Self)
+    }
+
+    fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        let _handle = self.0.spawn(future);
+    }
+
+    fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.0.enter();
+        f()
+    }
+
+    fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        self.0.block_on(future)
+    }
 }

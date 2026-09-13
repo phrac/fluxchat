@@ -40,6 +40,8 @@ pub enum Message {
     ShowError(String),
     /// Open the "leave room?" confirmation for a room.
     AskLeaveRoom(String),
+    /// Raw event JSON fetched for "View source": (event_id, json).
+    EventSourceLoaded(String, String),
     /// Server's max upload size in bytes (from /media/v1/config), if known.
     MaxUploadSizeLoaded(Option<u64>),
     /// Diagnostics for undecryptable sessions: (session_id, hint).

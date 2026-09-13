@@ -782,6 +782,23 @@ impl FluxChat {
                     "Leave", SVG_CLOSE, rid, "leave",
                 ));
             }
+            crate::state::ContextMenu::Message { event_id } => {
+                let eid = event_id.clone();
+                let is_local = event_id.starts_with('~');
+                if !is_local {
+                    col = col.push(self.context_menu_item(
+                        "Copy Message Link", SVG_LINK, eid.clone(), "msg_copy_link",
+                    ));
+                    col = col.push(self.context_menu_item(
+                        "Copy Event ID", SVG_CLIPBOARD, eid.clone(), "msg_copy_id",
+                    ));
+                    col = col.push(self.context_menu_item(
+                        "View Source", SVG_INFO, eid, "msg_source",
+                    ));
+                } else {
+                    col = col.push(text("Not sent yet").font(self.sidebar_font()).size(12).color(theme::colors().text_dim));
+                }
+            }
             crate::state::ContextMenu::Space { space_id } => {
                 let sid = space_id.clone();
                 col = col.push(self.context_menu_item(

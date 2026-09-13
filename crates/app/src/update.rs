@@ -1523,6 +1523,29 @@ impl FluxChat {
                     "copy_link" => {
                         return iced::clipboard::write(format!("https://matrix.to/#/{target_id}"));
                     }
+                    "msg_copy_link" => {
+                        let room = self.active_real_room().unwrap_or_default().to_string();
+                        return iced::clipboard::write(format!("https://matrix.to/#/{room}/{target_id}"));
+                    }
+                    "msg_copy_id" => {
+                        return iced::clipboard::write(target_id);
+                    }
+                    "msg_source" => {
+                        let Some(room) = self.active_real_room().map(str::to_string) else { return Task::none() };
+                        let core = self.core.clone();
+                        return Task::perform(
+                            async move {
+                                let client = core.get_client().await.map_err(|e| e.to_string())?;
+                                let json = fluxchat_core::messages::get_event_source(&client, &room, &target_id).await
+                                    .map_err(|e| e.to_string())?;
+                                Ok::<_, String>((target_id, json))
+                            },
+                            |r| match r {
+                                Ok((event_id, json)) => Message::EventSourceLoaded(event_id, json),
+                                Err(e) => Message::ShowError(format!("Couldn't load event: {e}")),
+                            },
+                        );
+                    }
                     "mark_read" => {
                         self.read_rooms.insert(target_id.clone());
                         // Tell the server too, so other devices clear the badge.
@@ -1861,6 +1884,9 @@ impl FluxChat {
                         Err(e) => Message::ShowError(format!("Join failed: {e}")),
                     },
                 ).chain(Task::done(Message::RefreshRoomList));
+            }
+            Message::EventSourceLoaded(event_id, json) => {
+                self.modal = Some(crate::state::Modal::EventSource { event_id, json });
             }
             Message::ShowError(message) => {
                 tracing::warn!("{message}");

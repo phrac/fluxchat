@@ -1214,11 +1214,13 @@ impl FluxChat {
             container(Space::new().height(0)).width(Fill).into()
         };
 
+        let ctx_menu = crate::state::ContextMenu::Message { event_id: msg.event_id.clone() };
         let msg_row: Element<'a, Message> = mouse_area(
             stack![base_row, action_bar].width(Fill)
         )
         .on_enter(Message::HoverMessage(Some(eid_hover)))
         .on_exit(Message::HoverMessage(None))
+        .on_right_press(Message::OpenContextMenu(ctx_menu))
         .into();
 
         // URL preview cards (max 2 unless expanded)

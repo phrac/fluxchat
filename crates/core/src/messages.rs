@@ -762,3 +762,14 @@ pub async fn search_messages(
 
     Ok((results, room_events.next_batch.clone()))
 }
+
+/// Fetch an event's raw JSON (pretty-printed) for "View source".
+pub async fn get_event_source(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Result<String, AppError> {
+    let room_id = parse_room_id(room_id)?;
+    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
+    let event = room.event(&event_id, None).await.map_err(|e| AppError::Other(format!("Failed to fetch event: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(event.raw().json().get())
+        .map_err(|e| AppError::Other(format!("Invalid event JSON: {e}")))?;
+    serde_json::to_string_pretty(&value).map_err(|e| AppError::Other(e.to_string()))
+}

@@ -39,6 +39,7 @@ pub type TabEntry = (String, String, Option<String>, Option<String>);
 pub enum ContextMenu {
     Room { room_id: String, is_dm: bool },
     Space { space_id: String },
+    Message { event_id: String },
 }
 
 /// Which modal is currently open.
@@ -55,6 +56,8 @@ pub enum Modal {
     Invite,
     Report { event_id: String, room_id: String },
     ConfirmLeave { room_id: String, name: String },
+    /// Raw event JSON for "View source".
+    EventSource { event_id: String, json: String },
     SpaceDetails { space_id: String },
     PendingInvites,
     DevTools,

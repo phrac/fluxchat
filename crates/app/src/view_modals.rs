@@ -31,6 +31,34 @@ impl FluxChat {
             crate::state::Modal::PendingInvites => self.view_pending_invites_modal(),
             crate::state::Modal::DevTools => self.view_devtools_modal(),
             crate::state::Modal::Directory => self.view_directory_modal(),
+            crate::state::Modal::EventSource { event_id, json } => {
+                column![
+                    row![
+                        text("Event Source").font(MONO).size(16).color(theme::colors().text_bright),
+                        Space::new().width(Fill),
+                        button(text("Copy").font(MONO).size(12).color(theme::colors().accent))
+                            .on_press(Message::CopyMessageText(json.clone()))
+                            .padding([4, 8])
+                            .style(|_, _| button::Style {
+                                background: Some(theme::colors().bg_light.into()),
+                                text_color: theme::colors().accent,
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                        button(text("\u{00d7}").font(MONO).size(18).color(theme::colors().text_dim))
+                            .on_press(Message::CloseModal)
+                            .padding([2, 6])
+                            .style(|_, _| button::Style { background: None, ..Default::default() }),
+                    ].spacing(8).align_y(iced::Alignment::Center),
+                    text(event_id.as_str()).font(MONO).size(11).color(theme::colors().text_dim),
+                    rule::horizontal(1),
+                    scrollable(
+                        container(
+                            text(json.as_str()).font(MONO).size(12).color(theme::colors().text_normal)
+                        ).padding(8).width(Fill)
+                    ).height(Length::Fixed(420.0)),
+                ].spacing(8).width(Length::Fixed(640.0)).into()
+            }
             crate::state::Modal::ConfirmLeave { room_id, name } => {
                 column![
                     text(format!("Leave {name}?")).font(MONO).size(16).color(theme::colors().text_bright),
