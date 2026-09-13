@@ -537,6 +537,9 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
             use matrix_sdk_ui::timeline::MembershipChange as MChange;
             let display = mc.display_name().unwrap_or_else(|| sender_name.clone());
             let body = match mc.change() {
+                // A re-sent join with nothing changed (bots "ensure joined" on
+                // every restart) — nothing to tell the user.
+                Some(MChange::None) => return None,
                 Some(MChange::Joined) | Some(MChange::InvitationAccepted) => format!("{display} has joined"),
                 Some(MChange::Left) => format!("{display} has left"),
                 Some(MChange::Banned) => format!("{display} was banned"),
