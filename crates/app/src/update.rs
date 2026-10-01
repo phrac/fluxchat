@@ -12,6 +12,14 @@ const URL_PREVIEW_LIMIT: usize = 200;
 const GIF_CACHE_LIMIT: usize = 100;
 /// Max entries kept in the SQLite media cache (avatars, inline images, GIFs).
 const MEDIA_DB_CACHE_LIMIT: usize = 1500;
+/// Scroll offset (px from the top) within which scrolling up loads history.
+const PAGINATE_TOP_ZONE: f32 = 100.0;
+/// Events requested per back-pagination page.
+const PAGINATE_PAGE_EVENTS: u16 = 20;
+/// Extra pages fetched automatically when a page adds nothing visible.
+const MAX_EMPTY_PAGES: u8 = 5;
+/// Wait after a page finishes before judging what it added.
+const PAGINATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// Total size cap of the SQLite media cache (base64 bytes).
 const MEDIA_DB_CACHE_BYTES: u64 = 300 * 1024 * 1024;
 /// How long to wait before retrying an avatar that failed to download.
@@ -331,6 +339,7 @@ impl FluxChat {
                 self.last_seen_timestamp.clear();
                 self.thread_counts.clear();
                 self.pending_redactions.clear();
+                self.history_start.clear();
                 self.row_heights.borrow_mut().clear();
                 *self.virt_anchor.borrow_mut() = None;
                 self.utd_hints.clear();
@@ -640,12 +649,11 @@ impl FluxChat {
                     if !room_id.starts_with("thread::") {
                         self.merge_room_threads(&room_id);
                     }
-                    // Pagination delivered; the prepended rows shift content and
-                    // the viewport anchor correction in MessagesScrolled compensates.
-                    if is_active && self.paginating && new_count != self.paginate_msg_count {
-                        self.paginating = false;
-                        self.paginate_msg_count = new_count;
-                    }
+                    // Prepended history shifts content; the viewport anchor
+                    // correction in MessagesScrolled compensates. Pagination
+                    // ends in PaginateSettled, not here: live messages change
+                    // the count too, and clearing early let pages overlap.
+                    let _ = new_count;
                     let utd_task = if is_active { self.check_utd_reasons(&room_id) } else { Task::none() };
                     let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task, members_task, utd_task];
                     let jump_now = self.pending_jump.as_ref()
@@ -800,7 +808,6 @@ impl FluxChat {
                 self.pinned_messages.clear();
                 crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
-                self.paginate_msg_count = 0;
                 self.last_scroll_offset = 0.0;
                 *self.virt_anchor.borrow_mut() = None;
                 // Mark as read (session-only, SDK handles server-side)
@@ -893,14 +900,12 @@ impl FluxChat {
                 // A view whose Timeline came up empty (its initial backfill
                 // failed or was cut short) would otherwise stay blank until a
                 // new event arrives — fetch history now.
-                let (nothing_visible, cached_len) = match self.messages_by_room.get(&room_id) {
-                    Some(msgs) => (self.visible_rows(&room_id, msgs).iter().all(|m| m.is_system()), msgs.len()),
-                    None => (true, 0),
+                let nothing_visible = match self.messages_by_room.get(&room_id) {
+                    Some(msgs) => self.visible_rows(&room_id, msgs).iter().all(|m| m.is_system()),
+                    None => true,
                 };
                 let backfill = if nothing_visible {
-                    self.paginating = true;
-                    self.paginate_msg_count = cached_len;
-                    self.update(Message::PaginateBack(room_id.clone()))
+                    self.start_back_pagination(room_id.clone(), MAX_EMPTY_PAGES)
                 } else {
                     Task::none()
                 };
@@ -3968,6 +3973,7 @@ impl FluxChat {
             // --- Misc ---
             Message::PaginateBack(room_id) => {
                 let core = self.core.clone();
+                let key = room_id.clone();
                 return Task::perform(
                     async move {
                         // get-or-create also rebuilds a Timeline whose watcher stopped.
@@ -3975,32 +3981,42 @@ impl FluxChat {
                         let timeline = fluxchat_core::timeline::get_or_create_for_key(
                             &client, &core.timelines, &room_id,
                         ).await.ok()?;
-                        // First call may just adjust lazy-loading window; second call
-                        // actually fetches from server if needed.
-                        let r1 = timeline.paginate_backwards(20).await;
-                        if matches!(r1, Ok(false)) {
-                            let _ = timeline.paginate_backwards(20).await;
-                        }
-                        Some(())
+                        // Ok(true): reached the start of the room's history.
+                        timeline.paginate_backwards(PAGINATE_PAGE_EVENTS).await
+                            .map_err(|e| tracing::warn!("Back-pagination failed for {room_id}: {e}"))
+                            .ok()
                     },
-                    |result| match result {
-                        Some(()) => Message::PaginateBackDone,
-                        None => Message::PaginateBackDone,
-                    },
+                    move |outcome| Message::PaginateBackDone(key.clone(), outcome),
                 );
             }
-            Message::PaginateBackDone => {
-                // Don't clear paginating here. Messages arrive via diff stream
-                // (MessagesUpdated), which will clear it when count changes.
-                // Set a timeout to clear it in case no messages arrive (end of history).
+            Message::PaginateBackDone(key, outcome) => {
+                // The page's rows reach us through the timeline watcher, which
+                // may land just after this: judge the page a moment later.
                 return Task::perform(
-                    async { tokio::time::sleep(std::time::Duration::from_secs(3)).await },
-                    |_| Message::PaginateTimeout,
+                    async { tokio::time::sleep(PAGINATE_SETTLE).await },
+                    move |_| Message::PaginateSettled(key.clone(), outcome),
                 );
             }
-            Message::PaginateTimeout => {
-                if self.paginating {
-                    self.paginating = false;
+            Message::PaginateSettled(key, outcome) => {
+                self.paginating = false;
+                match outcome {
+                    Some(true) => {
+                        self.history_start.insert(key);
+                    }
+                    Some(false) => {
+                        // Nothing visible arrived (a stretch of hidden thread
+                        // replies/edits) and we're still at the top: fetch a
+                        // few more pages, then wait for the next scroll.
+                        let still_here = self.selected_room_id.as_deref() == Some(key.as_str())
+                            && self.last_scroll_offset < PAGINATE_TOP_ZONE;
+                        if still_here && self.paginate_empty_budget > 0
+                            && self.visible_count(&key) <= self.paginate_visible_before
+                        {
+                            let budget = self.paginate_empty_budget - 1;
+                            return self.start_back_pagination(key, budget);
+                        }
+                    }
+                    None => {} // failed: the next scroll up retries
                 }
             }
             Message::ScrollToBottom => {
@@ -4019,7 +4035,13 @@ impl FluxChat {
                 let viewport_h = viewport.bounds().height;
                 self.messages_viewport_h = viewport_h;
                 let max_scroll = (content_h - viewport_h).max(0.0);
-                let near_top = offset < 100.0;
+                let near_top = offset < PAGINATE_TOP_ZONE;
+                // The user scrolled up (programmatic corrections below record
+                // their target in last_scroll_offset first, so they never
+                // count). Content resizing alone must not load history, or
+                // each small page re-triggers the next one forever.
+                let moving_up = offset + 0.5 < self.last_scroll_offset;
+                let underfilled = max_scroll < 1.0;
                 let near_bottom = (max_scroll - offset) < 50.0;
 
                 // Keep the row that was at the top of the viewport in place when
@@ -4058,17 +4080,11 @@ impl FluxChat {
                 if reached_bottom {
                     return self.update(Message::SendReadReceipt);
                 }
-                // Clear paginating once scrolled away from the top
-                if self.paginating && !near_top {
-                    self.paginating = false;
-                }
-                // At the top of everything loaded: fetch older history
-                if near_top && !self.paginating {
+                // Scrolled up into the top zone (or the content doesn't even
+                // fill the view): fetch older history.
+                if near_top && (moving_up || underfilled) {
                     if let Some(room_id) = self.selected_room_id.clone() {
-                        self.paginate_msg_count = self.messages_by_room
-                            .get(&room_id).map(|m| m.len()).unwrap_or(0);
-                        self.paginating = true;
-                        return self.update(Message::PaginateBack(room_id));
+                        return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
                     }
                 }
             }
@@ -4772,6 +4788,24 @@ impl FluxChat {
     /// full timeline batches instead of the room list's tiny window.
     /// Forget closed thread views: their cached rows and their SDK Timelines
     /// (stopping the watchers), so reopening a thread starts from a fresh one.
+    /// Visible timeline rows of a view.
+    fn visible_count(&self, key: &str) -> usize {
+        self.messages_by_room.get(key).map(|m| self.visible_rows(key, m).len()).unwrap_or(0)
+    }
+
+    /// Fetch one page of older history for `key`, unless one is in flight
+    /// or the view already reaches the room's start. `budget` is how many
+    /// more pages may follow automatically if this one shows nothing.
+    pub(crate) fn start_back_pagination(&mut self, key: String, budget: u8) -> Task<Message> {
+        if self.paginating || self.history_start.contains(&key) {
+            return Task::none();
+        }
+        self.paginating = true;
+        self.paginate_empty_budget = budget;
+        self.paginate_visible_before = self.visible_count(&key);
+        self.update(Message::PaginateBack(key))
+    }
+
     /// Persist window size, panel widths and the pane layout if changed.
     fn flush_layout(&mut self) {
         if !self.layout_dirty {

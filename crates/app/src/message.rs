@@ -525,8 +525,11 @@ pub enum Message {
 
     // --- Misc ---
     PaginateBack(String),     // room_id
-    PaginateBackDone,
-    PaginateTimeout,
+    /// A back-pagination request finished: (view key, Some(reached the
+    /// start of history) or None on error).
+    PaginateBackDone(String, Option<bool>),
+    /// Evaluated shortly after PaginateBackDone, once the new rows landed.
+    PaginateSettled(String, Option<bool>),
     OpenUrl(String),
     Escape, // close modals/panels/completions
     Tick, // periodic refresh

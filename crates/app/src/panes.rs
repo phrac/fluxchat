@@ -824,4 +824,40 @@ mod flow_tests {
         let _ = app.update(Message::TogglePins);
         assert_eq!(app.core.db.get_setting("pins_open").as_deref(), Some("false"));
     }
+
+    #[tokio::test]
+    async fn back_pagination_is_one_page_at_a_time_and_stops() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.last_scroll_offset = 0.0;
+        let _ = app.start_back_pagination("!a:x".into(), 5);
+        assert!(app.paginating);
+        assert_eq!(app.paginate_empty_budget, 5);
+        // A second request while one is in flight is ignored.
+        let _ = app.start_back_pagination("!a:x".into(), 1);
+        assert_eq!(app.paginate_empty_budget, 5);
+
+        // A page that showed nothing, still at the top: one more, budget down.
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(false)));
+        assert!(app.paginating);
+        assert_eq!(app.paginate_empty_budget, 4);
+
+        // Scrolled away meanwhile: stop.
+        app.last_scroll_offset = 500.0;
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(false)));
+        assert!(!app.paginating);
+
+        // Budget used up: stop even at the top.
+        app.last_scroll_offset = 0.0;
+        let _ = app.start_back_pagination("!a:x".into(), 0);
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(false)));
+        assert!(!app.paginating);
+
+        // Reached the start of history: never again for this view.
+        let _ = app.start_back_pagination("!a:x".into(), 5);
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(true)));
+        assert!(!app.paginating);
+        let _ = app.start_back_pagination("!a:x".into(), 5);
+        assert!(!app.paginating);
+    }
 }

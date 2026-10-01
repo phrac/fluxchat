@@ -478,8 +478,14 @@ pub struct FluxChat {
     pub last_scroll_offset: f32,
     // Whether a back-pagination request is currently in flight
     pub paginating: bool,
-    // Message count when pagination was triggered — to detect when new messages arrive
-    pub paginate_msg_count: usize,
+    /// Visible rows when the current pagination started (to tell whether a
+    /// page added anything that shows).
+    pub paginate_visible_before: usize,
+    /// More pages that may be fetched automatically while pages keep adding
+    /// nothing visible (all hidden thread replies/edits).
+    pub paginate_empty_budget: u8,
+    /// Views whose history has been loaded back to the room's start.
+    pub history_start: std::collections::HashSet<String>,
 
     // Animated GIF cache for inline messages
     pub gif_frames_cache: HashMap<String, std::sync::Arc<iced_gif::Frames>>,
@@ -755,7 +761,9 @@ impl FluxChat {
             messages_at_bottom: true,
             last_scroll_offset: 0.0,
             paginating: false,
-            paginate_msg_count: 0,
+            paginate_visible_before: 0,
+            paginate_empty_budget: 0,
+            history_start: std::collections::HashSet::new(),
             gif_frames_cache: HashMap::new(),
             gif_results: Vec::new(),
             gif_searching: false,
