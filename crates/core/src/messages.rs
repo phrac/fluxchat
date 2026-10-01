@@ -281,7 +281,8 @@ pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomM
     // Resolve @mentions
     if has_mentions {
         // Detect @room mention
-        if body.contains("@room") {
+        // Whole word: "@roommate" isn't a room ping.
+        if replace_mention(body, "@room", "").is_some() {
             mentions_room = true;
         }
 
@@ -530,6 +531,8 @@ mod tests {
         assert_eq!(replace_mention("@Al", "@Al", link).as_deref(), Some("<a>Al</a>"));
         assert_eq!(replace_mention("hi @Alexander", "@Al", link), None);
         assert_eq!(replace_mention("me@Al.com", "@Al", link), None);
+        assert!(replace_mention("ask @roommate", "@room", "").is_none());
+        assert!(replace_mention("hey @room!", "@room", "").is_some());
         assert_eq!(
             replace_mention("@Alex and @Al", "@Al", link).as_deref(),
             Some("@Alex and <a>Al</a>"),
