@@ -1,6 +1,6 @@
 # The interface
 
-![fluxchat](../assets/screenshot.png)
+![fluxchat](../assets/screenshots/layout.png)
 
 ## Spaces bar
 

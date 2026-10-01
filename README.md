@@ -2,7 +2,7 @@
 
 A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust, with an IRC-inspired interface.
 
-![fluxchat screenshot](assets/screenshot.png)
+![fluxchat: spaces, rooms with their latest threads, a thread beside its room, members](assets/screenshots/layout.png)
 
 **[Read the user manual →](docs/README.md)**
 
@@ -12,6 +12,15 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - **IRC feel, modern features.** Timestamp, colored nick and message columns in a monospace layout, with images, reactions, threads, spaces, encryption and voice calls.
 - **Fast.** Virtualized timeline, sliding sync, lazy-loaded member lists.
 - **Your layout.** Split the screen into tmux-style panes and windows; every sidebar opens, closes and resizes independently, and it all comes back after a restart.
+
+## Screenshots
+
+| | | |
+|---|---|---|
+| ![Timeline with a link preview, replies and an inline image](assets/screenshots/timeline.png) | ![Nord Light theme with the threads sidebar and a thread's hover preview](assets/screenshots/light.png) | ![Two panes: a room and a thread with its own composer](assets/screenshots/panes.png) |
+| Timeline: link previews, replies, inline media | Light theme, threads sidebar and hover preview | Panes: a room and its thread side by side |
+| ![Gallery of a room's images, grouped by month](assets/screenshots/gallery.png) | ![Command palette searching rooms](assets/screenshots/palette.png) | ![Settings: theme, fonts and text size](assets/screenshots/appearance.png) |
+| Gallery of every image, video and file | Command palette (Ctrl/⌘+K) | Themes, fonts and text size |
 
 ## Features
 
