@@ -5531,37 +5531,61 @@ impl FluxChat {
                             let tx_reconnect = tx.clone();
                             tokio::spawn(async move {
                                 use fluxchat_core::SyncState;
+                                // Retry delay doubles while the server stays
+                                // unreachable (5 s → 60 s) and resets once
+                                // sync is running again — which is also when
+                                // "reconnecting…" clears (not when start()
+                                // returns, which may fail again right away).
+                                const FIRST_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+                                const MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+                                let mut delay = FIRST_RETRY;
+                                let mut reconnecting = false;
                                 loop {
-                                    let next: Option<SyncState> = state_sub.next().await;
+                                    // While reconnecting, don't wait forever for a
+                                    // state change: a failed start() may leave the
+                                    // state as it was, so re-check periodically.
+                                    let next: Option<SyncState> = if reconnecting {
+                                        tokio::time::timeout(MAX_RETRY, state_sub.next()).await
+                                            .unwrap_or_else(|_| Some(state_sub.get()))
+                                    } else {
+                                        state_sub.next().await
+                                    };
                                     if next.is_none() { break; }
                                     let current = state_sub.get();
-                                    match current {
+                                    let retry = match current {
+                                        SyncState::Running => {
+                                            if reconnecting {
+                                                reconnecting = false;
+                                                tracing::info!("Sync running again");
+                                                let _ = tx_reconnect.send(Message::SyncReconnected);
+                                            }
+                                            delay = FIRST_RETRY;
+                                            false
+                                        }
                                         SyncState::Error(ref e) => {
                                             if fluxchat_core::sync_service::is_invalid_token_error(e) {
                                                 tracing::warn!("Sync error: access token rejected by server (M_UNKNOWN_TOKEN), logging out");
                                                 let _ = tx_reconnect.send(Message::Logout);
                                                 break;
                                             }
-                                            tracing::warn!("Sync error: {e}, reconnecting in 5s...");
-                                            let _ = tx_reconnect.send(Message::SyncStatus(Some("reconnecting…".into())));
-                                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                            if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
-                                                svc.start().await;
-                                                tracing::info!("Sync restarted after error");
-                                                let _ = tx_reconnect.send(Message::SyncReconnected);
-                                            }
+                                            tracing::warn!("Sync error: {e}, reconnecting in {}s", delay.as_secs());
+                                            true
                                         }
                                         SyncState::Terminated => {
-                                            tracing::warn!("Sync terminated, reconnecting in 5s...");
-                                            let _ = tx_reconnect.send(Message::SyncStatus(Some("reconnecting…".into())));
-                                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                            if let Some(ref svc) = *core_reconnect.sync_service.lock().await {
-                                                svc.start().await;
-                                                tracing::info!("Sync restarted after termination");
-                                                let _ = tx_reconnect.send(Message::SyncReconnected);
-                                            }
+                                            tracing::warn!("Sync terminated, reconnecting in {}s", delay.as_secs());
+                                            true
                                         }
-                                        _ => {}
+                                        _ => false,
+                                    };
+                                    if retry {
+                                        reconnecting = true;
+                                        let _ = tx_reconnect.send(Message::SyncStatus(Some("reconnecting…".into())));
+                                        tokio::time::sleep(delay).await;
+                                        delay = (delay * 2).min(MAX_RETRY);
+                                        match *core_reconnect.sync_service.lock().await {
+                                            Some(ref svc) => svc.start().await,
+                                            None => break, // logged out meanwhile
+                                        }
                                     }
                                 }
                             });

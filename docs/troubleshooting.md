@@ -24,7 +24,7 @@ A backup exists on the server but this device isn't using it. Settings → Secur
 
 ## "reconnecting…" in the status bar
 
-The connection to your homeserver dropped; fluxchat reconnects automatically. If your server rejects the session (for example after signing out elsewhere), you're returned to the sign-in screen.
+The connection to your homeserver dropped; fluxchat reconnects automatically, retrying less often the longer it stays offline (up to once a minute). The message clears once syncing has actually resumed. If your server rejects the session (for example after signing out elsewhere), you're returned to the sign-in screen.
 
 ## Couldn't restore the session
 
