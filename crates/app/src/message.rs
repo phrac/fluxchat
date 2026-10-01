@@ -112,6 +112,8 @@ pub enum Message {
     PaneClicked(iced::widget::pane_grid::Pane),
     /// Focus a pane right away (title-bar controls).
     PaneFocus(iced::widget::pane_grid::Pane),
+    /// Show a room in a given pane (an empty pane's picker).
+    FillPane(iced::widget::pane_grid::Pane, String),
     PaneResized(iced::widget::pane_grid::ResizeEvent),
     PaneDragged(iced::widget::pane_grid::DragEvent),
     PaneSplit(iced::widget::pane_grid::Axis),

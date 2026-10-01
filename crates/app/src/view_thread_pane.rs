@@ -13,6 +13,10 @@ use crate::view::thin_scrollbar;
 
 /// Most recent rows a room shows in a non-focused pane (not virtualized).
 const SIDE_PANE_ROWS: usize = 300;
+/// Rooms offered in an empty pane's picker (the rest via search).
+const EMPTY_PANE_ROOMS: usize = 8;
+/// Width of the empty-pane room picker.
+const EMPTY_PANE_WIDTH: f32 = 280.0;
 
 impl FluxChat {
     /// The active window's panes.
@@ -22,13 +26,12 @@ impl FluxChat {
         let maximized = window.grid.maximized().is_some();
         pane_grid(&window.grid, move |pane, slot, _is_max| {
             let focused = pane == window.focus;
-            let body: Element<Message> = if focused {
-                self.view_content()
-            } else {
-                match slot.key.as_deref() {
-                    Some(key) => self.view_pane_body(key),
-                    None => self.view_empty_pane(),
-                }
+            let body: Element<Message> = match slot.key.as_deref() {
+                // A lone empty pane is the welcome view; in a split it's a picker.
+                None if multiple => self.view_empty_pane(pane),
+                _ if focused => self.view_content(),
+                Some(key) => self.view_pane_body(key),
+                None => self.view_empty_pane(pane),
             };
             let framed = container(body)
                 .width(Fill)
@@ -131,18 +134,44 @@ impl FluxChat {
         .into()
     }
 
-    /// An empty pane: pick a room for it.
-    fn view_empty_pane(&self) -> Element<'_, Message> {
+    /// An empty pane: a short room list that fills *this* pane, plus the
+    /// full search (which also targets this pane).
+    fn view_empty_pane(&self, pane: pane_grid::Pane) -> Element<'_, Message> {
         let shortcut = if cfg!(target_os = "macos") { "\u{2318}K" } else { "Ctrl+K" };
+        let shown: std::collections::HashSet<&str> = self.window().grid.iter()
+            .filter_map(|(_, s)| s.key.as_deref())
+            .collect();
+        let mut list = column![].spacing(2).width(Length::Fixed(EMPTY_PANE_WIDTH));
+        for room_id in self.sidebar_room_order().into_iter()
+            .filter(|r| !shown.contains(r.as_str()))
+            .take(EMPTY_PANE_ROOMS)
+        {
+            let Some(room) = self.rooms.iter().find(|r| r.room_id == room_id) else { continue };
+            let name = if room.is_direct { room.name.clone() } else { format!("#{}", room.name) };
+            list = list.push(
+                button(
+                    row![
+                        self.render_room_avatar(room.avatar_url.as_deref(), &room.name, 18.0),
+                        text(name).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ].spacing(8).align_y(Alignment::Center),
+                )
+                .on_press(Message::FillPane(pane, room_id.clone()))
+                .padding([5, 10])
+                .width(Fill)
+                .clip(true)
+                .style(ui::row_style(false)),
+            );
+        }
         container(
             column![
-                ui::icon(crate::icons::SVG_SPLIT_V, 32.0, theme::colors().text_dim),
-                text("Empty pane").font(self.sidebar_font()).size(15).color(theme::colors().text_bright),
-                text(format!("Click it, then pick a room from the sidebar or {shortcut}."))
-                    .font(self.sidebar_font()).size(12).color(theme::colors().text_muted),
-                ui::btn(format!("Choose a room  {shortcut}"), Tone::Secondary, Some(Message::ToggleQuickSwitcher)),
+                ui::icon(crate::icons::SVG_SPLIT_V, 28.0, theme::colors().text_dim),
+                text("Choose a room for this pane").font(self.sidebar_font()).size(15).color(theme::colors().text_bright),
+                list,
+                ui::btn(format!("Search all rooms  {shortcut}"), Tone::Secondary,
+                    Some(Message::Batch(vec![Message::PaneFocus(pane), Message::ToggleQuickSwitcher]))),
             ]
-            .spacing(10)
+            .spacing(12)
             .align_x(Alignment::Center),
         )
         .width(Fill)

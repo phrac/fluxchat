@@ -13,7 +13,7 @@ Each pane shows a room or a thread. One pane at a time is **focused** (outlined 
   - **Ctrl+B %** (side by side) or **Ctrl+B "** (stacked);
   - the palette (**Ctrl/⌘+K** → "Split pane").
 
-  A new, empty pane opens the room picker so you can choose what goes in it.
+  You stay in the room you were reading. The new pane is empty and lists rooms to put in it: click one, or **Search all rooms** to find any room. Clicking a room there fills that pane and focuses it.
 - **Open a room beside the current one**: right-click it in the room list → **Open in split view**.
 - **Threads** open in a pane beside their room automatically.
 - **Resize** by dragging the gap between panes.
@@ -29,7 +29,7 @@ A non-focused pane shows a room's latest 300 messages; focus it to scroll throug
 
 Windows are separate pane layouts, like tmux windows or browser tabs.
 
-- **New window**: **Ctrl+B c**. It starts empty and opens the room picker.
+- **New window**: **Ctrl+B c**. It starts empty, showing the welcome view; pick a room from the sidebar or **Ctrl/⌘+K**. Your unsent text in the window you left is kept.
 - **Switch**: **Ctrl+B n** / **p** (next / previous), **Ctrl+B 0–9**, or click it in the status bar (`0:general* 1:dev`).
 - **Close the current window**: **Ctrl+B &**.
 

@@ -762,10 +762,6 @@ impl FluxChat {
                 // Keep unsent text per view so switching rooms doesn't lose
                 // (or misdirect) a half-written message.
                 if self.selected_room_id.as_deref() != Some(room_id.as_str()) {
-                    // Pins belong to the real room; reloaded below.
-                    if self.active_real_room() != Some(fluxchat_core::timeline::real_room_id(&room_id)) {
-                        self.pinned_messages.clear();
-                    }
                     if let Some(prev) = self.selected_room_id.clone() {
                         let draft = std::mem::take(&mut self.input_text);
                         if draft.trim().is_empty() {
@@ -4343,7 +4339,7 @@ impl FluxChat {
                 }
             }
             // --- Panes & windows (delegated to panes.rs) ---
-            msg @ (Message::PaneClicked(_) | Message::PaneFocus(_) | Message::PaneResized(_) | Message::PaneDragged(_)
+            msg @ (Message::PaneClicked(_) | Message::PaneFocus(_) | Message::FillPane(..) | Message::PaneResized(_) | Message::PaneDragged(_)
                 | Message::PaneSplit(_) | Message::PaneClose(_) | Message::PaneZoom
                 | Message::PaneFocusDirection(_) | Message::PaneCycle
                 | Message::WindowNew | Message::WindowSelect(_) | Message::WindowNext
