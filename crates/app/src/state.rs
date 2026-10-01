@@ -281,6 +281,9 @@ pub struct FluxChat {
     /// Rooms we're in the process of leaving (filter from sync updates)
     pub leaving_rooms: HashSet<String>,
     pub hovered_message: Option<String>, // event_id of hovered message
+    /// The message whose floating action bar has the cursor: leaving its row
+    /// (onto the bar) doesn't end the hover.
+    pub hover_bar: Option<String>,
     pub devtools_state_events: Vec<(String, String)>, // (event_type, json)
     pub devtools_tab: String,                         // "state" or "send"
     pub devtools_send_type: String,                   // event type to send
@@ -682,6 +685,7 @@ impl FluxChat {
             context_menu_position: (0.0, 0.0),
             leaving_rooms: HashSet::new(),
             hovered_message: None,
+            hover_bar: None,
             devtools_state_events: Vec::new(),
             devtools_tab: "state".into(),
             devtools_send_type: String::new(),

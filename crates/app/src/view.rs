@@ -2796,7 +2796,7 @@ impl FluxChat {
                     .on_scroll(Message::MessagesScrolled)
                     .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
             )
-            .on_exit(Message::HoverMessage(None));
+            .on_exit(Message::HoverLeft(None));
 
             // Helper: wrap msg_scrollable in a stack with overlays (new-messages pill)
             let mut msg_stack = stack![

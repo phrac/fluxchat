@@ -1,5 +1,5 @@
 use iced::widget::{
-    button, column, container, mouse_area, row, scrollable, stack,
+    button, column, container, mouse_area, row, scrollable,
     text, Space,
 };
 use iced::{Color, Element, Fill, Length, Theme};
@@ -28,6 +28,8 @@ const CODE_BLOCK_LINES: usize = 5;
 pub(crate) const MSG_COL_GAP: f32 = 6.0;
 /// Messages from the same sender within this many seconds are grouped.
 pub(crate) const MSG_GROUP_SECS: u64 = 300;
+/// Gap between a message's hover action bar and the row's right edge.
+const HOVER_BAR_INSET: f32 = 8.0;
 
 /// Column geometry of a message row (see `FluxChat::msg_columns`).
 pub(crate) struct MsgColumns {
@@ -1382,45 +1384,35 @@ impl FluxChat {
             )));
         }
 
-        // Only show action bar when hovered (opacity 0 when not, preserving tree structure)
-        let action_bar: Element<'a, Message> = if is_hovered {
-            container(
-                row![
-                    Space::new().width(Fill),
-                    container(action_row)
-                        .padding([2, 4])
-                        .style(|_: &Theme| container::Style {
-                            background: Some(theme::colors().bg_dark.into()),
-                            border: iced::Border {
-                                color: theme::colors().border,
-                                width: 1.0,
-                                radius: 8.0.into(),
-                            },
-                            shadow: iced::Shadow {
-                                color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
-                                offset: iced::Vector::new(0.0, 3.0),
-                                blur_radius: 10.0,
-                            },
-                            ..Default::default()
-                        }),
-                ]
-                .align_y(iced::Alignment::Start)
-            )
-            .width(Fill)
-            .height(Length::Shrink)
-            .padding([0, 8])
-            .into()
-        } else {
-            // Invisible placeholder — same tree shape, zero height
-            container(Space::new().height(0)).width(Fill).into()
-        };
+        // Floats over the row's top-right corner as an overlay (see
+        // hover_bar.rs); built every time so the widget tree keeps its shape.
+        let action_bar = mouse_area(
+            container(action_row)
+                .padding([2, 4])
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_dark.into()),
+                    border: iced::Border {
+                        color: theme::colors().border,
+                        width: 1.0,
+                        radius: 8.0.into(),
+                    },
+                    shadow: iced::Shadow {
+                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                        offset: iced::Vector::new(0.0, 3.0),
+                        blur_radius: 10.0,
+                    },
+                    ..Default::default()
+                }),
+        )
+        .on_enter(Message::HoverBar(Some(msg.event_id.clone())))
+        .on_exit(Message::HoverBar(None));
 
         let ctx_menu = crate::state::ContextMenu::Message { event_id: msg.event_id.clone() };
         let msg_row: Element<'a, Message> = mouse_area(
-            stack![base_row, action_bar].width(Fill)
+            crate::hover_bar::HoverBar::new(base_row, action_bar, is_hovered).inset(HOVER_BAR_INSET)
         )
         .on_enter(Message::HoverMessage(Some(eid_hover)))
-        .on_exit(Message::HoverMessage(None))
+        .on_exit(Message::HoverLeft(Some(msg.event_id.clone())))
         .on_right_press(Message::OpenContextMenu(ctx_menu))
         .into();
 

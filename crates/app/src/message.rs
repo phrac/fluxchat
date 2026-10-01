@@ -387,6 +387,11 @@ pub enum Message {
 
     // --- Message hover ---
     HoverMessage(Option<String>), // event_id or None
+    /// The cursor left a message row (`Some`) or the message list (`None`).
+    /// Ignored while it's on that message's action bar.
+    HoverLeft(Option<String>),
+    /// The cursor entered (`Some`) or left (`None`) a message's action bar.
+    HoverBar(Option<String>),
     TogglePreviewExpand(String),  // event_id
 
     // --- Formatting ---

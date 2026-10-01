@@ -2852,6 +2852,24 @@ impl FluxChat {
             Message::HoverMessage(id) => {
                 self.hovered_message = id;
             }
+            Message::HoverLeft(id) => {
+                // The bar floats over the list as an overlay: moving onto it
+                // reads as leaving the row (and the list) underneath.
+                let on_bar = match (&id, &self.hover_bar) {
+                    (Some(row), Some(bar)) => row == bar,
+                    (None, bar) => bar.is_some(),
+                    (Some(_), None) => false,
+                };
+                if !on_bar && (id.is_none() || self.hovered_message == id) {
+                    self.hovered_message = None;
+                }
+            }
+            Message::HoverBar(id) => {
+                // Leaving the bar ends the hover; if the cursor went back to
+                // the row, its enter (handled after this) brings it back.
+                self.hovered_message = id.clone();
+                self.hover_bar = id;
+            }
             Message::TogglePreviewExpand(event_id) => {
                 if !self.expanded_previews.remove(&event_id) {
                     self.expanded_previews.insert(event_id);

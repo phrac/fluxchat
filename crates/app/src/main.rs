@@ -5,6 +5,7 @@
 #![allow(mismatched_lifetime_syntaxes)]
 
 mod commands;
+mod hover_bar;
 mod html;
 mod icons;
 mod isolated;
