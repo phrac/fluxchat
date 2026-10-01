@@ -55,9 +55,20 @@ cat > "$CONTENTS/Info.plist" << EOF
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
+    <!-- Without these macOS never asks for access and the microphone
+         delivers silence (mic test, voice messages, calls). -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>FluxChat uses the microphone for voice calls and voice messages.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>FluxChat uses the camera for video calls.</string>
 </dict>
 </plist>
 EOF
+
+# Ad-hoc sign the bundle so macOS ties the Info.plist (and the microphone
+# permission) to this app. Each rebuild is a new signature, so macOS may ask
+# for microphone access again after rebuilding.
+codesign --force --deep --sign - "$APP_DIR"
 
 echo ""
 echo "Build successful!"

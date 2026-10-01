@@ -272,6 +272,8 @@ pub struct FluxChat {
     pub audio_outputs: Vec<String>,
     /// Running microphone test, and its latest level (0–1).
     pub mic_test: Option<fluxchat_core::audio_devices::MicTest>,
+    /// The mic test only hears exact silence (blocked by the OS).
+    pub mic_blocked: bool,
     pub mic_level: f32,
     /// Account-wide push rules (Settings → Notifications), `None` until loaded.
     pub notify_rules: Option<fluxchat_core::notify_rules::NotifyRules>,
@@ -638,6 +640,7 @@ impl FluxChat {
             audio_inputs: Vec::new(),
             audio_outputs: Vec::new(),
             mic_test: None,
+            mic_blocked: false,
             mic_level: 0.0,
             notify_rules: None,
             keyword_input: String::new(),

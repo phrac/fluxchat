@@ -83,11 +83,20 @@ pub fn output_device() -> Option<cpal::Device> {
     host.default_output_device()
 }
 
+/// Callbacks (~10 ms each on most devices) of pure zeros before the mic
+/// test reports the microphone as blocked.
+const SILENT_CALLBACKS: u32 = 150;
+
 /// A running microphone test: captures from the chosen input device and
 /// exposes the current level (0.0–1.0). Stops when dropped.
 pub struct MicTest {
     level: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
+    /// Audio callbacks received so far.
+    callbacks: Arc<AtomicU32>,
+    /// Any non-zero sample seen. A device that only ever delivers exact
+    /// zeros is blocked (macOS privacy permission) or muted in hardware.
+    signal: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for MicTest {
@@ -101,8 +110,11 @@ impl MicTest {
     pub fn start() -> Result<Self, String> {
         let level = Arc::new(AtomicU32::new(0));
         let stop = Arc::new(AtomicBool::new(false));
+        let callbacks = Arc::new(AtomicU32::new(0));
+        let signal = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
         let (lvl, stp) = (level.clone(), stop.clone());
+        let (cbs, sig) = (callbacks.clone(), signal.clone());
         std::thread::Builder::new()
             .name("mic-test".into())
             .spawn(move || {
@@ -110,11 +122,16 @@ impl MicTest {
                     let device = input_device().ok_or("No microphone found")?;
                     let config = device.default_input_config().map_err(|e| format!("Microphone unavailable: {e}"))?;
                     let lvl = lvl.clone();
+                    let (cbs, sig) = (cbs.clone(), sig.clone());
                     let stream = device.build_input_stream(
                         &config.into(),
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             if data.is_empty() {
                                 return;
+                            }
+                            cbs.fetch_add(1, Ordering::Relaxed);
+                            if data.iter().any(|s| *s != 0.0) {
+                                sig.store(true, Ordering::Relaxed);
                             }
                             let rms = (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt();
                             // Rough perceptual scaling so speech fills the meter.
@@ -145,7 +162,13 @@ impl MicTest {
             })
             .map_err(|e| e.to_string())?;
         ready_rx.recv().map_err(|e| e.to_string())??;
-        Ok(Self { level, stop })
+        Ok(Self { level, stop, callbacks, signal })
+    }
+
+    /// The device has been delivering audio for a while, all of it exact
+    /// silence: almost always a missing microphone permission.
+    pub fn blocked(&self) -> bool {
+        self.callbacks.load(Ordering::Relaxed) >= SILENT_CALLBACKS && !self.signal.load(Ordering::Relaxed)
     }
 
     /// Current input level, 0.0–1.0.

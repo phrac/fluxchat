@@ -642,11 +642,20 @@ impl FluxChat {
         .align_y(iced::Alignment::Center);
 
         let devices_loading = self.audio_inputs.is_empty() && self.audio_outputs.is_empty();
+        let mut mic_col = column![
+            picker(&self.audio_inputs, self.prefs.audio_input.as_ref(), |p, v| p.audio_input = v),
+            mic_test,
+        ].spacing(10);
+        if testing && self.mic_blocked {
+            let fix = if cfg!(target_os = "macos") {
+                "No sound is reaching FluxChat. Allow it in System Settings \u{2192} Privacy & Security \u{2192} Microphone, then restart FluxChat. (Or pick another microphone.)"
+            } else {
+                "No sound is reaching FluxChat. Check that the microphone isn't muted, or pick another one."
+            };
+            mic_col = mic_col.push(text(fix).font(MONO).size(12).color(theme::colors().yellow));
+        }
         let mut col = column![
-            ui::field("Microphone", column![
-                picker(&self.audio_inputs, self.prefs.audio_input.as_ref(), |p, v| p.audio_input = v),
-                mic_test,
-            ].spacing(10)),
+            ui::field("Microphone", mic_col),
             ui::field("Speaker", picker(&self.audio_outputs, self.prefs.audio_output.as_ref(), |p, v| p.audio_output = v)),
         ]
         .spacing(ui::GAP + 4.0);

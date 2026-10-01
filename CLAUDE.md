@@ -91,7 +91,8 @@ A cross-platform Matrix chat client written entirely in Rust. IRC-inspired UI. U
 - Favourites: `room.set_is_favourite()` / `room.is_favourite()` via Matrix tags, star toggle in overflow menu, dedicated sidebar section, rooms also appear in their original section
 - Files HUD: scans messages for `image_mxc`, shows thumbnails from media cache, click to scroll+highlight
 - Topic bar: IRC-style slim bar below tabs showing room topic
-- Header-bar panels (Pins/Files/Notices): `hud_panel()` (title + count + close, scrollable body capped at `HUD_PANEL_MAX_HEIGHT`) with `hud_row()` entries; pins/files jump to the message, threads open the thread
+- Pinned messages are a resizable sidebar (`view_pins_sidebar`, `ResizeTarget::Pins`, `pins_width`/`pins_open` persisted; left→right: panes | pins | threads | mentions | members), rows jump to the message and unpin
+- Header-bar panels (Files/Notices): `hud_panel()` (title + count + close, scrollable body capped at `HUD_PANEL_MAX_HEIGHT`) with `hud_row()` entries; pins/files jump to the message, threads open the thread
 - Search: overlay dropdown with click-to-scroll + blue highlight on target message, server-side with client-side fallback, arrow key navigation, Enter to select, auto-focus on toggle, results clear on select
 - Desktop notifications: `notify-rust`, fired off-thread by `show_notification()`. A client event handler on `OriginalSyncRoomMessageEvent` uses the SDK-computed push `Vec<Action>` (room mute / mentions-only / keyword rules) for every room, skipping own messages, startup history, and the active focused room. Clicking a notification (freedesktop backends) sends `NotificationClicked` → selects the room and focuses the window. Settings: enable, mentions-only (uses highlight action), preview, sound.
 - Polls: MSC3381 unstable events (`org.matrix.msc3381.poll.start/response/end`). `PollState::results()` from matrix-sdk-ui provides aggregated votes. `PollDisplay` component renders interactive vote UI with progress bars. Voting sends `UnstablePollResponseEventContent` via Timeline.
@@ -190,6 +191,7 @@ cargo run -p fluxchat
 - **Participant tracking:** LiveKit events are source of truth during connected calls. Tick handler only updates room indicators, not participants, when connected.
 - **UI:** In-call panel (participant tiles + controls) above messages, PIP in member list when viewing other rooms. Phone icon in tab bar action buttons. Join banner for rooms with active calls.
 - **State events:** `m.call.member` (MSC3401) sent with `room.send_state_event_raw()`. Custom event type `org.matrix.msc3401.call.member` with `memberships` array. Empty memberships = left call. Suppressed from timeline rendering.
+- **macOS mic permission:** `build-macos.sh` must keep `NSMicrophoneUsageDescription` in Info.plist and ad-hoc sign the bundle — without it macOS never prompts and input is pure silence. `MicTest::blocked()` detects all-zero input and Settings → Voice shows the fix
 - **macOS:** Requires `-ObjC` linker flag for libwebrtc Objective-C categories (`.cargo/config.toml`).
 - **TLS:** `livekit` crate requires `native-tls` feature for WSS connections.
 

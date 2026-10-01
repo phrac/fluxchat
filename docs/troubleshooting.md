@@ -34,6 +34,10 @@ The error is shown on the sign-in screen. fluxchat never deletes your saved sess
 
 Set a Giphy API key with `/giphykey <key>` or the `GIPHY_API_KEY` environment variable.
 
+## The microphone test, voice messages or calls are silent
+
+macOS only lets apps use the microphone after you allow it. Rebuild the app with `./build-macos.sh` (older builds never asked), open FluxChat, start the mic test and allow access when asked, or turn FluxChat on in System Settings → Privacy & Security → Microphone. Rebuilding may make macOS ask again.
+
 ## Video won't play
 
 Install GStreamer (`brew install gstreamer` on macOS, your distribution's packages on Linux).

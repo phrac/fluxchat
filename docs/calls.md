@@ -17,7 +17,9 @@ Settings → **Voice & Video**:
 - **Test microphone**: shows a live input level meter.
 - **Echo cancellation**, **Noise suppression**, **Automatic gain**.
 
-Changes apply to the next call and voice message. On Linux, call audio uses the PulseAudio default devices; the choices apply to voice messages.
+Changes apply to the next call and voice message.
+
+If the test meter doesn't move, FluxChat shows a warning when the microphone delivers only silence. On macOS that almost always means FluxChat isn't allowed to use it: turn it on in System Settings → Privacy & Security → Microphone, then restart FluxChat. Older builds of the app never asked for access; rebuild it with `./build-macos.sh`. On Linux, call audio uses the PulseAudio default devices; the choices apply to voice messages.
 
 ## Voice messages
 

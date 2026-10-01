@@ -76,7 +76,7 @@ Web and email links open in your browser or mail app. Links to rooms, messages a
 ## Forwarding and pins
 
 - **Forward**: hover a message → forward arrow → pick a room.
-- **Pin**: hover → pin. The room header's pin button lists pinned messages (red when there are any).
+- **Pin**: hover → pin. The room header's pin button opens the Pinned sidebar (the button is red when the room has pins). Click a pin to jump to it, or its pin button to unpin.
 
 ## Search
 

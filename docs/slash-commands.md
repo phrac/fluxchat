@@ -69,7 +69,7 @@ Commands marked *room* need a room open. Where a command takes `<user>`, you can
 | `/threads` | Threads sidebar |
 | `/members` | Member list |
 | `/search` | Search |
-| `/pins` | Pinned messages |
+| `/pins` | Pinned messages sidebar |
 | `/files` | Files panel |
 | `/notices` | Server notices panel |
 | `/clear` | Clear the visible scrollback (it comes back on the next update) |

@@ -29,7 +29,7 @@ Across the top of the timeline: room avatar and name, then buttons:
 |--------|------|
 | Phone | Start or join a voice call |
 | Search | Search the room's messages |
-| Pin | Pinned messages (red when the room has pins) |
+| Pin | Pinned messages sidebar (red when the room has pins) |
 | Split | Split the timeline side by side (see [Panes](panes-and-windows.md)) |
 | Spool | Threads sidebar |
 | @ | Mentions inbox |
@@ -56,7 +56,9 @@ Messages appear in IRC-style columns: **time | name | message**.
 
 ## Sidebars
 
-Three optional panels on the right. Open any combination; each one is resizable and stays open across restarts.
+Four optional panels on the right. Open any combination; each one is resizable and stays open across restarts.
+
+- **Pinned**: the room's pinned messages with who sent them and when. Click one to jump to it; the pin button on a row unpins it.
 
 - **Threads**: every thread in the room, most recently active first. See [Threads](threads.md).
 - **Mentions** (**Ctrl/⌘+I**): every message that mentioned you, across all rooms. See [Notifications](notifications.md#mentions-inbox).

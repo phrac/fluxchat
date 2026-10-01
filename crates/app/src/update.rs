@@ -4478,9 +4478,11 @@ impl FluxChat {
                     }
                 }
                 self.mic_level = 0.0;
+                self.mic_blocked = false;
             }
             Message::MicLevelTick => {
                 self.mic_level = self.mic_test.as_ref().map(|t| t.level()).unwrap_or(0.0);
+                self.mic_blocked = self.mic_test.as_ref().is_some_and(|t| t.blocked());
             }
             Message::SetCompactMode(on) => {
                 self.compact_mode = on;
