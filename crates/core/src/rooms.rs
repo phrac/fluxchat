@@ -1,6 +1,9 @@
 use matrix_sdk::ruma::{
     api::client::room::create_room::v3::{Request as CreateRoomRequest, RoomPreset},
-    events::space::child::SpaceChildEventContent,
+    events::{
+        space::{child::SpaceChildEventContent, parent::SpaceParentEventContent},
+        InitialStateEvent,
+    },
     Int, RoomOrAliasId,
 };
 use std::collections::{HashMap, HashSet};
@@ -497,6 +500,8 @@ pub async fn set_room_topic(client: &matrix_sdk::Client, room_id: &str, topic: &
 }
 
 /// Create a new room with optional encryption, space association, and invites.
+/// Returns the room ID and, when the room was created but couldn't be added
+/// to the space, a message saying so.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_room(
     client: &matrix_sdk::Client,
@@ -507,7 +512,7 @@ pub async fn create_room(
     is_space: bool,
     invite_user_ids: &[String],
     space_id: Option<&str>,
-) -> Result<String, AppError> {
+) -> Result<(String, Option<String>), AppError> {
     let mut request = CreateRoomRequest::new();
     request.name = Some(name.to_string());
     request.topic = topic.map(|s| s.to_string());
@@ -530,25 +535,46 @@ pub async fn create_room(
             request.invite.push(user_id);
         }
     }
+    // Encryption and the space parent go in the creation request: right
+    // after creation the room's state hasn't synced, so anything that reads
+    // it (the SDK's SpaceService checks power levels first) fails.
+    let space_id = space_id.map(parse_room_id).transpose()?;
+    let server = client.user_id()
+        .ok_or_else(|| AppError::Other("Not logged in".into()))?
+        .server_name()
+        .to_owned();
+    if is_encrypted {
+        use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
+        request.initial_state.push(
+            InitialStateEvent::with_empty_state_key(RoomEncryptionEventContent::with_recommended_defaults()).to_raw_any(),
+        );
+    }
+    if let Some(sid) = &space_id {
+        request.initial_state.push(
+            InitialStateEvent::new(sid.clone(), SpaceParentEventContent::new(vec![server.clone()])).to_raw_any(),
+        );
+    }
     let room = client.create_room(request).await
         .map_err(|e| AppError::Other(format!("Failed to create room: {e}")))?;
 
-    // Add to space if specified
-    if let Some(sid) = space_id {
-        if let Err(e) = crate::spaces::add_child(client, sid, room.room_id().as_str()).await {
-            tracing::warn!("Failed to associate room with space: {e}");
+    // The room exists now; a failed space link is reported, not fatal.
+    let mut warning = None;
+    if let Some(sid) = &space_id {
+        let linked = match client.get_room(sid) {
+            Some(space) => space
+                .send_state_event_for_key(room.room_id(), SpaceChildEventContent::new(vec![server]))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            None => Err("space not found".into()),
+        };
+        if let Err(e) = linked {
+            tracing::warn!("Failed to add new room to space: {e}");
+            warning = Some(format!("Room created, but couldn't add it to the space: {e}"));
         }
     }
 
-    // Enable encryption if requested
-    if is_encrypted {
-        use matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent;
-        if let Err(e) = room.send_state_event(RoomEncryptionEventContent::with_recommended_defaults()).await {
-            tracing::warn!("Failed to enable encryption on new room: {e}");
-        }
-    }
-
-    Ok(room.room_id().to_string())
+    Ok((room.room_id().to_string(), warning))
 }
 
 /// Add an existing room to a space.

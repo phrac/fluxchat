@@ -3518,15 +3518,21 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let room_id = fluxchat_core::rooms::create_room(
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let (room_id, warning) = fluxchat_core::rooms::create_room(
                             &client, &name, topic.as_deref(), is_public, encrypted, is_space, &[], space_id.as_deref(),
-                        ).await.ok()?;
-                        Some((room_id, name, encrypted, is_space, space_id))
+                        ).await.map_err(|e| e.to_string())?;
+                        Ok::<_, String>((room_id, name, encrypted, is_space, space_id, warning))
                     },
                     |result| match result {
-                        Some((room_id, name, encrypted, is_space, space_id)) => Message::RoomCreated(room_id, name, encrypted, is_space, space_id),
-                        None => Message::Noop,
+                        Ok((room_id, name, encrypted, is_space, space_id, warning)) => {
+                            let created = Message::RoomCreated(room_id, name, encrypted, is_space, space_id);
+                            match warning {
+                                Some(w) => Message::Batch(vec![created, Message::ShowError(w)]),
+                                None => created,
+                            }
+                        }
+                        Err(e) => Message::ShowError(e),
                     },
                 );
             }

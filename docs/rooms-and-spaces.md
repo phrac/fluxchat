@@ -26,7 +26,7 @@ Room list **+** → *Create room* (or `/create [name]`). Choose:
 - whether it's **public**;
 - whether it's **end-to-end encrypted** (rooms only; can't be turned off later).
 
-A room created in a space shows under that space straight away.
+A room created in a space shows under that space straight away. If the room can't be created, or is created but can't be added to the space (for example, you lack permission to add rooms there), the reason shows above the message box.
 
 Direct messages: **+** → *Direct message*, `/msg <user> <text>`, `/query <user>`, or **Message** on someone's profile.
 
