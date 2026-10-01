@@ -809,6 +809,7 @@ impl FluxChat {
                 crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
                 self.last_scroll_offset = 0.0;
+                crate::view::set_timeline_at_top(None); // until the new view reports its scroll
                 *self.virt_anchor.borrow_mut() = None;
                 // Mark as read (session-only, SDK handles server-side)
                 self.read_rooms.insert(room_id.clone());
@@ -3997,6 +3998,11 @@ impl FluxChat {
                     move |_| Message::PaginateSettled(key.clone(), outcome),
                 );
             }
+            Message::TimelineWheelUpAtTop => {
+                if let Some(room_id) = self.selected_room_id.clone() {
+                    return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
+                }
+            }
             Message::PaginateSettled(key, outcome) => {
                 self.paginating = false;
                 match outcome {
@@ -4042,6 +4048,9 @@ impl FluxChat {
                 // each small page re-triggers the next one forever.
                 let moving_up = offset + 0.5 < self.last_scroll_offset;
                 let underfilled = max_scroll < 1.0;
+                // At the very top a further scroll up can't move the view (so
+                // no event here): the wheel listener takes over from there.
+                crate::view::set_timeline_at_top((offset < 1.0).then(|| viewport.bounds()));
                 let near_bottom = (max_scroll - offset) < 50.0;
 
                 // Keep the row that was at the top of the viewport in place when

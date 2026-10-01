@@ -860,4 +860,16 @@ mod flow_tests {
         let _ = app.start_back_pagination("!a:x".into(), 5);
         assert!(!app.paginating);
     }
+
+    #[tokio::test]
+    async fn scrolling_up_at_the_top_loads_more() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::TimelineWheelUpAtTop);
+        assert!(app.paginating);
+        // Not again while that page is in flight.
+        app.paginate_empty_budget = 0;
+        let _ = app.update(Message::TimelineWheelUpAtTop);
+        assert_eq!(app.paginate_empty_budget, 0);
+    }
 }

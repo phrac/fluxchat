@@ -3168,6 +3168,9 @@ impl FluxChat {
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                     Some(Message::SidebarDragEnd)
                 }
+                iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) if wheel_up_at_timeline_top(&delta) => {
+                    Some(Message::TimelineWheelUpAtTop)
+                }
                 _ => None,
             }
         });
@@ -3335,6 +3338,29 @@ struct RoomGroups<'a> {
     ungrouped: Vec<&'a fluxchat_core::RoomInfo>,
     by_space_id: std::collections::HashMap<String, Vec<&'a fluxchat_core::RoomInfo>>,
     dms: Vec<&'a fluxchat_core::RoomInfo>,
+}
+
+/// The main timeline's bounds while it's scrolled to the top of what's
+/// loaded (None otherwise). A scroll-up gesture there can't move the view,
+/// so the scrollable reports nothing; the event listener uses this to turn
+/// that gesture into "load older messages" without a Message per wheel tick.
+static TIMELINE_AT_TOP: std::sync::Mutex<Option<iced::Rectangle>> = std::sync::Mutex::new(None);
+
+pub(crate) fn set_timeline_at_top(bounds: Option<iced::Rectangle>) {
+    *TIMELINE_AT_TOP.lock().unwrap_or_else(|e| e.into_inner()) = bounds;
+}
+
+/// A wheel/trackpad scroll up over the timeline while it's at the top.
+fn wheel_up_at_timeline_top(delta: &iced::mouse::ScrollDelta) -> bool {
+    let up = match delta {
+        iced::mouse::ScrollDelta::Lines { y, .. } | iced::mouse::ScrollDelta::Pixels { y, .. } => *y > 0.0,
+    };
+    if !up {
+        return false;
+    }
+    let (x, y) = cursor_position();
+    TIMELINE_AT_TOP.lock().unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|b| b.contains(iced::Point::new(x, y)))
 }
 
 static CURSOR_X: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

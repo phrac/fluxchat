@@ -530,6 +530,8 @@ pub enum Message {
     PaginateBackDone(String, Option<bool>),
     /// Evaluated shortly after PaginateBackDone, once the new rows landed.
     PaginateSettled(String, Option<bool>),
+    /// Scroll-up gesture over the timeline while it's already at the top.
+    TimelineWheelUpAtTop,
     OpenUrl(String),
     Escape, // close modals/panels/completions
     Tick, // periodic refresh
