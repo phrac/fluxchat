@@ -304,12 +304,14 @@ pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomM
             for (display_name, user_id) in &member_names {
                 let display_name = html_escape(display_name);
                 let mention = format!("@{display_name}");
-                if html.contains(&mention) {
-                    let encoded_uid = user_id.replace('@', "%40").replace(':', "%3A");
-                    let link = format!(
-                        "<a href=\"https://matrix.to/#/{encoded_uid}\">{display_name}</a>"
-                    );
-                    html = html.replace(&mention, &link);
+                let encoded_uid = user_id.replace('@', "%40").replace(':', "%3A");
+                let link = format!(
+                    "<a href=\"https://matrix.to/#/{encoded_uid}\">{display_name}</a>"
+                );
+                // Whole words only: "@Al" mustn't ping Al inside "@Alexander"
+                // or "me@Alpha.com".
+                if let Some(replaced) = replace_mention(&html, &mention, &link) {
+                    html = replaced;
                     changed = true;
                     // Track for m.mentions (MSC3952)
                     if let Ok(uid) = matrix_sdk::ruma::UserId::parse(user_id) {
@@ -446,6 +448,34 @@ pub fn html_escape(text: &str) -> String {
     out
 }
 
+/// Replace each `mention` (`@Name`) that stands as its own word: not preceded
+/// by a word character (so not inside an email address) and not followed by
+/// one (so `@Al` doesn't match `@Alexander`). None if nothing matched.
+fn replace_mention(text: &str, mention: &str, link: &str) -> Option<String> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut found = false;
+    while let Some(i) = rest.find(mention) {
+        // The character right before the match (in what's already emitted
+        // if the match starts this chunk).
+        let before = rest[..i].chars().last().or_else(|| out.chars().last());
+        let before_ok = before.is_none_or(|c| !is_word(c));
+        let after = &rest[i + mention.len()..];
+        let after_ok = after.chars().next().is_none_or(|c| !is_word(c));
+        out.push_str(&rest[..i]);
+        if before_ok && after_ok {
+            out.push_str(link);
+            found = true;
+        } else {
+            out.push_str(mention);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    found.then_some(out)
+}
+
 /// Wrap `*text*` in `<em>`. Requires non-space characters directly inside
 /// the markers and no newline between them, so `5 * 3 * 2` is left alone.
 fn apply_italics(text: &str) -> String {
@@ -491,6 +521,19 @@ mod tests {
     fn bold_strike_italic_and_headings() {
         assert_eq!(simple_markdown("**b** ~~s~~ *i*"), "<strong>b</strong> <del>s</del> <em>i</em>");
         assert_eq!(simple_markdown("# Title\nbody"), "<h1>Title</h1>\nbody");
+    }
+
+    #[test]
+    fn mentions_match_whole_words_only() {
+        let link = "<a>Al</a>";
+        assert_eq!(replace_mention("hi @Al!", "@Al", link).as_deref(), Some("hi <a>Al</a>!"));
+        assert_eq!(replace_mention("@Al", "@Al", link).as_deref(), Some("<a>Al</a>"));
+        assert_eq!(replace_mention("hi @Alexander", "@Al", link), None);
+        assert_eq!(replace_mention("me@Al.com", "@Al", link), None);
+        assert_eq!(
+            replace_mention("@Alex and @Al", "@Al", link).as_deref(),
+            Some("@Alex and <a>Al</a>"),
+        );
     }
 
     #[test]
