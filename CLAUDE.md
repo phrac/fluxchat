@@ -196,7 +196,7 @@ cargo run -p fluxchat
 - Member list lazy-loads: 30 initially, more on scroll. Avatars resolved in background batch.
 - Media caches: in-memory data-URI cache capped at `MEDIA_CACHE_LIMIT` (500); SQLite `media_cache` pruned to `MEDIA_DB_CACHE_LIMIT` (1500) entries + VACUUM at login (`prune_media_cache`). `cache_media` is INSERT OR REPLACE.
 - Avatar cache stores `image::Handle` (cheap Arc clone) to avoid re-decoding on every render.
-- Inline image cache persisted to SQLite (base64) for instant display on restart.
+- Inline image cache persisted to SQLite (base64) for instant display on restart. Cache reads, base64 and writes run in the image task (`read_cached_image`, `spawn_blocking`), never on the UI thread; both cache hits and downloads arrive as `ImageResolved`, which only builds handles (animated frames via `gif_frames_task`). Video thumbnails likewise (GStreamer in `spawn_blocking`).
 - syntect `SyntaxSet`/`ThemeSet` loaded once via `LazyLock` statics.
 - SDK timeline output used directly — no client-side message merge. Edits applied by SDK. Parsed message bodies (HTML → spans, syntect) memoized in `html::BodyCache`; cleared on theme change or room-name changes.
 - Empty messages filtered at load time, not per-render. New message detection via timestamp tracking.

@@ -2730,61 +2730,19 @@ impl FluxChat {
             // --- Inline images ---
             Message::ImageResolved(mxc, data) => {
                 self.image_cache_pending.remove(&mxc);
-                // Persist to SQLite
-                use base64::Engine;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                self.core.db.cache_media(&format!("iced_img:{mxc}"), &b64);
-                // Try to decode as animated GIF (native) or animated WebP (via transcode).
+                // Animated GIF (native) or animated WebP (transcoded) frames.
                 let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
                 let is_webp = data.len() >= 12
                     && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP";
-                if is_gif || is_webp {
-                    let mxc_clone = mxc.clone();
-                    let data_clone = data.clone();
-                    let core_task = self.core.clone();
-                    let handle = iced::widget::image::Handle::from_bytes(data);
-                    self.image_cache.insert(mxc.clone(), handle);
-                    return Task::perform(
-                        async move {
-                            let mxc_log = mxc_clone.clone();
-                            let mxc_inner = mxc_clone.clone();
-                            let frames = match tokio::task::spawn_blocking(move || {
-                                let gif_bytes = if is_webp {
-                                    let gb = webp_to_gif_bytes(&data_clone)?;
-                                    // Cache the transcoded GIF so we don't repeat
-                                    // the expensive NeuQuant quantization on restart.
-                                    let encoded = base64::engine::general_purpose::STANDARD.encode(&gb);
-                                    core_task.db.cache_media(&format!("iced_gif:{mxc_inner}"), &encoded);
-                                    gb
-                                } else {
-                                    data_clone
-                                };
-                                match iced_gif::Frames::from_bytes(gif_bytes) {
-                                    Ok(f) => Some(f),
-                                    Err(e) => {
-                                        tracing::warn!("iced_gif Frames::from_bytes failed: {e}");
-                                        None
-                                    }
-                                }
-                            }).await {
-                                Ok(Some(f)) => f,
-                                Ok(None) => return None,
-                                Err(e) => {
-                                    tracing::warn!("transcode task for {mxc_log} failed: {e}");
-                                    return None;
-                                }
-                            };
-                            Some((mxc_clone, std::sync::Arc::new(frames)))
-                        },
-                        |result| match result {
-                            Some((mxc, frames)) => Message::GifFramesResolved(mxc, frames),
-                            None => Message::Noop,
-                        },
-                    );
-                }
+                let frames = if (is_gif || is_webp) && !self.gif_frames_cache.contains_key(&mxc) {
+                    gif_frames_task(self.core.clone(), mxc.clone(), data.clone(), is_webp)
+                } else {
+                    Task::none()
+                };
                 let handle = iced::widget::image::Handle::from_bytes(data);
                 self.image_cache.insert(mxc, handle);
                 evict_cache(&mut self.image_cache, IMAGE_CACHE_LIMIT);
+                return frames;
             }
             Message::GifFramesResolved(mxc, frames) => {
                 self.gif_frames_cache.insert(mxc, frames);
@@ -3178,9 +3136,6 @@ impl FluxChat {
             }
             Message::VideoThumbResolved(key, data, w, h) => {
                 self.image_cache_pending.remove(&key);
-                use base64::Engine;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                self.core.db.cache_media(&format!("iced_img:{key}"), &b64);
                 let handle = iced::widget::image::Handle::from_bytes(data);
                 self.image_cache.insert(key.clone(), handle);
                 self.video_thumb_sizes.insert(key, (w, h));
@@ -5235,96 +5190,8 @@ impl FluxChat {
                 if self.image_cache.contains_key(mxc) || self.image_cache_pending.contains(mxc) {
                     continue;
                 }
-                // Check SQLite cache first
-                if let Some(b64) = self.core.db.get_cached_media(&format!("iced_img:{mxc}")) {
-                    use base64::Engine;
-                    if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                        // Validate it's actual image data (not garbage from a failed fetch)
-                        let is_valid = data.len() > 100 && (
-                            data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
-                            data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
-                            data.starts_with(b"GIF") ||                     // GIF
-                            data.starts_with(b"RIFF") ||                    // WebP
-                            (data.len() > 12 && &data[4..8] == b"ftyp")    // MP4/HEIF
-                        );
-                        if !is_valid {
-                            tracing::warn!("Cached image data for {mxc} is invalid ({} bytes), re-fetching", data.len());
-                            self.core.db.remove_cached_media(&format!("iced_img:{mxc}"));
-                        } else {
-                        let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
-                        let is_webp = data.len() >= 12
-                            && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP";
-                        let handle = iced::widget::image::Handle::from_bytes(data.clone());
-                        self.image_cache.insert(mxc.clone(), handle);
-                        if (is_gif || is_webp) && !self.gif_frames_cache.contains_key(mxc) {
-                            let mxc_clone = mxc.clone();
-                            // Fast path for previously-transcoded WebPs: cached
-                            // GIF bytes skip the NeuQuant pass entirely.
-                            let cached_gif_b64 = if is_webp {
-                                self.core.db.get_cached_media(&format!("iced_gif:{mxc}"))
-                            } else {
-                                None
-                            };
-                            let core_task = self.core.clone();
-                            tasks.push(Task::perform(
-                                async move {
-                                    let mxc_log = mxc_clone.clone();
-                                    let mxc_inner = mxc_clone.clone();
-                                    let frames = match tokio::task::spawn_blocking(move || {
-                                        let gif_bytes = if is_webp {
-                                            if let Some(b64) = cached_gif_b64 {
-                                                match base64::Engine::decode(
-                                                    &base64::engine::general_purpose::STANDARD, &b64
-                                                ) {
-                                                    Ok(bytes) if bytes.len() >= 3
-                                                        && &bytes[..3] == b"GIF" => bytes,
-                                                    _ => {
-                                                        let gb = webp_to_gif_bytes(&data)?;
-                                                        let enc = base64::Engine::encode(
-                                                            &base64::engine::general_purpose::STANDARD, &gb
-                                                        );
-                                                        core_task.db.cache_media(&format!("iced_gif:{mxc_inner}"), &enc);
-                                                        gb
-                                                    }
-                                                }
-                                            } else {
-                                                let gb = webp_to_gif_bytes(&data)?;
-                                                let enc = base64::Engine::encode(
-                                                    &base64::engine::general_purpose::STANDARD, &gb
-                                                );
-                                                core_task.db.cache_media(&format!("iced_gif:{mxc_inner}"), &enc);
-                                                gb
-                                            }
-                                        } else {
-                                            data
-                                        };
-                                        match iced_gif::Frames::from_bytes(gif_bytes) {
-                                            Ok(f) => Some(f),
-                                            Err(e) => {
-                                                tracing::warn!("iced_gif Frames::from_bytes failed: {e}");
-                                                None
-                                            }
-                                        }
-                                    }).await {
-                                        Ok(Some(f)) => f,
-                                        Ok(None) => return None,
-                                        Err(e) => {
-                                            tracing::warn!("transcode task for {mxc_log} failed: {e}");
-                                            return None;
-                                        }
-                                    };
-                                    Some((mxc_clone, std::sync::Arc::new(frames)))
-                                },
-                                |result| match result {
-                                    Some((mxc, frames)) => Message::GifFramesResolved(mxc, frames),
-                                    None => Message::Noop,
-                                },
-                            ));
-                        }
-                        continue;
-                    } // is_valid
-                    }
-                }
+                // Cache read, base64 and the download all happen off the UI
+                // thread; both paths end in ImageResolved.
                 self.image_cache_pending.insert(mxc.clone());
                 let core = self.core.clone();
                 let mxc_clone = mxc.clone();
@@ -5332,6 +5199,18 @@ impl FluxChat {
                 let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
                 tasks.push(Task::perform(
                     async move {
+                        let cache_key = format!("iced_img:{mxc_clone}");
+                        let cached = {
+                            let core = core.clone();
+                            let cache_key = cache_key.clone();
+                            tokio::task::spawn_blocking(move || read_cached_image(&core.db, &cache_key))
+                                .await
+                                .ok()
+                                .flatten()
+                        };
+                        if let Some(data) = cached {
+                            return Some((mxc_clone, data));
+                        }
                         let client = core.get_client().await.ok()?;
                         // Try event-based fetch first (handles encrypted media)
                         let event_result = fluxchat_core::media::get_event_media_bytes(
@@ -5351,6 +5230,14 @@ impl FluxChat {
                                 client.media().get_media_content(&req, true).await.ok()?
                             }
                         };
+                        // Persist for instant display on restart (detached:
+                        // dropping the JoinHandle doesn't cancel it).
+                        let to_store = data.clone();
+                        drop(tokio::task::spawn_blocking(move || {
+                            use base64::Engine;
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&to_store);
+                            core.db.cache_media(&cache_key, &b64);
+                        }));
                         Some((mxc_clone, data))
                     },
                     |result| match result {
@@ -5366,40 +5253,50 @@ impl FluxChat {
                     if self.image_cache.contains_key(&thumb_key) || self.image_cache_pending.contains(&thumb_key) {
                         continue;
                     }
-                    // Check SQLite cache
-                    if let Some(b64) = self.core.db.get_cached_media(&format!("iced_img:{thumb_key}")) {
-                        use base64::Engine;
-                        if let Ok(data) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                            if data.len() > 100 {
-                                // Read PNG dimensions from header
-                                if let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(&data)).with_guessed_format() {
-                                    if let Ok((w, h)) = reader.into_dimensions() {
-                                        self.video_thumb_sizes.insert(thumb_key.clone(), (w, h));
-                                    }
-                                }
-                                let handle = iced::widget::image::Handle::from_bytes(data);
-                                self.image_cache.insert(thumb_key, handle);
-                                continue;
-                            }
-                        }
-                    }
                     self.image_cache_pending.insert(thumb_key.clone());
                     let core = self.core.clone();
                     let event_id = msg.event_id.clone();
-                    let room_id = self.selected_room_id.clone().unwrap_or_default();
-                    let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
+                    let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
                     tasks.push(Task::perform(
                         async move {
+                            let cache_key = format!("iced_img:{thumb_key}");
+                            // Cached thumbnail (dimensions read from its header).
+                            let cached = {
+                                let core = core.clone();
+                                let cache_key = cache_key.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    use base64::Engine;
+                                    let b64 = core.db.get_cached_media(&cache_key)?;
+                                    let data = base64::engine::general_purpose::STANDARD.decode(&b64).ok()?;
+                                    if data.len() <= 100 {
+                                        return None;
+                                    }
+                                    let (w, h) = image::ImageReader::new(std::io::Cursor::new(&data))
+                                        .with_guessed_format().ok()?
+                                        .into_dimensions().ok()?;
+                                    Some((data, w, h))
+                                }).await.ok().flatten()
+                            };
+                            if let Some((data, w, h)) = cached {
+                                return Some((thumb_key, data, w, h));
+                            }
                             let client = core.get_client().await.ok()?;
                             let (data, _mime) = fluxchat_core::media::get_event_media_bytes(
                                 &client, &real_room, &event_id,
                             ).await.ok()?;
-                            // Write to temp file for GStreamer
-                            let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{event_id}.tmp"));
-                            std::fs::write(&tmp, &data).ok()?;
-                            let result = extract_video_thumbnail(&tmp);
-                            let _ = std::fs::remove_file(&tmp);
-                            let (data, w, h) = result?;
+                            // GStreamer reads a file and blocks: off the async workers.
+                            let (data, w, h) = tokio::task::spawn_blocking(move || {
+                                let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{event_id}.tmp"));
+                                std::fs::write(&tmp, &data).ok()?;
+                                let result = extract_video_thumbnail(&tmp);
+                                let _ = std::fs::remove_file(&tmp);
+                                result
+                            }).await.ok().flatten()?;
+                            let to_store = data.clone();
+                            drop(tokio::task::spawn_blocking(move || {
+                                use base64::Engine;
+                                core.db.cache_media(&cache_key, &base64::engine::general_purpose::STANDARD.encode(&to_store));
+                            }));
                             Some((thumb_key, data, w, h))
                         },
                         |result| match result {
@@ -5932,4 +5829,67 @@ pub(crate) fn extract_urls(text: &str) -> Vec<String> {
         .take(5)
         .map(|w| w.trim_end_matches(['.', ',', ')', ']']).to_string())
         .collect()
+}
+
+/// A cached inline image, if present and plausibly an image (a failed fetch
+/// once stored garbage; such entries are dropped so they're re-fetched).
+fn read_cached_image(db: &fluxchat_core::AppDb, cache_key: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let b64 = db.get_cached_media(cache_key)?;
+    let data = base64::engine::general_purpose::STANDARD.decode(&b64).ok()?;
+    let is_valid = data.len() > 100 && (
+        data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
+        data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
+        data.starts_with(b"GIF") ||                     // GIF
+        data.starts_with(b"RIFF") ||                    // WebP
+        (data.len() > 12 && &data[4..8] == b"ftyp")    // MP4/HEIF
+    );
+    if !is_valid {
+        tracing::warn!("Cached image data for {cache_key} is invalid ({} bytes), re-fetching", data.len());
+        db.remove_cached_media(cache_key);
+        return None;
+    }
+    Some(data)
+}
+
+/// Decode animation frames for a GIF, or a WebP transcoded to GIF (the
+/// transcode is cached as `iced_gif:` since NeuQuant is slow), on a blocking
+/// thread.
+fn gif_frames_task(core: std::sync::Arc<fluxchat_core::AppState>, mxc: String, data: Vec<u8>, is_webp: bool) -> Task<Message> {
+    Task::perform(
+        async move {
+            let key = format!("iced_gif:{mxc}");
+            let frames = tokio::task::spawn_blocking(move || {
+                use base64::Engine;
+                let engine = base64::engine::general_purpose::STANDARD;
+                let gif_bytes = if is_webp {
+                    let cached = core.db.get_cached_media(&key)
+                        .and_then(|b64| engine.decode(b64).ok())
+                        .filter(|b| b.len() >= 3 && &b[..3] == b"GIF");
+                    match cached {
+                        Some(bytes) => bytes,
+                        None => {
+                            let gb = webp_to_gif_bytes(&data)?;
+                            core.db.cache_media(&key, &engine.encode(&gb));
+                            gb
+                        }
+                    }
+                } else {
+                    data
+                };
+                iced_gif::Frames::from_bytes(gif_bytes)
+                    .map_err(|e| tracing::warn!("iced_gif Frames::from_bytes failed: {e}"))
+                    .ok()
+            })
+            .await
+            .map_err(|e| tracing::warn!("GIF decode task for {mxc} failed: {e}"))
+            .ok()
+            .flatten()?;
+            Some((mxc, std::sync::Arc::new(frames)))
+        },
+        |result| match result {
+            Some((mxc, frames)) => Message::GifFramesResolved(mxc, frames),
+            None => Message::Noop,
+        },
+    )
 }
