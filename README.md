@@ -21,6 +21,7 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Mentions with autocomplete, `:emoji:` shortcodes, full emoji picker
 - Images, video, voice messages, files, GIFs, stickers, polls, locations
 - Captions: attach a file and type a message, sent together as one
+- Gallery of every image, video and file in a room or thread, back to its first message (encrypted rooms included)
 - Link previews, read receipts, typing indicators, per-room drafts
 - Rooms open at your first unread message, marked by a NEW line
 

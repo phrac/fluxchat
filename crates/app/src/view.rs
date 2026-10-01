@@ -687,32 +687,6 @@ impl FluxChat {
             .into()
     }
 
-    /// One clickable entry in a header-bar panel: sender, optional meta, preview.
-    fn hud_row<'a>(&self, sender: &str, meta: Option<String>, body: &str, on_press: Message) -> Element<'a, Message> {
-        let preview: String = body.lines().next().unwrap_or("").chars().take(120).collect();
-        let mut head = row![
-            text(sender.to_string()).font(self.sidebar_font()).size(13).color(theme::nick_color(sender)),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-        if let Some(meta) = meta {
-            head = head.push(text(meta).font(self.sidebar_font()).size(12).color(theme::colors().text_dim));
-        }
-        button(
-            column![
-                head,
-                text(preview).font(self.sidebar_font()).size(13).color(theme::colors().text_muted)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            ]
-            .spacing(2),
-        )
-        .on_press(on_press)
-        .padding([5, 8])
-        .width(Fill)
-        .style(crate::ui::row_style(false))
-        .into()
-    }
-
     /// Command-palette card (search, quick switcher): icon + borderless
     /// input, divider, results, keyboard hint footer.
     fn palette<'a>(&self, input: iced::widget::TextInput<'a, Message>, body: Element<'a, Message>, hint: &'a str, width: f32) -> Element<'a, Message> {
@@ -1024,6 +998,7 @@ impl FluxChat {
             });
 
         let mut layers: Vec<Element<Message>> = vec![base.into()];
+        crate::view_gallery::set_lightbox_nav(crate::view_gallery::is_gallery_lightbox(self.modal.as_ref()));
         if self.modal.is_some() {
             layers.push(
                 opaque(
@@ -2514,6 +2489,8 @@ impl FluxChat {
                 call_btn,
                 make_action_btn(SVG_SEARCH, Message::ToggleSearch, self.search_open, "Search"),
                 pin_btn,
+                make_action_btn(crate::icons::SVG_GALLERY, Message::OpenGallery(crate::state::GalleryTab::Media),
+                    matches!(self.modal, Some(crate::state::Modal::Gallery)), "Gallery (\u{2318}/Ctrl+Shift+G)"),
                 make_action_btn(SVG_SPLIT_V, Message::PaneSplit(iced::widget::pane_grid::Axis::Vertical), false, "Split side by side (Ctrl+B %)"),
                 make_action_btn(SVG_THREAD, Message::ToggleThreads, self.threads_open, "Threads"),
                 make_action_btn(SVG_AT_SIGN, Message::ToggleMentions, self.mentions_open, "Mentions (\u{2318}/Ctrl+I)"),
@@ -2689,20 +2666,8 @@ impl FluxChat {
                 }
             }
 
-            // Panels (pinned messages, threads, files, notices): fixed header,
-            // scrollable body capped at HUD_PANEL_MAX_HEIGHT.
-            if self.files_open {
-                let items: Vec<Element<Message>> = self.messages_by_room.get(room_id)
-                    .map(|msgs| msgs.iter().rev()
-                        .filter(|m| m.image_mxc.is_some() || m.file_mxc.is_some() || m.video_mxc.is_some())
-                        .map(|m| self.hud_row(&m.sender_name, None, &m.body, Message::JumpToEvent(m.event_id.clone())))
-                        .collect())
-                    .unwrap_or_default();
-                panels_col = panels_col.push(self.hud_panel(
-                    "Files", items, Message::ToggleFiles, "No files in the loaded history",
-                ));
-            }
-
+            // Panels (notices): fixed header, scrollable body capped at
+            // HUD_PANEL_MAX_HEIGHT.
             if self.notices_open {
                 panels_col = panels_col.push(self.hud_panel(
                     "Notices", Vec::new(), Message::ToggleNotices, "No server notices",
@@ -3183,6 +3148,9 @@ impl FluxChat {
                 // Ctrl/Cmd+K: quick switcher
                 if modifiers.command() || modifiers.control() {
                     if let iced::keyboard::Key::Character(c) = key {
+                        if modifiers.shift() && c.as_str().eq_ignore_ascii_case("g") {
+                            return Some(Message::OpenGallery(crate::state::GalleryTab::Media));
+                        }
                         if c.as_str() == "k" || c.as_str() == "K" {
                             return Some(Message::ToggleQuickSwitcher);
                         }
@@ -3217,6 +3185,14 @@ impl FluxChat {
                 // and only here, so one press closes one thing.
                 if *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) {
                     return Some(Message::Escape);
+                }
+                // ←/→ browse the gallery from its lightbox.
+                if crate::view_gallery::lightbox_nav() && modifiers.is_empty() {
+                    match key {
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowLeft) => return Some(Message::GalleryStep(-1)),
+                        iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowRight) => return Some(Message::GalleryStep(1)),
+                        _ => {}
+                    }
                 }
             }
             match event {

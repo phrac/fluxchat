@@ -570,6 +570,9 @@ impl FluxChat {
                 self.revealed_media.insert(event_id.clone());
                 let msg = self.messages_by_room.get(&view_key)
                     .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                    .or_else(|| self.gallery.as_ref()
+                        .filter(|g| g.view_key == view_key)
+                        .and_then(|g| g.items.iter().find(|m| m.event_id == event_id)))
                     .cloned();
                 Some(match msg {
                     Some(m) => self.resolve_images(&view_key, std::slice::from_ref(&m)),

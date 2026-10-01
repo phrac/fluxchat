@@ -51,9 +51,21 @@ Hover a message and click the smiley to pick a reaction, or click an existing re
 
 - Attach with the **+** button, drag and drop a file, paste an image (**Ctrl/⌘+V**), or `/attach`.
 - The file appears as a card above the message box. Anything you type is sent **with** the file as its caption: one message, not two. Press **Enter** (or **Send**) to send. With an empty box, just the file is sent.
-- Images get a thumbnail. Click an image to view it large, where you can **Copy** or **Save** it. Click the image again or press **Esc** to close.
+- Images get a thumbnail. Click an image to view it large, where you can **Copy** or **Save** it. Click the image again or press **Esc** to close. GIFs animate there even with *Autoplay GIFs* off.
 - Files show as download cards. Videos play inline.
 - Files over your server's upload limit are rejected with a message before uploading.
+
+## Gallery
+
+The grid button in the room header (or **Ctrl/⌘+Shift+G**, `/gallery`, or *Gallery* in the command palette) shows every image and video in the room, or in the thread you're viewing, as thumbnails grouped by month, newest first. The **Files** tab (`/files`) lists files and audio with their size, sender and date, each with **Download** and **Jump to message**.
+
+- It opens with what's already loaded, then fetches older history as you scroll, back to the start of the room. In a room's gallery, images posted in its threads are included too.
+- In an encrypted room the server can't tell which messages have attachments, so fluxchat reads through the history itself, which takes longer. It stops after about 2,000 messages at a time; click **Load older** to keep going.
+- Click an image to view it large, with **←** / **→** (or the arrow buttons) to step through the gallery, and **Jump to message** to see it in the conversation. **Esc** or clicking the image goes back to the gallery.
+- Click a video to go to its message, where it plays.
+- Media hidden by your *Show media* setting stays covered: click once to show it, again to open it.
+- Thumbnails only download as they come into view. GIFs animate in the grid when *Autoplay GIFs* is on, and always when opened.
+- **Jump to message** loads older history until it reaches the message. A thread reply opens its thread.
 
 ## GIFs
 

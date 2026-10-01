@@ -563,7 +563,7 @@ impl FluxChat {
                             .width(img_w)
                             .content_fit(iced::ContentFit::ScaleDown)
                     )
-                    .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
+                    .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click, from_gallery: false }))
                     .interaction(iced::mouse::Interaction::ZoomIn)
                     .into()
                 } else if let Some(handle) = self.image_cache.get(mxc) {
@@ -587,7 +587,7 @@ impl FluxChat {
                             ..Default::default()
                         })
                     )
-                    .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
+                    .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click, from_gallery: false }))
                     .interaction(iced::mouse::Interaction::ZoomIn)
                     .into()
                 } else {
@@ -801,11 +801,7 @@ impl FluxChat {
         } else if msg.file_mxc.is_some() {
             // File attachment card
             let file_icon = iced::widget::svg::Handle::from_memory(crate::icons::SVG_FILE);
-            let size_str = msg.file_size.map(|s| {
-                if s >= 1_048_576 { format!("{:.1} MB", s as f64 / 1_048_576.0) }
-                else if s >= 1024 { format!("{:.0} KB", s as f64 / 1024.0) }
-                else { format!("{s} B") }
-            }).unwrap_or_default();
+            let size_str = msg.file_size.map(format_file_size).unwrap_or_default();
             let mime_str = msg.file_mimetype.as_deref().unwrap_or("file");
             let eid = msg.event_id.clone();
             let rid = view_key.to_string();
@@ -1945,6 +1941,13 @@ fn collapse_code_blocks(html: &str, max_lines: usize, expanded: &[bool]) -> Stri
     }
     result.push_str(&html[copied..]);
     result
+}
+
+/// A file size for display: "1.2 MB", "340 KB", "12 B".
+pub(crate) fn format_file_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 { format!("{:.1} MB", bytes as f64 / 1_048_576.0) }
+    else if bytes >= 1024 { format!("{:.0} KB", bytes as f64 / 1024.0) }
+    else { format!("{bytes} B") }
 }
 
 /// Day label for a date divider row.

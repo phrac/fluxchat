@@ -3,6 +3,7 @@ pub mod auth;
 pub mod db;
 pub mod devices;
 pub mod error;
+pub mod gallery;
 pub mod gif;
 pub mod media;
 pub mod messages;

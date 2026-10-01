@@ -70,7 +70,8 @@ Commands marked *room* need a room open. Where a command takes `<user>`, you can
 | `/members` | Member list |
 | `/search` | Search |
 | `/pins` | Pinned messages sidebar |
-| `/files` | Files panel |
+| `/gallery` | [Gallery](messaging.md#gallery) of images and videos |
+| `/files` | Gallery, Files tab |
 | `/notices` | Server notices panel |
 | `/clear` | Clear the visible scrollback (it comes back on the next update) |
 | `/refresh` | Rebuild the room's timeline |

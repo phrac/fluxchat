@@ -73,7 +73,11 @@ pub enum Modal {
     RoomSettings,
     Profile { user_id: String },
     Verification { info: VerificationInfo },
-    Lightbox { url: String },
+    /// An enlarged image; `from_gallery` returns to the gallery on close and
+    /// steps through it with the arrows.
+    Lightbox { url: String, from_gallery: bool },
+    /// The media gallery (`FluxChat::gallery`).
+    Gallery,
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
     Invite,
     Report { event_id: String, room_id: String },
@@ -89,6 +93,38 @@ pub enum Modal {
 }
 
 
+
+/// The gallery's tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GalleryTab {
+    #[default]
+    Media,
+    Files,
+}
+
+/// Every image, video and file of a room or thread view: the loaded history
+/// first, then older pages from the server as the grid scrolls.
+#[derive(Debug, Clone, Default)]
+pub struct Gallery {
+    pub view_key: String,
+    pub tab: GalleryTab,
+    /// Newest first, one per event.
+    pub items: Vec<fluxchat_core::MessageInfo>,
+    /// Token for the next older server page.
+    pub next: Option<String>,
+    /// The first server page was requested (`next` is meaningful).
+    pub started: bool,
+    /// The start of the room / thread was reached.
+    pub done: bool,
+    pub loading: bool,
+    /// Events scanned since the user last asked for more: automatic loading
+    /// (filling the view in a room with few attachments) stops at a cap.
+    pub burst: usize,
+    /// Scroll offset and viewport height of the grid.
+    pub offset: f32,
+    pub viewport: f32,
+    pub error: Option<String>,
+}
 
 /// A row in the Ctrl/Cmd+K command palette.
 #[derive(Debug, Clone)]
@@ -209,7 +245,6 @@ pub struct FluxChat {
     pub search_open: bool,
     pub pins_open: bool,
     pub threads_open: bool,
-    pub files_open: bool,
     pub notices_open: bool,
     pub gifs_open: bool,
     pub audio_playing: Option<String>,      // event_id of currently playing audio
@@ -287,6 +322,12 @@ pub struct FluxChat {
     pub mentions_width: f32,
     /// Jump to this message once its room's messages load (room, event).
     pub pending_jump: Option<(String, String)>,
+    /// Pages left to load while looking for `pending_jump`'s event further
+    /// back than the loaded history (gallery "Jump to message").
+    pub jump_search_pages: u16,
+    /// The media gallery's state; kept after closing so reopening the same
+    /// view doesn't start over.
+    pub gallery: Option<Gallery>,
     /// Composers of non-focused panes, by view key.
     pub pane_inputs: HashMap<String, iced::widget::text_editor::Content>,
 
@@ -635,7 +676,6 @@ impl FluxChat {
             search_open: false,
             pins_open: false,
             threads_open: false,
-            files_open: false,
             notices_open: false,
             create_menu_open: false,
             context_menu: None,
@@ -699,6 +739,8 @@ impl FluxChat {
             mentions_open: false,
             mentions_width: 300.0,
             pending_jump: None,
+            jump_search_pages: 0,
+            gallery: None,
             pane_inputs: HashMap::new(),
             read_rooms: HashSet::new(),
             read_anchor: None,

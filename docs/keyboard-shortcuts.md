@@ -9,6 +9,8 @@
 | Ctrl/⌘ + K | Command palette (rooms and actions; `>` for actions only) |
 | Ctrl/⌘ + I | Mentions inbox |
 | Ctrl/⌘ + F | Search the current room |
+| Ctrl/⌘ + Shift + G | Gallery of the room's (or thread's) images, videos and files |
+| ← / → | In an image opened from the gallery: newer / older image |
 | Ctrl/⌘ + [ | Hide / show the room list |
 | Ctrl/⌘ + ] | Hide / show the member list |
 | Ctrl/⌘ + C | Copy selected text |

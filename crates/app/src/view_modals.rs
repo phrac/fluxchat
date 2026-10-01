@@ -23,7 +23,8 @@ impl FluxChat {
             crate::state::Modal::CreateRoom => self.view_create_room_modal(),
             crate::state::Modal::Profile { user_id } => self.view_profile_modal(user_id),
             crate::state::Modal::Verification { info } => self.view_verification_modal(info),
-            crate::state::Modal::Lightbox { url } => self.view_lightbox_modal(url),
+            crate::state::Modal::Lightbox { url, from_gallery } => self.view_lightbox_modal(url, *from_gallery),
+            crate::state::Modal::Gallery => self.view_gallery_modal(),
             crate::state::Modal::Forward { body, sender_name, .. } => self.view_forward_modal(body, sender_name.as_deref()),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
             crate::state::Modal::Invite => self.view_invite_modal(),
@@ -1105,11 +1106,12 @@ impl FluxChat {
         col.push(ui::footer(actions)).width(440).into()
     }
 
-    fn view_lightbox_modal(&self, url: &str) -> Element<Message> {
+    fn view_lightbox_modal(&self, url: &str, from_gallery: bool) -> Element<Message> {
         // The message the image belongs to (for its name, sender and time).
         let msg = self.selected_room_id.as_ref()
             .and_then(|rid| self.messages_by_room.get(rid))
-            .and_then(|msgs| msgs.iter().rev().find(|m| m.image_mxc.as_deref() == Some(url)));
+            .and_then(|msgs| msgs.iter().rev().find(|m| m.image_mxc.as_deref() == Some(url)))
+            .or_else(|| self.gallery_item_for(url));
         let title = msg.map(|m| m.body.clone()).filter(|b| !b.trim().is_empty())
             .unwrap_or_else(|| "Image".into());
         let subtitle = msg.map(|m| {
@@ -1122,7 +1124,15 @@ impl FluxChat {
             )
         });
 
-        let image_el: Element<Message> = if let Some(handle) = self.image_cache.get(url) {
+        // GIFs animate here whatever the autoplay preference: opening one
+        // is asking to see it.
+        let image_el: Element<Message> = if let Some(frames) = self.gif_frames_cache.get(url) {
+            iced_gif::gif(frames.as_ref())
+                .content_fit(iced::ContentFit::Contain)
+                .width(Fill)
+                .height(Fill)
+                .into()
+        } else if let Some(handle) = self.image_cache.get(url) {
             iced::widget::image(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
                 .width(Fill)
@@ -1132,7 +1142,7 @@ impl FluxChat {
             ui::empty_state(crate::icons::SVG_IMAGE, "Loading image\u{2026}", None)
         };
 
-        let header = row![
+        let mut header = row![
             column![
                 text(title).font(MONO).size(16).color(theme::colors().text_bright)
                     .wrapping(iced::widget::text::Wrapping::None),
@@ -1141,12 +1151,23 @@ impl FluxChat {
             .spacing(3)
             .width(Fill)
             .clip(true),
-            ui::icon_btn(crate::icons::SVG_COPY, "Copy", Tone::Secondary, Some(Message::CopyImage(url.to_string()))),
-            ui::icon_btn(crate::icons::SVG_FILE, "Save", Tone::Secondary, Some(Message::SaveImage(url.to_string()))),
-            ui::close_button(),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center);
+        if from_gallery {
+            for control in self.gallery_lightbox_controls(url) {
+                header = header.push(control);
+            }
+        }
+        let header = header
+            .push(ui::icon_btn(crate::icons::SVG_COPY, "Copy", Tone::Secondary, Some(Message::CopyImage(url.to_string()))))
+            .push(ui::icon_btn(crate::icons::SVG_FILE, "Save", Tone::Secondary, Some(Message::SaveImage(url.to_string()))))
+            .push(ui::close_button());
+        let hint = if from_gallery {
+            "\u{2190} \u{2192} to browse  \u{00b7}  click the image or press Esc to go back"
+        } else {
+            "Click the image or press Esc to close"
+        };
 
         // Clicking the enlarged image closes it again (as do the backdrop,
         // Escape and the close button).
@@ -1169,7 +1190,7 @@ impl FluxChat {
         column![
             header,
             stage,
-            container(text("Click the image or press Esc to close").font(MONO).size(11).color(theme::colors().text_dim))
+            container(text(hint).font(MONO).size(11).color(theme::colors().text_dim))
                 .width(Fill)
                 .center_x(Fill),
         ]

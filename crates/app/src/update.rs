@@ -9,7 +9,7 @@ use crate::state::{FluxChat, Screen};
 const AVATAR_CACHE_LIMIT: usize = 1000;
 const IMAGE_CACHE_LIMIT: usize = 500;
 const URL_PREVIEW_LIMIT: usize = 200;
-const GIF_CACHE_LIMIT: usize = 100;
+pub(crate) const GIF_CACHE_LIMIT: usize = 100;
 /// Max entries kept in the SQLite media cache (avatars, inline images, GIFs).
 const MEDIA_DB_CACHE_LIMIT: usize = 1500;
 /// Scroll offset (px from the top) within which scrolling up loads history.
@@ -1666,9 +1666,6 @@ impl FluxChat {
                 self.threads_open = false;
                 return Task::batch([select, self.update(Message::ToggleThreads)]);
             }
-            Message::ToggleFiles => {
-                self.files_open = !self.files_open;
-            }
             Message::ToggleNotices => {
                 self.notices_open = !self.notices_open;
             }
@@ -1896,6 +1893,12 @@ impl FluxChat {
                 // Mic test only runs while the Voice & Video tab is open.
                 if !matches!(&modal, crate::state::Modal::Settings { tab } if tab == "voice") {
                     self.mic_test = None;
+                }
+                // An enlarged GIF animates even if its frames were evicted.
+                if let crate::state::Modal::Lightbox { url, .. } = &modal {
+                    let frames = self.ensure_gif_frames(url);
+                    self.modal = Some(modal);
+                    return frames;
                 }
                 // Load devices when opening sessions tab
                 let task = if matches!(&modal, crate::state::Modal::Settings { tab } if tab == "voice") {
@@ -2148,7 +2151,7 @@ impl FluxChat {
                 );
             }
             Message::CloseModal => {
-                self.modal = None;
+                self.modal = self.modal_after_close();
                 self.mic_test = None;
             }
 
@@ -2783,13 +2786,11 @@ impl FluxChat {
             Message::ImageResolved(mxc, data) => {
                 self.image_cache_pending.remove(&mxc);
                 // Animated GIF (native) or animated WebP (transcoded) frames.
-                let is_gif = data.len() >= 3 && &data[..3] == b"GIF";
-                let is_webp = data.len() >= 12
-                    && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP";
-                let frames = if (is_gif || is_webp) && !self.gif_frames_cache.contains_key(&mxc) {
-                    gif_frames_task(self.core.clone(), mxc.clone(), data.clone(), is_webp)
-                } else {
-                    Task::none()
+                let frames = match animated_kind(&data) {
+                    Some(is_webp) if !self.gif_frames_cache.contains_key(&mxc) => {
+                        gif_frames_task(self.core.clone(), mxc.clone(), data.clone(), is_webp)
+                    }
+                    _ => Task::none(),
                 };
                 let handle = iced::widget::image::Handle::from_bytes(data);
                 self.image_cache.insert(mxc, handle);
@@ -2797,6 +2798,7 @@ impl FluxChat {
                 return frames;
             }
             Message::GifFramesResolved(mxc, frames) => {
+                self.image_cache_pending.remove(&format!("frames:{mxc}"));
                 self.gif_frames_cache.insert(mxc, frames);
                 evict_cache(&mut self.gif_frames_cache, GIF_CACHE_LIMIT);
             }
@@ -3096,6 +3098,8 @@ impl FluxChat {
                 let filename = self.messages_by_room
                     .get(&room_id)
                     .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                    .or_else(|| self.gallery.as_ref()
+                        .and_then(|g| g.items.iter().find(|m| m.event_id == event_id)))
                     .map(|m| m.body.clone())
                     .unwrap_or_else(|| "file".to_string());
                 let core = self.core.clone();
@@ -4100,7 +4104,7 @@ impl FluxChat {
                 self.paginating = false;
                 match outcome {
                     Some(true) => {
-                        self.history_start.insert(key);
+                        self.history_start.insert(key.clone());
                     }
                     Some(false) => {
                         // Nothing visible arrived (a stretch of hidden thread
@@ -4116,6 +4120,10 @@ impl FluxChat {
                         }
                     }
                     None => {} // failed: the next scroll up retries
+                }
+                // Looking for a message further back (gallery "Jump to message").
+                if let Some(task) = self.continue_jump_search(&key, outcome) {
+                    return task;
                 }
             }
             Message::ScrollToBottom => {
@@ -4307,7 +4315,7 @@ impl FluxChat {
                 } else if !self.emoji_completions.is_empty() {
                     self.emoji_completions.clear();
                 } else if self.modal.is_some() {
-                    self.modal = None;
+                    self.modal = self.modal_after_close();
                 } else if self.tmux_prefix {
                     crate::panes::PREFIX_ARMED.store(false, std::sync::atomic::Ordering::Relaxed);
                     self.tmux_prefix = false;
@@ -4317,8 +4325,6 @@ impl FluxChat {
                     return self.update(Message::ToggleMentions);
                 } else if self.threads_open {
                     self.threads_open = false;
-                } else if self.files_open {
-                    self.files_open = false;
                 } else if self.notices_open {
                     self.notices_open = false;
                 } else if self.gifs_open {
@@ -4455,6 +4461,15 @@ impl FluxChat {
                     }
 
                     return Task::batch(tasks);
+                }
+            }
+            // --- Media gallery (update_gallery.rs) ---
+            msg @ (Message::OpenGallery(_) | Message::GalleryTabChanged(_)
+                | Message::GalleryPageLoaded(..) | Message::GalleryScrolled(..)
+                | Message::GalleryLoadMore | Message::GalleryOpen(_)
+                | Message::GalleryStep(_) | Message::GalleryJump(_)) => {
+                if let Some(task) = self.handle_gallery_message(msg) {
+                    return task;
                 }
             }
             // --- Room settings: security & roles (update_room_admin.rs) ---
@@ -4701,6 +4716,7 @@ impl FluxChat {
                 A::new("Room settings", "Name, security, roles", Message::OpenModal(Modal::RoomSettings)),
                 A::new("Invite people", "Invite to this room", Message::OpenModal(Modal::Invite)),
                 A::new("Search messages", "Search this room", Message::ToggleSearch),
+                A::new("Gallery", "Images, videos and files  Ctrl/\u{2318}+Shift+G", Message::OpenGallery(crate::state::GalleryTab::Media)),
                 A::new(if self.threads_open { "Hide threads" } else { "Show threads" }, "Threads sidebar", Message::ToggleThreads),
                 A::new(if self.show_member_list { "Hide members" } else { "Show members" }, "Member list  Ctrl/\u{2318}+]", Message::ToggleMemberList),
                 A::new("Mark as read", "Clear this room's unread count", Message::ContextMenuAction("mark_read".into(), room.clone())),
@@ -5588,6 +5604,36 @@ impl FluxChat {
         if tasks.is_empty() { Task::none() } else { Task::batch(tasks) }
     }
 
+    /// Decode a loaded image's animation frames again (from the image cache)
+    /// if it's a GIF / animated WebP whose frames were evicted.
+    pub(crate) fn ensure_gif_frames(&mut self, mxc: &str) -> Task<Message> {
+        let pending = format!("frames:{mxc}");
+        if !self.image_cache.contains_key(mxc)
+            || self.gif_frames_cache.contains_key(mxc)
+            || self.image_cache_pending.contains(&pending)
+        {
+            return Task::none();
+        }
+        // Stays pending if it isn't animated, so it's checked only once.
+        self.image_cache_pending.insert(pending);
+        let core = self.core.clone();
+        let mxc = mxc.to_string();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let data = read_cached_image(&core.db, &format!("iced_img:{mxc}"))?;
+                    let is_webp = animated_kind(&data)?;
+                    let frames = decode_gif_frames(&core, &mxc, data, is_webp)?;
+                    Some((mxc, std::sync::Arc::new(frames)))
+                }).await.ok().flatten()
+            },
+            |result| match result {
+                Some((mxc, frames)) => Message::GifFramesResolved(mxc, frames),
+                None => Message::Noop,
+            },
+        )
+    }
+
     /// Spawn URL preview fetches for any uncached URLs in the given messages.
     fn resolve_url_previews(&mut self, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
         if !self.prefs.url_previews {
@@ -6169,29 +6215,8 @@ fn read_cached_image(db: &fluxchat_core::AppDb, cache_key: &str) -> Option<Vec<u
 fn gif_frames_task(core: std::sync::Arc<fluxchat_core::AppState>, mxc: String, data: Vec<u8>, is_webp: bool) -> Task<Message> {
     Task::perform(
         async move {
-            let key = format!("iced_gif:{mxc}");
-            let frames = tokio::task::spawn_blocking(move || {
-                use base64::Engine;
-                let engine = base64::engine::general_purpose::STANDARD;
-                let gif_bytes = if is_webp {
-                    let cached = core.db.get_cached_media(&key)
-                        .and_then(|b64| engine.decode(b64).ok())
-                        .filter(|b| b.len() >= 3 && &b[..3] == b"GIF");
-                    match cached {
-                        Some(bytes) => bytes,
-                        None => {
-                            let gb = webp_to_gif_bytes(&data)?;
-                            core.db.cache_media(&key, &engine.encode(&gb));
-                            gb
-                        }
-                    }
-                } else {
-                    data
-                };
-                iced_gif::Frames::from_bytes(gif_bytes)
-                    .map_err(|e| tracing::warn!("iced_gif Frames::from_bytes failed: {e}"))
-                    .ok()
-            })
+            let key = mxc.clone();
+            let frames = tokio::task::spawn_blocking(move || decode_gif_frames(&core, &key, data, is_webp))
             .await
             .map_err(|e| tracing::warn!("GIF decode task for {mxc} failed: {e}"))
             .ok()
@@ -6203,6 +6228,43 @@ fn gif_frames_task(core: std::sync::Arc<fluxchat_core::AppState>, mxc: String, d
             None => Message::Noop,
         },
     )
+}
+
+/// Animation frames of a GIF, or of an animated WebP (transcoded to GIF and
+/// cached as `iced_gif:`). Blocking: run under `spawn_blocking`.
+fn decode_gif_frames(core: &fluxchat_core::AppState, mxc: &str, data: Vec<u8>, is_webp: bool) -> Option<iced_gif::Frames> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let gif_bytes = if is_webp {
+        let key = format!("iced_gif:{mxc}");
+        let cached = core.db.get_cached_media(&key)
+            .and_then(|b64| engine.decode(b64).ok())
+            .filter(|b| b.len() >= 3 && &b[..3] == b"GIF");
+        match cached {
+            Some(bytes) => bytes,
+            None => {
+                let gb = webp_to_gif_bytes(&data)?;
+                core.db.cache_media(&key, &engine.encode(&gb));
+                gb
+            }
+        }
+    } else {
+        data
+    };
+    iced_gif::Frames::from_bytes(gif_bytes)
+        .map_err(|e| tracing::warn!("iced_gif Frames::from_bytes failed: {e}"))
+        .ok()
+}
+
+/// Whether image bytes are a GIF, or a WebP (possibly animated).
+fn animated_kind(data: &[u8]) -> Option<bool> {
+    if data.len() >= 3 && &data[..3] == b"GIF" {
+        Some(false)
+    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 /// Parse a `https://matrix.to/#/<id>[/<event>][?via=…]` link into

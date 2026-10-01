@@ -31,6 +31,7 @@ Across the top of the timeline: room avatar and name, then buttons:
 | Phone | Start or join a voice call |
 | Search | Search the room's messages |
 | Pin | Pinned messages sidebar (red when the room has pins) |
+| Grid | [Gallery](messaging.md#gallery): every image, video and file in the room or thread |
 | Split | Split the timeline side by side (see [Panes](panes-and-windows.md)) |
 | Spool | Threads sidebar |
 | @ | Mentions inbox |

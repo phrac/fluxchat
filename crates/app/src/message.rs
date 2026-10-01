@@ -153,7 +153,22 @@ pub enum Message {
     ToggleSearch,
     TogglePins,
     ToggleThreads,
-    ToggleFiles,
+    /// Open the media gallery for the current view on a tab (header button,
+    /// Ctrl/Cmd+Shift+G, `/gallery`, `/files`).
+    OpenGallery(crate::state::GalleryTab),
+    GalleryTabChanged(crate::state::GalleryTab),
+    /// A page of server media arrived: (view key, page or error).
+    GalleryPageLoaded(String, Result<fluxchat_core::gallery::MediaPage, String>),
+    /// The grid scrolled: (offset, viewport height).
+    GalleryScrolled(f32, f32),
+    /// "Load older" (after automatic loading stopped at its cap).
+    GalleryLoadMore,
+    /// Open a gallery item (image → lightbox, video → its message).
+    GalleryOpen(String), // event_id
+    /// Lightbox opened from the gallery: previous (-1) / next (+1) image.
+    GalleryStep(i32),
+    /// Close the gallery and go to the item's message.
+    GalleryJump(String), // event_id
     ToggleNotices,
     ToggleGifs,
     ToggleEmojiPicker,

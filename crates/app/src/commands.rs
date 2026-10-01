@@ -53,7 +53,8 @@ static COMMANDS: &[Command] = &[
     Command { name: "/search", usage: "", description: "Toggle search", needs_room: true },
     Command { name: "/members", usage: "", description: "Toggle member list", needs_room: true },
     Command { name: "/pins", usage: "", description: "Toggle pinned messages", needs_room: true },
-    Command { name: "/files", usage: "", description: "Toggle files panel", needs_room: true },
+    Command { name: "/gallery", usage: "", description: "Images and videos in this room or thread", needs_room: true },
+    Command { name: "/files", usage: "", description: "Files in this room or thread", needs_room: true },
     Command { name: "/clear", usage: "", description: "Clear scrollback", needs_room: true },
     Command { name: "/refresh", usage: "", description: "Drop cached Timeline and rebuild from event cache", needs_room: true },
     Command { name: "/shrug", usage: "[text]", description: r"Append ¯\_(ツ)_/¯", needs_room: true },
@@ -155,7 +156,8 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         "/search" => CommandResult::Messages(vec![Message::ToggleSearch]),
         "/members" => CommandResult::Messages(vec![Message::ToggleMemberList]),
         "/pins" => CommandResult::Messages(vec![Message::TogglePins]),
-        "/files" => CommandResult::Messages(vec![Message::ToggleFiles]),
+        "/gallery" => CommandResult::Messages(vec![Message::OpenGallery(crate::state::GalleryTab::Media)]),
+        "/files" => CommandResult::Messages(vec![Message::OpenGallery(crate::state::GalleryTab::Files)]),
         "/quit" => CommandResult::Messages(vec![Message::Logout]),
 
         // --- Prefs ---
