@@ -193,7 +193,7 @@ impl FluxChat {
         let mut tasks = vec![self.resolve_images(&key, &visible)];
         // GIFs scrolled back into view animate again — unless the frame
         // cache is full, where re-decoding would evict others in view.
-        if self.prefs.autoplay_gifs && self.gif_frames_cache.len() < crate::update::GIF_CACHE_LIMIT {
+        if self.prefs.autoplay_gifs && !self.gif_frames_cache.nearly_full() {
             for m in visible.iter().filter(|m| looks_animated(&m.body)) {
                 if let Some(mxc) = &m.image_mxc {
                     tasks.push(self.ensure_gif_frames(mxc));

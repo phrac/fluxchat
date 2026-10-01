@@ -9,7 +9,6 @@ use crate::state::{FluxChat, Screen};
 const AVATAR_CACHE_LIMIT: usize = 1000;
 const IMAGE_CACHE_LIMIT: usize = 500;
 const URL_PREVIEW_LIMIT: usize = 200;
-pub(crate) const GIF_CACHE_LIMIT: usize = 100;
 /// Max entries kept in the SQLite media cache (avatars, inline images, GIFs).
 const MEDIA_DB_CACHE_LIMIT: usize = 1500;
 /// Scroll offset (px from the top) within which scrolling up loads history.
@@ -78,6 +77,10 @@ fn webp_to_gif_bytes(data: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let (w_u32, h_u32) = decoder.dimensions();
+    if crate::anim::webp_decoded_bytes(w_u32, h_u32, decoder.num_frames()) > crate::anim::ANIMATION_MAX_BYTES {
+        tracing::info!("animated WebP not decoded: {w_u32}x{h_u32}, {} frames exceeds the limit", decoder.num_frames());
+        return None;
+    }
     let (w, h): (u16, u16) = (w_u32.try_into().ok()?, h_u32.try_into().ok()?);
     let has_alpha = decoder.has_alpha();
     let buf_size = match decoder.output_buffer_size() {
@@ -2800,7 +2803,6 @@ impl FluxChat {
             Message::GifFramesResolved(mxc, frames) => {
                 self.image_cache_pending.remove(&format!("frames:{mxc}"));
                 self.gif_frames_cache.insert(mxc, frames);
-                evict_cache(&mut self.gif_frames_cache, GIF_CACHE_LIMIT);
             }
 
             // --- URL Previews ---
@@ -3251,7 +3253,7 @@ impl FluxChat {
                         self.voice_recording = true;
                         self.voice_record_start = Some(std::time::Instant::now());
                         // Store handle in a global — cpal::Stream isn't Send
-                        VOICE_HANDLE.lock().unwrap().0 = Some(handle);
+                        VOICE_HANDLE.lock().unwrap_or_else(|e| e.into_inner()).0 = Some(handle);
                     }
                     Err(e) => {
                         tracing::warn!("Failed to start recording: {e}");
@@ -3261,7 +3263,7 @@ impl FluxChat {
             Message::StopVoiceRecording => {
                 self.voice_recording = false;
                 self.voice_record_start = None;
-                if let Some(handle) = VOICE_HANDLE.lock().unwrap().0.take() {
+                if let Some(handle) = VOICE_HANDLE.lock().unwrap_or_else(|e| e.into_inner()).0.take() {
                     // Encode on main thread (fast for short recordings)
                     match handle.stop_and_encode() {
                         Ok((bytes, duration)) => {
@@ -3275,7 +3277,7 @@ impl FluxChat {
                 self.voice_recording = false;
                 self.voice_record_start = None;
                 // Drop the handle to stop recording
-                let _ = VOICE_HANDLE.lock().unwrap().0.take();
+                let _ = VOICE_HANDLE.lock().unwrap_or_else(|e| e.into_inner()).0.take();
             }
             Message::VoiceRecordingReady(bytes, duration_ms) => {
                 self.voice_ready = Some((bytes, duration_ms));
@@ -4022,8 +4024,8 @@ impl FluxChat {
                         tasks.push(Task::perform(
                             async move {
                                 let bytes = fluxchat_core::gif::download_gif(&url_clone).await.ok()?;
-                                let frames = iced_gif::Frames::from_bytes(bytes).ok()?;
-                                Some((url_clone, std::sync::Arc::new(frames)))
+                                let frames = tokio::task::spawn_blocking(move || crate::anim::decode(bytes)).await.ok()??;
+                                Some((url_clone, frames))
                             },
                             |result| match result {
                                 Some((url, frames)) => Message::GifPreviewLoaded(url, frames),
@@ -4039,7 +4041,6 @@ impl FluxChat {
             }
             Message::GifPreviewLoaded(url, frames) => {
                 self.gif_preview_cache.insert(url, frames);
-                evict_cache(&mut self.gif_preview_cache, GIF_CACHE_LIMIT);
             }
             Message::GifSelect(gif_url, description) => {
                 self.gifs_open = false;
@@ -4363,6 +4364,7 @@ impl FluxChat {
                 // Save what Tick would have, and leave a call: its membership
                 // would otherwise show us in it for hours (it expires after 4 h).
                 self.flush_layout();
+                crate::update_call::set_call_on_exit(&self.core, None);
                 let leave = self.call_room_id.take().map(|room_id| {
                     if let Some(tx) = self.call_disconnect_tx.take() {
                         let _ = tx.send(true);
@@ -5642,7 +5644,7 @@ impl FluxChat {
                     let data = read_cached_image(&core.db, &format!("iced_img:{mxc}"))?;
                     let is_webp = animated_kind(&data)?;
                     let frames = decode_gif_frames(&core, &mxc, data, is_webp)?;
-                    Some((mxc, std::sync::Arc::new(frames)))
+                    Some((mxc, frames))
                 }).await.ok().flatten()
             },
             |result| match result {
@@ -5671,7 +5673,7 @@ impl FluxChat {
                         let client = core.get_client().await.ok()?;
                         let preview = fluxchat_core::preview::get_url_preview(
                             &client,
-                            &core.media_cache,
+                            &core.preview_cache,
                             &url_clone,
                         ).await.ok()?;
                         Some((url_clone, preview))
@@ -6239,7 +6241,7 @@ fn gif_frames_task(core: std::sync::Arc<fluxchat_core::AppState>, mxc: String, d
             .map_err(|e| tracing::warn!("GIF decode task for {mxc} failed: {e}"))
             .ok()
             .flatten()?;
-            Some((mxc, std::sync::Arc::new(frames)))
+            Some((mxc, frames))
         },
         |result| match result {
             Some((mxc, frames)) => Message::GifFramesResolved(mxc, frames),
@@ -6250,7 +6252,7 @@ fn gif_frames_task(core: std::sync::Arc<fluxchat_core::AppState>, mxc: String, d
 
 /// Animation frames of a GIF, or of an animated WebP (transcoded to GIF and
 /// cached as `iced_gif:`). Blocking: run under `spawn_blocking`.
-fn decode_gif_frames(core: &fluxchat_core::AppState, mxc: &str, data: Vec<u8>, is_webp: bool) -> Option<iced_gif::Frames> {
+fn decode_gif_frames(core: &fluxchat_core::AppState, mxc: &str, data: Vec<u8>, is_webp: bool) -> Option<crate::anim::Anim> {
     use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
     let gif_bytes = if is_webp {
@@ -6269,9 +6271,7 @@ fn decode_gif_frames(core: &fluxchat_core::AppState, mxc: &str, data: Vec<u8>, i
     } else {
         data
     };
-    iced_gif::Frames::from_bytes(gif_bytes)
-        .map_err(|e| tracing::warn!("iced_gif Frames::from_bytes failed: {e}"))
-        .ok()
+    crate::anim::decode(gif_bytes)
 }
 
 /// Whether image bytes are a GIF, or a WebP (possibly animated).

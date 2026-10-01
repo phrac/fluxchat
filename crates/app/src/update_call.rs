@@ -1,7 +1,48 @@
+use std::sync::{Arc, Mutex};
+
 use iced::Task;
 
 use crate::message::Message;
 use crate::state::FluxChat;
+
+/// The call to leave if the process exits without a close request: on macOS,
+/// Cmd+Q and the Quit menu terminate the app directly (winit never sends
+/// `CloseRequested`), and the call membership would show us in the call for
+/// hours. Set while `call_room_id` is.
+static CALL_ON_EXIT: Mutex<Option<(Arc<fluxchat_core::AppState>, String, tokio::runtime::Handle)>> = Mutex::new(None);
+
+/// Record (or clear) the call `leave_call_on_exit` leaves.
+pub(crate) fn set_call_on_exit(core: &Arc<fluxchat_core::AppState>, room_id: Option<&str>) {
+    let entry = room_id.zip(tokio::runtime::Handle::try_current().ok())
+        .map(|(rid, rt)| (core.clone(), rid.to_string(), rt));
+    *CALL_ON_EXIT.lock().unwrap_or_else(|e| e.into_inner()) = entry;
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn register_exit_hook() {
+    extern "C" fn on_exit() {
+        leave_call_on_exit();
+    }
+    // SAFETY: registers a plain function with no captured state.
+    unsafe { libc::atexit(on_exit) };
+}
+
+/// Leave the recorded call, waiting at most 3 s. Runs from `atexit`, where
+/// the runtime's worker threads are still alive; the request runs on its own
+/// thread so nothing here can unwind into C.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn leave_call_on_exit() {
+    let Some((core, room_id, rt)) = CALL_ON_EXIT.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    let _ = std::thread::spawn(move || {
+        rt.block_on(async {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                if let Ok(client) = core.get_client().await {
+                    let _ = fluxchat_core::rtc::leave_call(&client, &room_id).await;
+                }
+            }).await;
+        });
+    }).join();
+}
 
 impl FluxChat {
     /// Handle all call/RTC messages. Returns Some(task) if handled.
@@ -13,6 +54,7 @@ impl FluxChat {
                 }
                 self.call_state = fluxchat_core::rtc::CallConnectionState::Connecting;
                 self.call_room_id = Some(room_id.clone());
+                set_call_on_exit(&self.core, Some(&room_id));
                 self.messages_at_bottom = true;
                 let core = self.core.clone();
                 let snap = iced::widget::operation::snap_to_end(crate::view::messages_scrollable_id());
@@ -91,6 +133,7 @@ impl FluxChat {
                 tracing::info!("Call disconnected: {reason}");
                 self.call_state = fluxchat_core::rtc::CallConnectionState::Disconnected;
                 self.call_room_id = None;
+                set_call_on_exit(&self.core, None);
                 self.call_participants.clear();
                 self.call_disconnect_tx = None;
                 Some(Task::none())
@@ -109,6 +152,7 @@ impl FluxChat {
                     let rid = room_id.clone();
                     self.call_state = fluxchat_core::rtc::CallConnectionState::Disconnected;
                     self.call_room_id = None;
+                    set_call_on_exit(&self.core, None);
                     self.call_participants.clear();
                     Some(Task::perform(
                         async move {

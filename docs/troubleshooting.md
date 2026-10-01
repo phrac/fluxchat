@@ -54,6 +54,14 @@ Run fluxchat from a terminal to see logs. `RUST_LOG` changes the detail level, f
 RUST_LOG=fluxchat=debug cargo run -p fluxchat
 ```
 
+## FluxChat feels slow
+
+Run it from a terminal with `FLUXCHAT_TIMING=1` set. Every update slower than 4 ms and every screen build slower than 8 ms is logged with what caused it, for example `update SyncEvent::MessagesUpdated: 12.3 ms`. Include those lines when you report the problem.
+
+```bash
+FLUXCHAT_TIMING=1 cargo run -p fluxchat --release
+```
+
 ## Where things are stored
 
 | OS | Data folder |

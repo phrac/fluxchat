@@ -51,7 +51,7 @@ Hover a message and click the smiley to pick a reaction, or click an existing re
 
 - Attach with the **+** button, drag and drop a file, paste an image (**Ctrl/⌘+V**), or `/attach`.
 - The file appears as a card above the message box. Anything you type is sent **with** the file as its caption: one message, not two. Press **Enter** (or **Send**) to send. With an empty box, just the file is sent.
-- Images get a thumbnail. Click an image to view it large, where you can **Copy** or **Save** it. Click the image again or press **Esc** to close. GIFs animate there even with *Autoplay GIFs* off.
+- Images get a thumbnail. Click an image to view it large, where you can **Copy** or **Save** it. Click the image again or press **Esc** to close. GIFs animate there even with *Autoplay GIFs* off. Very large animations (over 128 MB once decoded) show as a still image.
 - Files show as download cards. Videos play inline.
 - Files over your server's upload limit are rejected with a message before uploading.
 

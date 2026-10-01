@@ -37,3 +37,6 @@ gstreamer-app = "0.23"
 gstreamer-pbutils = "0.23"
 url = "2"
 arboard = { version = "3", features = ["wayland-data-control"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

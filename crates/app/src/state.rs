@@ -588,12 +588,12 @@ pub struct FluxChat {
     pub history_start: std::collections::HashSet<String>,
 
     // Animated GIF cache for inline messages
-    pub gif_frames_cache: HashMap<String, std::sync::Arc<iced_gif::Frames>>,
+    pub gif_frames_cache: crate::anim::FramesCache,
 
     // GIF panel state
     pub gif_results: Vec<fluxchat_core::gif::GifResult>,
     pub gif_searching: bool,
-    pub gif_preview_cache: HashMap<String, std::sync::Arc<iced_gif::Frames>>, // preview_url -> animated frames
+    pub gif_preview_cache: crate::anim::FramesCache, // preview_url -> animated frames
 
     // Panels data
     pub pinned_messages: Vec<fluxchat_core::MessageInfo>,
@@ -880,10 +880,10 @@ impl FluxChat {
             paginate_visible_before: 0,
             paginate_empty_budget: 0,
             history_start: std::collections::HashSet::new(),
-            gif_frames_cache: HashMap::new(),
+            gif_frames_cache: crate::anim::FramesCache::new(crate::anim::FRAMES_CACHE_BYTES),
             gif_results: Vec::new(),
             gif_searching: false,
-            gif_preview_cache: HashMap::new(),
+            gif_preview_cache: crate::anim::FramesCache::new(crate::anim::PREVIEW_CACHE_BYTES),
             pinned_messages: Vec::new(),
             thread_list: Vec::new(),
             room_threads: HashMap::new(),

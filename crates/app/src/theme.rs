@@ -214,12 +214,12 @@ static ACTIVE: LazyLock<RwLock<ThemeColors>> = LazyLock::new(|| RwLock::new(flux
 
 /// Set the active theme.
 pub fn set_active_theme(colors: ThemeColors) {
-    *ACTIVE.write().unwrap() = colors;
+    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = colors;
 }
 
 /// Read a color from the active theme.
 fn active() -> std::sync::RwLockReadGuard<'static, ThemeColors> {
-    ACTIVE.read().unwrap()
+    ACTIVE.read().unwrap_or_else(|e| e.into_inner())
 }
 
 // --- Public color accessors (drop-in replacements for the old constants) ---

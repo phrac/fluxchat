@@ -142,7 +142,7 @@ fn spawn_audio_playback(audio_track: livekit::prelude::RemoteAudioTrack) {
         let stream = device.build_output_stream(
             &stream_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                let mut buf = buffer.lock().unwrap();
+                let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
                 let available = buf.len().min(data.len());
                 if available > 0 {
                     data[..available].copy_from_slice(&buf[..available]);
@@ -183,7 +183,7 @@ fn spawn_audio_playback(audio_track: livekit::prelude::RemoteAudioTrack) {
                 let samples: Vec<f32> = frame.data.iter()
                     .map(|&s| s as f32 / i16::MAX as f32)
                     .collect();
-                let mut buf = buffer_writer.lock().unwrap();
+                let mut buf = buffer_writer.lock().unwrap_or_else(|e| e.into_inner());
                 let max_samples = (sample_rate as usize * channels as usize) / 2;
                 if buf.len() < max_samples {
                     buf.extend_from_slice(&samples);

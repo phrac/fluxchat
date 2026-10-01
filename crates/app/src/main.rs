@@ -4,6 +4,7 @@
 
 #![allow(mismatched_lifetime_syntaxes)]
 
+mod anim;
 mod commands;
 mod hover_bar;
 mod html;
@@ -17,6 +18,7 @@ mod primary_clipboard;
 mod selectable_text;
 mod state;
 mod theme;
+mod timing;
 mod ui;
 mod update;
 mod update_call;
@@ -81,6 +83,8 @@ fn main() -> iced::Result {
     // Set macOS notification app identity to avoid "Where is use_default?" dialog
     #[cfg(target_os = "macos")]
     { let _ = notify_rust::set_application("com.apple.Terminal"); }
+    #[cfg(target_os = "macos")]
+    update_call::register_exit_hook();
 
     let core = init_core();
     let (win_w, win_h) = state::saved_window_size(&core.db)
@@ -89,8 +93,8 @@ fn main() -> iced::Result {
     let core2 = core.clone();
     iced::application(
         move || FluxChat::new_with_init(core2.clone()),
-        FluxChat::update,
-        FluxChat::view,
+        timing::update,
+        timing::view,
     )
     .executor::<BigStackExecutor>()
     .title(FluxChat::title)

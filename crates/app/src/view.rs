@@ -138,7 +138,7 @@ pub(crate) fn font_bold_by_name(name: &str) -> Font {
 }
 
 fn leaked_name(name: &str) -> &'static str {
-    let mut names = LEAKED_NAMES.lock().unwrap();
+    let mut names = LEAKED_NAMES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = names.iter().find(|n| **n == name) {
         return existing;
     }
@@ -3467,7 +3467,7 @@ fn timeline_update_stream() -> impl futures_util::Stream<Item = Message> {
             let lock = crate::state::TIMELINE_RX.get();
             match lock {
                 Some(mutex) => {
-                    let mut guard = mutex.lock().unwrap();
+                    let mut guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
                     match guard.take() {
                         Some(rx) => rx,
                         None => return,
@@ -3491,7 +3491,7 @@ fn call_event_stream() -> impl futures_util::Stream<Item = Message> {
             let lock = crate::state::CALL_RX.get();
             match lock {
                 Some(mutex) => {
-                    let mut guard = mutex.lock().unwrap();
+                    let mut guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
                     match guard.take() {
                         Some(rx) => rx,
                         None => return,

@@ -379,7 +379,7 @@ pub enum Message {
 
     // --- Inline images ---
     ImageResolved(String, Vec<u8>), // (mxc_uri, image_bytes)
-    GifFramesResolved(String, std::sync::Arc<iced_gif::Frames>), // (mxc_uri, frames)
+    GifFramesResolved(String, crate::anim::Anim), // (mxc_uri, frames)
 
     // --- URL Previews ---
     UrlPreviewFetched(String, Option<fluxchat_core::UrlPreview>), // url, preview
@@ -558,7 +558,7 @@ pub enum Message {
     GifQueryChanged(String),                             // search input
     GifSearchSubmit,                                     // trigger search
     GifResultsLoaded(Vec<fluxchat_core::gif::GifResult>),
-    GifPreviewLoaded(String, std::sync::Arc<iced_gif::Frames>), // preview_url, animated frames
+    GifPreviewLoaded(String, crate::anim::Anim), // preview_url, animated frames
     GifSelect(String, String),                           // gif_url, description
 
     // --- Read receipts ---

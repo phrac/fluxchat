@@ -52,7 +52,7 @@ impl AppDb {
 
     /// Save the current session data to the database.
     pub fn save_session(&self, data: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO sessions (key, data) VALUES ('current', ?1)",
             params![data],
@@ -62,7 +62,7 @@ impl AppDb {
 
     /// Load the saved session data, if any.
     pub fn load_session(&self) -> Option<String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT data FROM sessions WHERE key = 'current'",
             [],
@@ -72,7 +72,7 @@ impl AppDb {
 
     /// Delete the saved session.
     pub fn delete_session(&self) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = conn.execute("DELETE FROM sessions WHERE key = 'current'", []) {
             tracing::warn!("Failed to delete session from database: {e}");
         }
@@ -86,7 +86,7 @@ impl AppDb {
         if data_uri.len() > MAX_CACHED_ENTRY_BYTES {
             return;
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let _ = conn.execute(
             "INSERT OR REPLACE INTO media_cache (key, data, stamp) \
              VALUES (?1, ?2, (SELECT COALESCE(MAX(stamp), 0) + 1 FROM media_cache))",
@@ -96,7 +96,7 @@ impl AppDb {
 
     /// Look up a cached media data URI by key.
     pub fn get_cached_media(&self, key: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT data FROM media_cache WHERE key = ?1",
             params![key],
@@ -108,7 +108,7 @@ impl AppDb {
 
     /// Store a key-value setting.
     pub fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params![key, value],
@@ -118,7 +118,7 @@ impl AppDb {
 
     /// Retrieve a setting value by key.
     pub fn get_setting(&self, key: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT value FROM settings WHERE key = ?1",
             params![key],
@@ -128,7 +128,7 @@ impl AppDb {
 
     /// Drop a cached media entry (e.g. corrupt data from a failed fetch).
     pub fn remove_cached_media(&self, key: &str) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let _ = conn.execute("DELETE FROM media_cache WHERE key = ?1", params![key]);
     }
 
@@ -139,7 +139,7 @@ impl AppDb {
     /// quarter of the file is free pages: it rewrites the whole database
     /// while holding the connection.
     pub fn prune_media_cache(&self, keep: usize, max_bytes: u64) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let oversized = conn.execute(
             "DELETE FROM media_cache WHERE octet_length(data) > ?1",
             params![MAX_CACHED_ENTRY_BYTES as i64],

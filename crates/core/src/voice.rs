@@ -18,7 +18,7 @@ pub fn start_recording() -> Result<RecordingHandle, String> {
     let stream = device.build_input_stream(
         &config.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let mut buf = samples_clone.lock().unwrap();
+            let mut buf = samples_clone.lock().unwrap_or_else(|e| e.into_inner());
             // Convert f32 to i16 and downmix to mono if needed
             if channels == 1 {
                 buf.extend(data.iter().map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16));
@@ -63,7 +63,7 @@ impl RecordingHandle {
         // Stream is dropped here, stopping capture
         drop(self._stream);
 
-        let samples = self.samples.lock().unwrap().clone();
+        let samples = self.samples.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let duration_ms = self.start_time.elapsed().as_millis() as u64;
 
         if samples.is_empty() {

@@ -1,6 +1,9 @@
 use crate::error::AppError;
 use crate::models::UrlPreview;
 
+/// Previews kept in memory; when full, half (arbitrary entries) is dropped.
+const PREVIEW_CACHE_LIMIT: usize = 500;
+
 /// Fetch an OpenGraph URL preview from the homeserver, with caching.
 pub async fn get_url_preview(
     client: &matrix_sdk::Client,
@@ -8,7 +11,7 @@ pub async fn get_url_preview(
     url: &str,
 ) -> Result<Option<UrlPreview>, AppError> {
     let cache_key = format!("preview:{}", url);
-    { let c = cache.lock().unwrap(); if let Some(v) = c.get(&cache_key) { return Ok(serde_json::from_str(v).ok()); } }
+    { let c = cache.lock().unwrap_or_else(|e| e.into_inner()); if let Some(v) = c.get(&cache_key) { return Ok(serde_json::from_str(v).ok()); } }
 
     use matrix_sdk::ruma::api::client::authenticated_media::get_media_preview::v1::Request;
     let request = Request::new(url.to_string());
@@ -24,6 +27,13 @@ pub async fn get_url_preview(
     if title.is_none() && description.is_none() { return Ok(None); }
 
     let preview = UrlPreview { url: url.to_string(), title, description, image_url, site_name };
-    if let Ok(json) = serde_json::to_string(&preview) { cache.lock().unwrap().insert(cache_key, json); }
+    if let Ok(json) = serde_json::to_string(&preview) {
+        let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if c.len() >= PREVIEW_CACHE_LIMIT {
+            let drop: Vec<String> = c.keys().take(PREVIEW_CACHE_LIMIT / 2).cloned().collect();
+            for k in drop { c.remove(&k); }
+        }
+        c.insert(cache_key, json);
+    }
     Ok(Some(preview))
 }

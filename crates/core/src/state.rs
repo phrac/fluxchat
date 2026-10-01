@@ -8,7 +8,8 @@ use crate::db::AppDb;
 pub struct AppState {
     pub client: Arc<Mutex<Option<Client>>>,
     pub db: AppDb,
-    pub media_cache: std::sync::Mutex<HashMap<String, String>>,
+    /// URL previews (`preview::get_url_preview`), as JSON by URL.
+    pub preview_cache: std::sync::Mutex<HashMap<String, String>>,
     pub timelines: crate::timeline::RoomTimelines,
     pub sync_service: Mutex<Option<matrix_sdk_ui::sync_service::SyncService>>,
 }
@@ -18,7 +19,7 @@ impl AppState {
         Self {
             client: Arc::new(Mutex::new(None)),
             db,
-            media_cache: std::sync::Mutex::new(HashMap::new()),
+            preview_cache: std::sync::Mutex::new(HashMap::new()),
             timelines: Default::default(),
             sync_service: Mutex::new(None),
         }

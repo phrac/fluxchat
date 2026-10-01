@@ -6,7 +6,7 @@ fluxchat supports voice calls using MatrixRTC with a LiveKit server (your homese
 
 - **Start or join**: the phone button in the room header. Rooms with an active call show a join banner and a phone icon in the room list.
 - **In a call**, a panel above the messages shows the participants. Your microphone starts **muted**; use the mic button to unmute.
-- **Leaving**: hang up with the red button.
+- **Leaving**: hang up with the red button. Quitting FluxChat (closing the window, or Cmd+Q on macOS) also leaves the call.
 - **Other rooms**: if you switch rooms during a call, a small picture-in-picture panel stays in the member list.
 
 ## Devices and audio processing
