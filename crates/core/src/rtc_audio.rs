@@ -112,11 +112,10 @@ fn spawn_audio_playback(audio_track: livekit::prelude::RemoteAudioTrack) {
 
     #[cfg(not(target_os = "linux"))]
     {
-        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        use cpal::traits::{DeviceTrait, StreamTrait};
         use std::sync::Mutex;
 
-        let host = cpal::default_host();
-        let device = match host.default_output_device() {
+        let device = match crate::audio_devices::output_device() {
             Some(d) => d,
             None => {
                 tracing::warn!("No audio output device found");
@@ -324,10 +323,8 @@ impl CallSession {
 
         #[cfg(not(target_os = "linux"))]
         {
-            use cpal::traits::{DeviceTrait, HostTrait};
-            let host = cpal::default_host();
-            let device = host
-                .default_input_device()
+            use cpal::traits::DeviceTrait;
+            let device = crate::audio_devices::input_device()
                 .ok_or("No audio input device found")?;
             let config = device
                 .default_input_config()
@@ -336,11 +333,12 @@ impl CallSession {
             channels = config.channels() as u32;
         }
 
+        let audio = crate::audio_devices::audio_prefs();
         let audio_source = NativeAudioSource::new(
             AudioSourceOptions {
-                echo_cancellation: true,
-                noise_suppression: true,
-                auto_gain_control: true,
+                echo_cancellation: audio.echo_cancellation,
+                noise_suppression: audio.noise_suppression,
+                auto_gain_control: audio.auto_gain,
             },
             sample_rate,
             channels,
@@ -441,11 +439,9 @@ impl CallSession {
 
         #[cfg(not(target_os = "linux"))]
         {
-            use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+            use cpal::traits::{DeviceTrait, StreamTrait};
 
-            let host = cpal::default_host();
-            let device = host
-                .default_input_device()
+            let device = crate::audio_devices::input_device()
                 .ok_or("No audio input device found")?;
             let config = device
                 .default_input_config()

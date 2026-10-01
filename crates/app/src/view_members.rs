@@ -250,7 +250,7 @@ impl FluxChat {
         }
 
         container(panel)
-            .width(200)
+            .width(self.member_list_width)
             .height(Fill)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::colors().bg_deep.into()),

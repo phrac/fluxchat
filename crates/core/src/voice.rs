@@ -1,13 +1,12 @@
 //! Voice message recording: mic capture via cpal → Opus encoding → OGG container.
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
 
 /// Record audio from the default input device.
 /// Returns a handle that can be stopped to get the encoded OGG Opus bytes.
 pub fn start_recording() -> Result<RecordingHandle, String> {
-    let host = cpal::default_host();
-    let device = host.default_input_device().ok_or("No audio input device")?;
+    let device = crate::audio_devices::input_device().ok_or("No audio input device")?;
     let config = device.default_input_config().map_err(|e| format!("No input config: {e}"))?;
 
     let sample_rate = config.sample_rate().0;
@@ -262,8 +261,7 @@ pub fn play_pcm(
         .name("voice-playback".into())
         .spawn(move || {
             let result = (|| -> Result<(), String> {
-                let host = cpal::default_host();
-                let device = host.default_output_device().ok_or("No audio output device")?;
+                let device = crate::audio_devices::output_device().ok_or("No audio output device")?;
                 let config = device.default_output_config().map_err(|e| format!("No output config: {e}"))?;
                 let out_rate = config.sample_rate().0;
                 let out_channels = config.channels() as usize;

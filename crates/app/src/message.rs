@@ -104,7 +104,12 @@ pub enum Message {
     SearchArrowUp,
 
     // --- Threads ---
-    OpenThread(String, String), // room_id, thread_root_event_id
+    OpenThread(String, String), // room_id, thread_root_event_id — opens the thread pane
+    CloseThreadPane,
+    /// Show the pane's thread in the full main view instead.
+    ExpandThreadPane,
+    ThreadInputAction(iced::widget::text_editor::Action),
+    ThreadSend,
 
     // --- UI panels ---
     ToggleMemberList,
@@ -143,6 +148,22 @@ pub enum Message {
     SetSidebarFontFamily(String),
     SetTheme(String), // theme name
 
+    /// Replace the preferences (Settings → Preferences) and persist them.
+    SetPrefs(Box<crate::prefs::Prefs>),
+    AudioDevicesLoaded(Vec<String>, Vec<String>), // inputs, outputs
+    ToggleMicTest,
+    MicLevelTick,
+    // --- Notification rules (server push rules) ---
+    NotifyRulesLoaded(Result<fluxchat_core::notify_rules::NotifyRules, String>),
+    SetDefaultNotify(bool, fluxchat_core::notify_rules::DefaultLevel), // dm?, level
+    SetNotifyToggle(fluxchat_core::notify_rules::NotifyToggle, bool),
+    KeywordInputChanged(String),
+    AddKeyword,
+    RemoveKeyword(String),
+    /// A rule change finished (error).
+    NotifyRuleDone(Option<String>),
+    SetCompactMode(bool),
+    SetShowJoinPart(bool),
     /// Handle several messages in order (for task callbacks that need more
     /// than one follow-up).
     Batch(Vec<Message>),
@@ -150,6 +171,17 @@ pub enum Message {
     RoomParentSpacesLoaded(String, Vec<String>, Vec<String>), // room_id, parent space_ids, manageable space_ids
     RoomSettingsPickSpace(String),              // space_id chosen in "Add to space"
     ReloadRoomSettingsExtras,
+    // --- Room settings: security & roles ---
+    RoomSettingsTabChanged(crate::state::RoomSettingsTab),
+    RoomSecurityLoaded(String, Result<fluxchat_core::room_admin::RoomSecurity, String>),
+    RoomPermsLoaded(String, Result<(fluxchat_core::room_admin::RoomPermissions, Vec<fluxchat_core::room_admin::BannedUser>), String>),
+    SetJoinMode(fluxchat_core::room_admin::JoinMode),
+    SetHistoryMode(fluxchat_core::room_admin::HistoryMode),
+    SetGuestAccess(bool),
+    SetInDirectory(bool),
+    SetPermission(fluxchat_core::room_admin::Permission, i64),
+    /// A security/permission change finished (room_id, error).
+    RoomAdminDone(String, Option<String>),
     SetRoomNotifyMode(String),                  // mode for the active room
     // --- Notifications ---
     SetNotificationsEnabled(bool),
@@ -419,7 +451,8 @@ pub enum Message {
     RedactionFailed(String, String),
 
     // --- Sidebar resize ---
-    SidebarDragStart,
+    /// Start dragging a panel divider.
+    ResizeStart(crate::state::ResizeTarget),
     SidebarDragEnd,
     CursorMoved(f32, f32), // x, y
 

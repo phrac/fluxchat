@@ -120,7 +120,10 @@ pub async fn get_or_create_for_key(
         .ok_or_else(|| crate::error::AppError::Other("Timeline sink not set".into()))?;
     let room = client.get_room(&room_id)
         .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
-    let mut builder = TimelineBuilder::new(&room);
+    // Read receipts are off by default in the SDK; without this every
+    // item's receipt list is empty and nothing shows who read what.
+    let mut builder = TimelineBuilder::new(&room)
+        .track_read_marker_and_receipts(matrix_sdk_ui::timeline::TimelineReadReceiptTracking::MessageLikeEvents);
     if let Some(root_event_id) = root {
         builder = builder.with_focus(TimelineFocus::Thread { root_event_id });
     }
@@ -149,9 +152,12 @@ pub async fn get_or_create_timeline(
 pub async fn mark_as_read(
     timelines: &RoomTimelines,
     key: &str,
+    private: bool,
 ) -> Result<(), crate::error::AppError> {
     let Some(timeline) = timelines.get(key).await else { return Ok(()) };
-    for receipt_type in [ReceiptType::Read, ReceiptType::FullyRead] {
+    // A private receipt clears our unread state without telling others.
+    let read = if private { ReceiptType::ReadPrivate } else { ReceiptType::Read };
+    for receipt_type in [read, ReceiptType::FullyRead] {
         timeline.mark_as_read(receipt_type).await
             .map_err(|e| crate::error::AppError::Other(format!("Failed to send receipt: {e}")))?;
     }
@@ -167,14 +173,25 @@ pub async fn send_text(
     key: &str,
     body: &str,
     reply_to: Option<&str>,
+    markdown: bool,
 ) -> Result<(), crate::error::AppError> {
     let room_id = crate::rooms::parse_room_id(real_room_id(key))?;
     let room = client.get_room(&room_id)
         .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
-    let content = match body.strip_prefix("/me ") {
+    let mut content = match body.strip_prefix("/me ") {
         Some(emote) => crate::messages::build_emote_content(&room, emote).await,
         None => crate::messages::build_message_content(&room, body).await,
     };
+    if !markdown {
+        // Plain text as typed; keep the resolved intentional mentions.
+        use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+        let mentions = content.mentions.take();
+        content = match body.strip_prefix("/me ") {
+            Some(emote) => RoomMessageEventContent::emote_plain(emote),
+            None => RoomMessageEventContent::text_plain(body),
+        };
+        content.mentions = mentions;
+    }
     let timeline = get_or_create_for_key(client, timelines, key).await?;
     let result = match reply_to {
         Some(event_id) => {
@@ -529,7 +546,15 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
     match content {
         TimelineItemContent::MsgLike(msg_like) => {
             if content.is_redacted() {
-                return None;
+                // Kept as a placeholder row; hidden unless the user wants
+                // "message deleted" placeholders.
+                return Some(MessageInfo {
+                    event_id, sender, sender_name, avatar_url, timestamp,
+                    body: "Message deleted".into(),
+                    thread_root: msg_like.thread_root.as_ref().map(|id| id.to_string()),
+                    row_kind: crate::models::RowKind::Redacted,
+                    ..Default::default()
+                });
             }
 
             let thread_root = msg_like.thread_root.as_ref().map(|id| id.to_string());
@@ -639,6 +664,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     thread_latest: None,
                     caption: None,
                     caption_html: None,
+                    row_kind: Default::default(),
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -662,6 +688,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     thread_latest: None,
                     caption: None,
                     caption_html: None,
+                    row_kind: Default::default(),
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -696,6 +723,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     thread_latest: None,
                     caption: None,
                     caption_html: None,
+                    row_kind: Default::default(),
                 })
             } else {
                 // Distinguish encryption failures (missing key) from genuinely
@@ -752,6 +780,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     thread_latest: None,
                     caption: None,
                     caption_html: None,
+                    row_kind: Default::default(),
                 })
             }
         }
@@ -759,6 +788,11 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
         TimelineItemContent::MembershipChange(mc) => {
             use matrix_sdk_ui::timeline::MembershipChange as MChange;
             let display = mc.display_name().unwrap_or_else(|| sender_name.clone());
+            let row_kind = match mc.change() {
+                Some(MChange::Joined) | Some(MChange::InvitationAccepted) | Some(MChange::Left) =>
+                    crate::models::RowKind::JoinLeave,
+                _ => crate::models::RowKind::Membership,
+            };
             let body = match mc.change() {
                 // A re-sent join with nothing changed (bots "ensure joined" on
                 // every restart) — nothing to tell the user.
@@ -789,6 +823,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             thread_latest: None,
             caption: None,
             caption_html: None,
+            row_kind,
             })
         }
 
@@ -810,6 +845,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             thread_latest: None,
             caption: None,
             caption_html: None,
+            row_kind: crate::models::RowKind::Profile,
             })
         }
 
@@ -850,6 +886,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             thread_latest: None,
             caption: None,
             caption_html: None,
+            row_kind: crate::models::RowKind::RoomState,
             })
         }
 

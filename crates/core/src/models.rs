@@ -72,6 +72,26 @@ pub struct MessageInfo {
     pub caption: Option<String>,
     #[serde(default)]
     pub caption_html: Option<String>,
+    /// What this row is, for display preferences (hide joins/leaves, ...).
+    #[serde(default)]
+    pub row_kind: RowKind,
+}
+
+/// Kind of timeline row.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowKind {
+    #[default]
+    Message,
+    /// Someone joined or left.
+    JoinLeave,
+    /// Other membership changes (invite, kick, ban, ...).
+    Membership,
+    /// Display name / avatar change.
+    Profile,
+    /// Room name / topic / avatar / power level changes.
+    RoomState,
+    /// A deleted message (placeholder).
+    Redacted,
 }
 
 /// The latest reply in a thread, shown in the root's thread summary row.

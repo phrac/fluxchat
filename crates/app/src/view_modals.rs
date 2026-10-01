@@ -104,10 +104,12 @@ impl FluxChat {
     }
 
     fn view_settings_modal(&self, tab: &str) -> Element<Message> {
-        const TABS: [(&str, &str, &[u8]); 5] = [
+        const TABS: [(&str, &str, &[u8]); 7] = [
             ("account", "Account", crate::icons::SVG_PERSON),
+            ("preferences", "Preferences", crate::icons::SVG_SLIDERS),
             ("appearance", "Appearance", crate::icons::SVG_PALETTE),
             ("notifications", "Notifications", crate::icons::SVG_BELL),
+            ("voice", "Voice & Video", crate::icons::SVG_HEADPHONES),
             ("sessions", "Sessions", crate::icons::SVG_MONITOR),
             ("security", "Security", crate::icons::SVG_SHIELD),
         ];
@@ -155,6 +157,8 @@ impl FluxChat {
 
         let (title, subtitle) = match tab {
             "account" => ("Account", "Your profile and sign-in"),
+            "preferences" => ("Preferences", "How the timeline, composer and privacy behave"),
+            "voice" => ("Voice & Video", "Devices and audio processing for calls"),
             "appearance" => ("Appearance", "Theme, fonts and text size"),
             "notifications" => ("Notifications", "Desktop alerts for new messages"),
             "sessions" => ("Sessions", "Devices signed in to your account"),
@@ -164,6 +168,8 @@ impl FluxChat {
 
         let body: Element<Message> = match tab {
             "account" => self.view_settings_account(),
+            "preferences" => self.view_settings_preferences(),
+            "voice" => self.view_settings_voice(),
             "sessions" => self.view_settings_sessions(),
             "security" => self.view_settings_security(),
             "appearance" => self.view_settings_appearance(),
@@ -482,6 +488,175 @@ impl FluxChat {
         col.into()
     }
 
+    fn view_settings_preferences(&self) -> Element<Message> {
+        // Each toggle sends a full updated copy of the preferences.
+        let toggle = |label: &'static str, detail: &'static str, on: bool, set: fn(&mut crate::prefs::Prefs, bool)| -> Element<Message> {
+            let base = self.prefs.clone();
+            ui::toggle_row(label, detail, on, move |v| {
+                let mut p = base.clone();
+                set(&mut p, v);
+                Message::SetPrefs(Box::new(p))
+            })
+        };
+        let section = |items: Vec<Element<'static, Message>>| -> Element<Message> {
+            let mut col = column![].spacing(10);
+            for (i, item) in items.into_iter().enumerate() {
+                if i > 0 {
+                    col = col.push(ui::divider());
+                }
+                col = col.push(item);
+            }
+            ui::card(col).into()
+        };
+        let p = &self.prefs;
+        let fmt = self.timestamp_format.as_str();
+        let clock = |secs: bool| crate::view_messages::format_clock(14 * 3600 + 5 * 60 + 9, secs, p.twelve_hour);
+
+        let timestamps = column![
+            ui::segmented(vec![
+                ("Hidden".to_string(), Some(Message::SetTimestampFormat("off".into())), fmt == "off"),
+                (clock(false), Some(Message::SetTimestampFormat("short".into())), fmt != "off" && fmt != "full"),
+                (clock(true), Some(Message::SetTimestampFormat("full".into())), fmt == "full"),
+            ]),
+            toggle("12-hour clock", "2:05 PM instead of 14:05", p.twelve_hour, |p, v| p.twelve_hour = v),
+        ]
+        .spacing(10);
+
+        let layout = vec![
+            ui::toggle_row("Compact layout", "Tighter rows, no avatars", self.compact_mode, Message::SetCompactMode),
+            toggle("Group consecutive messages", "Fade the name and hide the avatar on follow-ups from the same person",
+                p.group_messages, |p, v| p.group_messages = v),
+            toggle("Big emoji", "Show messages that are only emoji at a larger size", p.big_emoji, |p, v| p.big_emoji = v),
+            toggle("Link previews", "Show a card for links in messages", p.url_previews, |p, v| p.url_previews = v),
+            toggle("Autoplay GIFs", "Animate GIFs in the timeline (off shows a still frame)", p.autoplay_gifs, |p, v| p.autoplay_gifs = v),
+            toggle("Expand code blocks", "Show long code blocks in full instead of collapsed", p.expand_code_blocks, |p, v| p.expand_code_blocks = v),
+        ];
+        let events = vec![
+            ui::toggle_row("Joins and leaves", "People joining or leaving the room", self.show_joinpart, Message::SetShowJoinPart),
+            toggle("Name and avatar changes", "When someone changes their display name or avatar",
+                p.show_profile_changes, |p, v| p.show_profile_changes = v),
+            toggle("Room changes", "Name, topic, icon and permission changes", p.show_room_changes, |p, v| p.show_room_changes = v),
+            toggle("Deleted messages", "Leave a \u{201c}Message deleted\u{201d} placeholder", p.show_redactions, |p, v| p.show_redactions = v),
+            toggle("Read receipts", "Show who has read up to each message", p.show_read_receipts, |p, v| p.show_read_receipts = v),
+            toggle("Typing indicators", "Show when others are typing", p.show_typing, |p, v| p.show_typing = v),
+        ];
+        let send_shortcut = if cfg!(target_os = "macos") { "\u{2318}+Enter sends; Enter adds a new line" } else { "Ctrl+Enter sends; Enter adds a new line" };
+        let composer = vec![
+            toggle("Send with Ctrl+Enter", send_shortcut, p.ctrl_enter_to_send, |p, v| p.ctrl_enter_to_send = v),
+            toggle("Markdown", "Format **bold**, *italic*, `code` and lists when sending", p.use_markdown, |p, v| p.use_markdown = v),
+            toggle("Emoji suggestions", "Complete :shortcodes: as you type", p.emoji_suggestions, |p, v| p.emoji_suggestions = v),
+            toggle("Replace emoticons", "Turn :) and <3 into emoji when sending", p.auto_replace_emoji, |p, v| p.auto_replace_emoji = v),
+        ];
+        let privacy = vec![
+            toggle("Send read receipts", "Let others see what you've read (off: your unread state still syncs, privately)",
+                p.send_read_receipts, |p, v| p.send_read_receipts = v),
+            toggle("Send typing notifications", "Let others see when you're typing", p.send_typing, |p, v| p.send_typing = v),
+            toggle("Share presence", "Show others when you're online or away", p.share_presence, |p, v| p.share_presence = v),
+        ];
+
+        column![
+            ui::field("Timestamps", ui::card(timestamps)),
+            ui::field("Timeline", section(layout)),
+            ui::field("Show in the timeline", section(events)),
+            ui::field("Composer", section(composer)),
+            ui::field("Privacy", section(privacy)),
+        ]
+        .spacing(ui::GAP + 4.0)
+        .into()
+    }
+
+    fn view_settings_voice(&self) -> Element<Message> {
+        const DEFAULT: &str = "System default";
+        // Device picker: "System default" first, then the device names.
+        let picker = |devices: &[String], chosen: Option<&String>, set: fn(&mut crate::prefs::Prefs, Option<String>)| {
+            let mut options = vec![DEFAULT.to_string()];
+            options.extend(devices.iter().cloned());
+            // A remembered device that's unplugged still shows as selected.
+            if let Some(c) = chosen {
+                if !options.contains(c) {
+                    options.push(c.clone());
+                }
+            }
+            let selected = chosen.cloned().unwrap_or_else(|| DEFAULT.to_string());
+            let base = self.prefs.clone();
+            iced::widget::pick_list(options, Some(selected), move |name: String| {
+                let mut p = base.clone();
+                set(&mut p, (name != DEFAULT).then_some(name));
+                Message::SetPrefs(Box::new(p))
+            })
+            .font(MONO)
+            .text_size(13)
+            .padding([7, 10])
+            .width(Fill)
+            .style(ui::pick_list_style)
+        };
+        let toggle = |label: &'static str, detail: &'static str, on: bool, set: fn(&mut crate::prefs::Prefs, bool)| -> Element<Message> {
+            let base = self.prefs.clone();
+            ui::toggle_row(label, detail, on, move |v| {
+                let mut p = base.clone();
+                set(&mut p, v);
+                Message::SetPrefs(Box::new(p))
+            })
+        };
+
+        // Mic test: level meter + start/stop
+        let level = self.mic_level.clamp(0.0, 1.0);
+        let filled = ((level * 1000.0) as u16).clamp(1, 999);
+        let meter = container(
+            row![
+                container(Space::new().height(8))
+                    .width(Length::FillPortion(filled))
+                    .style(move |_: &Theme| container::Style {
+                        background: Some(if level > 0.85 { theme::colors().yellow } else { theme::colors().green }.into()),
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                Space::new().width(Length::FillPortion(1000 - filled)),
+            ],
+        )
+        .padding(2)
+        .width(Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::colors().bg_deep.into()),
+            border: iced::Border { color: theme::colors().border, width: 1.0, radius: 6.0.into() },
+            ..Default::default()
+        });
+        let testing = self.mic_test.is_some();
+        let mic_test = row![
+            if testing { meter.into() } else { Element::from(ui::hint("Check your microphone level before a call.")) },
+            ui::btn(if testing { "Stop test" } else { "Test microphone" }, Tone::Secondary, Some(Message::ToggleMicTest)),
+        ]
+        .spacing(12)
+        .align_y(iced::Alignment::Center);
+
+        let devices_loading = self.audio_inputs.is_empty() && self.audio_outputs.is_empty();
+        let mut col = column![
+            ui::field("Microphone", column![
+                picker(&self.audio_inputs, self.prefs.audio_input.as_ref(), |p, v| p.audio_input = v),
+                mic_test,
+            ].spacing(10)),
+            ui::field("Speaker", picker(&self.audio_outputs, self.prefs.audio_output.as_ref(), |p, v| p.audio_output = v)),
+        ]
+        .spacing(ui::GAP + 4.0);
+        if devices_loading {
+            col = col.push(ui::hint("Looking for audio devices\u{2026}"));
+        }
+        col = col.push(ui::field("Voice processing", ui::card(column![
+            toggle("Echo cancellation", "Stop others hearing themselves through your speakers",
+                self.prefs.echo_cancellation, |p, v| p.echo_cancellation = v),
+            ui::divider(),
+            toggle("Noise suppression", "Filter out background noise", self.prefs.noise_suppression, |p, v| p.noise_suppression = v),
+            ui::divider(),
+            toggle("Automatic gain", "Keep your voice at an even volume", self.prefs.auto_gain, |p, v| p.auto_gain = v),
+        ].spacing(10))));
+        col = col.push(ui::hint(if cfg!(target_os = "linux") {
+            "Changes apply to the next call. On Linux, call audio uses the PulseAudio default devices; the choices here apply to voice messages."
+        } else {
+            "Changes apply to the next call and voice message."
+        }));
+        col.into()
+    }
+
     fn view_settings_appearance(&self) -> Element<Message> {
         let fs = self.msg_font_size;
         let msg_font = crate::view::font_by_name(&self.msg_font_family);
@@ -545,12 +720,13 @@ impl FluxChat {
     }
 
     fn view_settings_notifications(&self) -> Element<Message> {
+        use fluxchat_core::notify_rules::{DefaultLevel, NotifyToggle};
         let enabled = self.notifications_enabled;
         let sub = |label: &'static str, detail: &'static str, on: bool, msg: fn(bool) -> Message| -> Element<Message> {
             if enabled {
                 ui::toggle_row(label, detail, on, msg)
             } else {
-                // Dimmed and inert while notifications are off.
+                // Dimmed and inert while desktop notifications are off.
                 row![
                     column![
                         text(label).font(MONO).size(13).color(theme::colors().text_dim),
@@ -563,13 +739,13 @@ impl FluxChat {
                 .into()
             }
         };
-        column![
+        let desktop = column![
             ui::card(ui::toggle_row(
-                "Desktop notifications", "Show a system notification for new messages",
+                "Desktop notifications", "Show a system notification on this device",
                 enabled, Message::SetNotificationsEnabled,
             )),
             ui::card(column![
-                sub("Mentions only", "Only notify when you're mentioned or a keyword matches",
+                sub("Only for mentions", "Only alert on this device when you're mentioned or a keyword matches",
                     self.notify_mentions_only, Message::SetNotifyMentionsOnly),
                 ui::divider(),
                 sub("Show message preview", "Include the message text in the notification",
@@ -578,10 +754,97 @@ impl FluxChat {
                 sub("Play sound", "Use the system notification sound",
                     self.notify_sound, Message::SetNotifySound),
             ].spacing(12)),
-            ui::hint("Per-room settings (all messages, mentions, mute) live in each room's settings."),
         ]
-        .spacing(ui::GAP)
-        .into()
+        .spacing(10);
+
+        let mut col = column![ui::field("This device", desktop)].spacing(ui::GAP + 4.0);
+
+        let Some(rules) = &self.notify_rules else {
+            col = col.push(ui::field("Your account", ui::hint("Loading your notification rules\u{2026}")));
+            return col.into();
+        };
+
+        let level_picker = |dm: bool, current: DefaultLevel| ui::segmented(vec![
+            ("All messages".to_string(), Some(Message::SetDefaultNotify(dm, DefaultLevel::AllMessages)), current == DefaultLevel::AllMessages),
+            ("Mentions & keywords".to_string(), Some(Message::SetDefaultNotify(dm, DefaultLevel::MentionsAndKeywords)), current == DefaultLevel::MentionsAndKeywords),
+        ]);
+        let toggle = |label: &'static str, detail: &'static str, on: bool, t: NotifyToggle| -> Element<Message> {
+            ui::toggle_row(label, detail, on, move |v| Message::SetNotifyToggle(t, v))
+        };
+
+        let defaults = ui::card(column![
+            text("Direct messages").font(MONO).size(13).color(theme::colors().text_normal),
+            level_picker(true, rules.dms),
+            Space::new().height(4),
+            text("Group rooms").font(MONO).size(13).color(theme::colors().text_normal),
+            level_picker(false, rules.groups),
+        ].spacing(8));
+
+        let mentions = ui::card(column![
+            toggle("Mentions of me", "Your name, username or a mention pill", rules.mention_me, NotifyToggle::MentionMe),
+            ui::divider(),
+            toggle("@room", "When someone notifies the whole room", rules.mention_room, NotifyToggle::MentionRoom),
+        ].spacing(10));
+
+        // Keywords: chips + add field
+        let mut chips = row![].spacing(6);
+        for kw in &rules.keywords {
+            chips = chips.push(
+                container(
+                    row![
+                        text(kw.as_str()).font(MONO).size(12).color(theme::colors().text_normal),
+                        button(ui::icon(crate::icons::SVG_CLOSE, 11.0, theme::colors().text_dim))
+                            .on_press(Message::RemoveKeyword(kw.clone()))
+                            .padding(2)
+                            .style(ui::button_style(Tone::Ghost)),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding(iced::Padding { top: 3.0, right: 4.0, bottom: 3.0, left: 10.0 })
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_light.into()),
+                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 12.0.into() },
+                    ..Default::default()
+                }),
+            );
+        }
+        let keywords = ui::card(column![
+            if rules.keywords.is_empty() {
+                Element::from(ui::hint("No keywords yet. Messages containing a keyword notify you and are highlighted."))
+            } else {
+                iced::widget::scrollable(chips)
+                    .direction(iced::widget::scrollable::Direction::Horizontal(
+                        iced::widget::scrollable::Scrollbar::new().width(3).scroller_width(3),
+                    ))
+                    .style(thin_scrollbar)
+                    .into()
+            },
+            row![
+                ui::input("Add a keyword", &self.keyword_input, Message::KeywordInputChanged)
+                    .on_submit(Message::AddKeyword)
+                    .width(Fill),
+                ui::btn("Add", Tone::Secondary, (!self.keyword_input.trim().is_empty()).then_some(Message::AddKeyword)),
+            ].spacing(8).align_y(iced::Alignment::Center),
+        ].spacing(10));
+
+        let other = ui::card(column![
+            toggle("Invites", "When you're invited to a room", rules.invites, NotifyToggle::Invites),
+            ui::divider(),
+            toggle("Calls", "Incoming calls", rules.calls, NotifyToggle::Calls),
+            ui::divider(),
+            toggle("Bot messages", "Notices sent by bots", rules.bot_notices, NotifyToggle::BotNotices),
+            ui::divider(),
+            toggle("Room upgrades", "When a room moves to a new version", rules.room_upgrades, NotifyToggle::RoomUpgrades),
+        ].spacing(10));
+
+        col = col
+            .push(ui::field("Notify me for", defaults))
+            .push(ui::field("Mentions", mentions))
+            .push(ui::field("Keywords", keywords))
+            .push(ui::field("Other", other))
+            .push(ui::hint("Account settings are saved on your server and apply on all your devices. Per-room overrides live in each room's settings."));
+        col.into()
     }
 
     fn view_create_room_modal(&self) -> Element<Message> {
@@ -756,11 +1019,10 @@ impl FluxChat {
         let subtitle = msg.map(|m| {
             let secs = crate::view::local_time_of_day(m.timestamp);
             format!(
-                "{}  \u{00b7}  {}, {:02}:{:02}",
+                "{}  \u{00b7}  {}, {}",
                 m.sender_name,
                 crate::view_messages::local_day_label(m.timestamp),
-                secs / 3600,
-                (secs % 3600) / 60,
+                crate::view_messages::format_clock(secs, false, self.prefs.twelve_hour),
             )
         });
 
@@ -1001,32 +1263,6 @@ impl FluxChat {
             }
         }
 
-        // --- Security ---
-        let encryption: Element<Message> = if room.is_encrypted {
-            row![
-                ui::icon(crate::icons::SVG_LOCK, 16.0, theme::colors().green),
-                column![
-                    text("End-to-end encrypted").font(MONO).size(13).color(theme::colors().text_normal),
-                    ui::hint("Messages can only be read by members' devices."),
-                ].spacing(2).width(Fill),
-            ]
-            .spacing(10)
-            .align_y(iced::Alignment::Center)
-            .into()
-        } else {
-            row![
-                ui::icon(crate::icons::SVG_LOCK, 16.0, theme::colors().text_dim),
-                column![
-                    text("Not encrypted").font(MONO).size(13).color(theme::colors().text_normal),
-                    ui::hint("Once enabled, encryption can't be turned off."),
-                ].spacing(2).width(Fill),
-                ui::btn("Enable", Tone::Secondary, Some(Message::EnableEncryption(room.room_id.clone()))),
-            ]
-            .spacing(10)
-            .align_y(iced::Alignment::Center)
-            .into()
-        };
-
         // --- Advanced ---
         let id_row = row![
             text(&room.room_id).font(MONO).size(12).color(theme::colors().text_muted).width(Fill),
@@ -1047,7 +1283,6 @@ impl FluxChat {
             ].spacing(6)),
             ui::field("Spaces", spaces_col),
             ui::divider(),
-            ui::field("Security", encryption),
             ui::field("Room ID", id_row),
             ui::divider(),
             row![
@@ -1062,8 +1297,20 @@ impl FluxChat {
         ]
         .spacing(ui::GAP);
 
+        use crate::state::RoomSettingsTab;
+        let tab = self.room_settings_tab;
+        let body: Element<Message> = match tab {
+            RoomSettingsTab::General => body.into(),
+            RoomSettingsTab::Security => self.view_room_security_tab(&room.room_id),
+            RoomSettingsTab::Roles => self.view_room_roles_tab(&room.room_id),
+        };
         column![
             ui::header("Room settings", Some(room.name.clone())),
+            ui::tabs(vec![
+                ("General".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::General), tab == RoomSettingsTab::General),
+                ("Security & Privacy".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Security), tab == RoomSettingsTab::Security),
+                ("Roles & Permissions".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Roles), tab == RoomSettingsTab::Roles),
+            ]),
             container(
                 scrollable(container(body).padding(iced::Padding { right: 10.0, ..Default::default() }))
                     .direction(iced::widget::scrollable::Direction::Vertical(
@@ -1071,10 +1318,10 @@ impl FluxChat {
                     ))
                     .style(thin_scrollbar),
             )
-            .max_height(560.0),
+            .height(Length::Fixed(520.0)),
         ]
         .spacing(ui::GAP)
-        .width(540)
+        .width(580)
         .into()
     }
 

@@ -1,3 +1,4 @@
+pub mod audio_devices;
 pub mod auth;
 pub mod db;
 pub mod devices;
@@ -5,9 +6,11 @@ pub mod error;
 pub mod gif;
 pub mod media;
 pub mod messages;
+pub mod notify_rules;
 pub mod models;
 pub mod preview;
 pub mod profile;
+pub mod room_admin;
 pub mod rooms;
 pub mod spaces;
 pub mod state;

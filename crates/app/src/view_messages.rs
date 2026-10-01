@@ -19,6 +19,9 @@ use crate::view::{
 /// Selection-widget part index for a media caption (after any body parts).
 const CAPTION_PART_INDEX: usize = 10_000;
 
+/// Size multiplier for emoji-only messages.
+const BIG_EMOJI_SCALE: f32 = 2.2;
+
 /// Gap between the columns of a message row (time, nick, avatar, separator, text).
 pub(crate) const MSG_COL_GAP: f32 = 6.0;
 /// Messages from the same sender within this many seconds are grouped.
@@ -144,6 +147,35 @@ impl FluxChat {
     }
 
     /// Render a single message row: [time] [nick] | [body]
+    /// Whether a message should be highlighted: it mentions us (name,
+    /// username, ID or pill), @room, or one of our keywords (server push-rule
+    /// keywords plus local `/highlight` words). Never our own messages.
+    pub(crate) fn is_highlight(&self, msg: &fluxchat_core::MessageInfo) -> bool {
+        if msg.sender == self.user_id || msg.row_kind != fluxchat_core::RowKind::Message || msg.body.is_empty() {
+            return false;
+        }
+        let body = msg.body.to_lowercase();
+        let html = msg.formatted_body.as_deref().unwrap_or("");
+        let rules = self.notify_rules.as_ref();
+        let mention_me = rules.is_none_or(|r| r.mention_me);
+        if mention_me {
+            let localpart = self.user_id.trim_start_matches('@').split(':').next().unwrap_or("").to_lowercase();
+            let display = self.display_name.as_deref().unwrap_or("").to_lowercase();
+            let mentions = |needle: &str| !needle.is_empty() && contains_word(&body, needle);
+            if mentions(&localpart) || mentions(&display) || html.contains(&self.user_id)
+                || html.contains(&self.user_id.replace('@', "%40"))
+            {
+                return true;
+            }
+        }
+        if rules.is_none_or(|r| r.mention_room) && contains_word(&body, "@room") {
+            return true;
+        }
+        let server_keywords = rules.map(|r| r.keywords.as_slice()).unwrap_or(&[]);
+        server_keywords.iter().chain(self.highlight_words.iter())
+            .any(|k| !k.trim().is_empty() && contains_word(&body, &k.to_lowercase()))
+    }
+
     /// Column geometry of a message row, scaled to the message font size.
     pub(crate) fn msg_columns(&self) -> MsgColumns {
         let fs = self.msg_font_size;
@@ -152,13 +184,14 @@ impl FluxChat {
             "off" => 0.0,
             "full" => 8.0,
             _ => 5.0,
-        };
+        } + if self.prefs.twelve_hour && self.timestamp_format != "off" { 3.0 } else { 0.0 };
         MsgColumns {
             time_size,
             // Digits are ~0.6em in most fonts; a little slack avoids clipping.
             time_w: if time_chars == 0.0 { 0.0 } else { (time_chars * time_size * 0.62 + 6.0).ceil() },
             nick_w: (fs * 7.4).max(96.0).round(),
-            avatar: (fs + 4.0).round(),
+            // Compact mode: no avatar column.
+            avatar: if self.compact_mode { 0.0 } else { (fs + 4.0).round() },
         }
     }
 
@@ -180,15 +213,11 @@ impl FluxChat {
             String::new()
         } else {
             // Convert Unix timestamp to local time using libc
-            let local_secs = local_time_of_day(msg.timestamp);
-            let h = local_secs / 3600;
-            let m = (local_secs % 3600) / 60;
-            if self.timestamp_format == "full" {
-                let s = local_secs % 60;
-                format!("{h:02}:{m:02}:{s:02}")
-            } else {
-                format!("{h:02}:{m:02}")
-            }
+            format_clock(
+                local_time_of_day(msg.timestamp),
+                self.timestamp_format == "full",
+                self.prefs.twelve_hour,
+            )
         };
 
         // Date divider
@@ -275,7 +304,7 @@ impl FluxChat {
         .clip(true);
 
         // Avatar (initial on a colour tint when they have none); blank on continuations
-        let msg_avatar: Element<'a, Message> = if continuation {
+        let msg_avatar: Element<'a, Message> = if continuation || self.compact_mode {
             Space::new().width(cols.avatar).height(1).into()
         } else {
             self.render_avatar_with_initial(msg.avatar_url.as_deref(), &msg.sender_name, cols.avatar)
@@ -292,6 +321,24 @@ impl FluxChat {
                 })
                 .into()
         };
+
+        // Deleted message placeholder
+        if msg.row_kind == fluxchat_core::RowKind::Redacted {
+            let placeholder = row![
+                crate::ui::icon(SVG_TRASH, (fs - 2.0).max(11.0), theme::colors().text_dim),
+                text("Message deleted").font(self.msg_font()).size((fs - 1.0).max(11.0))
+                    .color(theme::colors().text_dim),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+            return container(
+                row![time, nick, msg_avatar, make_sep(), placeholder]
+                    .spacing(MSG_COL_GAP).width(Fill).align_y(iced::Alignment::Start),
+            )
+            .padding(iced::Padding { top: if continuation { 1.0 } else { 6.0 }, right: 0.0, bottom: 1.0, left: 0.0 })
+            .width(Fill)
+            .into();
+        }
 
         // Poll messages
         if let Some(ref poll) = msg.poll {
@@ -478,7 +525,7 @@ impl FluxChat {
         } else if let Some(ref mxc) = msg.image_mxc {
             if !msg.is_video {
                 // Image messages
-                if let Some(frames) = self.gif_frames_cache.get(mxc) {
+                if let Some(frames) = self.gif_frames_cache.get(mxc).filter(|_| self.prefs.autoplay_gifs) {
                     let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
                     let mxc_click = mxc.clone();
                     mouse_area(
@@ -757,10 +804,14 @@ impl FluxChat {
             .padding(0)
             .style(|_, _| button::Style { background: None, ..Default::default() })
             .into()
+        } else if self.prefs.big_emoji && crate::prefs::is_emoji_only(&msg.body) {
+            // Emoji-only message (formatted or not): shown large.
+            text(msg.body.trim()).size(fs * BIG_EMOJI_SCALE).into()
         } else if let Some(ref formatted) = msg.formatted_body {
             let has_code_block = formatted.contains("<pre>");
             let has_table = formatted.contains("<table");
-            let is_expanded = self.expanded_code_blocks.contains(&msg.event_id);
+            // The set holds messages toggled away from the default.
+            let is_expanded = self.expanded_code_blocks.contains(&msg.event_id) != self.prefs.expand_code_blocks;
 
             let rendered = self.body_cache.get_or_insert(
                 ("html", formatted.as_str(), is_expanded, fs.to_bits()),
@@ -1183,15 +1234,23 @@ impl FluxChat {
         let base_row: Element<'a, Message> = row![time, nick, msg_avatar, make_sep(), body_element]
             .spacing(MSG_COL_GAP).width(Fill).align_y(iced::Alignment::Start).into();
 
-        // Wrap in container with hover highlight
-        let hover_bg = if is_hovered {
-            theme::tint(0.03)
-        } else {
-            Color::TRANSPARENT
+        // Wrap in container with hover highlight; mentions/keywords get a
+        // red wash (a little stronger on hover).
+        let highlighted = self.is_highlight(msg);
+        let hover_bg = match (highlighted, is_hovered) {
+            (true, true) => theme::with_alpha(theme::colors().red, 0.13),
+            (true, false) => theme::with_alpha(theme::colors().red, 0.08),
+            (false, true) => theme::tint(0.03),
+            (false, false) => Color::TRANSPARENT,
         };
         let base_row: Element<'a, Message> = container(base_row)
             .width(Fill)
-            .padding(iced::Padding { top: if continuation { 1.0 } else { 6.0 }, right: 0.0, bottom: 1.0, left: 0.0 })
+            .padding(iced::Padding {
+                top: if continuation || self.compact_mode { 1.0 } else { 6.0 },
+                right: 0.0,
+                bottom: if self.compact_mode { 0.0 } else { 1.0 },
+                left: 0.0,
+            })
             .style(move |_: &Theme| container::Style {
                 background: Some(hover_bg.into()),
                 ..Default::default()
@@ -1334,7 +1393,7 @@ impl FluxChat {
 
         // URL preview cards (max 2 unless expanded)
         let indent = self.msg_content_indent();
-        let urls = extract_urls(&msg.body);
+        let urls = if self.prefs.url_previews { extract_urls(&msg.body) } else { Vec::new() };
         let all_previews: Vec<&fluxchat_core::UrlPreview> = urls
             .iter()
             .filter_map(|url| self.url_previews.get(url))
@@ -1847,4 +1906,51 @@ fn collapse_code_blocks(html: &str, max_lines: usize) -> String {
 /// Day label for a date divider row.
 pub(crate) fn local_day_label(unix_secs: u64) -> String {
     crate::view::format_day(unix_secs)
+}
+
+/// Clock text for seconds-since-midnight: "14:05", "14:05:09", "2:05 PM".
+pub(crate) fn format_clock(secs_of_day: u64, seconds: bool, twelve_hour: bool) -> String {
+    let (h, m, s) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
+    let tail = if seconds { format!(":{s:02}") } else { String::new() };
+    if twelve_hour {
+        let (h12, ampm) = match h { 0 => (12, "AM"), 1..=11 => (h, "AM"), 12 => (12, "PM"), _ => (h - 12, "PM") };
+        format!("{h12}:{m:02}{tail} {ampm}")
+    } else {
+        format!("{h:02}:{m:02}{tail}")
+    }
+}
+
+
+/// `needle` appears in `haystack` as a whole word (both lowercase).
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    haystack.match_indices(needle).any(|(i, m)| {
+        let before = haystack[..i].chars().next_back();
+        let after = haystack[i + m.len()..].chars().next();
+        before.is_none_or(|c| !is_word(c)) && after.is_none_or(|c| !is_word(c))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{contains_word, format_clock};
+
+    #[test]
+    fn whole_word_matching() {
+        assert!(contains_word("hey phrac, look", "phrac"));
+        assert!(contains_word("@room deploy now", "@room"));
+        assert!(!contains_word("phracking around", "phrac"));
+        assert!(!contains_word("myroomie", "room"));
+        assert!(contains_word("seerr!", "seerr"));
+    }
+
+    #[test]
+    fn clock_formats() {
+        let t = 14 * 3600 + 5 * 60 + 9;
+        assert_eq!(format_clock(t, false, false), "14:05");
+        assert_eq!(format_clock(t, true, false), "14:05:09");
+        assert_eq!(format_clock(t, false, true), "2:05 PM");
+        assert_eq!(format_clock(5 * 60, false, true), "12:05 AM");
+        assert_eq!(format_clock(12 * 3600, false, true), "12:00 PM");
+    }
 }

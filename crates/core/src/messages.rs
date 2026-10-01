@@ -624,6 +624,17 @@ pub async fn fetch_presence(client: &matrix_sdk::Client, user_id: &str) -> Resul
     })
 }
 
+/// Set our own presence (online, or offline to stop sharing activity).
+pub async fn set_own_presence(client: &matrix_sdk::Client, online: bool) -> Result<(), AppError> {
+    use matrix_sdk::ruma::api::client::presence::set_presence;
+    use matrix_sdk::ruma::presence::PresenceState;
+    let user_id = client.user_id().ok_or_else(|| AppError::Other("Not logged in".into()))?.to_owned();
+    let state = if online { PresenceState::Online } else { PresenceState::Offline };
+    client.send(set_presence::v3::Request::new(user_id, state)).await
+        .map_err(|e| AppError::Other(format!("Couldn't set presence: {e}")))?;
+    Ok(())
+}
+
 /// Fetch the member list for a room with presence and power level info.
 pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<MemberInfo>, AppError> {
     let room_id = parse_room_id(room_id)?;

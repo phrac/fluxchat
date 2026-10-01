@@ -33,6 +33,10 @@ pub async fn login(
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver)
         .sqlite_store(&matrix_store, None)
+        // Without this the event cache never routes live sync events into
+        // thread caches, so open thread views stop updating (and thread
+        // summaries never refresh).
+        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled { with_subscriptions: false })
         .build()
         .await?;
 
@@ -152,6 +156,10 @@ pub async fn login_sso(
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver)
         .sqlite_store(&matrix_store, None)
+        // Without this the event cache never routes live sync events into
+        // thread caches, so open thread views stop updating (and thread
+        // summaries never refresh).
+        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled { with_subscriptions: false })
         .build()
         .await?;
 
@@ -227,6 +235,10 @@ pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginRe
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver)
         .sqlite_store(&matrix_store, None)
+        // Without this the event cache never routes live sync events into
+        // thread caches, so open thread views stop updating (and thread
+        // summaries never refresh).
+        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled { with_subscriptions: false })
         .build().await?;
 
     let matrix_session = MatrixSession {

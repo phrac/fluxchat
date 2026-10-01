@@ -66,6 +66,25 @@ pub enum Modal {
 
 
 
+/// Resizable panels (each has a drag divider).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeTarget {
+    /// Room list (left).
+    RoomList,
+    /// Thread pane (right of the timeline).
+    ThreadPane,
+    /// Member list (far right).
+    MemberList,
+}
+
+/// Tabs of the room settings dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomSettingsTab {
+    General,
+    Security,
+    Roles,
+}
+
 /// Tabs of the space dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpaceTab {
@@ -180,6 +199,13 @@ pub struct FluxChat {
 
     // Tabs
     pub open_tabs: Vec<TabEntry>,
+    /// Thread shown in the right-hand pane beside the room (a thread key).
+    pub thread_pane: Option<String>,
+    pub thread_pane_width: f32,
+    /// Width of the member list (resizable).
+    pub member_list_width: f32,
+    /// The thread pane's own composer.
+    pub thread_input: iced::widget::text_editor::Content,
 
     // Unread tracking
     pub read_rooms: HashSet<String>,
@@ -192,6 +218,17 @@ pub struct FluxChat {
     pub highlight_words: Vec<String>,
     pub timestamp_format: String,  // "short", "full", "off"
     pub compact_mode: bool,
+    /// Settings → Preferences (persisted under `prefs::PREFS_KEY`).
+    pub prefs: crate::prefs::Prefs,
+    /// Voice & Video tab: device names (loaded when the tab opens).
+    pub audio_inputs: Vec<String>,
+    pub audio_outputs: Vec<String>,
+    /// Running microphone test, and its latest level (0–1).
+    pub mic_test: Option<fluxchat_core::audio_devices::MicTest>,
+    pub mic_level: f32,
+    /// Account-wide push rules (Settings → Notifications), `None` until loaded.
+    pub notify_rules: Option<fluxchat_core::notify_rules::NotifyRules>,
+    pub keyword_input: String,
     pub show_joinpart: bool,
     pub zoom_level: u32,
     pub msg_font_size: f32,
@@ -212,7 +249,8 @@ pub struct FluxChat {
     // Status
     pub sync_lag_ms: u64,
     pub sidebar_width: f32,
-    pub sidebar_dragging: bool,
+    /// Divider being dragged, if any.
+    pub resizing: Option<ResizeTarget>,
     /// Layout values changed since they were last written to SQLite;
     /// flushed on the next Tick so resize drags don't hammer the database.
     pub layout_dirty: bool,
@@ -312,6 +350,11 @@ pub struct FluxChat {
     pub room_notify_mode: Option<String>,
     /// Spaces the room in Room Settings belongs to (`None` while loading).
     pub room_parent_spaces: Option<Vec<String>>,
+    pub room_settings_tab: RoomSettingsTab,
+    /// Security & privacy of the room in Room Settings (`None` while loading).
+    pub room_security: Option<fluxchat_core::room_admin::RoomSecurity>,
+    /// Power levels + ban list of the room in Room Settings.
+    pub room_perms: Option<(fluxchat_core::room_admin::RoomPermissions, Vec<fluxchat_core::room_admin::BannedUser>)>,
     /// Spaces we may add rooms to (for Room Settings' "Add to space").
     pub manageable_spaces: Vec<String>,
     /// Space picked in Room Settings' "Add to space" picker.
@@ -517,6 +560,10 @@ impl FluxChat {
             help_text: None,
             modal: None,
             open_tabs: Vec::new(),
+            thread_pane: None,
+            thread_pane_width: 420.0,
+            member_list_width: 220.0,
+            thread_input: iced::widget::text_editor::Content::new(),
             read_rooms: HashSet::new(),
             last_read_event: HashMap::new(),
             last_seen_timestamp: HashMap::new(),
@@ -525,6 +572,13 @@ impl FluxChat {
             highlight_words: Vec::new(),
             timestamp_format: "short".into(),
             compact_mode: false,
+            prefs: Default::default(),
+            audio_inputs: Vec::new(),
+            audio_outputs: Vec::new(),
+            mic_test: None,
+            mic_level: 0.0,
+            notify_rules: None,
+            keyword_input: String::new(),
             show_joinpart: true,
             zoom_level: 100,
             msg_font_size: 14.0,
@@ -541,7 +595,7 @@ impl FluxChat {
             app_focused: true,
             sync_lag_ms: 0,
             sidebar_width: 220.0,
-            sidebar_dragging: false,
+            resizing: None,
             layout_dirty: false,
             window_size: (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
             device_id: None,
@@ -594,6 +648,9 @@ impl FluxChat {
             room_settings_topic: String::new(),
             room_notify_mode: None,
             room_parent_spaces: None,
+            room_settings_tab: RoomSettingsTab::General,
+            room_security: None,
+            room_perms: None,
             manageable_spaces: Vec::new(),
             room_settings_add_space: None,
             profile_power_input: String::new(),

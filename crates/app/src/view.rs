@@ -9,6 +9,16 @@ pub fn input_id() -> iced::widget::Id {
     iced::widget::Id::new("main_input")
 }
 
+/// The thread pane's composer.
+pub fn thread_input_id() -> iced::widget::Id {
+    iced::widget::Id::new("thread_input")
+}
+
+/// The thread pane's message list.
+pub fn thread_scrollable_id() -> iced::widget::Id {
+    iced::widget::Id::new("thread_messages")
+}
+
 /// Fixed ID for the GIF search input.
 pub fn gif_search_id() -> iced::widget::Id {
     iced::widget::Id::new("gif_search_input")
@@ -29,6 +39,10 @@ pub fn quick_switcher_id() -> iced::widget::Id {
     iced::widget::Id::new("quick_switcher_input")
 }
 
+/// Grab width of panel dividers.
+const RESIZE_HANDLE_WIDTH: f32 = 3.0;
+/// Read-receipt avatars shown under a message before "+N".
+const READ_RECEIPT_AVATARS: usize = 5;
 /// Left offset of a thread entry's icon so it lines up with its parent
 /// room's name: unread dot (8) + gap (6) + room icon (18) + gap (6).
 const THREAD_ENTRY_OFFSET: f32 = 38.0;
@@ -149,7 +163,8 @@ impl FluxChat {
         font_by_name(&self.sidebar_font_family)
     }
 
-    /// Window title: unread total and the current room.
+    /// Window title, IRC-client style:
+    /// `(3) #general › thread · Space — @me:server · 6 members — FluxChat`.
     pub fn title(&self) -> String {
         if self.screen == Screen::Login {
             return "FluxChat".to_string();
@@ -158,15 +173,37 @@ impl FluxChat {
             .filter(|r| !self.read_rooms.contains(&r.room_id))
             .map(|r| r.unread_count)
             .sum();
-        let room = self.active_real_room()
-            .and_then(|rid| self.rooms.iter().find(|r| r.room_id == rid))
-            .map(|r| r.name.as_str());
-        match (unread, room) {
-            (0, Some(name)) => format!("{name} — FluxChat"),
-            (n, Some(name)) => format!("({n}) {name} — FluxChat"),
-            (0, None) => "FluxChat".to_string(),
-            (n, None) => format!("({n}) FluxChat"),
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(key) = self.selected_room_id.as_deref() {
+            let real = fluxchat_core::timeline::real_room_id(key);
+            if let Some(room) = self.rooms.iter().find(|r| r.room_id == real) {
+                let mut where_ = if room.is_direct { room.name.clone() } else { format!("#{}", room.name) };
+                if key.starts_with("thread::") {
+                    where_.push_str(" \u{203a} thread");
+                }
+                if let Some(space) = &room.space_name {
+                    where_.push_str(&format!(" \u{00b7} {space}"));
+                }
+                parts.push(where_);
+            }
         }
+        let mut who = self.user_id.clone();
+        if let Some(n) = self.selected_room_id.as_ref()
+            .and_then(|k| self.members_by_room.get(k))
+            .map(|m| m.len())
+            .filter(|n| *n > 0)
+        {
+            who.push_str(&format!(" \u{00b7} {n} members"));
+        }
+        if !who.is_empty() {
+            parts.push(who);
+        }
+        if self.sync_status.is_some() {
+            parts.push("reconnecting\u{2026}".into());
+        }
+        parts.push("FluxChat".into());
+        let title = parts.join(" \u{2014} ");
+        if unread > 0 { format!("({unread}) {title}") } else { title }
     }
 
     /// Top-level view — dispatches to login or main layout.
@@ -189,6 +226,9 @@ impl FluxChat {
         &'a self,
         msg: &'a fluxchat_core::MessageInfo,
     ) -> Option<Element<'a, Message>> {
+        if !self.prefs.show_read_receipts {
+            return None;
+        }
         let user_ids: Vec<&str> = msg.read_receipt_user_ids.iter()
             .filter(|uid| uid.as_str() != self.user_id)
             .map(String::as_str)
@@ -198,31 +238,50 @@ impl FluxChat {
         }
         let members = self.selected_room_id.as_ref()
             .and_then(|rid| self.members_by_room.get(rid));
+        let name_of = |uid: &str| -> String {
+            members.and_then(|m| m.iter().find(|m| m.user_id == uid))
+                .map(|m| m.display_name.clone())
+                .unwrap_or_else(|| uid.trim_start_matches('@').split(':').next().unwrap_or(uid).to_string())
+        };
         let mut avatars_row = row![].spacing(2);
-        let shown = user_ids.len().min(5);
+        let shown = user_ids.len().min(READ_RECEIPT_AVATARS);
         for uid in user_ids.iter().take(shown) {
-            let member = members.and_then(|m| m.iter().find(|m| m.user_id == *uid));
-            let avatar_mxc = member.and_then(|m| m.avatar_url.as_deref());
-            let display = member.map(|m| m.display_name.as_str())
-                .unwrap_or_else(|| uid.trim_start_matches('@').split(':').next().unwrap_or(uid));
-            avatars_row = avatars_row.push(
-                self.render_avatar_with_initial(avatar_mxc, display, 14.0),
-            );
+            let avatar_mxc = members
+                .and_then(|m| m.iter().find(|m| m.user_id == *uid))
+                .and_then(|m| m.avatar_url.as_deref());
+            avatars_row = avatars_row.push(self.render_avatar_with_initial(avatar_mxc, &name_of(uid), 16.0));
         }
-        if user_ids.len() > 5 {
+        if user_ids.len() > shown {
             avatars_row = avatars_row.push(
-                text(format!("+{}", user_ids.len() - 5))
+                text(format!("+{}", user_ids.len() - shown))
                     .font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
             );
         }
-        // Offset to align with message content area (timestamp + nick + avatar + separator)
+        // Hover: who has read up to here.
+        let names: Vec<String> = user_ids.iter().map(|u| name_of(u)).collect();
+        let tip = if names.len() <= 6 {
+            format!("Read by {}", names.join(", "))
+        } else {
+            format!("Read by {} and {} others", names[..5].join(", "), names.len() - 5)
+        };
         Some(
             row![
                 Space::new().width(Fill),
-                avatars_row,
+                iced::widget::tooltip(
+                    avatars_row,
+                    text(tip).font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
+                    iced::widget::tooltip::Position::Left,
+                )
+                .gap(6)
+                .padding(4)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_deep.into()),
+                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                    ..Default::default()
+                }),
             ]
             .align_y(iced::Alignment::Center)
-            .padding([0, 8])
+            .padding([1, 8])
             .into(),
         )
     }
@@ -296,6 +355,21 @@ impl FluxChat {
     /// Render a cached avatar with an initial letter fallback.
     pub(crate) fn render_avatar_with_initial<'a>(&self, mxc: Option<&str>, name: &str, size: f32) -> Element<'a, Message> {
         self.render_avatar_shaped(mxc, name, size, size / 2.0)
+    }
+
+    /// Draggable divider between panels (highlights while hovered/dragged).
+    fn resize_handle(&self, target: crate::state::ResizeTarget) -> Element<'_, Message> {
+        let active = self.resizing == Some(target);
+        mouse_area(
+            container(Space::new().width(RESIZE_HANDLE_WIDTH).height(Fill))
+                .style(move |_: &Theme| container::Style {
+                    background: Some(if active { theme::colors().accent } else { theme::colors().border }.into()),
+                    ..Default::default()
+                }),
+        )
+        .on_press(Message::ResizeStart(target))
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .into()
     }
 
     /// A panel under the header bar: title + count + close, then a
@@ -632,28 +706,26 @@ impl FluxChat {
         let room_list = self.view_room_list();
         let main_content = self.view_content();
 
-        // Drag handle between room list and content
-        let drag_handle: Element<Message> = mouse_area(
-            container(Space::new().width(3).height(Fill))
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().border.into()),
-                    ..Default::default()
-                })
-        )
-        .on_press(Message::SidebarDragStart)
-        .interaction(iced::mouse::Interaction::ResizingHorizontally)
-        .into();
-
+        use crate::state::ResizeTarget;
         let mut main_area = row![
             sidebar,
             container(room_list).width(Length::Fixed(self.sidebar_width)),
-            drag_handle,
+            self.resize_handle(ResizeTarget::RoomList),
             main_content,
         ];
 
+        // Thread pane beside the timeline
+        if let Some(key) = self.thread_pane.as_deref() {
+            main_area = main_area
+                .push(self.resize_handle(ResizeTarget::ThreadPane))
+                .push(container(self.view_thread_pane(key)).width(Length::Fixed(self.thread_pane_width)));
+        }
+
         // Member list (right sidebar)
         if self.show_member_list && self.selected_room_id.is_some() {
-            main_area = main_area.push(self.view_member_list());
+            main_area = main_area
+                .push(self.resize_handle(ResizeTarget::MemberList))
+                .push(self.view_member_list());
         }
 
         let main_area = main_area.width(Fill).height(Fill);
@@ -690,7 +762,7 @@ impl FluxChat {
             let mut results_col = column![].spacing(1);
             for (i, result) in self.search_results.iter().take(20).enumerate() {
                 let local_secs = local_time_of_day(result.timestamp);
-                let time_str = format!("{:02}:{:02}", local_secs / 3600, (local_secs % 3600) / 60);
+                let time_str = crate::view_messages::format_clock(local_secs, false, self.prefs.twelve_hour);
                 let body_line: String = result.body.lines().next().unwrap_or("").chars().take(120).collect();
                 results_col = results_col.push(
                     button(
@@ -1065,10 +1137,19 @@ impl FluxChat {
     /// The rows the message list would show for a view, in order — hidden
     /// senders and (outside thread views) thread replies removed.
     pub(crate) fn visible_rows<'m>(&self, room_id: &str, msgs: &'m [fluxchat_core::MessageInfo]) -> Vec<&'m fluxchat_core::MessageInfo> {
+        use fluxchat_core::RowKind;
         let is_thread_view = room_id.starts_with("thread::");
+        let p = &self.prefs;
         msgs.iter()
             .filter(|m| !self.ignored_users.contains(&m.sender))
             .filter(|m| is_thread_view || m.thread_root.is_none())
+            .filter(|m| match m.row_kind {
+                RowKind::JoinLeave => self.show_joinpart,
+                RowKind::Profile => p.show_profile_changes,
+                RowKind::RoomState => p.show_room_changes,
+                RowKind::Redacted => p.show_redactions,
+                RowKind::Message | RowKind::Membership => true,
+            })
             .collect()
     }
 
@@ -2242,7 +2323,8 @@ impl FluxChat {
                     msg_col = msg_col.push(Space::new().width(Fill).height(top_spacer));
                 }
                 for (i, msg) in rows.iter().enumerate().take(end).skip(start) {
-                    let continuation = i > 0 && is_continuation(rows[i - 1], msg);
+                    let continuation = self.prefs.group_messages && !self.compact_mode
+                        && i > 0 && is_continuation(rows[i - 1], msg);
                     let mut row_col = column![self.view_message(msg, continuation)].spacing(0).width(Fill);
                     // Unread divider: show after the last-read message
                     let is_last_read = show_divider && !divider_shown
@@ -2661,7 +2743,7 @@ impl FluxChat {
         let call_sub = Subscription::run(call_event_stream);
 
         // Only stream cursor movement into update() while resizing the sidebar.
-        let sidebar_drag = if self.sidebar_dragging {
+        let sidebar_drag = if self.resizing.is_some() {
             iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     Some(Message::CursorMoved(position.x, position.y))
@@ -2672,7 +2754,14 @@ impl FluxChat {
             Subscription::none()
         };
 
-        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub, audio_tick, sidebar_drag])
+        // Mic test level meter
+        let mic_tick = if self.mic_test.is_some() {
+            iced::time::every(std::time::Duration::from_millis(60)).map(|_| Message::MicLevelTick)
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub, audio_tick, sidebar_drag, mic_tick])
     }
 
     /// Application theme — dark.
@@ -2695,9 +2784,10 @@ const VIRTUAL_OVERSCAN: f32 = 600.0;
 /// the summed heights of the rows before and after them.
 /// Whether `msg` continues a run from the same sender started by `prev`
 /// (shown without repeating avatar / with a dimmed nick).
-fn is_continuation(prev: &fluxchat_core::MessageInfo, msg: &fluxchat_core::MessageInfo) -> bool {
+pub(crate) fn is_continuation(prev: &fluxchat_core::MessageInfo, msg: &fluxchat_core::MessageInfo) -> bool {
     prev.sender == msg.sender
         && !prev.is_system() && !msg.is_system()
+        && prev.row_kind != fluxchat_core::RowKind::Redacted
         && !prev.is_emote && !msg.is_emote
         && msg.reply_to_id.is_none()
         && msg.timestamp.saturating_sub(prev.timestamp) < crate::view_messages::MSG_GROUP_SECS

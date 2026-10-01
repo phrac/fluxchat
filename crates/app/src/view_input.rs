@@ -15,7 +15,7 @@ impl FluxChat {
         let mut elements: Vec<Element<Message>> = Vec::new();
 
         // Typing indicator
-        if let Some((typers, _)) = self.typing_by_room.get(room_id) {
+        if let Some((typers, _)) = self.typing_by_room.get(room_id).filter(|_| self.prefs.show_typing) {
             if !typers.is_empty() {
                 let typing_text = if typers.len() == 1 {
                     format!("{} is typing...", typers[0])
@@ -484,13 +484,20 @@ impl FluxChat {
                 let has_mentions = !self.mention_completions.is_empty();
                 let has_emoji = !self.emoji_completions.is_empty();
                 let input_empty = self.input_text.trim().is_empty();
+                let ctrl_enter = self.prefs.ctrl_enter_to_send;
                 move |key_press| {
                     use iced::keyboard::Key;
                     use iced::keyboard::key::Named;
                     use iced::widget::text_editor::Binding;
                     match key_press.key {
-                        // Enter without Shift = send message
-                        Key::Named(Named::Enter) if !key_press.modifiers.shift() => {
+                        // Send: Enter (Shift+Enter = newline), or with the
+                        // "Ctrl+Enter to send" preference, Ctrl/Cmd+Enter
+                        // (plain Enter = newline).
+                        Key::Named(Named::Enter) if ctrl_enter
+                            && (key_press.modifiers.command() || key_press.modifiers.control()) => {
+                            Some(Binding::Custom(Message::SendMessage))
+                        }
+                        Key::Named(Named::Enter) if !ctrl_enter && !key_press.modifiers.shift() => {
                             Some(Binding::Custom(Message::SendMessage))
                         }
                         // Tab = cycle autocomplete
