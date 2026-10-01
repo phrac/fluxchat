@@ -63,7 +63,7 @@ Four optional panels on the right. Open any combination; each one is resizable a
 
 - **Threads**: every thread in the room, most recently active first. See [Threads](threads.md).
 - **Mentions** (**Ctrl/⌘+I**): every message that mentioned you, across all rooms. See [Notifications](notifications.md#mentions-inbox).
-- **Users**: the member list with roles, presence dots and a filter box. Hide it with its panel button, the people button in the room header, or **Ctrl/⌘+]**; while hidden, a slim rail on the right edge has the button to bring it back.
+- **Users**: the member list with roles, presence dots and a filter box. Hide it with its panel button, the people button in the room header, or **Ctrl/⌘+]**; while hidden, a slim rail on the right edge shows everyone as small avatars with presence dots (hover for the name, click for the profile) and has the button to bring the list back.
 
 ## Status bar
 

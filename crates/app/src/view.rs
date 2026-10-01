@@ -49,7 +49,7 @@ const CONTEXT_MENU_WIDTH: f32 = 300.0;
 /// Grab width of panel dividers.
 pub(crate) const RESIZE_HANDLE_WIDTH: f32 = 3.0;
 /// Width of the rail shown in place of a hidden member list.
-pub(crate) const MEMBER_RAIL_WIDTH: f32 = 34.0;
+pub(crate) const MEMBER_RAIL_WIDTH: f32 = 40.0;
 /// Read-receipt avatars shown under a message before "+N".
 const READ_RECEIPT_AVATARS: usize = 5;
 /// Left offset of a thread entry's icon so it lines up with its parent
@@ -1008,21 +1008,7 @@ impl FluxChat {
                 .push(self.resize_handle(ResizeTarget::MemberList))
                 .push(self.view_member_list());
         } else if self.selected_room_id.is_some() {
-            let tip = if cfg!(target_os = "macos") { "Show users (\u{2318}])" } else { "Show users (Ctrl+])" };
-            main_area = main_area.push(
-                container(self.panel_restore_button(
-                    crate::icons::SVG_PANEL_RIGHT_OPEN, Message::ToggleMemberList, tip, iced::widget::tooltip::Position::Left,
-                ))
-                .width(MEMBER_RAIL_WIDTH)
-                .height(Fill)
-                .padding(iced::Padding { top: 8.0, right: 0.0, bottom: 0.0, left: 0.0 })
-                .align_x(iced::Alignment::Center)
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().bg_deep.into()),
-                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 0.0.into() },
-                    ..Default::default()
-                }),
-            );
+            main_area = main_area.push(self.view_member_rail());
         }
 
         let main_area = main_area.width(Fill).height(Fill);

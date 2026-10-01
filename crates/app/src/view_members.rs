@@ -10,6 +10,9 @@ use crate::state::FluxChat;
 use crate::theme;
 use crate::view::thin_scrollbar;
 
+/// Most avatars shown on the hidden member list's rail (then "+N").
+const MEMBER_RAIL_MAX: usize = 40;
+
 impl FluxChat {
     /// Member list panel (right sidebar).
     pub(crate) fn view_member_list(&self) -> Element<Message> {
@@ -297,38 +300,109 @@ impl FluxChat {
         col.into()
     }
 
-    /// Single member row.
-    pub(crate) fn view_member_row<'a>(&'a self, member: &'a fluxchat_core::MemberInfo) -> Element<'a, Message> {
-        let nick_col = theme::nick_color(&member.display_name);
+    /// A member's avatar (or tinted initial) in a `box_size` square, with
+    /// the presence dot at the bottom right.
+    fn member_avatar<'a>(&'a self, member: &'a fluxchat_core::MemberInfo, size: f32, box_size: f32) -> Element<'a, Message> {
         let presence_color = match member.presence.as_str() {
             "online" => theme::colors().green,
             "idle" => theme::colors().yellow,
             _ => Color::TRANSPARENT,
         };
-        let user_id = member.user_id.clone();
-
-        // Avatar — use cached image or fallback to initial
-        let avatar_img: Element<'a, Message> = self.render_avatar_with_initial(member.avatar_url.as_deref(), &member.display_name, 28.0);
-
-        // Presence dot overlaid on avatar (bottom-right)
+        let dot = (box_size * 0.3).round();
         let presence_dot = container(Space::new())
-            .width(10).height(10)
+            .width(dot).height(dot)
             .style(move |_: &Theme| container::Style {
                 background: Some(presence_color.into()),
                 border: iced::Border {
-                    radius: 5.0.into(),
+                    radius: (dot / 2.0).into(),
                     color: theme::colors().bg_deep,
                     width: 2.0,
                 },
                 ..Default::default()
             });
-        let avatar: Element<'a, Message> = stack![
-            container(avatar_img).width(32).height(32),
+        stack![
+            container(self.render_avatar_with_initial(member.avatar_url.as_deref(), &member.display_name, size))
+                .width(box_size).height(box_size),
             container(presence_dot)
-                .width(32).height(32)
+                .width(box_size).height(box_size)
                 .align_x(iced::alignment::Horizontal::Right)
                 .align_y(iced::alignment::Vertical::Bottom),
-        ].width(32).height(32).into();
+        ].width(box_size).height(box_size).into()
+    }
+
+    /// The hidden member list's rail: restore button, then the members as
+    /// small avatars (same order as the list) — hover for the name, click
+    /// for the profile.
+    pub(crate) fn view_member_rail(&self) -> Element<'_, Message> {
+        let tip = if cfg!(target_os = "macos") { "Show users (\u{2318}])" } else { "Show users (Ctrl+])" };
+        let restore = crate::ui::tooltip_at(
+            button(crate::ui::icon(crate::icons::SVG_PANEL_RIGHT_OPEN, 18.0, theme::colors().text_muted))
+                .on_press(Message::ToggleMemberList)
+                .padding(6)
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+            tip,
+            iced::widget::tooltip::Position::Left,
+        );
+        let members = self.selected_room_id.as_ref().and_then(|r| self.members_by_room.get(r));
+        let mut avatars = column![].spacing(6).align_x(iced::Alignment::Center);
+        if let Some(members) = members {
+            // Same order as the list: admins, moderators, members.
+            let ordered = ["Admin", "Moderator", "Member"].into_iter()
+                .flat_map(|role| members.iter().filter(move |m| m.role == role));
+            for member in ordered.clone().take(MEMBER_RAIL_MAX) {
+                let label = match member.role.as_str() {
+                    "Admin" | "Moderator" => format!("{} \u{00b7} {}", member.display_name, member.role),
+                    _ => member.display_name.clone(),
+                };
+                avatars = avatars.push(crate::ui::tooltip_at(
+                    button(self.member_avatar(member, 24.0, 26.0))
+                        .on_press(Message::OpenModal(crate::state::Modal::Profile { user_id: member.user_id.clone() }))
+                        .padding(2)
+                        .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+                    label,
+                    iced::widget::tooltip::Position::Left,
+                ));
+            }
+            let more = members.len().saturating_sub(MEMBER_RAIL_MAX);
+            if more > 0 {
+                avatars = avatars.push(crate::ui::tooltip_at(
+                    button(text(format!("+{more}")).font(self.sidebar_font()).size(11).color(theme::colors().text_dim))
+                        .on_press(Message::ToggleMemberList)
+                        .padding([4, 2])
+                        .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+                    "Show everyone",
+                    iced::widget::tooltip::Position::Left,
+                ));
+            }
+        }
+        container(
+            column![
+                restore,
+                container(crate::ui::divider()).width(22).padding([6, 0]),
+                scrollable(avatars.width(Fill))
+                    .height(Fill)
+                    .direction(iced::widget::scrollable::Direction::Vertical(
+                        iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0),
+                    )),
+            ]
+            .align_x(iced::Alignment::Center),
+        )
+        .width(crate::view::MEMBER_RAIL_WIDTH)
+        .height(Fill)
+        .padding(iced::Padding { top: 8.0, right: 0.0, bottom: 8.0, left: 0.0 })
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::colors().bg_deep.into()),
+            border: iced::Border { color: theme::colors().border, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+    }
+
+    /// Single member row.
+    pub(crate) fn view_member_row<'a>(&'a self, member: &'a fluxchat_core::MemberInfo) -> Element<'a, Message> {
+        let nick_col = theme::nick_color(&member.display_name);
+        let user_id = member.user_id.clone();
+        let avatar = self.member_avatar(member, 28.0, 32.0);
 
         let member_row = row![
             avatar,
