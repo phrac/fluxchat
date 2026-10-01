@@ -351,9 +351,16 @@ impl TreeSink for &Arena {
 // ---------------------------------------------------------------------------
 
 /// Context passed through the tree walk.
+/// Deepest element nesting rendered with formatting. Messages come from
+/// anyone in the room and the walk recurses, so beyond this the rest of the
+/// subtree is shown as plain text (a 64 KB event can nest ~20 000 tags,
+/// which overflowed the main thread's stack). Real messages stay far below.
+const MAX_HTML_DEPTH: usize = 64;
+
 struct WalkCtx<'a> {
     nodes: &'a [Node],
     segments: Vec<Segment>,
+    depth: usize,
 }
 
 impl<'a> WalkCtx<'a> {
@@ -383,13 +390,13 @@ impl<'a> WalkCtx<'a> {
         out
     }
 
+    /// Iterative (explicit stack): used on arbitrarily deep subtrees.
     fn collect_text_inner(&self, id: NodeId, out: &mut String) {
-        match &self.nodes[id].data {
-            NodeData::Text(t) => out.push_str(t),
-            _ => {
-                for &child in &self.nodes[id].children {
-                    self.collect_text_inner(child, out);
-                }
+        let mut stack = vec![id];
+        while let Some(id) = stack.pop() {
+            match &self.nodes[id].data {
+                NodeData::Text(t) => out.push_str(t),
+                _ => stack.extend(self.nodes[id].children.iter().rev().copied()),
             }
         }
     }
@@ -407,8 +414,22 @@ impl<'a> WalkCtx<'a> {
         false
     }
 
-    /// Walk a node and its children, accumulating Segments.
+    /// Walk a node and its children, accumulating Segments. Past
+    /// `MAX_HTML_DEPTH` the subtree is flattened to its text.
     fn walk(&mut self, id: NodeId, style: &Style) {
+        if self.depth >= MAX_HTML_DEPTH {
+            let text = self.collect_text(id);
+            if !text.trim().is_empty() {
+                self.segments.push(Segment::Text(text, style.clone()));
+            }
+            return;
+        }
+        self.depth += 1;
+        self.walk_node(id, style);
+        self.depth -= 1;
+    }
+
+    fn walk_node(&mut self, id: NodeId, style: &Style) {
         match &self.nodes[id].data {
             NodeData::Document => {
                 let children: Vec<NodeId> = self.nodes[id].children.clone();
@@ -698,30 +719,65 @@ impl<'a> WalkCtx<'a> {
         out
     }
 
+    /// Iterative (explicit stack): code blocks can hold arbitrarily deep markup.
     fn collect_code_text_inner(&self, id: NodeId, out: &mut String) {
-        match &self.nodes[id].data {
-            NodeData::Text(t) => out.push_str(t),
-            NodeData::Element { name, .. } => {
-                let tag = &*name.local;
-                if tag == "br" {
-                    out.push('\n');
-                    return;
-                }
-                for &child in &self.nodes[id].children {
-                    self.collect_code_text_inner(child, out);
-                }
-            }
-            _ => {
-                for &child in &self.nodes[id].children {
-                    self.collect_code_text_inner(child, out);
-                }
+        let mut stack = vec![id];
+        while let Some(id) = stack.pop() {
+            match &self.nodes[id].data {
+                NodeData::Text(t) => out.push_str(t),
+                NodeData::Element { name, .. } if &*name.local == "br" => out.push('\n'),
+                _ => stack.extend(self.nodes[id].children.iter().rev().copied()),
             }
         }
     }
 }
 
+/// Tag nesting above which a message isn't parsed as HTML at all. The HTML5
+/// tree builder checks element scope by scanning the open-element stack, so
+/// parse time grows with the square of the nesting: 20 000 nested list items
+/// took seconds on the UI thread. Real messages nest a few levels.
+const MAX_PARSE_NESTING: usize = 512;
+
+/// Rough maximum nesting of `html` (opening tags minus closing tags, void
+/// and self-closed tags ignored). Only used to reject pathological input.
+fn approx_nesting(html: &str) -> usize {
+    const VOID: &[&str] = &["br", "img", "hr", "input", "meta", "link", "wbr", "col", "area", "base", "source"];
+    let (mut depth, mut max) = (0usize, 0usize);
+    let mut rest = html;
+    while let Some(i) = rest.find('<') {
+        rest = &rest[i + 1..];
+        let end = rest.find('>').unwrap_or(rest.len());
+        let tag = &rest[..end];
+        if let Some(_closing) = tag.strip_prefix('/') {
+            depth = depth.saturating_sub(1);
+        } else if !tag.ends_with('/') && !tag.starts_with('!') {
+            let name: String = tag.chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+            if !name.is_empty() && !VOID.contains(&name.as_str()) {
+                depth += 1;
+                max = max.max(depth);
+            }
+        }
+        rest = &rest[end.min(rest.len())..];
+    }
+    max
+}
+
 /// Parse HTML string into intermediate Segments using html5ever.
 fn parse_html(html: &str) -> Vec<Segment> {
+    if approx_nesting(html) > MAX_PARSE_NESTING {
+        // Pathological markup: show its text instead of parsing it.
+        let mut text = String::with_capacity(html.len());
+        let mut in_tag = false;
+        for c in html.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        return vec![Segment::Text(text, Style::default())];
+    }
     let arena = Arena::new();
 
     // Parse as an HTML fragment (body context)
@@ -741,6 +797,7 @@ fn parse_html(html: &str) -> Vec<Segment> {
     let mut ctx = WalkCtx {
         nodes: &nodes,
         segments: Vec::new(),
+        depth: 0,
     };
 
     let doc_children: Vec<NodeId> = nodes[arena.document].children.clone();
@@ -1347,6 +1404,35 @@ mod tests {
 
     fn texts(spans: &[Span<'static, String>]) -> Vec<String> {
         spans.iter().map(|s| s.text.to_string()).collect()
+    }
+
+    /// Anyone in a room can send deeply nested HTML; rendering it must not
+    /// overflow the (8 MB, main-thread) stack or stall the UI.
+    #[test]
+    fn deeply_nested_html_is_safe() {
+        for (tag, depth) in [("blockquote", 20_000), ("b", 20_000), ("ul><li", 20_000), ("pre><b", 20_000), ("b", 400), ("blockquote", 400)] {
+            let close = tag.split('>').next().unwrap();
+            let html = format!("{}deep{}", format!("<{tag}>").repeat(depth), format!("</{close}>").repeat(depth));
+            let (parts, elapsed) = std::thread::Builder::new()
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || {
+                    let t = std::time::Instant::now();
+                    let parts = html_to_parts(&html, &[], 14.0);
+                    (parts, t.elapsed())
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            assert!(!parts.is_empty(), "{tag} x{depth}");
+            // Generous (debug builds), but far below the seconds it took.
+            assert!(elapsed < std::time::Duration::from_secs(3), "{tag} x{depth}: {elapsed:?}");
+        }
+    }
+
+    #[test]
+    fn nesting_estimate() {
+        assert_eq!(approx_nesting("<b>x<br><i>y</i></b><img src=a/>"), 2);
+        assert_eq!(approx_nesting("plain"), 0);
     }
 
     #[test]
