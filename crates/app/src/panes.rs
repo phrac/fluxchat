@@ -801,4 +801,16 @@ mod flow_tests {
         // Hover / links aren't wrapped, so they never move focus.
         assert!(matches!(in_view("!b:x", Message::OpenUrl("u".into())), Message::OpenUrl(_)));
     }
+
+    #[tokio::test]
+    async fn closing_the_window_saves_the_layout_immediately() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        assert!(app.layout_dirty);
+        let _ = app.update(Message::CloseRequested);
+        assert!(!app.layout_dirty);
+        let saved = app.core.db.get_setting(LAYOUT_KEY).expect("layout saved");
+        assert!(saved.contains("!b:x"));
+    }
 }

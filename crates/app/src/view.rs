@@ -3129,7 +3129,9 @@ impl FluxChat {
             Subscription::none()
         };
 
-        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub, audio_tick, sidebar_drag, mic_tick])
+        let close = iced::window::close_requests().map(|_| Message::CloseRequested);
+
+        Subscription::batch([tick, keys, file_drop, timeline_sub, call_sub, audio_tick, sidebar_drag, mic_tick, close])
     }
 
     /// Application theme — dark.

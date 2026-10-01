@@ -185,6 +185,7 @@ cargo run -p fluxchat
 - **Core modules:** `rtc.rs` (MatrixRTC signaling: join/leave, state events, JWT exchange), `rtc_audio.rs` (LiveKit connection, cpal audio capture/playback)
 - **Audio capture:** cpal input device → mpsc channel → tokio task → `NativeAudioSource` → LiveKit publish. Channel bridges sync cpal callback to async LiveKit API.
 - **Audio playback:** `NativeAudioStream` from remote tracks → tokio task → ring buffer → cpal output stream. Output stream leaked into tokio task, cleaned up when track ends.
+- **Quit:** `exit_on_close_request: false`; `CloseRequested` flushes the layout and leaves an active call (3 s timeout) before `iced::exit()` — the membership event otherwise keeps us "in" the call for its 4 h expiry.
 - **Call lifecycle:** `CallJoin` → get JWT → `CallSession::connect()` → publish mic (muted by default) → event loop drains `RoomEvent` → `CallEvent` → bridged to `Message` variants. `CallLeave` → `watch::channel` signal → `session.disconnect()` → `leave_call()` state event.
 - **Participant tracking:** LiveKit events are source of truth during connected calls. Tick handler only updates room indicators, not participants, when connected.
 - **UI:** In-call panel (participant tiles + controls) above messages, PIP in member list when viewing other rooms. Phone icon in tab bar action buttons. Join banner for rooms with active calls.
@@ -222,4 +223,4 @@ Login (password + SSO/OIDC with provider detection), session persistence, rooms 
 
 ## Known Issues
 - Rows never rendered contribute `ESTIMATED_ROW_HEIGHT` to spacers, so the scrollbar length is approximate until they are measured
-- Window size / sidebar width persist via `layout_dirty` flushed on Tick
+- Window size / sidebar width persist via `layout_dirty` flushed on Tick and on close

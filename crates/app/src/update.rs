@@ -4212,17 +4212,31 @@ impl FluxChat {
                     self.input_content = iced::widget::text_editor::Content::new();
                 }
             }
+            Message::CloseRequested => {
+                // Save what Tick would have, and leave a call: its membership
+                // would otherwise show us in it for hours (it expires after 4 h).
+                self.flush_layout();
+                let leave = self.call_room_id.take().map(|room_id| {
+                    if let Some(tx) = self.call_disconnect_tx.take() {
+                        let _ = tx.send(true);
+                    }
+                    let core = self.core.clone();
+                    Task::perform(
+                        async move {
+                            // Never let a slow server keep the app open.
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                                if let Ok(client) = core.get_client().await {
+                                    let _ = fluxchat_core::rtc::leave_call(&client, &room_id).await;
+                                }
+                            }).await;
+                        },
+                        |_| Message::Noop,
+                    )
+                });
+                return leave.unwrap_or_else(Task::none).chain(iced::exit());
+            }
             Message::Tick => {
-                if self.layout_dirty {
-                    self.layout_dirty = false;
-                    let (w, h) = self.window_size;
-                    let _ = self.core.db.set_setting("window_size", &format!("{w:.0}x{h:.0}"));
-                    let _ = self.core.db.set_setting("sidebar_width", &format!("{:.0}", self.sidebar_width));
-                    self.save_layout();
-                    let _ = self.core.db.set_setting("member_list_width", &format!("{:.0}", self.member_list_width));
-                    let _ = self.core.db.set_setting("thread_list_width", &format!("{:.0}", self.thread_list_width));
-                    let _ = self.core.db.set_setting("mentions_width", &format!("{:.0}", self.mentions_width));
-                }
+                self.flush_layout();
                 if self.sync_running {
                     let mut tasks = Vec::new();
                     self.tick_count = self.tick_count.wrapping_add(1);
@@ -4751,6 +4765,21 @@ impl FluxChat {
     /// full timeline batches instead of the room list's tiny window.
     /// Forget closed thread views: their cached rows and their SDK Timelines
     /// (stopping the watchers), so reopening a thread starts from a fresh one.
+    /// Persist window size, panel widths and the pane layout if changed.
+    fn flush_layout(&mut self) {
+        if !self.layout_dirty {
+            return;
+        }
+        self.layout_dirty = false;
+        let (w, h) = self.window_size;
+        let _ = self.core.db.set_setting("window_size", &format!("{w:.0}x{h:.0}"));
+        let _ = self.core.db.set_setting("sidebar_width", &format!("{:.0}", self.sidebar_width));
+        self.save_layout();
+        let _ = self.core.db.set_setting("member_list_width", &format!("{:.0}", self.member_list_width));
+        let _ = self.core.db.set_setting("thread_list_width", &format!("{:.0}", self.thread_list_width));
+        let _ = self.core.db.set_setting("mentions_width", &format!("{:.0}", self.mentions_width));
+    }
+
     pub(crate) fn close_thread_views(&mut self, keys: Vec<String>) -> Task<Message> {
         let keys: Vec<String> = keys.into_iter().filter(|k| k.starts_with("thread::")).collect();
         if keys.is_empty() {

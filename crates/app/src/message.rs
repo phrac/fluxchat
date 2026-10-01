@@ -135,6 +135,8 @@ pub enum Message {
     PaneSend(String),
     /// Ctrl+B pressed; the next key is a pane command.
     TmuxPrefix,
+    /// The window's close button / shortcut: tidy up, then exit.
+    CloseRequested,
     TmuxKey(String),
     ShowTmuxHelp,
     /// Server thread list for a room: (room_id, for the context menu?, threads).

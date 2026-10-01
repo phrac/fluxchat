@@ -103,6 +103,8 @@ fn main() -> iced::Result {
         min_size: Some(Size::new(800.0, 400.0)),
         decorations: cfg!(target_os = "macos"),
         icon: load_icon(),
+        // Closing first leaves any call and saves the layout (CloseRequested).
+        exit_on_close_request: false,
         ..Default::default()
     })
     .run()
