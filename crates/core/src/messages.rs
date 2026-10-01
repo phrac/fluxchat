@@ -1,5 +1,4 @@
 use matrix_sdk::{
-    attachment::AttachmentConfig,
     room::{edit::EditedContent, MessagesOptions},
     ruma::events::{
         reaction::ReactionEventContent,
@@ -680,35 +679,6 @@ pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Res
     }
     result.sort_by(|a, b| b.power_level.cmp(&a.power_level).then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase())));
     Ok(result)
-}
-
-/// Upload a file attachment to a room, generating a thumbnail for images.
-pub async fn upload_file(client: &matrix_sdk::Client, room_id: &str, filename: &str, mime_type: &str, data: Vec<u8>) -> Result<String, AppError> {
-    let room_id = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    let content_type: mime::Mime = mime_type.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
-
-    // Generate thumbnail for images
-    let config = if mime_type.starts_with("image/") {
-        if let Some((thumb_data, thumb_w, thumb_h)) = crate::media::generate_thumbnail(&data, 320, 240) {
-            use matrix_sdk::attachment::Thumbnail;
-            use matrix_sdk::ruma::UInt;
-            AttachmentConfig::new().thumbnail(Some(Thumbnail {
-                data: thumb_data.clone(),
-                content_type: mime::IMAGE_PNG,
-                height: UInt::from(thumb_h),
-                width: UInt::from(thumb_w),
-                size: UInt::try_from(thumb_data.len()).unwrap_or(UInt::from(0u32)),
-            }))
-        } else {
-            AttachmentConfig::new()
-        }
-    } else {
-        AttachmentConfig::new()
-    };
-
-    let response = room.send_attachment(filename, &content_type, data, config).await.map_err(|e| AppError::Other(format!("Failed to upload: {e}")))?;
-    Ok(response.event_id.to_string())
 }
 
 /// Send a read receipt and fully-read marker for a message.

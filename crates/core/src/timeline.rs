@@ -187,6 +187,61 @@ pub async fn send_text(
     result.map_err(|e| crate::error::AppError::Other(format!("Failed to send: {e}")))
 }
 
+/// Send a file into a view through its Timeline (local echo, send queue,
+/// thread relation in thread views), with `caption` — formatted like a typed
+/// message, mentions included — on the same event, so text + file is one send.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_attachment(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+    filename: &str,
+    mime_type: &str,
+    data: Vec<u8>,
+    caption: Option<&str>,
+    reply_to: Option<&str>,
+) -> Result<(), crate::error::AppError> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+    use matrix_sdk_ui::timeline::{AttachmentConfig, AttachmentSource};
+
+    let room_id = crate::rooms::parse_room_id(real_room_id(key))?;
+    let room = client.get_room(&room_id)
+        .ok_or_else(|| crate::error::AppError::RoomNotFound(room_id.to_string()))?;
+    let content_type: mime::Mime = mime_type.parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
+
+    let mut config = AttachmentConfig::default();
+    if mime_type.starts_with("image/") {
+        if let Some((thumb, w, h)) = crate::media::generate_thumbnail(&data, 320, 240) {
+            use matrix_sdk::ruma::UInt;
+            config.thumbnail = Some(matrix_sdk::attachment::Thumbnail {
+                size: UInt::try_from(thumb.len()).unwrap_or_default(),
+                data: thumb,
+                content_type: mime::IMAGE_PNG,
+                height: UInt::from(h),
+                width: UInt::from(w),
+            });
+        }
+    }
+    if let Some(text) = caption.map(str::trim).filter(|t| !t.is_empty()) {
+        let content = crate::messages::build_message_content(&room, text).await;
+        config.mentions = content.mentions.clone();
+        if let MessageType::Text(t) = content.msgtype {
+            config.caption = Some(t);
+        }
+    }
+    if let Some(event_id) = reply_to {
+        config.in_reply_to = Some(matrix_sdk::ruma::EventId::parse(event_id)
+            .map_err(|_| crate::error::AppError::Other("Invalid event ID".into()))?);
+    }
+
+    let timeline = get_or_create_for_key(client, timelines, key).await?;
+    timeline
+        .send_attachment(AttachmentSource::Data { bytes: data, filename: filename.to_string() }, content_type, config)
+        .use_send_queue()
+        .await
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to upload: {e}")))
+}
+
 /// The single consumer of a Timeline's diff stream. Keeps a converted mirror of
 /// the SDK's item list by applying each diff to it (so only changed items are
 /// re-converted), and emits the full message list after each burst of diffs.
@@ -365,6 +420,25 @@ pub fn timeline_item_to_message_info(item: &TimelineItem) -> Option<MessageInfo>
 /// Convert an EventTimelineItem to MessageInfo.
 fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     let mut info = convert_event(ev)?;
+    if let Some(message) = ev.content().as_message() {
+        use matrix_sdk::ruma::events::room::message::MessageType;
+        let parts = match message.msgtype() {
+            MessageType::Image(c) => Some((c.caption(), c.formatted_caption(), c.filename.as_deref())),
+            MessageType::File(c) => Some((c.caption(), c.formatted_caption(), c.filename.as_deref())),
+            MessageType::Video(c) => Some((c.caption(), c.formatted_caption(), c.filename.as_deref())),
+            MessageType::Audio(c) => Some((c.caption(), c.formatted_caption(), c.filename.as_deref())),
+            _ => None,
+        };
+        if let Some((Some(caption), formatted, filename)) = parts {
+            info.caption = Some(caption.to_string());
+            info.caption_html = formatted
+                .filter(|f| f.format == matrix_sdk::ruma::events::room::message::MessageFormat::Html)
+                .map(|f| f.body.clone());
+            if let Some(name) = filename {
+                info.body = name.to_string();
+            }
+        }
+    }
     info.thread_latest = ev.content().thread_summary().and_then(|summary| {
         let TimelineDetails::Ready(latest) = summary.latest_event else { return None };
         let sender = latest.sender.to_string();
@@ -563,6 +637,8 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     is_edited,
                     send_state: send_state.clone(),
                     thread_latest: None,
+                    caption: None,
+                    caption_html: None,
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -584,6 +660,8 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     is_edited,
                     send_state: send_state.clone(),
                     thread_latest: None,
+                    caption: None,
+                    caption_html: None,
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -616,6 +694,8 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     is_edited,
                     send_state: send_state.clone(),
                     thread_latest: None,
+                    caption: None,
+                    caption_html: None,
                 })
             } else {
                 // Distinguish encryption failures (missing key) from genuinely
@@ -670,6 +750,8 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     is_edited: false,
                     send_state,
                     thread_latest: None,
+                    caption: None,
+                    caption_html: None,
                 })
             }
         }
@@ -705,6 +787,8 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             is_edited: false,
             send_state: None,
             thread_latest: None,
+            caption: None,
+            caption_html: None,
             })
         }
 
@@ -724,6 +808,8 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             is_edited: false,
             send_state: None,
             thread_latest: None,
+            caption: None,
+            caption_html: None,
             })
         }
 
@@ -762,6 +848,8 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             is_edited: false,
             send_state: None,
             thread_latest: None,
+            caption: None,
+            caption_html: None,
             })
         }
 

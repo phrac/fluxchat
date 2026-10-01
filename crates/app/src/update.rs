@@ -908,6 +908,13 @@ impl FluxChat {
                 if let Some(rid) = &self.selected_room_id {
                     self.drafts.remove(rid);
                 }
+                // A pending attachment goes out with the typed text as its
+                // caption — one event, not a file and a separate message.
+                // (Slash commands and edits still run on their own.)
+                let is_command = self.input_text.starts_with('/') && !self.input_text.starts_with("//");
+                if self.upload_pending.is_some() && !is_command && self.edit_event.is_none() {
+                    return self.send_pending_upload();
+                }
                 if self.input_text.trim().is_empty() {
                     return Task::none();
                 }
@@ -2443,22 +2450,10 @@ impl FluxChat {
                 self.upload_pending = None;
             }
             Message::UploadFile => {
-                if let Some((name, mime, data)) = self.upload_pending.take() {
-                    if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                        let core = self.core.clone();
-                        return Task::perform(
-                            async move {
-                                let client = core.get_client().await.ok()?;
-                                fluxchat_core::messages::upload_file(
-                                    &client, &room_id, &name, &mime, data,
-                                )
-                                .await
-                                .ok()
-                            },
-                            |_| Message::Noop,
-                        );
-                    }
-                }
+                return self.send_pending_upload();
+            }
+            Message::UploadFailed(error) => {
+                self.help_text = Some(format!("Upload failed: {error}"));
             }
 
             // --- Settings / Security / Profile / Power levels ---
@@ -3701,18 +3696,22 @@ impl FluxChat {
                 self.gifs_open = false;
                 self.gif_results.clear();
                 self.gif_query.clear();
-                if let Some(room_id) = self.active_real_room().map(str::to_string) {
+                if let Some(key) = self.selected_room_id.clone() {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            // Download the GIF and upload as image
-                            let data = fluxchat_core::gif::download_gif(&gif_url).await.ok()?;
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::upload_file(
-                                &client, &room_id, &format!("{description}.gif"), "image/gif", data,
-                            ).await.ok()
+                            // Download the GIF and send it as an image (thread-aware).
+                            let data = fluxchat_core::gif::download_gif(&gif_url).await.map_err(|e| e.to_string())?;
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::timeline::send_attachment(
+                                &client, &core.timelines, &key, &format!("{description}.gif"), "image/gif",
+                                data, None, None,
+                            ).await.map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(()) => Message::Noop,
+                            Err(e) => Message::UploadFailed(e),
+                        },
                     );
                 }
             }
@@ -4298,6 +4297,39 @@ impl FluxChat {
                 }
             }
         });
+    }
+
+    /// Send the pending attachment into the current view, with whatever is
+    /// typed in the composer as its caption (and the pending reply, if any).
+    fn send_pending_upload(&mut self) -> Task<Message> {
+        let Some(key) = self.selected_room_id.clone() else { return Task::none() };
+        let Some((name, mime, data)) = self.upload_pending.take() else { return Task::none() };
+        let mut caption = std::mem::take(&mut self.input_text);
+        if caption.starts_with("//") {
+            caption.remove(0);
+        }
+        self.input_content = iced::widget::text_editor::Content::new();
+        self.drafts.remove(&key);
+        self.help_text = None;
+        self.cmd_completions.clear();
+        self.mention_completions.clear();
+        let reply_to = self.reply_to.take().map(|(event_id, _, _)| event_id);
+        let core = self.core.clone();
+        let send = Task::perform(
+            async move {
+                let client = core.get_client().await.map_err(|e| e.to_string())?;
+                fluxchat_core::timeline::send_attachment(
+                    &client, &core.timelines, &key, &name, &mime, data,
+                    Some(caption.as_str()), reply_to.as_deref(),
+                ).await.map_err(|e| e.to_string())
+            },
+            |r| match r {
+                Ok(()) => Message::Noop,
+                Err(e) => Message::UploadFailed(e),
+            },
+        );
+        let snap = iced::widget::operation::snap_to_end(crate::view::messages_scrollable_id());
+        Task::batch([send, iced::widget::operation::focus(crate::view::input_id()), snap])
     }
 
     /// Room Settings data not kept in `RoomInfo`: notification mode and

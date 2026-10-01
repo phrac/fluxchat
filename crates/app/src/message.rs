@@ -219,6 +219,7 @@ pub enum Message {
     FileDropped(std::path::PathBuf),
     FileSelected(String, String, Vec<u8>), // filename, mime, data
     CancelUpload,
+    UploadFailed(String),
     UploadFile,                            // trigger actual upload
 
     // --- Settings ---

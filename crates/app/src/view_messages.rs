@@ -16,6 +16,9 @@ use crate::view::{
     EMOJI_GRID_COLUMNS, EMOJI_PANEL_HEIGHT, EMOJI_PANEL_WIDTH,
 };
 
+/// Selection-widget part index for a media caption (after any body parts).
+const CAPTION_PART_INDEX: usize = 10_000;
+
 /// Gap between the columns of a message row (time, nick, avatar, separator, text).
 pub(crate) const MSG_COL_GAP: f32 = 6.0;
 /// Messages from the same sender within this many seconds are grouped.
@@ -484,6 +487,7 @@ impl FluxChat {
                             .content_fit(iced::ContentFit::ScaleDown)
                     )
                     .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
+                    .interaction(iced::mouse::Interaction::ZoomIn)
                     .into()
                 } else if let Some(handle) = self.image_cache.get(mxc) {
                     let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
@@ -507,6 +511,7 @@ impl FluxChat {
                         })
                     )
                     .on_press(Message::OpenModal(crate::state::Modal::Lightbox { url: mxc_click }))
+                    .interaction(iced::mouse::Interaction::ZoomIn)
                     .into()
                 } else {
                     let label = if msg.body.trim().is_empty() { "Loading image..." } else { &msg.body };
@@ -1026,6 +1031,41 @@ impl FluxChat {
                 })
                 .into()
         };
+
+        // Caption under media (image / file / video / audio sent with text)
+        if let Some(ref caption) = msg.caption {
+            let rendered = match msg.caption_html {
+                Some(ref html) => self.body_cache.get_or_insert(("caption-html", html.as_str(), fs.to_bits()), || {
+                    crate::html::RenderedBody::Spans(crate::html::html_to_spans_with_rooms(html, &self.rooms, fs))
+                }),
+                None => self.body_cache.get_or_insert(("plain", caption.as_str()), || {
+                    crate::html::RenderedBody::Spans(crate::html::plain_text_to_spans(caption))
+                }),
+            };
+            let spans = match &*rendered {
+                crate::html::RenderedBody::Spans(spans) => spans.clone(),
+                crate::html::RenderedBody::Parts(_) => Vec::new(),
+            };
+            // Part index past any body parts so selection ids don't collide.
+            let wid = crate::selectable_text::SelectionWidgetId {
+                event_id: msg.event_id.clone(), part_index: CAPTION_PART_INDEX,
+            };
+            let caption_el = selectable_rich_text(spans)
+                .font(self.msg_font())
+                .size(fs)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                .width(Fill)
+                .on_link_click(Message::OpenUrl)
+                .selection_range(self.selection_range_for(&wid))
+                .selection_active(self.selection.active)
+                .widget_id(wid)
+                .on_selection(|evt| match evt {
+                    crate::selectable_text::SelectionEvent::Started(id, l, i) => Message::SelectionStarted(id, l, i),
+                    crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
+                    crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
+                });
+            body_element = column![body_element, caption_el].spacing(6).width(Fill).into();
+        }
 
         // Edited marker and local-echo delivery state
         let mut status_bits: Vec<Element<'a, Message>> = Vec::new();
@@ -1805,6 +1845,6 @@ fn collapse_code_blocks(html: &str, max_lines: usize) -> String {
 }
 
 /// Day label for a date divider row.
-fn local_day_label(unix_secs: u64) -> String {
+pub(crate) fn local_day_label(unix_secs: u64) -> String {
     crate::view::format_day(unix_secs)
 }

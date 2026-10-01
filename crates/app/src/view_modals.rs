@@ -747,6 +747,23 @@ impl FluxChat {
     }
 
     fn view_lightbox_modal(&self, url: &str) -> Element<Message> {
+        // The message the image belongs to (for its name, sender and time).
+        let msg = self.selected_room_id.as_ref()
+            .and_then(|rid| self.messages_by_room.get(rid))
+            .and_then(|msgs| msgs.iter().rev().find(|m| m.image_mxc.as_deref() == Some(url)));
+        let title = msg.map(|m| m.body.clone()).filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "Image".into());
+        let subtitle = msg.map(|m| {
+            let secs = crate::view::local_time_of_day(m.timestamp);
+            format!(
+                "{}  \u{00b7}  {}, {:02}:{:02}",
+                m.sender_name,
+                crate::view_messages::local_day_label(m.timestamp),
+                secs / 3600,
+                (secs % 3600) / 60,
+            )
+        });
+
         let image_el: Element<Message> = if let Some(handle) = self.image_cache.get(url) {
             iced::widget::image(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
@@ -756,22 +773,49 @@ impl FluxChat {
         } else {
             ui::empty_state(crate::icons::SVG_IMAGE, "Loading image\u{2026}", None)
         };
-        column![
-            row![
-                Space::new().width(Fill),
-                ui::icon_btn(crate::icons::SVG_COPY, "Copy", Tone::Secondary, Some(Message::CopyImage(url.to_string()))),
-                ui::icon_btn(crate::icons::SVG_FILE, "Save", Tone::Secondary, Some(Message::SaveImage(url.to_string()))),
-                ui::close_button(),
+
+        let header = row![
+            column![
+                text(title).font(MONO).size(16).color(theme::colors().text_bright)
+                    .wrapping(iced::widget::text::Wrapping::None),
+                text(subtitle.unwrap_or_default()).font(MONO).size(12).color(theme::colors().text_dim),
             ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center),
+            .spacing(3)
+            .width(Fill)
+            .clip(true),
+            ui::icon_btn(crate::icons::SVG_COPY, "Copy", Tone::Secondary, Some(Message::CopyImage(url.to_string()))),
+            ui::icon_btn(crate::icons::SVG_FILE, "Save", Tone::Secondary, Some(Message::SaveImage(url.to_string()))),
+            ui::close_button(),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+        // Clicking the enlarged image closes it again (as do the backdrop,
+        // Escape and the close button).
+        let stage = iced::widget::mouse_area(
             container(image_el)
                 .width(Fill)
                 .height(Fill)
                 .center(Fill)
-                .clip(true),
+                .padding(8)
+                .clip(true)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_deep.into()),
+                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 8.0.into() },
+                    ..Default::default()
+                }),
+        )
+        .on_press(Message::CloseModal)
+        .interaction(iced::mouse::Interaction::ZoomOut);
+
+        column![
+            header,
+            stage,
+            container(text("Click the image or press Esc to close").font(MONO).size(11).color(theme::colors().text_dim))
+                .width(Fill)
+                .center_x(Fill),
         ]
-        .spacing(10)
+        .spacing(ui::GAP)
         .width(Length::FillPortion(9))
         .height(Length::FillPortion(9))
         .into()

@@ -226,45 +226,54 @@ impl FluxChat {
 
         // Emoji picker is rendered as an overlay on the message area (see view.rs)
 
-        // Upload preview bar
-        if let Some((ref filename, _, _)) = self.upload_pending {
+        // Pending attachment: sent with the composer text as its caption.
+        if let Some((ref filename, ref mime, ref data)) = self.upload_pending {
+            use crate::ui::{self, Tone};
+            let is_image = mime.starts_with("image/");
+            let size = data.len() as f64;
+            let size_label = if size >= 1_048_576.0 {
+                format!("{:.1} MB", size / 1_048_576.0)
+            } else {
+                format!("{:.0} KB", (size / 1024.0).max(1.0))
+            };
+            let hint = if self.input_text.trim().is_empty() {
+                "Type a caption, or press Enter to send the file"
+            } else {
+                "Enter sends it with your message as the caption"
+            };
             elements.push(
                 container(
-                    row![
-                        text(format!("attach: {filename}"))
-                            .font(self.msg_font())
-                            .size(14)
-                            .color(theme::colors().accent),
-                        Space::new().width(Fill),
-                        button(text("send").font(self.msg_font()).size(14).color(theme::colors().green))
-                            .on_press(Message::UploadFile)
-                            .padding([0, 6])
-                            .style(|_, _| button::Style {
-                                background: None,
-                                text_color: theme::colors().green,
-                                ..Default::default()
-                            }),
-                        button(text("\u{00d7}").font(self.msg_font()).size(16).color(theme::colors().text_dim))
-                            .on_press(Message::CancelUpload)
-                            .padding([0, 4])
-                            .style(|_, _| button::Style {
-                                background: None,
-                                ..Default::default()
-                            }),
-                    ]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center),
+                    container(
+                        row![
+                            container(ui::icon(if is_image { SVG_IMAGE } else { SVG_FILE }, 18.0, theme::colors().accent))
+                                .width(36).height(36).center_x(36).center_y(36)
+                                .style(|_: &Theme| container::Style {
+                                    background: Some(theme::with_alpha(theme::colors().accent, 0.14).into()),
+                                    border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                                    ..Default::default()
+                                }),
+                            column![
+                                text(filename.as_str()).font(self.msg_font()).size(13).color(theme::colors().text_bright)
+                                    .wrapping(iced::widget::text::Wrapping::None),
+                                text(format!("{size_label}  \u{00b7}  {hint}")).font(self.msg_font()).size(11)
+                                    .color(theme::colors().text_dim)
+                                    .wrapping(iced::widget::text::Wrapping::None),
+                            ].spacing(2).width(Fill).clip(true),
+                            ui::btn("Send", Tone::Primary, Some(Message::UploadFile)),
+                            ui::icon_only(SVG_CLOSE, "Remove attachment", Tone::Ghost, Some(Message::CancelUpload)),
+                        ]
+                        .spacing(12)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .padding([8, 10])
+                    .width(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::colors().bg_dark.into()),
+                        border: iced::Border { color: theme::with_alpha(theme::colors().accent, 0.5), width: 1.0, radius: 10.0.into() },
+                        ..Default::default()
+                    }),
                 )
-                .padding([4, 12])
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().bg_deep.into()),
-                    border: iced::Border {
-                        color: theme::colors().accent,
-                        width: 2.0,
-                        radius: 0.0.into(),
-                    },
-                    ..Default::default()
-                })
+                .padding(iced::Padding { top: 6.0, right: 14.0, bottom: 0.0, left: 14.0 })
                 .into(),
             );
         }

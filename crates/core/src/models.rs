@@ -66,6 +66,12 @@ pub struct MessageInfo {
     /// thread summary (available even when the replies aren't loaded).
     #[serde(default)]
     pub thread_latest: Option<ThreadLatest>,
+    /// Caption sent with an image / file / video / audio (Matrix v1.10);
+    /// `body` then holds the file name, as for uncaptioned media.
+    #[serde(default)]
+    pub caption: Option<String>,
+    #[serde(default)]
+    pub caption_html: Option<String>,
 }
 
 /// The latest reply in a thread, shown in the root's thread summary row.
