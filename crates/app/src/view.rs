@@ -48,6 +48,8 @@ const THREAD_PREVIEW_WIDTH: f32 = 360.0;
 const CONTEXT_MENU_WIDTH: f32 = 300.0;
 /// Grab width of panel dividers.
 pub(crate) const RESIZE_HANDLE_WIDTH: f32 = 3.0;
+/// Width of the rail shown in place of a hidden member list.
+pub(crate) const MEMBER_RAIL_WIDTH: f32 = 34.0;
 /// Read-receipt avatars shown under a message before "+N".
 const READ_RECEIPT_AVATARS: usize = 5;
 /// Left offset of a thread entry's icon so it lines up with its parent
@@ -469,6 +471,24 @@ impl FluxChat {
                 ..Default::default()
             })
             .into()
+    }
+
+    /// Button that brings back a hidden side list (room list / users).
+    fn panel_restore_button(
+        &self,
+        icon: &'static [u8],
+        message: Message,
+        tip: &'static str,
+        side: iced::widget::tooltip::Position,
+    ) -> Element<'_, Message> {
+        crate::ui::tooltip_at(
+            button(crate::ui::icon(icon, 18.0, theme::colors().text_muted))
+                .on_press(message)
+                .padding(6)
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+            tip,
+            side,
+        )
     }
 
     /// Pinned messages sidebar: the room's pins (in the room's pin order).
@@ -982,11 +1002,27 @@ impl FluxChat {
                 .push(container(self.view_mentions_sidebar()).width(Length::Fixed(self.mentions_width)));
         }
 
-        // Member list (right sidebar)
+        // Member list (right sidebar), or a slim rail to bring it back
         if self.show_member_list && self.selected_room_id.is_some() {
             main_area = main_area
                 .push(self.resize_handle(ResizeTarget::MemberList))
                 .push(self.view_member_list());
+        } else if self.selected_room_id.is_some() {
+            let tip = if cfg!(target_os = "macos") { "Show users (\u{2318}])" } else { "Show users (Ctrl+])" };
+            main_area = main_area.push(
+                container(self.panel_restore_button(
+                    crate::icons::SVG_PANEL_RIGHT_OPEN, Message::ToggleMemberList, tip, iced::widget::tooltip::Position::Left,
+                ))
+                .width(MEMBER_RAIL_WIDTH)
+                .height(Fill)
+                .padding(iced::Padding { top: 8.0, right: 0.0, bottom: 0.0, left: 0.0 })
+                .align_x(iced::Alignment::Center)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_deep.into()),
+                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 0.0.into() },
+                    ..Default::default()
+                }),
+            );
         }
 
         let main_area = main_area.width(Fill).height(Fill);
@@ -1474,18 +1510,15 @@ impl FluxChat {
         let spaces = scrollable(col).height(Fill)
             .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4)))
             .style(thin_scrollbar);
-        let mut bar = column![spaces].align_x(iced::Alignment::Center);
+        // Restore button at the top, matching the member list's rail.
+        let mut bar = column![].align_x(iced::Alignment::Center);
         if self.room_list_collapsed {
             let tip = if cfg!(target_os = "macos") { "Show room list (\u{2318}[)" } else { "Show room list (Ctrl+[)" };
-            bar = bar.push(container(crate::ui::tooltip_at(
-                button(crate::ui::icon(crate::icons::SVG_PANEL_LEFT_OPEN, 18.0, theme::colors().text_muted))
-                    .on_press(Message::ToggleRoomList)
-                    .padding(8)
-                    .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
-                tip,
-                iced::widget::tooltip::Position::Right,
-            )).padding([8, 0]));
+            bar = bar.push(container(self.panel_restore_button(
+                crate::icons::SVG_PANEL_LEFT_OPEN, Message::ToggleRoomList, tip, iced::widget::tooltip::Position::Right,
+            )).padding(iced::Padding { top: 8.0, right: 0.0, bottom: 0.0, left: 0.0 }));
         }
+        let bar = bar.push(spaces);
         container(bar)
             .width(56)
             .height(Fill)

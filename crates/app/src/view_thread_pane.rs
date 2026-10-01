@@ -106,6 +106,8 @@ impl FluxChat {
         }
         if self.show_member_list && room_open {
             grid_w -= self.member_list_width + handle;
+        } else if room_open {
+            grid_w -= crate::view::MEMBER_RAIL_WIDTH;
         }
         let grid_w = grid_w.max(0.0);
         let grid = &self.window().grid;
