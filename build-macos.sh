@@ -65,10 +65,19 @@ cat > "$CONTENTS/Info.plist" << EOF
 </plist>
 EOF
 
-# Ad-hoc sign the bundle so macOS ties the Info.plist (and the microphone
-# permission) to this app. Each rebuild is a new signature, so macOS may ask
-# for microphone access again after rebuilding.
-codesign --force --deep --sign - "$APP_DIR"
+# Sign the bundle so macOS ties the Info.plist, the microphone permission
+# and Keychain access (the saved session) to this app. With the "FluxChat
+# Local" identity (scripts/macos-signing-cert.sh) the signature stays the
+# same across rebuilds; an ad-hoc one changes every build, and macOS asks
+# again for Keychain and microphone access after each rebuild.
+SIGN_ID="FluxChat Local"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$SIGN_ID\""; then
+    codesign --force --deep --sign "$SIGN_ID" "$APP_DIR"
+else
+    echo "note: signing ad-hoc. Run scripts/macos-signing-cert.sh once to stop"
+    echo "      macOS asking for Keychain access after every rebuild."
+    codesign --force --deep --sign - "$APP_DIR"
+fi
 
 echo ""
 echo "Build successful!"

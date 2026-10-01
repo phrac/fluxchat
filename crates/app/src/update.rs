@@ -140,9 +140,7 @@ static AUDIO_PLAYBACK: std::sync::Mutex<Option<fluxchat_core::voice::PlaybackHan
 /// Bytes of an inline image from the SQLite media cache (the in-memory
 /// cache only holds opaque `image::Handle`s).
 async fn cached_image_bytes(core: &fluxchat_core::AppState, mxc: &str) -> Option<Vec<u8>> {
-    use base64::Engine;
-    let b64 = core.db.get_cached_media(&format!("iced_img:{mxc}"))?;
-    base64::engine::general_purpose::STANDARD.decode(b64).ok().filter(|d| !d.is_empty())
+    core.db.get_cached_media(&format!("iced_img:{mxc}")).filter(|d| !d.is_empty())
 }
 
 /// Whether any room's display name differs between two room lists.
@@ -213,6 +211,7 @@ impl FluxChat {
                     .map(|restored| restored.map(|(_, result)| LoginSuccess {
                         user_id: result.user_id,
                         display_name: result.display_name,
+                        protection: result.protection,
                     }))
             },
             |result| match result {
@@ -220,9 +219,11 @@ impl FluxChat {
                 Ok(None) => Message::NoSavedSession,
                 Err(e) => {
                     tracing::warn!("{e}");
+                    // Signing in again replaces the store (and this device's
+                    // keys), so it's the last resort.
                     Message::LoginResult(Err(format!(
-                        "{e}. If another FluxChat window is open, close it and restart; \
-                         otherwise sign in again."
+                        "{e}. If another FluxChat window is open, close it and restart. \
+                         Signing in again creates a new session."
                     )))
                 }
             },
@@ -280,6 +281,7 @@ impl FluxChat {
                             Ok((_, result)) => Ok(LoginSuccess {
                                 user_id: result.user_id,
                                 display_name: result.display_name,
+                                protection: result.protection,
                             }),
                             Err(e) => Err(format!("{e}")),
                         }
@@ -299,6 +301,7 @@ impl FluxChat {
                             Ok((_, result)) => Ok(LoginSuccess {
                                 user_id: result.user_id,
                                 display_name: result.display_name,
+                                protection: result.protection,
                             }),
                             Err(e) => Err(format!("{e}")),
                         }
@@ -5547,11 +5550,7 @@ impl FluxChat {
                         // Persist for instant display on restart (detached:
                         // dropping the JoinHandle doesn't cancel it).
                         let to_store = data.clone();
-                        drop(tokio::task::spawn_blocking(move || {
-                            use base64::Engine;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&to_store);
-                            core.db.cache_media(&cache_key, &b64);
-                        }));
+                        drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
                         Some((mxc_clone, data))
                     },
                     |result| match result {
@@ -5579,9 +5578,7 @@ impl FluxChat {
                                 let core = core.clone();
                                 let cache_key = cache_key.clone();
                                 tokio::task::spawn_blocking(move || {
-                                    use base64::Engine;
-                                    let b64 = core.db.get_cached_media(&cache_key)?;
-                                    let data = base64::engine::general_purpose::STANDARD.decode(&b64).ok()?;
+                                    let data = core.db.get_cached_media(&cache_key)?;
                                     if data.len() <= 100 {
                                         return None;
                                     }
@@ -5607,10 +5604,7 @@ impl FluxChat {
                                 result
                             }).await.ok().flatten()?;
                             let to_store = data.clone();
-                            drop(tokio::task::spawn_blocking(move || {
-                                use base64::Engine;
-                                core.db.cache_media(&cache_key, &base64::engine::general_purpose::STANDARD.encode(&to_store));
-                            }));
+                            drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
                             Some((thumb_key, data, w, h))
                         },
                         |result| match result {
@@ -5696,6 +5690,7 @@ impl FluxChat {
     fn finish_login(&mut self, success: LoginSuccess) -> Task<Message> {
         self.user_id = success.user_id;
         self.display_name = success.display_name;
+        self.session_protection = Some(success.protection);
         self.screen = Screen::Main;
         self.loading = false;
         self.login_submitting = false;
@@ -6211,9 +6206,7 @@ pub(crate) fn extract_urls(text: &str) -> Vec<String> {
 /// A cached inline image, if present and plausibly an image (a failed fetch
 /// once stored garbage; such entries are dropped so they're re-fetched).
 fn read_cached_image(db: &fluxchat_core::AppDb, cache_key: &str) -> Option<Vec<u8>> {
-    use base64::Engine;
-    let b64 = db.get_cached_media(cache_key)?;
-    let data = base64::engine::general_purpose::STANDARD.decode(&b64).ok()?;
+    let data = db.get_cached_media(cache_key)?;
     let is_valid = data.len() > 100 && (
         data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
         data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
@@ -6253,18 +6246,15 @@ fn gif_frames_task(core: std::sync::Arc<fluxchat_core::AppState>, mxc: String, d
 /// Animation frames of a GIF, or of an animated WebP (transcoded to GIF and
 /// cached as `iced_gif:`). Blocking: run under `spawn_blocking`.
 fn decode_gif_frames(core: &fluxchat_core::AppState, mxc: &str, data: Vec<u8>, is_webp: bool) -> Option<crate::anim::Anim> {
-    use base64::Engine;
-    let engine = base64::engine::general_purpose::STANDARD;
     let gif_bytes = if is_webp {
         let key = format!("iced_gif:{mxc}");
         let cached = core.db.get_cached_media(&key)
-            .and_then(|b64| engine.decode(b64).ok())
             .filter(|b| b.len() >= 3 && &b[..3] == b"GIF");
         match cached {
             Some(bytes) => bytes,
             None => {
                 let gb = webp_to_gif_bytes(&data)?;
-                core.db.cache_media(&key, &engine.encode(&gb));
+                core.db.cache_media(&key, &gb);
                 gb
             }
         }

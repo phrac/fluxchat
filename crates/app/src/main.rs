@@ -52,7 +52,8 @@ fn init_core() -> Arc<AppState> {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("fluxchat");
     std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
-    // The folder holds the access token and encryption keys: owner only.
+    // Owner only: the stores are encrypted (core::vault), but secrets.json
+    // holds the key when there's no system keyring.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -3,16 +3,98 @@ use matrix_sdk::{
     ruma::OwnedUserId,
     Client, SessionMeta,
 };
-use serde_json::json;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
 use crate::error::AppError;
 use crate::models::LoginResult;
 use crate::state::AppState;
+use crate::vault::{self, Protection, SavedSession, Vault};
 
 fn data_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("fluxchat")
+}
+
+fn store_dir() -> PathBuf {
+    data_dir().join("matrix_store")
+}
+
+/// A client on the SDK store in `matrix_store/`, encrypted with `key`.
+async fn build_client(homeserver: &str, key: &[u8; 32]) -> Result<Client, AppError> {
+    Ok(Client::builder()
+        .server_name_or_homeserver_url(homeserver)
+        .sqlite_store_with_config_and_cache_path(
+            matrix_sdk::SqliteStoreConfig::new(store_dir()).key(Some(key)),
+            None::<PathBuf>,
+        )
+        // Without this the event cache never routes live sync events into
+        // thread caches, so open thread views stop updating (and thread
+        // summaries never refresh).
+        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled { with_subscriptions: false })
+        .build()
+        .await?)
+}
+
+/// Run a blocking vault call (the credential store may show a prompt).
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Send + 'static) -> Result<T, AppError> {
+    tokio::task::spawn_blocking(f).await
+        .map_err(|e| AppError::Other(e.to_string()))?
+        .map_err(|e| AppError::Other(e.to_string()))
+}
+
+/// Start a fresh store for a new login: the old one belongs to another
+/// session (or none), and its key is about to be replaced.
+fn clear_store() {
+    let dir = store_dir();
+    if dir.exists() {
+        info!("Clearing old matrix store for fresh login");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    crate::store_migration::discard(&dir);
+}
+
+/// After a login: keep the session and store key in the vault, start the
+/// encrypted media cache, and finish setting up the client.
+async fn complete_login(
+    state: &AppState,
+    client: Client,
+    homeserver: &str,
+    key: [u8; 32],
+) -> Result<(Client, LoginResult), AppError> {
+    let user_id = client.user_id()
+        .ok_or(AppError::Other("No user ID after login".into()))?.to_string();
+    let session = client.matrix_auth().session()
+        .ok_or(AppError::Other("No session after login".into()))?;
+    let vault = Vault::with_key(SavedSession {
+        homeserver: homeserver.to_string(),
+        user_id: session.meta.user_id.to_string(),
+        device_id: session.meta.device_id.to_string(),
+        access_token: session.tokens.access_token,
+        refresh_token: session.tokens.refresh_token,
+    }, &key);
+    let dir = data_dir();
+    let protection = blocking(move || vault::save(&dir, &vault)).await?;
+    state.db.delete_session();
+    info!("Session saved for {user_id} ({protection:?})");
+    if let Err(e) = state.db.unlock_media_cache(&key) {
+        warn!("Media cache unavailable: {e}");
+    }
+    start_client(state, client, user_id, protection).await
+}
+
+async fn start_client(
+    state: &AppState,
+    client: Client,
+    user_id: String,
+    protection: Protection,
+) -> Result<(Client, LoginResult), AppError> {
+    // Enable event cache for Timeline API
+    if let Err(e) = client.event_cache().subscribe() {
+        warn!("Failed to subscribe event cache: {e}");
+    }
+    let display_name = client.account().get_display_name().await.ok().flatten();
+    state.set_client(client.clone()).await;
+    Ok((client, LoginResult { user_id, display_name, protection }))
 }
 
 /// Log in with username and password, saving the session to the database.
@@ -22,55 +104,16 @@ pub async fn login(
     username: &str,
     password: &str,
 ) -> Result<(Client, LoginResult), AppError> {
-    let data_dir = data_dir();
-    let matrix_store = data_dir.join("matrix_store");
-
-    if matrix_store.exists() {
-        info!("Clearing old matrix store for fresh login");
-        let _ = std::fs::remove_dir_all(&matrix_store);
-    }
-
-    let client = Client::builder()
-        .server_name_or_homeserver_url(homeserver)
-        .sqlite_store(&matrix_store, None)
-        // Without this the event cache never routes live sync events into
-        // thread caches, so open thread views stop updating (and thread
-        // summaries never refresh).
-        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled { with_subscriptions: false })
-        .build()
-        .await?;
+    clear_store();
+    let key = vault::new_key().map_err(|e| AppError::Other(e.to_string()))?;
+    let client = build_client(homeserver, &key).await?;
 
     client.matrix_auth()
         .login_username(username, password)
         .initial_device_display_name("FluxChat")
         .await?;
 
-    let user_id = client.user_id()
-        .ok_or(AppError::Other("No user ID after login".into()))?.to_string();
-
-    if let Some(session) = client.matrix_auth().session() {
-        let session_json = json!({
-            "homeserver": homeserver,
-            "user_id": session.meta.user_id.as_str(),
-            "device_id": session.meta.device_id.as_str(),
-            "access_token": session.tokens.access_token,
-            "refresh_token": session.tokens.refresh_token,
-        });
-        state.db.save_session(&session_json.to_string())
-            .map_err(|e| AppError::Other(e.to_string()))?;
-        info!("Session saved for {}", user_id);
-    }
-
-    // Enable event cache for Timeline API
-    if let Err(e) = client.event_cache().subscribe() {
-        warn!("Failed to subscribe event cache: {e}");
-    }
-
-    let display_name = client.account().get_display_name().await.ok().flatten();
-
-    state.set_client(client.clone()).await;
-
-    Ok((client, LoginResult { user_id, display_name }))
+    complete_login(state, client, homeserver, key).await
 }
 
 /// Log out, clearing the saved session and matrix store.
@@ -85,11 +128,11 @@ pub async fn logout(state: &AppState) -> Result<(), AppError> {
     if let Some(client) = lock.take() {
         let _ = client.logout().await;
     }
+    let dir = data_dir();
+    let _ = tokio::task::spawn_blocking(move || vault::delete(&dir)).await;
     state.db.delete_session();
-    let matrix_store = data_dir().join("matrix_store");
-    if matrix_store.exists() {
-        let _ = std::fs::remove_dir_all(&matrix_store);
-    }
+    state.db.forget_media_cache();
+    clear_store();
     Ok(())
 }
 
@@ -145,23 +188,9 @@ pub async fn login_sso(
     state: &AppState,
     homeserver: &str,
 ) -> Result<(Client, LoginResult), AppError> {
-    let data_dir = data_dir();
-    let matrix_store = data_dir.join("matrix_store");
-
-    if matrix_store.exists() {
-        info!("Clearing old matrix store for fresh login");
-        let _ = std::fs::remove_dir_all(&matrix_store);
-    }
-
-    let client = Client::builder()
-        .server_name_or_homeserver_url(homeserver)
-        .sqlite_store(&matrix_store, None)
-        // Without this the event cache never routes live sync events into
-        // thread caches, so open thread views stop updating (and thread
-        // summaries never refresh).
-        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled { with_subscriptions: false })
-        .build()
-        .await?;
+    clear_store();
+    let key = vault::new_key().map_err(|e| AppError::Other(e.to_string()))?;
+    let client = build_client(homeserver, &key).await?;
 
     client.matrix_auth()
         .login_sso(|url| async move {
@@ -175,75 +204,67 @@ pub async fn login_sso(
         .await
         .map_err(|e| AppError::Other(format!("SSO login failed: {e}")))?;
 
-    let user_id = client.user_id()
-        .ok_or(AppError::Other("No user ID after SSO login".into()))?.to_string();
-
-    if let Some(session) = client.matrix_auth().session() {
-        let session_json = serde_json::json!({
-            "homeserver": homeserver,
-            "user_id": session.meta.user_id.as_str(),
-            "device_id": session.meta.device_id.as_str(),
-            "access_token": session.tokens.access_token,
-            "refresh_token": session.tokens.refresh_token,
-        });
-        state.db.save_session(&session_json.to_string())
-            .map_err(|e| AppError::Other(e.to_string()))?;
-        info!("SSO session saved for {}", user_id);
-    }
-
-    // Enable event cache for Timeline API
-    if let Err(e) = client.event_cache().subscribe() {
-        warn!("Failed to subscribe event cache: {e}");
-    }
-
-    let display_name = client.account().get_display_name().await.ok().flatten();
-
-    state.set_client(client.clone()).await;
-
-    Ok((client, LoginResult { user_id, display_name }))
+    complete_login(state, client, homeserver, key).await
 }
 
-/// Restore a previously saved session from the database.
+/// Restore the saved session: from the vault, or once from the session
+/// row older versions kept in `fluxchat.db`, encrypting their store
+/// (`store_migration`).
 pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginResult)>, AppError> {
-    let session_str = match state.db.load_session() {
-        Some(s) => s,
-        None => { info!("No saved session"); return Ok(None); }
+    let dir = data_dir();
+    let store = store_dir();
+    let vault = {
+        let dir = dir.clone();
+        blocking(move || vault::load(&dir)).await?
     };
+    let legacy = state.db.load_session()
+        .and_then(|json| serde_json::from_str::<SavedSession>(&json).ok());
 
-    let session_doc: serde_json::Value = serde_json::from_str(&session_str)
-        .map_err(|e| AppError::Other(format!("Invalid session data: {e}")))?;
+    // A pre-vault session with no vault yet, or newer than the vault's (an
+    // older version signed in again): encrypt its store, then keep it in
+    // the vault. Same device: an interrupted migration that got this far.
+    let migrate = legacy.filter(|l| vault.as_ref().is_none_or(|(v, _)| v.session.device_id != l.device_id));
+    let (vault, protection) = match (vault, migrate) {
+        (_, Some(legacy)) => {
+            info!("Encrypting the local store of {} (device {})", legacy.user_id, legacy.device_id);
+            let key = vault::new_key().map_err(|e| AppError::Other(e.to_string()))?;
+            crate::store_migration::copy_crypto_store(&store, &key).await?;
+            let vault = Vault::with_key(legacy, &key);
+            let protection = {
+                let (dir, vault) = (dir.clone(), vault.clone());
+                blocking(move || vault::save(&dir, &vault)).await?
+            };
+            (vault, protection)
+        }
+        (Some(found), None) => found,
+        (None, None) => {
+            // A copy whose key was never saved can't be used.
+            crate::store_migration::discard(&store);
+            info!("No saved session");
+            return Ok(None);
+        }
+    };
+    // Swap in an encrypted copy (also after an interrupted migration), then
+    // drop the plaintext session row.
+    crate::store_migration::finish(&store)
+        .map_err(|e| AppError::Other(format!("Couldn't replace the local store: {e}")))?;
+    state.db.delete_session();
 
-    let homeserver = session_doc["homeserver"].as_str()
-        .ok_or(AppError::Other("Missing homeserver".into()))?;
-    let session = &session_doc;
+    let session = &vault.session;
+    let user_id: OwnedUserId = session.user_id.as_str().try_into()
+        .map_err(|_| AppError::Other("Invalid user_id".into()))?;
+    let device_id: matrix_sdk::ruma::OwnedDeviceId = session.device_id.as_str().into();
+    let key = vault.store_key().map_err(|e| AppError::Other(e.to_string()))?;
 
-    let user_id: OwnedUserId = session["user_id"].as_str()
-        .ok_or(AppError::Other("Missing user_id".into()))?
-        .try_into().map_err(|_| AppError::Other("Invalid user_id".into()))?;
-
-    let device_id: matrix_sdk::ruma::OwnedDeviceId = session["device_id"].as_str()
-        .ok_or(AppError::Other("Missing device_id".into()))?.into();
-
-    let access_token = session["access_token"].as_str()
-        .ok_or(AppError::Other("Missing access_token".into()))?.to_string();
-    let refresh_token = session["refresh_token"].as_str().map(|s| s.to_string());
-
-    let matrix_store = data_dir().join("matrix_store");
-
-    info!("Restoring session for {} (device {})", user_id, device_id);
-
-    let client = Client::builder()
-        .server_name_or_homeserver_url(homeserver)
-        .sqlite_store(&matrix_store, None)
-        // Without this the event cache never routes live sync events into
-        // thread caches, so open thread views stop updating (and thread
-        // summaries never refresh).
-        .with_threading_support(matrix_sdk::ThreadingSupport::Enabled { with_subscriptions: false })
-        .build().await?;
+    info!("Restoring session for {} (device {}, {protection:?})", user_id, device_id);
+    let client = build_client(&session.homeserver, &key).await?;
 
     let matrix_session = MatrixSession {
         meta: SessionMeta { user_id: user_id.clone(), device_id },
-        tokens: SessionTokens { access_token, refresh_token },
+        tokens: SessionTokens {
+            access_token: session.access_token.clone(),
+            refresh_token: session.refresh_token.clone(),
+        },
     };
 
     // Never delete the session or crypto store here: restore can fail for
@@ -253,14 +274,8 @@ pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginRe
     client.restore_session(matrix_session).await
         .map_err(|e| AppError::Other(format!("Session restore failed: {e}")))?;
     info!("Session restored");
-
-    // Enable event cache for Timeline API
-    if let Err(e) = client.event_cache().subscribe() {
-        warn!("Failed to subscribe event cache: {e}");
+    if let Err(e) = state.db.unlock_media_cache(&key) {
+        warn!("Media cache unavailable: {e}");
     }
-
-    let display_name = client.account().get_display_name().await.ok().flatten();
-    state.set_client(client.clone()).await;
-
-    Ok(Some((client, LoginResult { user_id: user_id.to_string(), display_name })))
+    start_client(state, client, user_id.to_string(), protection).await.map(Some)
 }

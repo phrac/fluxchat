@@ -15,11 +15,13 @@ pub mod room_admin;
 pub mod rooms;
 pub mod spaces;
 pub mod state;
+pub mod store_migration;
 pub mod sync_service;
 pub mod voice;
 pub mod timeline;
 pub mod rtc;
 pub mod rtc_audio;
+pub mod vault;
 pub mod verification;
 
 pub use db::AppDb;

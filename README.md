@@ -74,6 +74,7 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - End-to-end encryption, emoji (SAS) verification, cross-signing
 - Key backup and recovery, session management
 - Explanations for messages that can't be decrypted
+- Local data encrypted, with the key and sign-in in the system keychain (macOS Keychain, Windows Credential Manager, Secret Service)
 
 ### Calls
 - Voice calls over MatrixRTC + LiveKit
@@ -119,9 +120,12 @@ cargo run -p fluxchat
 **macOS app bundle**
 
 ```bash
+scripts/macos-signing-cert.sh   # once: a local code-signing identity
 ./build-macos.sh
 cp -r target/release/FluxChat.app /Applications/
 ```
+
+macOS ties Keychain access (your saved session) and the microphone permission to the app's signature. The one-time script creates a self-signed "FluxChat Local" identity, which `build-macos.sh` and `cargo run` use when present, so the signature stays the same across rebuilds. Without it builds are signed ad-hoc, and macOS asks again after every rebuild.
 
 **Linux**
 

@@ -608,6 +608,8 @@ pub struct FluxChat {
 
     // Security tab state
     pub security_state: Option<SecurityState>,
+    /// Where the session and store key are kept (`core::vault`).
+    pub session_protection: Option<fluxchat_core::vault::Protection>,
     pub security_recovery_key_input: String,
     pub security_shown_recovery_key: Option<String>,
     // Reset-identity flow (when recovery key is lost)
@@ -902,6 +904,7 @@ impl FluxChat {
             deactivate_armed: false,
             deactivating: false,
             security_state: None,
+            session_protection: None,
             security_recovery_key_input: String::new(),
             security_shown_recovery_key: None,
             security_reset_confirm: false,

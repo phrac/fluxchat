@@ -609,6 +609,7 @@ pub enum Message {
 pub struct LoginSuccess {
     pub user_id: String,
     pub display_name: Option<String>,
+    pub protection: fluxchat_core::vault::Protection,
 }
 
 /// Events coming from the Matrix sync subscription.

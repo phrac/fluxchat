@@ -30,6 +30,8 @@ The connection to your homeserver dropped; fluxchat reconnects automatically, re
 
 The error is shown on the sign-in screen. fluxchat never deletes your saved session or encryption keys on its own. A common cause is another fluxchat instance still running and holding the database; quit it and try again.
 
+If it says the saved session couldn't be read from the system keyring, the keyring is locked or FluxChat was denied access: unlock it (or choose **Always Allow** when macOS asks) and restart. Signing in again also works, but creates a new session that needs verifying.
+
 ## GIF search says it needs a key
 
 Set a Giphy API key with `/giphykey <key>` or the `GIPHY_API_KEY` environment variable.
@@ -70,4 +72,4 @@ FLUXCHAT_TIMING=1 cargo run -p fluxchat --release
 | Linux | `~/.local/share/fluxchat/` |
 | Windows | `%APPDATA%\fluxchat\` |
 
-It contains `fluxchat.db` (settings, media cache), `matrix_store/` (encryption keys, sync state, message cache) and `themes/`.
+It contains `fluxchat.db` (settings, encrypted media cache), `matrix_store/` (encryption keys, sync state, message cache; encrypted) and `themes/`. The key to the encrypted parts and your sign-in are in the system credential store (service `fluxchat`), or in `secrets.json` in this folder when there is none (see [Encryption](encryption.md#data-on-this-computer)).

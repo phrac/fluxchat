@@ -4,8 +4,12 @@
 [env]
 PKG_CONFIG_PATH = { value = "/opt/homebrew/lib/pkgconfig", force = false }
 
+# The runner signs `cargo run` builds like the app bundle (see
+# scripts/macos-run.sh), so they can read the Keychain without a prompt.
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-arg=-ObjC"]
+runner = "scripts/macos-run.sh"
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-ObjC"]
+runner = "scripts/macos-run.sh"

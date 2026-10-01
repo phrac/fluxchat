@@ -197,6 +197,8 @@ pub struct PaginatedMessages {
 pub struct LoginResult {
     pub user_id: String,
     pub display_name: Option<String>,
+    /// Where the session and store key are kept.
+    pub protection: crate::vault::Protection,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -393,6 +393,11 @@ impl FluxChat {
     }
 
     fn view_settings_security(&self) -> Element<Message> {
+        fn keyring_name() -> &'static str {
+            if cfg!(target_os = "macos") { "your macOS Keychain" }
+            else if cfg!(windows) { "Windows Credential Manager" }
+            else { "your system keyring" }
+        }
         let mut col = column![].spacing(ui::GAP);
         let status_row = |icon_svg: &'static [u8], color: Color, title: String, detail: String| -> Element<Message> {
             row![
@@ -443,6 +448,23 @@ impl FluxChat {
                 }
                 col = col.push(ui::card(backup));
             }
+        }
+
+        // Local storage: token + store key in the OS credential store?
+        use fluxchat_core::vault::Protection;
+        match self.session_protection {
+            Some(Protection::Keyring) => col = col.push(ui::card(status_row(
+                crate::icons::SVG_LOCK, theme::colors().green,
+                "Local data is encrypted".into(),
+                format!("Your sign-in and encryption keys are locked with a key kept in {}.", keyring_name()),
+            ))),
+            Some(Protection::File) => col = col.push(ui::card(status_row(
+                crate::icons::SVG_LOCK, theme::colors().yellow,
+                "Session not protected by the system keyring".into(),
+                "No keyring was available, so the key to your local data is kept in FluxChat's data folder \
+                 (readable only by your user). Install or unlock a keyring (e.g. GNOME Keyring, KWallet) and sign in again.".into(),
+            ))),
+            None => {}
         }
 
         if let Some(ref key) = self.security_shown_recovery_key {
