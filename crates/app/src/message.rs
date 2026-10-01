@@ -411,7 +411,7 @@ pub enum Message {
     LocationSubmit,
 
     // --- Panels data ---
-    PinsLoaded(Vec<fluxchat_core::MessageInfo>),
+    PinsLoaded(String, Vec<fluxchat_core::MessageInfo>), // room_id, pins
 
     // --- Room creation ---
     CreateRoomNameChanged(String),

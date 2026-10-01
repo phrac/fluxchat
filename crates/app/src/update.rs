@@ -762,6 +762,10 @@ impl FluxChat {
                 // Keep unsent text per view so switching rooms doesn't lose
                 // (or misdirect) a half-written message.
                 if self.selected_room_id.as_deref() != Some(room_id.as_str()) {
+                    // Pins belong to the real room; reloaded below.
+                    if self.active_real_room() != Some(fluxchat_core::timeline::real_room_id(&room_id)) {
+                        self.pinned_messages.clear();
+                    }
                     if let Some(prev) = self.selected_room_id.clone() {
                         let draft = std::mem::take(&mut self.input_text);
                         if draft.trim().is_empty() {
@@ -807,13 +811,13 @@ impl FluxChat {
                     let rid = fluxchat_core::timeline::real_room_id(&room_id).to_string();
                     Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::get_pinned_messages(&client, &rid).await.ok()
+                            let pins = match core.get_client().await {
+                                Ok(client) => fluxchat_core::messages::get_pinned_messages(&client, &rid).await.unwrap_or_default(),
+                                Err(_) => Vec::new(),
+                            };
+                            (rid, pins)
                         },
-                        |result| match result {
-                            Some(pins) => Message::PinsLoaded(pins),
-                            None => Message::PinsLoaded(Vec::new()),
-                        },
+                        |(rid, pins)| Message::PinsLoaded(rid, pins),
                     )
                 };
 
@@ -1334,18 +1338,21 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            let _ = fluxchat_core::messages::pin_message(
-                                &client, &real_room, &event_id,
-                            )
-                            .await;
-                            // Re-fetch pins so the icon updates
-                            let pins = fluxchat_core::messages::get_pinned_messages(&client, &real_room).await.ok();
-                            Some(pins.unwrap_or_default())
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            let pinned = fluxchat_core::messages::pin_message(&client, &real_room, &event_id)
+                                .await
+                                .map_err(|e| e.to_string());
+                            // Re-fetch pins so the icon updates (also after a failure).
+                            let pins = fluxchat_core::messages::get_pinned_messages(&client, &real_room).await.unwrap_or_default();
+                            Ok::<_, String>((real_room, pins, pinned.err()))
                         },
                         |result| match result {
-                            Some(pins) => Message::PinsLoaded(pins),
-                            None => Message::Noop,
+                            Ok((room, pins, None)) => Message::PinsLoaded(room, pins),
+                            Ok((room, pins, Some(e))) => Message::Batch(vec![
+                                Message::PinsLoaded(room, pins),
+                                Message::ShowError(format!("Couldn't pin: {e}")),
+                            ]),
+                            Err(e) => Message::ShowError(format!("Couldn't pin: {e}")),
                         },
                     );
                 }
@@ -1422,6 +1429,10 @@ impl FluxChat {
                 }
             }
             Message::SearchResults(results) => {
+                // A search started in another room (we switched since).
+                if results.first().is_some_and(|r| Some(r.room_id.as_str()) != self.active_real_room()) {
+                    return Task::none();
+                }
                 self.search_results = results;
                 self.search_done = true;
                 self.search_selected = None;
@@ -1531,13 +1542,13 @@ impl FluxChat {
                         let core = self.core.clone();
                         return Task::perform(
                             async move {
-                                let client = core.get_client().await.ok()?;
-                                fluxchat_core::messages::get_pinned_messages(&client, &room_id).await.ok()
+                                let pins = match core.get_client().await {
+                                    Ok(client) => fluxchat_core::messages::get_pinned_messages(&client, &room_id).await.unwrap_or_default(),
+                                    Err(_) => Vec::new(),
+                                };
+                                (room_id, pins)
                             },
-                            |result| match result {
-                                Some(msgs) => Message::PinsLoaded(msgs),
-                                None => Message::PinsLoaded(Vec::new()),
-                            },
+                            |(room_id, pins)| Message::PinsLoaded(room_id, pins),
                         );
                     }
                 }
@@ -3413,8 +3424,11 @@ impl FluxChat {
             }
 
             // --- Panels data ---
-            Message::PinsLoaded(msgs) => {
-                self.pinned_messages = msgs;
+            Message::PinsLoaded(room_id, msgs) => {
+                // Ignore a reply for a room we've since left.
+                if self.active_real_room() == Some(room_id.as_str()) {
+                    self.pinned_messages = msgs;
+                }
             }
 
             // --- Room creation ---
