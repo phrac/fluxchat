@@ -2646,7 +2646,7 @@ impl FluxChat {
                 for (i, msg) in rows.iter().enumerate().take(end).skip(start) {
                     let continuation = self.prefs.group_messages && !self.compact_mode
                         && i > 0 && is_continuation(rows[i - 1], msg);
-                    let mut row_col = column![self.view_message(msg, continuation)].spacing(0).width(Fill);
+                    let mut row_col = column![self.view_message(room_id, msg, continuation)].spacing(0).width(Fill);
                     // Unread divider: show after the last-read message
                     let is_last_read = show_divider && !divider_shown
                         && last_read.as_deref() == Some(msg.event_id.as_str());

@@ -4347,7 +4347,7 @@ impl FluxChat {
                 }
             }
             // --- Panes & windows (delegated to panes.rs) ---
-            msg @ (Message::PaneClicked(_) | Message::PaneFocus(_) | Message::FillPane(..) | Message::PaneResized(_) | Message::PaneDragged(_)
+            msg @ (Message::PaneClicked(_) | Message::PaneFocus(_) | Message::FillPane(..) | Message::InView(..) | Message::PaneResized(_) | Message::PaneDragged(_)
                 | Message::PaneSplit(_) | Message::PaneClose(_) | Message::PaneZoom
                 | Message::PaneFocusDirection(_) | Message::PaneCycle
                 | Message::WindowNew | Message::WindowSelect(_) | Message::WindowNext

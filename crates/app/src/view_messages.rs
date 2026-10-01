@@ -205,7 +205,9 @@ impl FluxChat {
     /// One message row. `continuation`: same sender as the row above within a
     /// few minutes — the nick is dimmed and the avatar left out so runs of
     /// messages read as one block.
-    pub(crate) fn view_message<'a>(&'a self, msg: &'a fluxchat_core::MessageInfo, continuation: bool) -> Element<'a, Message> {
+    /// One timeline row. `view_key` is the view it's shown in (the main view
+    /// or a side pane), used for every room-scoped lookup and action.
+    pub(crate) fn view_message<'a>(&'a self, view_key: &'a str, msg: &'a fluxchat_core::MessageInfo, continuation: bool) -> Element<'a, Message> {
         let fs = self.msg_font_size;
         let cols = self.msg_columns();
         // Timestamp
@@ -474,7 +476,7 @@ impl FluxChat {
             let bar_width = 120.0_f32;
             let filled_width = (bar_width * progress).max(0.0);
             let play_event_id = msg.event_id.clone();
-            let play_room_id = self.selected_room_id.clone().unwrap_or_default();
+            let play_room_id = view_key.to_string();
             let icon_color = if is_playing { theme::colors().red } else { theme::colors().accent };
             button(
                 container(
@@ -574,7 +576,7 @@ impl FluxChat {
             }
         } else if msg.is_video {
             let eid = msg.event_id.clone();
-            let rid = self.selected_room_id.clone().unwrap_or_default();
+            let rid = view_key.to_string();
             let is_playing = self.video_playing_event.as_deref() == Some(&msg.event_id);
 
             if is_playing {
@@ -778,7 +780,7 @@ impl FluxChat {
             }).unwrap_or_default();
             let mime_str = msg.file_mimetype.as_deref().unwrap_or("file");
             let eid = msg.event_id.clone();
-            let rid = self.selected_room_id.clone().unwrap_or_default();
+            let rid = view_key.to_string();
             button(
                 container(
                     row![
@@ -1166,8 +1168,7 @@ impl FluxChat {
             (msg.reply_to_sender.clone(), msg.reply_to_body.clone())
         } else if let Some(ref reply_id) = msg.reply_to_id {
             // Look up in local messages
-            let room_id = self.selected_room_id.as_deref().unwrap_or("");
-            let found = self.messages_by_room.get(room_id)
+            let found = self.messages_by_room.get(view_key)
                 .and_then(|msgs| msgs.iter().find(|m| m.event_id == *reply_id));
             if let Some(original) = found {
                 (Some(original.sender_name.clone()), Some(original.body.chars().take(120).collect()))
@@ -1339,12 +1340,7 @@ impl FluxChat {
             )));
             action_row = action_row.push(make_msg_action(SVG_DELETE, "Delete", Message::DeleteMessage(event_id.clone())));
         } else {
-            let report_room = self.selected_room_id.clone().unwrap_or_default();
-            let report_room = if report_room.starts_with("thread::") {
-                report_room.split("::").nth(1).unwrap_or(&report_room).to_string()
-            } else {
-                report_room
-            };
+            let report_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
             action_row = action_row.push(make_msg_action(SVG_FLAG, "Report", Message::OpenModal(
                 crate::state::Modal::Report { event_id: event_id.clone(), room_id: report_room },
             )));

@@ -112,6 +112,9 @@ pub enum Message {
     PaneClicked(iced::widget::pane_grid::Pane),
     /// Focus a pane right away (title-bar controls).
     PaneFocus(iced::widget::pane_grid::Pane),
+    /// An action from a side pane's message row: focus the pane showing
+    /// the view key, then run the action there.
+    InView(String, Box<Message>),
     /// Show a room in a given pane (an empty pane's picker).
     FillPane(iced::widget::pane_grid::Pane, String),
     PaneResized(iced::widget::pane_grid::ResizeEvent),

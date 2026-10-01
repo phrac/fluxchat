@@ -265,6 +265,16 @@ impl FluxChat {
                 self.pending_pane_focus = (pane != self.window().focus).then_some(pane);
                 Task::none()
             }
+            Message::InView(key, inner) => {
+                let focus = match self.window().pane_with(&key) {
+                    Some(p) if self.selected_room_id.as_deref() != Some(key.as_str()) => {
+                        self.pending_pane_focus = None;
+                        self.focus_pane(p)
+                    }
+                    _ => Task::none(),
+                };
+                Task::batch([focus, self.update(*inner)])
+            }
             Message::FillPane(pane, key) => {
                 let w = self.window_mut();
                 if w.grid.get(pane).is_none() {
@@ -525,6 +535,28 @@ fn layout_order(node: &pane_grid::Node) -> Vec<pane_grid::Pane> {
     }
 }
 
+/// Route a side pane's message-row message. Actions that work on "the
+/// current room" (react, reply, edit, delete, pin, menus…) go through
+/// `InView` so the pane is focused first; hover, selection, links and
+/// media controls pass straight through, so hovering a pane never moves focus.
+pub fn in_view(key: &str, message: Message) -> Message {
+    match message {
+        Message::ToggleReaction(..)
+        | Message::StartReply(..)
+        | Message::StartEdit(..)
+        | Message::RetrySend(..)
+        | Message::PinMessage(..)
+        | Message::OpenEmojiReact(..)
+        | Message::ToggleEmojiPicker
+        | Message::EmojiSelect(..)
+        | Message::DeleteMessage(..)
+        | Message::JumpToEvent(..)
+        | Message::OpenContextMenu(..)
+        | Message::OpenModal(..) => Message::InView(key.to_string(), Box::new(message)),
+        other => other,
+    }
+}
+
 /// The command for a key pressed after the Ctrl+B prefix.
 pub fn tmux_command(key: &str) -> Option<Message> {
     Some(match key {
@@ -749,5 +781,21 @@ mod flow_tests {
         click(&mut app, pt, Message::PaneClose(Some(pt)));
         assert_eq!(keys(&app), vec![Some("!a:x".to_string())]);
         assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+    }
+
+    #[tokio::test]
+    async fn actions_in_a_side_pane_apply_to_that_pane() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let pb = pane_of(&app, Some("!b:x"));
+        // Delete from b's hover bar: press in b, release on the button.
+        let wrapped = in_view("!b:x", Message::DeleteMessage("$e".into()));
+        click(&mut app, pb, wrapped);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        assert!(app.pending_redactions.get("!b:x").is_some_and(|p| p.contains("$e")));
+        assert!(!app.pending_redactions.contains_key("!a:x"));
+        // Hover / links aren't wrapped, so they never move focus.
+        assert!(matches!(in_view("!b:x", Message::OpenUrl("u".into())), Message::OpenUrl(_)));
     }
 }

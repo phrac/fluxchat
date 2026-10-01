@@ -203,7 +203,10 @@ impl FluxChat {
                 for (i, msg) in rows.iter().enumerate() {
                     let continuation = self.prefs.group_messages && !self.compact_mode
                         && i > 0 && crate::view::is_continuation(rows[i - 1], msg);
-                    let mut item = column![self.view_message(msg, continuation)].width(Fill);
+                    // Actions act on this pane's view (it gets focus first).
+                    let row = self.view_message(key, msg, continuation)
+                        .map(move |m| crate::panes::in_view(key, m));
+                    let mut item = column![row].width(Fill);
                     if is_thread && i == 0 && msg.thread_root.is_none() && rows.len() > 1 {
                         item = item.push(container(ui::divider()).padding([6, 0]));
                     }

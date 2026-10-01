@@ -6,7 +6,7 @@ fluxchat can split its main area into **panes**, tmux-style, and keep several la
 
 Each pane shows a room or a thread. One pane at a time is **focused** (outlined in the accent colour). It shows the full room view: header, panels and the main message box. The other panes show their messages live, each with its own message box.
 
-- **Focus** a pane by clicking it; the cursor goes to its message box. Buttons in an unfocused pane work on the first click. The room list then fills the focused pane: clicking a room puts it there.
+- **Focus** a pane by clicking it; the cursor goes to its message box. Buttons in an unfocused pane work on the first click; acting on a message there (react, reply, edit, delete, pin) focuses that pane first, so the action applies to its room. Hovering never moves focus. The room list then fills the focused pane: clicking a room puts it there.
 - **Split**:
   - the split button in the room header;
   - the split buttons in a pane's title bar;
