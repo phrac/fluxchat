@@ -224,12 +224,12 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 return CommandResult::Help("Usage: /location <lat> <lon> [description]".into());
             }
             let lat = match parts[0].parse::<f64>() {
-                Ok(v) => v,
-                Err(_) => return CommandResult::Help("Invalid latitude".into()),
+                Ok(v) if (-90.0..=90.0).contains(&v) => v,
+                _ => return CommandResult::Help("Latitude must be a number from -90 to 90".into()),
             };
             let lon = match parts[1].parse::<f64>() {
-                Ok(v) => v,
-                Err(_) => return CommandResult::Help("Invalid longitude".into()),
+                Ok(v) if (-180.0..=180.0).contains(&v) => v,
+                _ => return CommandResult::Help("Longitude must be a number from -180 to 180".into()),
             };
             let geo_uri = format!("geo:{lat},{lon}");
             CommandResult::Messages(vec![Message::SendLocation(geo_uri)])
@@ -238,12 +238,12 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 return CommandResult::Help("Usage: /report <event_id> [reason]".into());
             }
-            let mut parts = args.splitn(2, ' ');
-            let event_id = parts.next().unwrap().to_string();
+            let (event_id, reason) = args.split_once(' ').unwrap_or((args, ""));
             let room_id = current_room.clone().unwrap_or_default();
-            CommandResult::Messages(vec![Message::OpenModal(crate::state::Modal::Report {
-                event_id, room_id,
-            })])
+            CommandResult::Messages(vec![
+                Message::OpenModal(crate::state::Modal::Report { event_id: event_id.to_string(), room_id }),
+                Message::ReportReasonChanged(reason.trim().to_string()),
+            ])
         }
         "/leave" | "/part" => {
             if let Some(room_id) = &current_room {
@@ -266,11 +266,9 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 return CommandResult::Help("Usage: /kick <user> [reason]".into());
             }
-            let (user, reason) = args.split_once(' ')
-                .map(|(u, r)| (u, Some(r.to_string())))
-                .unwrap_or((args, None));
             if let Some(room_id) = &current_room {
-                let user_id = resolve_user_id(user, room_id, state);
+                let (user_id, rest) = split_user_arg(args, room_id, state);
+                let reason = (!rest.is_empty()).then(|| rest.to_string());
                 CommandResult::Messages(vec![Message::KickUser(room_id.clone(), user_id, reason)])
             } else {
                 CommandResult::Help("No room selected".into())
@@ -280,11 +278,9 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 return CommandResult::Help("Usage: /ban <user> [reason]".into());
             }
-            let (user, reason) = args.split_once(' ')
-                .map(|(u, r)| (u, Some(r.to_string())))
-                .unwrap_or((args, None));
             if let Some(room_id) = &current_room {
-                let user_id = resolve_user_id(user, room_id, state);
+                let (user_id, rest) = split_user_arg(args, room_id, state);
+                let reason = (!rest.is_empty()).then(|| rest.to_string());
                 CommandResult::Messages(vec![Message::BanUser(room_id.clone(), user_id, reason)])
             } else {
                 CommandResult::Help("No room selected".into())
@@ -354,12 +350,16 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             if args.is_empty() {
                 return CommandResult::Help("Usage: /op <user> [level]".into());
             }
-            let (user, level) = args.split_once(' ')
-                .map(|(u, l)| (u.to_string(), l.parse::<i64>().unwrap_or(50)))
-                .unwrap_or((args.to_string(), 50));
             if let Some(room_id) = &current_room {
-                // Resolve display name to user_id
-                let user_id = resolve_user_id(&user, room_id, state);
+                let (user_id, rest) = split_user_arg(args, room_id, state);
+                let level = if rest.is_empty() {
+                    50
+                } else {
+                    match rest.parse::<i64>() {
+                        Ok(l) if (0..=100).contains(&l) => l,
+                        _ => return CommandResult::Help("Usage: /op <user> [level 0-100]".into()),
+                    }
+                };
                 CommandResult::Messages(vec![Message::SetPowerLevel(room_id.clone(), user_id, level)])
             } else {
                 CommandResult::Help("No room selected".into())
@@ -603,6 +603,44 @@ pub fn autocomplete_entries(prefix: &str) -> Vec<(&'static str, &'static str)> {
 /// Resolve a display name or user ID to a user_id.
 /// If the input starts with @, treat as user_id directly.
 /// Otherwise, search the room's member list for a matching display name.
+/// Split `<user> [rest]`, where the user may be a display name with spaces:
+/// a `@user:server` ID ends at the first space; otherwise the longest member
+/// display name the arguments start with (case-insensitive) wins, so
+/// `/kick Bob Smith spamming` finds "Bob Smith". Falls back to the first word.
+fn split_user_arg<'a>(args: &'a str, room_id: &str, state: &FluxChat) -> (String, &'a str) {
+    let members = state.members_by_room.get(room_id).map(Vec::as_slice).unwrap_or(&[]);
+    split_member_arg(args, members)
+}
+
+fn split_member_arg<'a>(args: &'a str, members: &[fluxchat_core::MemberInfo]) -> (String, &'a str) {
+    let first_word = || {
+        let (user, rest) = args.split_once(' ').unwrap_or((args, ""));
+        (user, rest.trim())
+    };
+    if args.starts_with('@') {
+        let (user, rest) = first_word();
+        return (user.to_string(), rest);
+    }
+    let lower = args.to_lowercase();
+    let best = members.iter()
+        .filter(|m| !m.display_name.is_empty())
+        .filter(|m| {
+            let name = m.display_name.to_lowercase();
+            lower.starts_with(&name) && lower[name.len()..].chars().next().is_none_or(|c| c == ' ')
+        })
+        .max_by_key(|m| m.display_name.len());
+    match best {
+        // Byte offsets match: lowercasing keeps the lengths of these names.
+        Some(m) if args.is_char_boundary(m.display_name.len()) => {
+            (m.user_id.clone(), args[m.display_name.len()..].trim())
+        }
+        _ => {
+            let (user, rest) = first_word();
+            (user.to_string(), rest)
+        }
+    }
+}
+
 fn resolve_user_id(input: &str, room_id: &str, state: &FluxChat) -> String {
     if input.starts_with('@') {
         return input.to_string();
@@ -614,4 +652,41 @@ fn resolve_user_id(input: &str, room_id: &str, state: &FluxChat) -> String {
         }
     }
     input.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(id: &str, name: &str) -> fluxchat_core::MemberInfo {
+        fluxchat_core::MemberInfo {
+            user_id: id.into(),
+            display_name: name.into(),
+            avatar_url: None,
+            power_level: 0,
+            role: "Member".into(),
+            presence: "offline".into(),
+            status_msg: None,
+            server_name: "x".into(),
+            last_active_secs: None,
+        }
+    }
+
+    #[test]
+    fn user_args_match_display_names_with_spaces() {
+        let members = [member("@bob:x", "Bob"), member("@bs:x", "Bob Smith")];
+        assert_eq!(split_member_arg("Bob Smith spamming", &members), ("@bs:x".to_string(), "spamming"));
+        assert_eq!(split_member_arg("bob being rude", &members), ("@bob:x".to_string(), "being rude"));
+        assert_eq!(split_member_arg("Bobby", &members), ("Bobby".to_string(), ""));
+        assert_eq!(split_member_arg("@z:x 50", &members), ("@z:x".to_string(), "50"));
+    }
+
+    #[test]
+    fn every_command_has_a_unique_name() {
+        let mut names: Vec<&str> = all_commands().iter().map(|c| c.name).collect();
+        let n = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), n);
+    }
 }

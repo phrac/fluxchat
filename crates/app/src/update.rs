@@ -3387,10 +3387,15 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::send_location(&client, &real_room, &geo_uri).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::messages::send_location(&client, &real_room, &geo_uri).await
+                                .map(|_| ())
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |result| match result {
+                            Ok(()) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Couldn't share location: {e}")),
+                        },
                     );
                 }
             }

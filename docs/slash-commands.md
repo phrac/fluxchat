@@ -2,7 +2,7 @@
 
 Type `/` in the message box for suggestions; **Tab** cycles through them. `/help [command]` lists commands or explains one. To send text that starts with `/`, start it with `//`.
 
-Commands marked *room* need a room open. Where a command takes `<user>`, you can use a display name or a full `@user:server` ID.
+Commands marked *room* need a room open. Where a command takes `<user>`, you can use a display name (spaces are fine: `/kick Bob Smith spamming` kicks "Bob Smith" with the reason "spamming") or a full `@user:server` ID.
 
 ## Rooms
 
@@ -40,7 +40,7 @@ Commands marked *room* need a room open. Where a command takes `<user>`, you can
 | `/kick <user> [reason]` | Remove someone |
 | `/ban <user> [reason]` | Ban someone |
 | `/unban <user>` | Lift a ban |
-| `/op <user> [level]` | Set someone's power level (default: moderator) |
+| `/op <user> [level]` | Set someone's power level, 0–100 (default 50, moderator) |
 | `/deop <user>` | Reset someone to member |
 | `/report <event_id> [reason]` | Report a message |
 
