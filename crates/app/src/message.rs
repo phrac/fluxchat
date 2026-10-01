@@ -224,6 +224,7 @@ pub enum Message {
     // --- Room settings: advanced ---
     RoomAdvancedLoaded(String, Result<Box<fluxchat_core::room_admin::RoomAdvanced>, String>),
     RoomAliasInputChanged(String),
+    RoomBridgesLoaded(String, Vec<fluxchat_core::room_admin::BridgeInfo>),
     AddRoomAlias,
     RemoveRoomAlias(String),
     /// Make an address the main one (None: no main address).
@@ -483,6 +484,10 @@ pub enum Message {
     // --- Profile actions ---
     ToggleIgnoreUser(String), // user_id
     IgnoredUsersLoaded(Vec<String>),
+    MediaPreviewsLoaded(fluxchat_core::profile::MediaPreviewConfig),
+    SetMediaPreviews(fluxchat_core::profile::MediaPreviewConfig),
+    /// Show one hidden image/video: (view key, event id).
+    RevealMedia(String, String),
     /// An ignore-list change finished: (user, now ignored?, error).
     IgnoreDone(String, bool, Option<String>),
     SettingsDeactivatePasswordChanged(String),

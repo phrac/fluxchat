@@ -69,8 +69,13 @@ impl FluxChat {
                 let space = self.spaces.iter().find(|s| s.room_id == space_id);
                 self.space_name_input = space.map(|s| s.name.clone()).unwrap_or_default();
                 self.space_topic_input = space.and_then(|s| s.topic.clone()).unwrap_or_default();
+                // Visibility and addresses use Room Settings' controls.
+                self.room_security = None;
+                self.room_perms = None;
+                self.room_advanced = None;
+                self.room_alias_input.clear();
                 self.modal = Some(Modal::SpaceDetails { space_id: space_id.clone() });
-                self.load_space_details(space_id)
+                Task::batch([self.load_space_details(space_id.clone()), self.load_room_admin(space_id)])
             }
             Message::SpaceDetailsLoaded(space_id, children, members, perms) => {
                 if self.open_space_id() != Some(space_id.as_str()) {

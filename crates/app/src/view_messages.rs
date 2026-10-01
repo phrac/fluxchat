@@ -526,6 +526,32 @@ impl FluxChat {
             .padding(0)
             .style(|_, _| button::Style { background: None, ..Default::default() })
             .into()
+        } else if self.media_hidden(view_key, msg) {
+            // Media previews are off here: a click shows (and fetches) it.
+            let kind = if msg.is_video { "Video" } else { "Image" };
+            button(
+                row![
+                    crate::ui::icon(crate::icons::SVG_EYE_OFF, 16.0, theme::colors().text_dim),
+                    column![
+                        text(format!("{kind} hidden")).font(self.msg_font()).size(fs).color(theme::colors().text_normal),
+                        text("Click to show").font(self.msg_font()).size(fs * 0.8).color(theme::colors().text_dim),
+                    ].spacing(2),
+                ]
+                .spacing(10)
+                .align_y(iced::Alignment::Center),
+            )
+            .on_press(Message::RevealMedia(view_key.to_string(), msg.event_id.clone()))
+            .padding([10, 14])
+            .style(|_, status| button::Style {
+                background: Some(if matches!(status, button::Status::Hovered) {
+                    theme::tint(0.08)
+                } else {
+                    theme::colors().bg_mid
+                }.into()),
+                border: iced::Border { color: theme::colors().border, width: 1.0, radius: 6.0.into() },
+                ..Default::default()
+            })
+            .into()
         } else if let Some(ref mxc) = msg.image_mxc {
             if !msg.is_video {
                 // Image messages

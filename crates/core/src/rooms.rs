@@ -77,6 +77,7 @@ pub async fn room_to_info(room: &matrix_sdk::Room, space_info: Option<(String, S
         space_id: space_info.as_ref().map(|(_, id)| id.clone()),
         is_favourite: room.is_favourite(),
         successor: room.successor_room().map(|s| s.room_id.to_string()),
+        is_public: matches!(room.join_rule(), Some(matrix_sdk::ruma::events::room::join_rules::JoinRule::Public)),
     }
 }
 
@@ -236,6 +237,7 @@ pub async fn get_invited_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
             space_id: None,
             is_favourite: false,
             successor: None,
+            is_public: false,
         });
     }
     Ok(rooms)
@@ -264,6 +266,7 @@ pub async fn get_knocked_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
             space_id: None,
             is_favourite: false,
             successor: None,
+            is_public: false,
         });
     }
     Ok(rooms)

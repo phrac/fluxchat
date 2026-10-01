@@ -479,6 +479,90 @@ pub async fn respond_join_request(client: &matrix_sdk::Client, room_id: &str, us
     .map_err(err)
 }
 
+/// A bridge connecting the room to another network (`m.bridge` /
+/// `uk.half-shot.bridge` state).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeInfo {
+    /// The protocol / service, e.g. "Discord".
+    pub protocol: String,
+    pub protocol_avatar: Option<String>,
+    /// Server / workspace / guild on that network, if it has one.
+    pub network: Option<String>,
+    /// The channel or chat on the other side.
+    pub channel: Option<String>,
+    pub channel_url: Option<String>,
+    /// The bridge's bot user, and who set the bridge up.
+    pub bot: Option<String>,
+    pub creator: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct BridgeSection {
+    id: Option<String>,
+    displayname: Option<String>,
+    avatar_url: Option<String>,
+    external_url: Option<String>,
+}
+
+impl BridgeSection {
+    fn label(&self) -> Option<String> {
+        self.displayname.clone().or_else(|| self.id.clone()).filter(|s| !s.is_empty())
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BridgeContent {
+    bridgebot: Option<String>,
+    creator: Option<String>,
+    protocol: Option<BridgeSection>,
+    network: Option<BridgeSection>,
+    channel: Option<BridgeSection>,
+}
+
+/// Parse one bridge state event's content (None for an empty / removed one).
+fn parse_bridge(content: serde_json::Value) -> Option<BridgeInfo> {
+    let c: BridgeContent = serde_json::from_value(content).ok()?;
+    let protocol = c.protocol.as_ref().and_then(BridgeSection::label)?;
+    Some(BridgeInfo {
+        protocol,
+        protocol_avatar: c.protocol.as_ref().and_then(|p| p.avatar_url.clone()),
+        network: c.network.as_ref().and_then(BridgeSection::label),
+        channel: c.channel.as_ref().and_then(BridgeSection::label),
+        channel_url: c.channel.as_ref().and_then(|ch| ch.external_url.clone()),
+        bot: c.bridgebot,
+        creator: c.creator,
+    })
+}
+
+/// The bridges in a room, from the server's copy of its state (sliding sync
+/// doesn't fetch bridge events). One per state key: bridges often send both
+/// the stable and the legacy type.
+pub async fn room_bridges(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<BridgeInfo>, AppError> {
+    use matrix_sdk::ruma::api::client::state::get_state_events;
+    #[derive(serde::Deserialize)]
+    struct Head {
+        #[serde(rename = "type")]
+        kind: String,
+        state_key: String,
+    }
+    let room = room(client, room_id)?;
+    let response = client.send(get_state_events::v3::Request::new(room.room_id().to_owned())).await.map_err(err)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut bridges = Vec::new();
+    for raw in &response.room_state {
+        let Ok(head) = serde_json::from_str::<Head>(raw.json().get()) else { continue };
+        if head.kind != "m.bridge" && head.kind != "uk.half-shot.bridge" {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(raw.json().get()) else { continue };
+        let Some(bridge) = event.get("content").cloned().and_then(parse_bridge) else { continue };
+        if seen.insert(head.state_key) {
+            bridges.push(bridge);
+        }
+    }
+    Ok(bridges)
+}
+
 #[cfg(test)]
 mod tests {
     use super::full_alias;
@@ -490,5 +574,22 @@ mod tests {
         assert_eq!(full_alias("#lobby:other.net", "example.org").as_deref(), Some("#lobby:other.net"));
         assert_eq!(full_alias("", "example.org"), None);
         assert_eq!(full_alias("two words", "example.org"), None);
+    }
+
+    #[test]
+    fn bridge_content() {
+        let b = super::parse_bridge(serde_json::json!({
+            "bridgebot": "@discordbot:x",
+            "protocol": {"id": "discord", "displayname": "Discord"},
+            "network": {"id": "123", "displayname": "My Guild"},
+            "channel": {"id": "456", "displayname": "general", "external_url": "https://discord.com/channels/123/456"},
+        })).unwrap();
+        assert_eq!(b.protocol, "Discord");
+        assert_eq!(b.network.as_deref(), Some("My Guild"));
+        assert_eq!(b.channel.as_deref(), Some("general"));
+        assert_eq!(b.bot.as_deref(), Some("@discordbot:x"));
+        // Falls back to the id; an emptied event isn't a bridge.
+        assert_eq!(super::parse_bridge(serde_json::json!({"protocol": {"id": "gmessages"}})).unwrap().protocol, "gmessages");
+        assert!(super::parse_bridge(serde_json::json!({})).is_none());
     }
 }

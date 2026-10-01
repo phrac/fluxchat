@@ -380,6 +380,8 @@ impl FluxChat {
             ]));
         }
         col = col.push(ui::divider());
+        col = col.push(self.view_space_visibility());
+        col = col.push(ui::divider());
         col = col.push(
             row![
                 column![
@@ -395,6 +397,45 @@ impl FluxChat {
             .align_y(Alignment::Center),
         );
         scroll(col)
+    }
+}
+
+impl FluxChat {
+    /// Who can find and join the space, its directory listing and addresses
+    /// (Room Settings' security/address state, loaded for the space).
+    fn view_space_visibility(&self) -> Element<'_, Message> {
+        use fluxchat_core::room_admin::JoinMode;
+        use crate::view_room_admin::choice;
+        let Some(sec) = &self.room_security else {
+            return ui::field("Visibility", ui::hint("Loading\u{2026}"));
+        };
+        let join = |mode: JoinMode| sec.can_change_join.then_some(Message::SetJoinMode(mode));
+        let mut visibility = column![
+            choice("Private (invite only)", "Only people who are invited can find and join",
+                sec.join == JoinMode::Invite, join(JoinMode::Invite)),
+            choice("Ask to join", "Anyone can request to join; members approve",
+                sec.join == JoinMode::Knock, join(JoinMode::Knock)),
+            choice("Public", "Anyone can find and join",
+                sec.join == JoinMode::Public, join(JoinMode::Public)),
+        ]
+        .spacing(6);
+        if sec.join == JoinMode::SpaceMembers {
+            // Set elsewhere (a sub-space open to its parent's members).
+            visibility = visibility.push(choice("Members of parent spaces", "Set by another client",
+                true, None));
+        }
+        let mut col = column![ui::field("Visibility", visibility)].spacing(ui::GAP);
+        if !sec.can_change_join {
+            col = col.push(ui::hint("Only admins can change who can join."));
+        }
+        if sec.join == JoinMode::Public {
+            col = col.push(ui::card(ui::toggle_row("List in the directory",
+                "Let people find it in Explore rooms", sec.in_directory, Message::SetInDirectory)));
+        }
+        if let Some(adv) = &self.room_advanced {
+            col = col.push(ui::field("Address", self.view_addresses(adv, "space")));
+        }
+        col.into()
     }
 }
 

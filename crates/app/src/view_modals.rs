@@ -623,9 +623,27 @@ impl FluxChat {
             toggle("Share presence", "Show others when you're online or away", p.share_presence, |p, v| p.share_presence = v),
         ];
 
+        // Media previews (account data, shared with other clients).
+        use fluxchat_core::profile::{MediaPreviewConfig, MediaPreviews};
+        let mp = self.media_previews;
+        let set = |c: MediaPreviewConfig| Some(Message::SetMediaPreviews(c));
+        let media = column![
+            ui::segmented(vec![
+                ("Always".to_string(), set(MediaPreviewConfig { media: MediaPreviews::On, ..mp }), mp.media == MediaPreviews::On),
+                ("In private rooms".to_string(), set(MediaPreviewConfig { media: MediaPreviews::Private, ..mp }), mp.media == MediaPreviews::Private),
+                ("Never".to_string(), set(MediaPreviewConfig { media: MediaPreviews::Off, ..mp }), mp.media == MediaPreviews::Off),
+            ]),
+            ui::hint("Where images and videos show without a click. Hidden media isn't downloaded until you show it; yours always shows."),
+            ui::divider(),
+            ui::toggle_row("Invite avatars", "Show the icons of rooms you're invited to",
+                mp.invite_avatars, move |v| Message::SetMediaPreviews(MediaPreviewConfig { invite_avatars: v, ..mp })),
+        ]
+        .spacing(10);
+
         column![
             ui::field("Timestamps", ui::card(timestamps)),
             ui::field("Timeline", section(layout)),
+            ui::field("Media", ui::card(media)),
             ui::field("Show in the timeline", section(events)),
             ui::field("Composer", section(composer)),
             ui::field("Privacy", section(privacy)),
@@ -1379,15 +1397,21 @@ impl FluxChat {
             RoomSettingsTab::Security => self.view_room_security_tab(&room.room_id),
             RoomSettingsTab::Roles => self.view_room_roles_tab(&room.room_id),
             RoomSettingsTab::Advanced => self.view_room_advanced_tab(&room.room_id),
+            RoomSettingsTab::Bridges => self.view_room_bridges_tab(),
         };
+        let mut tabs = vec![
+            ("General".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::General), tab == RoomSettingsTab::General),
+            ("Security & Privacy".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Security), tab == RoomSettingsTab::Security),
+            ("Roles & Permissions".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Roles), tab == RoomSettingsTab::Roles),
+            ("Advanced".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Advanced), tab == RoomSettingsTab::Advanced),
+        ];
+        // Like Element: only bridged rooms get the tab.
+        if self.room_bridges.as_ref().is_some_and(|b| !b.is_empty()) {
+            tabs.push(("Bridges".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Bridges), tab == RoomSettingsTab::Bridges));
+        }
         column![
             ui::header("Room settings", Some(room.name.clone())),
-            ui::tabs(vec![
-                ("General".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::General), tab == RoomSettingsTab::General),
-                ("Security & Privacy".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Security), tab == RoomSettingsTab::Security),
-                ("Roles & Permissions".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Roles), tab == RoomSettingsTab::Roles),
-                ("Advanced".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Advanced), tab == RoomSettingsTab::Advanced),
-            ]),
+            ui::tabs(tabs),
             container(
                 scrollable(container(body).padding(iced::Padding { right: 10.0, ..Default::default() }))
                     .id(crate::view::dialog_scroll_id())
@@ -1399,7 +1423,8 @@ impl FluxChat {
             .height(Length::Fixed(520.0)),
         ]
         .spacing(ui::GAP)
-        .width(580)
+        // Wide enough for all five tab labels (Bridges included).
+        .width(640)
         .into()
     }
 
@@ -1620,7 +1645,7 @@ impl FluxChat {
             for room in &self.invited_rooms {
                 list = list.push(ui::card(
                     row![
-                        self.render_room_avatar(room.avatar_url.as_deref(), &room.name, 36.0),
+                        self.render_room_avatar(room.avatar_url.as_deref().filter(|_| self.media_previews.invite_avatars), &room.name, 36.0),
                         column![
                             text(&room.name).font(MONO).size(13).color(theme::colors().text_bright),
                             text(if room.is_direct { "Direct message" } else if room.is_space { "Space" } else { "Room" })

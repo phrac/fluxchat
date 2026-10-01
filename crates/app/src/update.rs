@@ -346,6 +346,8 @@ impl FluxChat {
                 self.utd_checked.clear();
                 self.typing_by_room.clear();
                 self.ignored_users.clear();
+                self.media_previews = Default::default();
+                self.revealed_media.clear();
                 self.join_requests = None;
                 self.join_requests_watch = None;
                 self.decline_all_armed = false;
@@ -427,7 +429,8 @@ impl FluxChat {
                 let mentions = if self.mentions_open { self.refresh_mentions() } else { Task::none() };
                 let room_threads = self.load_all_room_threads();
                 let ignored = self.load_ignored_users();
-                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored]);
+                let media = self.load_media_previews();
+                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media]);
             }
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
@@ -505,6 +508,10 @@ impl FluxChat {
                         }
                     }
 
+                    // Invite avatars only when the media settings allow them.
+                    if self.media_previews.invite_avatars {
+                        mxc_uris.extend(invited.iter().filter_map(|r| r.avatar_url.clone()));
+                    }
                     self.invited_rooms = invited;
                     self.knocked_rooms = knocked;
                     return Task::batch([close_tabs, self.resolve_avatars(mxc_uris)]);
@@ -1935,6 +1942,7 @@ impl FluxChat {
                     self.room_security = None;
                     self.room_perms = None;
                     self.room_advanced = None;
+                    self.room_bridges = None;
                     self.room_alias_input.clear();
                     self.room_upgrade_confirm = false;
                     self.room_settings_tab = crate::state::RoomSettingsTab::General;
@@ -2739,6 +2747,7 @@ impl FluxChat {
                 | Message::SecurityResetPasswordChanged(_) | Message::SecurityResetIdentitySubmit
                 | Message::SecurityResetIdentityResult(_)
                 | Message::ToggleIgnoreUser(_) | Message::IgnoredUsersLoaded(_) | Message::IgnoreDone(..)
+                | Message::MediaPreviewsLoaded(_) | Message::SetMediaPreviews(_) | Message::RevealMedia(..)
                 | Message::SettingsDeactivatePasswordChanged(_) | Message::SettingsDeactivateArm(_)
                 | Message::SettingsDeactivate | Message::DeactivateDone(_)
                 | Message::ProfilePowerInputChanged(_)
@@ -3547,6 +3556,7 @@ impl FluxChat {
                         space_id: None,
                         is_favourite: false,
                         successor: None,
+                        is_public: false,
                     };
                     if !self.spaces.iter().any(|s| s.room_id == room_id) {
                         self.spaces.push(info.clone());
@@ -3572,6 +3582,7 @@ impl FluxChat {
                         space_id,
                         is_favourite: false,
                         successor: None,
+                        is_public: false,
                     });
                 }
                 if !is_space {
@@ -4446,7 +4457,7 @@ impl FluxChat {
                 | Message::SetHistoryMode(_) | Message::SetGuestAccess(_)
                 | Message::SetInDirectory(_) | Message::SetPermission(..)
                 | Message::RoomAdminDone(..) | Message::RoomAdvancedLoaded(..)
-                | Message::RoomAliasInputChanged(_) | Message::AddRoomAlias
+                | Message::RoomAliasInputChanged(_) | Message::AddRoomAlias | Message::RoomBridgesLoaded(..)
                 | Message::RemoveRoomAlias(_) | Message::SetMainAlias(_)
                 | Message::SetAliasPublished(..) | Message::ConfirmRoomUpgrade(_)
                 | Message::RoomUpgraded(..) | Message::JoinRequestsWatching(..)
@@ -5191,6 +5202,25 @@ impl FluxChat {
         out
     }
 
+    /// Whether a message's image/video stays behind a "Show" button: the
+    /// media preview setting (everywhere, or in public rooms), unless it's
+    /// ours or was clicked open.
+    pub(crate) fn media_hidden(&self, view_key: &str, msg: &fluxchat_core::MessageInfo) -> bool {
+        use fluxchat_core::profile::MediaPreviews;
+        let has_media = msg.image_mxc.is_some() || msg.is_video;
+        if !has_media || msg.sender == self.user_id || self.revealed_media.contains(&msg.event_id) {
+            return false;
+        }
+        match self.media_previews.media {
+            MediaPreviews::On => false,
+            MediaPreviews::Off => true,
+            MediaPreviews::Private => {
+                let room = fluxchat_core::timeline::real_room_id(view_key);
+                self.rooms.iter().any(|r| r.room_id == room && r.is_public)
+            }
+        }
+    }
+
     /// Put rooms we just added to a space in it, until the room list (built
     /// from the space's synced m.space.child events) shows them there itself.
     pub(crate) fn apply_pending_space_links(&mut self) {
@@ -5421,9 +5451,13 @@ impl FluxChat {
     /// Load inline images for `view_key`'s messages (cache first, then the
     /// event itself so encrypted media decrypts). `view_key` may be a pane
     /// that isn't the main view.
-    fn resolve_images(&mut self, view_key: &str, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
+    pub(crate) fn resolve_images(&mut self, view_key: &str, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
         let mut tasks = Vec::new();
         for msg in messages {
+            // Hidden media isn't fetched until it's clicked open.
+            if self.media_hidden(view_key, msg) {
+                continue;
+            }
             if let Some(ref mxc) = msg.image_mxc {
                 if self.image_cache.contains_key(mxc) || self.image_cache_pending.contains(mxc) {
                     continue;

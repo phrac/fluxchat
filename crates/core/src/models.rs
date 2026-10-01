@@ -17,6 +17,10 @@ pub struct RoomInfo {
     /// The room that replaced this one (it was upgraded / tombstoned).
     #[serde(default)]
     pub successor: Option<String>,
+    /// Anyone may join (join rule public): "private rooms only" media
+    /// previews treat it as public.
+    #[serde(default)]
+    pub is_public: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

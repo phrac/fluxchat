@@ -137,6 +137,7 @@ pub enum RoomSettingsTab {
     Security,
     Roles,
     Advanced,
+    Bridges,
 }
 
 /// Tabs of the space dialog.
@@ -302,6 +303,10 @@ pub struct FluxChat {
     // User prefs (persisted to SQLite)
     /// The account's ignore list (`m.ignored_user_list`, loaded at login).
     pub ignored_users: HashSet<String>,
+    /// Where media shows without a click (account data, loaded at login),
+    /// and the hidden media clicked open this session (event ids).
+    pub media_previews: fluxchat_core::profile::MediaPreviewConfig,
+    pub revealed_media: HashSet<String>,
     pub highlight_words: Vec<String>,
     pub timestamp_format: String,  // "short", "full", "off"
     pub compact_mode: bool,
@@ -452,6 +457,8 @@ pub struct FluxChat {
     pub room_perms: Option<(fluxchat_core::room_admin::RoomPermissions, Vec<fluxchat_core::room_admin::BannedUser>)>,
     /// Version, upgrade links and addresses of the room in Room Settings.
     pub room_advanced: Option<fluxchat_core::room_admin::RoomAdvanced>,
+    /// Bridges in the room in Room Settings (the tab shows when non-empty).
+    pub room_bridges: Option<Vec<fluxchat_core::room_admin::BridgeInfo>>,
     /// New-address input on the Advanced tab.
     pub room_alias_input: String,
     /// Upgrade asked for and awaiting confirmation (or running).
@@ -699,6 +706,8 @@ impl FluxChat {
             last_seen_timestamp: HashMap::new(),
             thread_counts: HashMap::new(),
             ignored_users: HashSet::new(),
+            media_previews: Default::default(),
+            revealed_media: HashSet::new(),
             highlight_words: Vec::new(),
             timestamp_format: "short".into(),
             compact_mode: false,
@@ -783,6 +792,7 @@ impl FluxChat {
             room_settings_tab: RoomSettingsTab::General,
             room_security: None,
             room_advanced: None,
+            room_bridges: None,
             room_alias_input: String::new(),
             room_upgrade_confirm: false,
             room_upgrading: false,

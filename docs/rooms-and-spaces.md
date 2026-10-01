@@ -32,7 +32,7 @@ Direct messages: **+** → *Direct message*, `/msg <user> <text>`, `/query <user
 
 ## Room settings
 
-Open with the room header's info button, right-click → Room Settings, or the palette. Four tabs:
+Open with the room header's info button, right-click → Room Settings, or the palette. Tabs: General, Security & Privacy, Roles & Permissions, Advanced, and Bridges for bridged rooms.
 
 ### General
 - **Icon**: upload or remove.
@@ -80,6 +80,9 @@ Open with the room header's info button, right-click → Room Settings, or the p
   - **Publish / Unpublish**: whether it's listed in the room's details.
   - The bin deletes an address from your server.
 
+### Bridges
+Only for rooms connected to another network (Discord, Telegram, Google Messages, …). Each bridge shows its service, the network and channel on the other side (with **Open** when it has a link), its bot and who set it up.
+
 Controls you don't have permission for are shown read-only.
 
 ## Spaces
@@ -97,7 +100,10 @@ The space dialog has three tabs:
 
   Adding and removing need permission in the space.
 - **Members**: everyone in the space; click someone for their profile.
-- **Settings**: icon, name, topic, and **Leave space** (you stay in its rooms).
+- **Settings**: icon, name, topic, and:
+  - **Visibility**: Private (invite only), Ask to join, or Public. Public spaces can be **listed in the directory**.
+  - **Address**: add `#name:server` addresses, pick the main one, publish or delete them (as in a room's Advanced tab).
+  - **Leave space** (you stay in its rooms).
 
 A room can belong to several spaces.
 

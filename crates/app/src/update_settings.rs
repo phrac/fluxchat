@@ -540,6 +540,42 @@ impl FluxChat {
                     |(user, ignore, err)| Message::IgnoreDone(user, ignore, err),
                 ))
             }
+            Message::MediaPreviewsLoaded(config) => {
+                let changed = config != self.media_previews;
+                self.media_previews = config;
+                Some(if changed { self.resolve_visible_media() } else { Task::none() })
+            }
+            Message::SetMediaPreviews(config) => {
+                let previous = std::mem::replace(&mut self.media_previews, config);
+                let core = self.core.clone();
+                let save = Task::perform(
+                    async move {
+                        match core.get_client().await {
+                            Ok(client) => fluxchat_core::profile::set_media_preview_config(&client, config).await.err().map(|e| e.to_string()),
+                            Err(e) => Some(e.to_string()),
+                        }
+                    },
+                    move |err| match err {
+                        // Put the old setting back.
+                        Some(e) => Message::Batch(vec![
+                            Message::MediaPreviewsLoaded(previous),
+                            Message::ShowError(format!("Couldn't save media settings: {e}")),
+                        ]),
+                        None => Message::Noop,
+                    },
+                );
+                Some(Task::batch([save, self.resolve_visible_media()]))
+            }
+            Message::RevealMedia(view_key, event_id) => {
+                self.revealed_media.insert(event_id.clone());
+                let msg = self.messages_by_room.get(&view_key)
+                    .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                    .cloned();
+                Some(match msg {
+                    Some(m) => self.resolve_images(&view_key, std::slice::from_ref(&m)),
+                    None => Task::none(),
+                })
+            }
             Message::IgnoredUsersLoaded(users) => {
                 self.ignored_users = users.into_iter().collect();
                 Some(Task::none())
@@ -704,5 +740,33 @@ impl FluxChat {
             },
             |users| users.map(Message::IgnoredUsersLoaded).unwrap_or(Message::Noop),
         )
+    }
+
+    /// Load the account's media preview settings.
+    pub(crate) fn load_media_previews(&self) -> Task<Message> {
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let client = core.get_client().await.ok()?;
+                Some(fluxchat_core::profile::media_preview_config(&client).await)
+            },
+            |config| config.map(Message::MediaPreviewsLoaded).unwrap_or(Message::Noop),
+        )
+    }
+
+    /// Fetch media that a looser setting now shows, in every view on screen.
+    fn resolve_visible_media(&mut self) -> Task<Message> {
+        let keys: Vec<String> = self.pane_keys().map(str::to_string)
+            .chain(self.selected_room_id.clone())
+            .collect();
+        let mut tasks = Vec::new();
+        for key in keys {
+            // Borrowed out and back rather than cloning the whole room.
+            if let Some(msgs) = self.messages_by_room.remove(&key) {
+                tasks.push(self.resolve_images(&key, &msgs));
+                self.messages_by_room.insert(key, msgs);
+            }
+        }
+        Task::batch(tasks)
     }
 }

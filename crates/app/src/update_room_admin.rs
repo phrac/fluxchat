@@ -32,6 +32,21 @@ impl FluxChat {
             },
             |(rid, r)| Message::RoomPermsLoaded(rid, r),
         );
+        // Its own task: this fetches the room's full state from the server.
+        let core = self.core.clone();
+        let rid = room_id.clone();
+        let bridges = Task::perform(
+            async move {
+                let bridges = match core.get_client().await {
+                    Ok(client) => room_admin::room_bridges(&client, &rid).await
+                        .map_err(|e| tracing::warn!("Couldn't load bridges of {rid}: {e}"))
+                        .unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
+                (rid, bridges)
+            },
+            |(rid, bridges)| Message::RoomBridgesLoaded(rid, bridges),
+        );
         let core = self.core.clone();
         let advanced = Task::perform(
             async move {
@@ -43,7 +58,7 @@ impl FluxChat {
             },
             |(rid, r)| Message::RoomAdvancedLoaded(rid, r),
         );
-        Task::batch([security, perms, advanced])
+        Task::batch([security, perms, advanced, bridges])
     }
 
     /// Follow the join requests of the room in view (`room_id`, a real
@@ -80,11 +95,15 @@ impl FluxChat {
         )
     }
 
-    /// The room whose settings dialog is open.
+    /// The room whose settings are open: Room Settings' room, or the space
+    /// in the space dialog (a space is a room; visibility and addresses
+    /// use the same controls).
     fn room_settings_room(&self) -> Option<String> {
-        matches!(self.modal, Some(Modal::RoomSettings))
-            .then(|| self.active_real_room().map(str::to_string))
-            .flatten()
+        match &self.modal {
+            Some(Modal::RoomSettings) => self.active_real_room().map(str::to_string),
+            Some(Modal::SpaceDetails { space_id }) => Some(space_id.clone()),
+            _ => None,
+        }
     }
 
     /// Run a room-admin change, then reload (errors go to the notice line).
@@ -225,6 +244,14 @@ impl FluxChat {
                 }
                 Task::none()
             }
+            Message::RoomBridgesLoaded(room_id, bridges) => {
+                if self.room_settings_room().as_deref() != Some(room_id.as_str()) {
+                    return Some(Task::none());
+                }
+                let avatars = bridges.iter().filter_map(|b| b.protocol_avatar.clone()).collect();
+                self.room_bridges = Some(bridges);
+                self.resolve_avatars(avatars)
+            }
             Message::RoomAliasInputChanged(value) => {
                 self.room_alias_input = value;
                 Task::none()
@@ -336,7 +363,7 @@ mod tests {
         fluxchat_core::RoomInfo {
             room_id: id.into(), name: id.into(), is_encrypted: false, is_space: false, is_direct: false,
             unread_count: 0, highlight_count: 0, avatar_url: None, topic: None, space_name: None,
-            space_id: None, is_favourite: false, successor: None,
+            space_id: None, is_favourite: false, successor: None, is_public: false,
         }
     }
 
@@ -418,5 +445,33 @@ mod tests {
         synced.space_id = Some("!space:x".into());
         let _ = app.update(list(vec![synced]));
         assert!(app.pending_space_links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn media_previews_hide_and_reveal() {
+        use fluxchat_core::profile::{MediaPreviewConfig, MediaPreviews};
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        let mut public = room("!pub:x");
+        public.is_public = true;
+        app.rooms = vec![public, room("!priv:x")];
+        let image = |sender: &str| fluxchat_core::MessageInfo {
+            event_id: format!("$img-{sender}"), sender: sender.into(), image_mxc: Some("mxc://x/1".into()),
+            ..Default::default()
+        };
+        let set = |media| Message::MediaPreviewsLoaded(MediaPreviewConfig { media, invite_avatars: true });
+
+        assert!(!app.media_hidden("!pub:x", &image("@a:x")), "on by default");
+        let _ = app.update(set(MediaPreviews::Private));
+        assert!(app.media_hidden("!pub:x", &image("@a:x")));
+        assert!(!app.media_hidden("!priv:x", &image("@a:x")));
+        let _ = app.update(set(MediaPreviews::Off));
+        assert!(app.media_hidden("!priv:x", &image("@a:x")));
+        assert!(!app.media_hidden("!priv:x", &image("@me:x")), "our own media always shows");
+        // A thread view follows its room.
+        assert!(app.media_hidden("thread::!priv:x::$root", &image("@a:x")));
+
+        let _ = app.update(Message::RevealMedia("!priv:x".into(), "$img-@a:x".into()));
+        assert!(!app.media_hidden("!priv:x", &image("@a:x")));
     }
 }

@@ -50,12 +50,15 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Security & privacy: who can join, history visibility, guests, directory listing, encryption
 - Roles & permissions: role per action, privileged users, bans
 - Advanced: room version and upgrade, links to replaced/replacing rooms, addresses (main, published, local)
+- Bridges tab for bridged rooms: service, network, channel, bot
+- Space visibility (private / ask to join / public, directory) and addresses
 - Public room directory
 
 ### People
 - Profile cards with presence, status, roles, verification, and moderation tools
 - Member list with filter and presence
 - Ignore users (synced to your account, list in Settings), direct messages
+- Media previews: always / private rooms only / never, click to show; shared with Element
 
 ### Encryption
 - End-to-end encryption, emoji (SAS) verification, cross-signing

@@ -102,3 +102,88 @@ pub async fn set_ignored(client: &matrix_sdk::Client, user_id: &str, ignore: boo
     let result = if ignore { account.ignore_user(&user_id).await } else { account.unignore_user(&user_id).await };
     result.map_err(|e| AppError::Other(format!("{e}")))
 }
+
+/// Where media (images, videos, stickers) shows without a click (MSC4278).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaPreviews {
+    /// Everywhere.
+    #[default]
+    On,
+    /// Only in rooms that aren't public.
+    Private,
+    /// Nowhere: click to show each one.
+    Off,
+}
+
+/// The account's media preview settings (shared with Element via account data).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaPreviewConfig {
+    pub media: MediaPreviews,
+    /// Show the avatars of rooms we're invited to.
+    pub invite_avatars: bool,
+}
+
+impl Default for MediaPreviewConfig {
+    fn default() -> Self {
+        Self { media: MediaPreviews::On, invite_avatars: true }
+    }
+}
+
+/// The stable type and the unstable one clients use today (written).
+const MEDIA_PREVIEW_TYPE: &str = "m.media_preview_config";
+const MEDIA_PREVIEW_TYPE_UNSTABLE: &str = "io.element.msc4278.media_preview_config";
+
+fn parse_media_preview_config(v: &serde_json::Value) -> MediaPreviewConfig {
+    let media = match v.get("media_previews").and_then(|m| m.as_str()) {
+        Some("off") => MediaPreviews::Off,
+        Some("private") => MediaPreviews::Private,
+        _ => MediaPreviews::On,
+    };
+    let invite_avatars = v.get("invite_avatars").and_then(|m| m.as_str()) != Some("off");
+    MediaPreviewConfig { media, invite_avatars }
+}
+
+/// Read the media preview settings (defaults when unset).
+pub async fn media_preview_config(client: &matrix_sdk::Client) -> MediaPreviewConfig {
+    use matrix_sdk::ruma::events::GlobalAccountDataEventType;
+    for t in [MEDIA_PREVIEW_TYPE, MEDIA_PREVIEW_TYPE_UNSTABLE] {
+        let raw = client.account().account_data_raw(GlobalAccountDataEventType::from(t)).await.ok().flatten();
+        if let Some(v) = raw.and_then(|r| serde_json::from_str::<serde_json::Value>(r.json().get()).ok()) {
+            return parse_media_preview_config(&v);
+        }
+    }
+    MediaPreviewConfig::default()
+}
+
+/// Save the media preview settings to the account.
+pub async fn set_media_preview_config(client: &matrix_sdk::Client, config: MediaPreviewConfig) -> Result<(), AppError> {
+    use matrix_sdk::ruma::events::GlobalAccountDataEventType;
+    let media = match config.media {
+        MediaPreviews::On => "on",
+        MediaPreviews::Private => "private",
+        MediaPreviews::Off => "off",
+    };
+    let content = serde_json::json!({
+        "media_previews": media,
+        "invite_avatars": if config.invite_avatars { "on" } else { "off" },
+    });
+    let raw = matrix_sdk::ruma::serde::Raw::new(&content).map_err(|e| AppError::Other(e.to_string()))?.cast_unchecked();
+    client.account().set_account_data_raw(GlobalAccountDataEventType::from(MEDIA_PREVIEW_TYPE_UNSTABLE), raw).await
+        .map_err(|e| AppError::Other(format!("{e}")))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_media_preview_config, MediaPreviews};
+
+    #[test]
+    fn media_preview_config_parsing() {
+        let c = parse_media_preview_config(&serde_json::json!({"media_previews": "private", "invite_avatars": "off"}));
+        assert_eq!(c.media, MediaPreviews::Private);
+        assert!(!c.invite_avatars);
+        let d = parse_media_preview_config(&serde_json::json!({}));
+        assert_eq!(d.media, MediaPreviews::On);
+        assert!(d.invite_avatars);
+    }
+}

@@ -26,6 +26,12 @@ Open Settings with the ⚙ in the status bar, by clicking your own name, from th
 - **Autoplay GIFs**: off shows a still frame.
 - **Expand code blocks** by default.
 
+**Media**
+- Show images and videos **Always**, **In private rooms** (not in rooms anyone can join), or **Never**. Hidden media shows as "Image hidden": click to show it. It isn't downloaded until you do. Your own media always shows.
+- **Invite avatars**: show the icons of rooms you're invited to.
+
+These are saved to your account, so Element and your other devices use them too.
+
 **Show in the timeline**
 - Joins and leaves.
 - Name and avatar changes.

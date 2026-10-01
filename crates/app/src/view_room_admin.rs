@@ -13,7 +13,7 @@ use crate::ui::{self, Tone};
 use crate::view::MONO;
 
 /// A selectable option card: radio dot, title, description.
-fn choice<'a>(title: impl Into<String>, detail: impl Into<String>, selected: bool, on_press: Option<Message>) -> Element<'a, Message> {
+pub(crate) fn choice<'a>(title: impl Into<String>, detail: impl Into<String>, selected: bool, on_press: Option<Message>) -> Element<'a, Message> {
     let (title, detail) = (title.into(), detail.into());
     let c = theme::colors();
     let dot = container(
@@ -392,6 +392,14 @@ impl FluxChat {
         }
         col = col.push(ui::field("Version", ui::card(version)));
 
+        col = col.push(ui::field("Addresses", self.view_addresses(adv, "room")));
+        col.into()
+    }
+
+    /// Published (main + alternatives) and local addresses, with add /
+    /// make main / publish / delete. `noun` is "room" or "space".
+    pub(crate) fn view_addresses<'a>(&'a self, adv: &'a fluxchat_core::room_admin::RoomAdvanced, noun: &str) -> Element<'a, Message> {
+        let c = theme::colors();
         // --- Addresses: published (main + alternatives) and local ---
         let mut addresses: Vec<&String> = adv.main_alias.iter().chain(&adv.alt_aliases).chain(&adv.local_aliases).collect();
         addresses.dedup_by(|a, b| a == b);
@@ -442,13 +450,12 @@ impl FluxChat {
         .align_y(Alignment::Center);
         let mut addr = column![ui::card(list), add_row].spacing(8);
         addr = addr.push(ui::hint(format!(
-            "Published addresses show in the room's details; the main one is used in links. \
+            "Published addresses show in the {noun}'s details; the main one is used in links. \
             Addresses you add live on {} (delete them with the bin).", adv.server)));
         if !can {
             addr = addr.push(ui::hint("You don't have permission to change which addresses are published."));
         }
-        col = col.push(ui::field("Addresses", addr));
-        col.into()
+        addr.into()
     }
 
     /// "N people asking to join" above the messages of the room in view,
@@ -513,5 +520,50 @@ impl FluxChat {
                 ..Default::default()
             })
             .into())
+    }
+
+    pub(crate) fn view_room_bridges_tab(&self) -> Element<'_, Message> {
+        let Some(bridges) = &self.room_bridges else {
+            return ui::empty_state(crate::icons::SVG_CLOCK, "Loading\u{2026}", None);
+        };
+        let c = theme::colors();
+        let mut col = column![
+            ui::hint("This room is connected to other networks. A bridge relays messages both ways, \
+                usually through a bot account; people on the other side may appear as Matrix users."),
+        ]
+        .spacing(ui::GAP);
+        for bridge in bridges {
+            let detail = |label: &'static str, value: &str| -> Element<'_, Message> {
+                row![
+                    text(label).font(MONO).size(12).color(c.text_dim).width(Length::Fixed(80.0)),
+                    text(value.to_string()).font(MONO).size(12).color(c.text_normal).width(Fill)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                ].spacing(8).into()
+            };
+            let mut info = column![
+                text(bridge.protocol.clone()).font(MONO).size(14).color(c.text_bright),
+            ].spacing(4).width(Fill);
+            if let Some(network) = &bridge.network {
+                info = info.push(detail("Network", network));
+            }
+            if let Some(channel) = &bridge.channel {
+                info = info.push(detail("Channel", channel));
+            }
+            if let Some(bot) = &bridge.bot {
+                info = info.push(detail("Bot", bot));
+            }
+            if let Some(creator) = bridge.creator.as_ref().filter(|cr| Some(*cr) != bridge.bot.as_ref()) {
+                info = info.push(detail("Set up by", creator));
+            }
+            let mut r = row![
+                self.render_room_avatar(bridge.protocol_avatar.as_deref(), &bridge.protocol, 40.0),
+                info,
+            ].spacing(14).align_y(Alignment::Start);
+            if let Some(url) = &bridge.channel_url {
+                r = r.push(ui::btn("Open", Tone::Secondary, Some(Message::OpenUrl(url.clone()))));
+            }
+            col = col.push(ui::card(r));
+        }
+        col.into()
     }
 }
