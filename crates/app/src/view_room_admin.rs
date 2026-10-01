@@ -323,4 +323,130 @@ impl FluxChat {
         col = col.push(ui::field("Permissions", column![ui::hint(perm_hint), ui::card(grid)].spacing(8)));
         col.into()
     }
+
+    pub(crate) fn view_room_advanced_tab(&self, room_id: &str) -> Element<'_, Message> {
+        let c = theme::colors();
+        let id_row = row![
+            text(room_id.to_string()).font(MONO).size(12).color(c.text_muted).width(Fill),
+            ui::icon_only(crate::icons::SVG_COPY, "Copy room ID", Tone::Ghost,
+                Some(Message::CopyMessageText(room_id.to_string()))),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        let mut col = column![ui::field("Room ID", id_row)].spacing(ui::GAP + 4.0);
+        let Some(adv) = &self.room_advanced else {
+            return col.push(ui::empty_state(crate::icons::SVG_CLOCK, "Loading\u{2026}", None)).into();
+        };
+
+        // --- Version & upgrade ---
+        let mut version = column![
+            row![
+                text(format!("Room version {}", adv.version)).font(MONO).size(13).color(c.text_normal).width(Fill),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(10);
+        match (&adv.upgrade_to, self.room_upgrade_confirm) {
+            (Some(to), false) => {
+                version = version.push(row![
+                    ui::hint(format!("Your server makes new rooms with version {to}.")),
+                    Space::new().width(Fill),
+                    ui::btn(format!("Upgrade to {to}"), Tone::Secondary,
+                        adv.can_upgrade.then_some(Message::ConfirmRoomUpgrade(true))),
+                ].spacing(10).align_y(Alignment::Center));
+                if !adv.can_upgrade {
+                    version = version.push(ui::hint("You don't have permission to upgrade this room."));
+                }
+            }
+            (Some(to), true) => {
+                version = version.push(column![
+                    text("Upgrade this room?").font(MONO).size(13).color(c.yellow),
+                    ui::hint("This makes a new room and closes this one: members see a link to move over, \
+                        history stays here, and bridges may need to be set up again. It can't be undone."),
+                    ui::footer(vec![
+                        ui::btn("Cancel", Tone::Ghost, (!self.room_upgrading).then_some(Message::ConfirmRoomUpgrade(false))).into(),
+                        ui::btn(if self.room_upgrading { "Upgrading\u{2026}".to_string() } else { format!("Upgrade to {to}") },
+                            Tone::Danger, (!self.room_upgrading).then(|| Message::UpgradeRoom(to.clone()))).into(),
+                    ]),
+                ].spacing(8));
+            }
+            (None, _) => version = version.push(ui::hint("This is the version your server uses for new rooms.")),
+        }
+        let link = |room: &str, label: &'static str, detail: &'static str| -> Element<'_, Message> {
+            // Room IDs before v12 name a server that's in the room.
+            let via: Vec<String> = room.split_once(':').map(|(_, s)| vec![s.to_string()]).unwrap_or_default();
+            row![
+                column![
+                    text(label).font(MONO).size(13).color(c.text_normal),
+                    ui::hint(detail),
+                ].spacing(2).width(Fill),
+                ui::btn("Open", Tone::Secondary, Some(Message::OpenMatrixLink(room.to_string(), None, via))),
+            ].spacing(10).align_y(Alignment::Center).into()
+        };
+        if let Some(pred) = &adv.predecessor {
+            version = version.push(ui::divider()).push(link(pred, "Continues an older room", "Older messages are in the room this one replaced."));
+        }
+        if let Some(succ) = &adv.successor {
+            version = version.push(ui::divider()).push(link(succ, "Replaced by a newer room", "This room was upgraded; the conversation continues there."));
+        }
+        col = col.push(ui::field("Version", ui::card(version)));
+
+        // --- Addresses: published (main + alternatives) and local ---
+        let mut addresses: Vec<&String> = adv.main_alias.iter().chain(&adv.alt_aliases).chain(&adv.local_aliases).collect();
+        addresses.dedup_by(|a, b| a == b);
+        let mut seen = std::collections::HashSet::new();
+        addresses.retain(|a| seen.insert(*a));
+        let mut list = column![].spacing(4);
+        if addresses.is_empty() {
+            list = list.push(ui::hint("No addresses yet. Add one so people can join with a link like #name:server."));
+        }
+        let can = adv.can_publish_aliases;
+        for alias in addresses {
+            let is_main = adv.main_alias.as_ref() == Some(alias);
+            let is_alt = adv.alt_aliases.contains(alias);
+            let is_local = adv.local_aliases.contains(alias);
+            let mut r = row![text(alias.as_str()).font(MONO).size(13).color(c.text_normal)]
+                .spacing(8)
+                .align_y(Alignment::Center);
+            if is_main {
+                r = r.push(ui::badge("Main", c.accent));
+            } else if !is_alt {
+                r = r.push(ui::badge("Not published", c.text_muted));
+            }
+            r = r.push(Space::new().width(Fill));
+            if !is_main {
+                r = r.push(ui::btn("Make main", Tone::Ghost, can.then(|| Message::SetMainAlias(Some(alias.clone())))));
+            }
+            r = r.push(if is_main {
+                ui::btn("Unpublish", Tone::Ghost, can.then_some(Message::SetMainAlias(None)))
+            } else if is_alt {
+                ui::btn("Unpublish", Tone::Ghost, can.then(|| Message::SetAliasPublished(alias.clone(), false)))
+            } else {
+                ui::btn("Publish", Tone::Ghost, can.then(|| Message::SetAliasPublished(alias.clone(), true)))
+            });
+            if is_local {
+                r = r.push(ui::icon_only(crate::icons::SVG_TRASH, "Delete address", Tone::Ghost,
+                    Some(Message::RemoveRoomAlias(alias.clone()))));
+            }
+            list = list.push(container(r).padding([2, 4]));
+        }
+        let add_row = row![
+            ui::input(&format!("name  (becomes #name:{})", adv.server), &self.room_alias_input, Message::RoomAliasInputChanged)
+                .on_submit(Message::AddRoomAlias)
+                .width(Fill),
+            ui::btn("Add", Tone::Secondary,
+                (!self.room_alias_input.trim().is_empty()).then_some(Message::AddRoomAlias)),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        let mut addr = column![ui::card(list), add_row].spacing(8);
+        addr = addr.push(ui::hint(format!(
+            "Published addresses show in the room's details; the main one is used in links. \
+            Addresses you add live on {} (delete them with the bin).", adv.server)));
+        if !can {
+            addr = addr.push(ui::hint("You don't have permission to change which addresses are published."));
+        }
+        col = col.push(ui::field("Addresses", addr));
+        col.into()
+    }
 }

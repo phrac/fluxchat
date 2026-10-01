@@ -14,6 +14,9 @@ pub struct RoomInfo {
     pub space_name: Option<String>,
     pub space_id: Option<String>,
     pub is_favourite: bool,
+    /// The room that replaced this one (it was upgraded / tombstoned).
+    #[serde(default)]
+    pub successor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

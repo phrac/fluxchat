@@ -76,6 +76,7 @@ pub async fn room_to_info(room: &matrix_sdk::Room, space_info: Option<(String, S
         space_name: space_info.as_ref().map(|(name, _)| name.clone()),
         space_id: space_info.as_ref().map(|(_, id)| id.clone()),
         is_favourite: room.is_favourite(),
+        successor: room.successor_room().map(|s| s.room_id.to_string()),
     }
 }
 
@@ -234,6 +235,7 @@ pub async fn get_invited_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
             space_name: None,
             space_id: None,
             is_favourite: false,
+            successor: None,
         });
     }
     Ok(rooms)
@@ -261,6 +263,7 @@ pub async fn get_knocked_rooms(client: &matrix_sdk::Client) -> Result<Vec<RoomIn
             space_name: None,
             space_id: None,
             is_favourite: false,
+            successor: None,
         });
     }
     Ok(rooms)
@@ -412,16 +415,16 @@ pub async fn unban_user(client: &matrix_sdk::Client, room_id: &str, user_id: &st
     Ok(())
 }
 
-/// Upgrade a room to a new version.
-pub async fn upgrade_room(client: &matrix_sdk::Client, room_id: &str, version: &str) -> Result<(), AppError> {
+/// Upgrade a room to a new version. Returns the new room's ID.
+pub async fn upgrade_room(client: &matrix_sdk::Client, room_id: &str, version: &str) -> Result<String, AppError> {
     use matrix_sdk::ruma::api::client::room::upgrade_room::v3::Request;
     use matrix_sdk::ruma::RoomVersionId;
     let room_id = parse_room_id(room_id)?;
     let new_version: RoomVersionId = version.try_into()
         .map_err(|_| AppError::Other(format!("Invalid room version: {version}")))?;
     let request = Request::new(room_id, new_version);
-    client.send(request).await.map_err(|e| AppError::Other(format!("Failed to upgrade room: {e}")))?;
-    Ok(())
+    let response = client.send(request).await.map_err(|e| AppError::Other(format!("Failed to upgrade room: {e}")))?;
+    Ok(response.replacement_room.to_string())
 }
 
 /// Get all room state events as (event_type, json_string) pairs for dev tools.

@@ -336,6 +336,38 @@ impl FluxChat {
         }
         col = col.push(ui::divider());
         col = col.push(ui::field("Password", password));
+
+        // Deactivation: armed first, then confirmed with the password.
+        col = col.push(ui::divider());
+        let mut deactivate = column![
+            row![
+                column![
+                    text("Deactivate account").font(MONO).size(13).color(theme::colors().text_normal),
+                    ui::hint("Permanently disables this account: you're removed from every room and can't log in again."),
+                ].spacing(2).width(Fill),
+                ui::btn("Deactivate\u{2026}", Tone::Danger,
+                    (!self.deactivate_armed).then_some(Message::SettingsDeactivateArm(true))),
+            ]
+            .spacing(12)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(10);
+        if self.deactivate_armed {
+            deactivate = deactivate.push(ui::card(column![
+                text("This can't be undone.").font(MONO).size(13).color(theme::colors().red),
+                ui::hint(format!("{} can never be used again, by you or anyone else. \
+                    Your messages stay visible to people who already have them.", self.user_id)),
+                ui::input("Password", &self.deactivate_password, Message::SettingsDeactivatePasswordChanged)
+                    .on_submit(Message::SettingsDeactivate)
+                    .secure(true),
+                ui::footer(vec![
+                    ui::btn("Cancel", Tone::Ghost, (!self.deactivating).then_some(Message::SettingsDeactivateArm(false))).into(),
+                    ui::btn(if self.deactivating { "Deactivating\u{2026}" } else { "Deactivate account" }, Tone::Danger,
+                        (!self.deactivating && !self.deactivate_password.is_empty()).then_some(Message::SettingsDeactivate)).into(),
+                ]),
+            ].spacing(10)));
+        }
+        col = col.push(deactivate);
         col.into()
     }
 
@@ -464,6 +496,31 @@ impl FluxChat {
         if let Some(ref status) = self.settings_status {
             col = col.push(ui::status_line(status));
         }
+
+        // Ignored users (the account's m.ignored_user_list)
+        let mut ignored: Vec<&String> = self.ignored_users.iter().collect();
+        ignored.sort();
+        let mut list = column![].spacing(4);
+        if ignored.is_empty() {
+            list = list.push(ui::hint("You're not ignoring anyone. Ignore someone from their profile, or with /ignore."));
+        }
+        for user_id in ignored {
+            let member = self.find_member(user_id).0;
+            let name = member.map(|m| m.display_name.as_str()).filter(|n| !n.is_empty()).unwrap_or(user_id.as_str());
+            list = list.push(container(row![
+                self.render_avatar_with_initial(member.and_then(|m| m.avatar_url.as_deref()), name, 26.0),
+                column![
+                    text(name.to_string()).font(MONO).size(13).color(theme::colors().text_normal),
+                    text(user_id.as_str()).font(MONO).size(11).color(theme::colors().text_dim),
+                ].spacing(1).width(Fill),
+                ui::btn("Unignore", Tone::Ghost, Some(Message::ToggleIgnoreUser(user_id.clone()))),
+            ].spacing(10).align_y(iced::Alignment::Center)).padding([2, 4]));
+        }
+        col = col.push(ui::divider());
+        col = col.push(ui::field("Ignored users", column![
+            list,
+            ui::hint("You won't see their messages or invites. Applies on all your devices."),
+        ].spacing(6)));
 
         // Reset identity
         col = col.push(ui::divider());
@@ -1292,15 +1349,6 @@ impl FluxChat {
             }
         }
 
-        // --- Advanced ---
-        let id_row = row![
-            text(&room.room_id).font(MONO).size(12).color(theme::colors().text_muted).width(Fill),
-            ui::icon_only(crate::icons::SVG_COPY, "Copy room ID", Tone::Ghost,
-                Some(Message::CopyMessageText(room.room_id.clone()))),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-
         let body = column![
             avatar_row,
             ui::field("Name", name_row),
@@ -1311,8 +1359,6 @@ impl FluxChat {
                 ui::hint("Only affects this room. Desktop alerts are set in Settings \u{2192} Notifications."),
             ].spacing(6)),
             ui::field("Spaces", spaces_col),
-            ui::divider(),
-            ui::field("Room ID", id_row),
             ui::divider(),
             row![
                 column![
@@ -1332,6 +1378,7 @@ impl FluxChat {
             RoomSettingsTab::General => body.into(),
             RoomSettingsTab::Security => self.view_room_security_tab(&room.room_id),
             RoomSettingsTab::Roles => self.view_room_roles_tab(&room.room_id),
+            RoomSettingsTab::Advanced => self.view_room_advanced_tab(&room.room_id),
         };
         column![
             ui::header("Room settings", Some(room.name.clone())),
@@ -1339,6 +1386,7 @@ impl FluxChat {
                 ("General".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::General), tab == RoomSettingsTab::General),
                 ("Security & Privacy".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Security), tab == RoomSettingsTab::Security),
                 ("Roles & Permissions".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Roles), tab == RoomSettingsTab::Roles),
+                ("Advanced".into(), Message::RoomSettingsTabChanged(RoomSettingsTab::Advanced), tab == RoomSettingsTab::Advanced),
             ]),
             container(
                 scrollable(container(body).padding(iced::Padding { right: 10.0, ..Default::default() }))

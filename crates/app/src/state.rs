@@ -114,6 +114,7 @@ pub enum RoomSettingsTab {
     General,
     Security,
     Roles,
+    Advanced,
 }
 
 /// Tabs of the space dialog.
@@ -267,6 +268,7 @@ pub struct FluxChat {
     pub thread_counts: HashMap<String, HashMap<String, u32>>, // room_id → { thread_root → reply_count }
 
     // User prefs (persisted to SQLite)
+    /// The account's ignore list (`m.ignored_user_list`, loaded at login).
     pub ignored_users: HashSet<String>,
     pub highlight_words: Vec<String>,
     pub timestamp_format: String,  // "short", "full", "off"
@@ -391,6 +393,10 @@ pub struct FluxChat {
     pub settings_old_password: String,
     pub settings_new_password: String,
     pub settings_confirm_password: String,
+    /// Account deactivation: password, and armed (asks before doing it).
+    pub deactivate_password: String,
+    pub deactivate_armed: bool,
+    pub deactivating: bool,
 
     // Room creation modal state
     pub create_room_name: String,
@@ -412,6 +418,13 @@ pub struct FluxChat {
     pub room_security: Option<fluxchat_core::room_admin::RoomSecurity>,
     /// Power levels + ban list of the room in Room Settings.
     pub room_perms: Option<(fluxchat_core::room_admin::RoomPermissions, Vec<fluxchat_core::room_admin::BannedUser>)>,
+    /// Version, upgrade links and addresses of the room in Room Settings.
+    pub room_advanced: Option<fluxchat_core::room_admin::RoomAdvanced>,
+    /// New-address input on the Advanced tab.
+    pub room_alias_input: String,
+    /// Upgrade asked for and awaiting confirmation (or running).
+    pub room_upgrade_confirm: bool,
+    pub room_upgrading: bool,
     /// Spaces we may add rooms to (for Room Settings' "Add to space").
     pub manageable_spaces: Vec<String>,
     /// Space picked in Room Settings' "Add to space" picker.
@@ -732,6 +745,10 @@ impl FluxChat {
             room_parent_spaces: None,
             room_settings_tab: RoomSettingsTab::General,
             room_security: None,
+            room_advanced: None,
+            room_alias_input: String::new(),
+            room_upgrade_confirm: false,
+            room_upgrading: false,
             room_perms: None,
             manageable_spaces: Vec::new(),
             room_settings_add_space: None,
@@ -788,6 +805,9 @@ impl FluxChat {
             settings_old_password: String::new(),
             settings_new_password: String::new(),
             settings_confirm_password: String::new(),
+            deactivate_password: String::new(),
+            deactivate_armed: false,
+            deactivating: false,
             security_state: None,
             security_recovery_key_input: String::new(),
             security_shown_recovery_key: None,

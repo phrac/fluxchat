@@ -2871,10 +2871,26 @@ impl FluxChat {
 
             content = content.push(msg_stack);
 
-            // Input area: typing indicator, reply/edit preview, GIF panel,
-            // upload preview, help text, autocomplete, input bar
-            for element in self.view_input_area(room_id) {
-                content = content.push(element);
+            // A replaced (upgraded) room takes no new messages: point to
+            // the room that continues it instead of the input area.
+            let real_room = fluxchat_core::timeline::real_room_id(room_id);
+            let successor = self.rooms.iter().find(|r| r.room_id == real_room).and_then(|r| r.successor.clone());
+            if let Some(successor) = successor {
+                use crate::ui::{self, Tone};
+                let via: Vec<String> = successor.split_once(':').map(|(_, s)| vec![s.to_string()]).unwrap_or_default();
+                content = content.push(container(ui::card(row![
+                    column![
+                        text("This room has been replaced").font(MONO).size(13).color(theme::colors().text_normal),
+                        ui::hint("It's no longer active. The conversation continues in the new room."),
+                    ].spacing(2).width(Fill),
+                    ui::btn("Go to the new room", Tone::Primary, Some(Message::OpenMatrixLink(successor, None, via))),
+                ].spacing(12).align_y(iced::Alignment::Center))).padding([8, 12]));
+            } else {
+                // Input area: typing indicator, reply/edit preview, GIF panel,
+                // upload preview, help text, autocomplete, input bar
+                for element in self.view_input_area(room_id) {
+                    content = content.push(element);
+                }
             }
         } else {
             // Nothing selected: a short welcome with the common next steps.

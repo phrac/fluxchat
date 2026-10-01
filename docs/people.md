@@ -37,7 +37,7 @@ The people button in the room header toggles it.
 
 ## Ignoring
 
-`/ignore <user>` hides someone's messages everywhere; `/unignore <user>` brings them back. You can also ignore from their profile.
+`/ignore <user>` hides someone's messages and invites; `/unignore <user>` brings them back. You can also ignore from their profile. The list is saved to your account, so it applies on all your devices; see and undo it in [Settings → Security](settings.md#security).
 
 ## Finding people
 

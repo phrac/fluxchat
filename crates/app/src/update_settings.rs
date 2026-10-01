@@ -521,12 +521,79 @@ impl FluxChat {
 
             // --- Profile actions ---
             Message::ToggleIgnoreUser(user_id) => {
-                if self.ignored_users.contains(&user_id) {
-                    self.ignored_users.remove(&user_id);
+                // Shown at once; IgnoreDone puts it back if the server refuses.
+                let ignore = !self.ignored_users.contains(&user_id);
+                if ignore {
+                    self.ignored_users.insert(user_id.clone());
                 } else {
-                    self.ignored_users.insert(user_id);
+                    self.ignored_users.remove(&user_id);
+                }
+                let core = self.core.clone();
+                Some(Task::perform(
+                    async move {
+                        let err = match core.get_client().await {
+                            Ok(client) => fluxchat_core::profile::set_ignored(&client, &user_id, ignore).await.err().map(|e| e.to_string()),
+                            Err(e) => Some(e.to_string()),
+                        };
+                        (user_id, ignore, err)
+                    },
+                    |(user, ignore, err)| Message::IgnoreDone(user, ignore, err),
+                ))
+            }
+            Message::IgnoredUsersLoaded(users) => {
+                self.ignored_users = users.into_iter().collect();
+                Some(Task::none())
+            }
+            Message::IgnoreDone(user_id, ignore, err) => Some(match err {
+                None => Task::none(),
+                Some(e) => {
+                    if ignore {
+                        self.ignored_users.remove(&user_id);
+                    } else {
+                        self.ignored_users.insert(user_id);
+                    }
+                    let verb = if ignore { "ignore" } else { "unignore" };
+                    self.update(Message::ShowError(format!("Couldn't {verb}: {e}")))
+                }
+            }),
+            Message::SettingsDeactivatePasswordChanged(value) => {
+                self.deactivate_password = value;
+                Some(Task::none())
+            }
+            Message::SettingsDeactivateArm(armed) => {
+                self.deactivate_armed = armed;
+                if !armed {
+                    self.deactivate_password.clear();
                 }
                 Some(Task::none())
+            }
+            Message::SettingsDeactivate => {
+                if !self.deactivate_armed || self.deactivating || self.deactivate_password.is_empty() {
+                    return Some(Task::none());
+                }
+                self.deactivating = true;
+                let password = std::mem::take(&mut self.deactivate_password);
+                let core = self.core.clone();
+                Some(Task::perform(
+                    async move {
+                        match core.get_client().await {
+                            Ok(client) => fluxchat_core::profile::deactivate_account(&client, &password).await.err().map(|e| e.to_string()),
+                            Err(e) => Some(e.to_string()),
+                        }
+                    },
+                    Message::DeactivateDone,
+                ))
+            }
+            Message::DeactivateDone(err) => {
+                self.deactivating = false;
+                Some(match err {
+                    // The account is gone: sign out and clear this device's data.
+                    None => self.update(Message::Logout),
+                    Some(e) => {
+                        self.settings_status = Some(format!("Couldn't deactivate: {e}"));
+                        Task::none()
+                    }
+                })
             }
             Message::ProfilePowerInputChanged(val) => {
                 self.profile_power_input = val;
@@ -623,5 +690,19 @@ impl FluxChat {
 
             _ => None,
         }
+    }
+
+    /// Load the account's ignore list.
+    pub(crate) fn load_ignored_users(&self) -> Task<Message> {
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let client = core.get_client().await.ok()?;
+                fluxchat_core::profile::ignored_users(&client).await
+                    .map_err(|e| tracing::warn!("Failed to load the ignore list: {e}"))
+                    .ok()
+            },
+            |users| users.map(Message::IgnoredUsersLoaded).unwrap_or(Message::Noop),
+        )
     }
 }

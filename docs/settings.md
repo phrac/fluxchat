@@ -9,6 +9,7 @@ Open Settings with the ⚙ in the status bar, by clicking your own name, from th
 - **Display name**: Save is enabled once you change it. Also `/nick <name>`.
 - **User ID** with a copy button.
 - **Password**: current, new, confirm. *Change password* enables when the new passwords match.
+- **Deactivate account**: permanently disables the account (asks for your password first). This can't be undone.
 - **Log out** is at the bottom of the tab list.
 
 ## Preferences
@@ -73,6 +74,7 @@ Every device signed in to your account:
 - **Session verification** status.
 - **Key backup**: whether a server backup exists and whether this device uses it. **Enable backup** creates one and shows a **recovery key**: save it somewhere safe.
 - **Recover from backup**: enter your recovery key or passphrase to unlock old encrypted messages.
+- **Ignored users**: everyone you've ignored, with **Unignore**.
 - **Reset identity**: for when the recovery key is lost (password required). This replaces your backup; old messages not on this device stay unreadable, and other devices must verify again.
 
 See [Encryption](encryption.md).

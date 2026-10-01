@@ -47,12 +47,13 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Room settings: name, topic, icon, notifications, spaces
 - Security & privacy: who can join, history visibility, guests, directory listing, encryption
 - Roles & permissions: role per action, privileged users, bans
+- Advanced: room version and upgrade, links to replaced/replacing rooms, addresses (main, published, local)
 - Public room directory
 
 ### People
 - Profile cards with presence, status, roles, verification, and moderation tools
 - Member list with filter and presence
-- Ignore users, direct messages
+- Ignore users (synced to your account, list in Settings), direct messages
 
 ### Encryption
 - End-to-end encryption, emoji (SAS) verification, cross-signing

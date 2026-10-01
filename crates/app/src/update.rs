@@ -345,6 +345,10 @@ impl FluxChat {
                 self.utd_hints.clear();
                 self.utd_checked.clear();
                 self.typing_by_room.clear();
+                self.ignored_users.clear();
+                self.deactivate_password.clear();
+                self.deactivate_armed = false;
+                self.deactivating = false;
                 self.modal = None;
                 self.sync_running = false;
                 let core = self.core.clone();
@@ -418,7 +422,8 @@ impl FluxChat {
                 let restore = self.restore_last_view();
                 let mentions = if self.mentions_open { self.refresh_mentions() } else { Task::none() };
                 let room_threads = self.load_all_room_threads();
-                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads]);
+                let ignored = self.load_ignored_users();
+                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored]);
             }
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
@@ -1920,6 +1925,9 @@ impl FluxChat {
                     self.room_parent_spaces = None;
                     self.room_security = None;
                     self.room_perms = None;
+                    self.room_advanced = None;
+                    self.room_alias_input.clear();
+                    self.room_upgrade_confirm = false;
                     self.room_settings_tab = crate::state::RoomSettingsTab::General;
                     match self.active_real_room().map(str::to_string) {
                         Some(rid) => {
@@ -2458,13 +2466,17 @@ impl FluxChat {
             }
             Message::UpgradeRoom(version) => {
                 if let Some(room_id) = self.active_real_room().map(str::to_string) {
+                    self.room_upgrading = true;
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::upgrade_room(&client, &room_id, &version).await.ok()
+                            let result = match core.get_client().await {
+                                Ok(client) => fluxchat_core::rooms::upgrade_room(&client, &room_id, &version).await.map_err(|e| e.to_string()),
+                                Err(e) => Err(e.to_string()),
+                            };
+                            (room_id, result)
                         },
-                        |_| Message::Noop,
+                        |(rid, result)| Message::RoomUpgraded(rid, result),
                     );
                 }
             }
@@ -2717,7 +2729,10 @@ impl FluxChat {
                 | Message::SecurityResetIdentityConfirm | Message::SecurityResetIdentityCancel
                 | Message::SecurityResetPasswordChanged(_) | Message::SecurityResetIdentitySubmit
                 | Message::SecurityResetIdentityResult(_)
-                | Message::ToggleIgnoreUser(_) | Message::ProfilePowerInputChanged(_)
+                | Message::ToggleIgnoreUser(_) | Message::IgnoredUsersLoaded(_) | Message::IgnoreDone(..)
+                | Message::SettingsDeactivatePasswordChanged(_) | Message::SettingsDeactivateArm(_)
+                | Message::SettingsDeactivate | Message::DeactivateDone(_)
+                | Message::ProfilePowerInputChanged(_)
                 | Message::ProfileSetPowerLevel | Message::SendDmToUser(_)
                 | Message::DmCreated(_)
                 | Message::ManualVerifyUser(_) | Message::ManualVerifyResult(_, _)
@@ -3495,6 +3510,7 @@ impl FluxChat {
                         space_name: None,
                         space_id: None,
                         is_favourite: false,
+                        successor: None,
                     };
                     if !self.spaces.iter().any(|s| s.room_id == room_id) {
                         self.spaces.push(info.clone());
@@ -3519,6 +3535,7 @@ impl FluxChat {
                         space_name,
                         space_id,
                         is_favourite: false,
+                        successor: None,
                     });
                 }
                 if !is_space {
@@ -4387,7 +4404,11 @@ impl FluxChat {
                 | Message::RoomPermsLoaded(..) | Message::SetJoinMode(_)
                 | Message::SetHistoryMode(_) | Message::SetGuestAccess(_)
                 | Message::SetInDirectory(_) | Message::SetPermission(..)
-                | Message::RoomAdminDone(..)) => {
+                | Message::RoomAdminDone(..) | Message::RoomAdvancedLoaded(..)
+                | Message::RoomAliasInputChanged(_) | Message::AddRoomAlias
+                | Message::RemoveRoomAlias(_) | Message::SetMainAlias(_)
+                | Message::SetAliasPublished(..) | Message::ConfirmRoomUpgrade(_)
+                | Message::RoomUpgraded(..)) => {
                 if let Some(task) = self.handle_room_admin_message(msg) {
                     return task;
                 }

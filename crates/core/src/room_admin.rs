@@ -292,3 +292,117 @@ pub async fn set_permission(client: &matrix_sdk::Client, room_id: &str, permissi
     room.send_state_event(content).await.map_err(err)?;
     Ok(())
 }
+
+/// Advanced settings: version, upgrade links and addresses.
+#[derive(Debug, Clone)]
+pub struct RoomAdvanced {
+    pub version: String,
+    /// The server's version for new rooms, when it differs from this room's
+    /// (what Upgrade moves to).
+    pub upgrade_to: Option<String>,
+    /// The room this one replaced, and the room that replaced it.
+    pub predecessor: Option<String>,
+    pub successor: Option<String>,
+    /// Published addresses (`m.room.canonical_alias`).
+    pub main_alias: Option<String>,
+    pub alt_aliases: Vec<String>,
+    /// Addresses on our server that point here, published or not.
+    pub local_aliases: Vec<String>,
+    /// Our homeserver, for `#name:server` addresses.
+    pub server: String,
+    pub can_publish_aliases: bool,
+    pub can_upgrade: bool,
+}
+
+/// Read a room's version, upgrade links and addresses.
+pub async fn room_advanced(client: &matrix_sdk::Client, room_id: &str) -> Result<RoomAdvanced, AppError> {
+    use matrix_sdk::ruma::api::client::room::aliases;
+    let room = room(client, room_id)?;
+    let user_id = client.user_id().ok_or_else(|| err("Not logged in"))?.to_owned();
+    let pl = room.power_levels().await.map_err(err)?;
+    let version = room.version().map(|v| v.to_string()).unwrap_or_else(|| "1".into());
+    // Capabilities and local aliases are best-effort: the tab still works
+    // (without Upgrade / the local list) if the server won't say.
+    let upgrade_to = client.homeserver_capabilities().room_versions().await.ok()
+        .map(|c| c.default.to_string())
+        .filter(|v| *v != version);
+    let local_aliases = client.send(aliases::v3::Request::new(room.room_id().to_owned())).await
+        .map(|r| r.aliases.iter().map(|a| a.to_string()).collect())
+        .unwrap_or_default();
+    Ok(RoomAdvanced {
+        version,
+        upgrade_to,
+        predecessor: room.predecessor_room().map(|p| p.room_id.to_string()),
+        successor: room.successor_room().map(|s| s.room_id.to_string()),
+        main_alias: room.canonical_alias().map(|a| a.to_string()),
+        alt_aliases: room.alt_aliases().iter().map(|a| a.to_string()).collect(),
+        local_aliases,
+        server: user_id.server_name().to_string(),
+        can_publish_aliases: pl.user_can_send_state(&user_id, StateEventType::RoomCanonicalAlias),
+        can_upgrade: pl.user_can_send_state(&user_id, StateEventType::RoomTombstone),
+    })
+}
+
+/// `#name:server` from what was typed: a full address, or just the name
+/// (then on `server`).
+pub fn full_alias(input: &str, server: &str) -> Option<String> {
+    let input = input.trim();
+    let name = input.strip_prefix('#').unwrap_or(input);
+    if name.is_empty() || name.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let full = if name.contains(':') { format!("#{name}") } else { format!("#{name}:{server}") };
+    matrix_sdk::ruma::RoomAliasId::parse(&full).ok().map(|a| a.to_string())
+}
+
+/// Rewrite the published addresses: `main` (None = no main address) and
+/// the alternatives, keeping `main` out of them.
+pub async fn set_published_aliases(client: &matrix_sdk::Client, room_id: &str, main: Option<&str>, alts: &[String]) -> Result<(), AppError> {
+    use matrix_sdk::ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
+    use matrix_sdk::ruma::RoomAliasId;
+    let room = room(client, room_id)?;
+    let parse = |a: &str| RoomAliasId::parse(a).map_err(|_| err(format!("Invalid address: {a}")));
+    let mut content = RoomCanonicalAliasEventContent::new();
+    content.alias = main.map(parse).transpose()?;
+    for alt in alts.iter().filter(|a| Some(a.as_str()) != main) {
+        let alt = parse(alt)?;
+        if !content.alt_aliases.contains(&alt) {
+            content.alt_aliases.push(alt);
+        }
+    }
+    room.send_state_event(content).await.map_err(err)?;
+    Ok(())
+}
+
+/// Delete an address from our server. If it was published, unpublish it
+/// too, so the room doesn't advertise a dead address.
+pub async fn remove_local_alias(client: &matrix_sdk::Client, room_id: &str, alias: &str) -> Result<(), AppError> {
+    crate::rooms::remove_room_alias(client, alias).await?;
+    let room = room(client, room_id)?;
+    let main = room.canonical_alias().map(|a| a.to_string());
+    let alts: Vec<String> = room.alt_aliases().iter().map(|a| a.to_string()).collect();
+    if main.as_deref() == Some(alias) || alts.iter().any(|a| a == alias) {
+        let main = main.filter(|m| m != alias);
+        let alts: Vec<String> = alts.into_iter().filter(|a| a != alias).collect();
+        // Best effort: the server usually unpublishes it itself, and the
+        // delete (what was asked) already succeeded.
+        if let Err(e) = set_published_aliases(client, room_id, main.as_deref(), &alts).await {
+            tracing::warn!("Couldn't unpublish deleted address {alias}: {e}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::full_alias;
+
+    #[test]
+    fn alias_from_input() {
+        assert_eq!(full_alias("lobby", "example.org").as_deref(), Some("#lobby:example.org"));
+        assert_eq!(full_alias(" #lobby ", "example.org").as_deref(), Some("#lobby:example.org"));
+        assert_eq!(full_alias("#lobby:other.net", "example.org").as_deref(), Some("#lobby:other.net"));
+        assert_eq!(full_alias("", "example.org"), None);
+        assert_eq!(full_alias("two words", "example.org"), None);
+    }
+}

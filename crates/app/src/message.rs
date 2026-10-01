@@ -221,6 +221,19 @@ pub enum Message {
     SetPermission(fluxchat_core::room_admin::Permission, i64),
     /// A security/permission change finished (room_id, error).
     RoomAdminDone(String, Option<String>),
+    // --- Room settings: advanced ---
+    RoomAdvancedLoaded(String, Result<Box<fluxchat_core::room_admin::RoomAdvanced>, String>),
+    RoomAliasInputChanged(String),
+    AddRoomAlias,
+    RemoveRoomAlias(String),
+    /// Make an address the main one (None: no main address).
+    SetMainAlias(Option<String>),
+    /// Publish or unpublish an address as an alternative.
+    SetAliasPublished(String, bool),
+    /// Ask for (true) or cancel (false) the Upgrade confirmation.
+    ConfirmRoomUpgrade(bool),
+    /// An upgrade finished: (old room, new room or error).
+    RoomUpgraded(String, Result<String, String>),
     SetRoomNotifyMode(String),                  // mode for the active room
     // --- Notifications ---
     SetNotificationsEnabled(bool),
@@ -455,6 +468,14 @@ pub enum Message {
 
     // --- Profile actions ---
     ToggleIgnoreUser(String), // user_id
+    IgnoredUsersLoaded(Vec<String>),
+    /// An ignore-list change finished: (user, now ignored?, error).
+    IgnoreDone(String, bool, Option<String>),
+    SettingsDeactivatePasswordChanged(String),
+    /// Ask for (true) or cancel (false) the deactivation confirmation.
+    SettingsDeactivateArm(bool),
+    SettingsDeactivate,
+    DeactivateDone(Option<String>), // error
     SendDmToUser(String),     // user_id
     MentionUser(String),      // display name — insert "@name " into the input
     ProfileConfirm(Option<String>), // pending "kick" / "ban" on the profile card

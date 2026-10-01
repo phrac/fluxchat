@@ -28,7 +28,7 @@ Open with the room header's info button, right-click → Room Settings, or the p
 - **Name** and **topic**: the Save button enables when changed.
 - **Notify me in this room**: All messages / Mentions / Mute. Only affects this room.
 - **Spaces**: the spaces this room is in (with Remove, where you're allowed), and **Add to a space…** for spaces you can edit.
-- **Room ID** with a copy button, and **Leave room**.
+- **Leave room**.
 
 ### Security & Privacy
 - **Who can join**:
@@ -58,6 +58,16 @@ Open with the room header's info button, right-click → Room Settings, or the p
   - enable encryption, upgrade, and other settings.
 
   You can set levels up to your own.
+
+### Advanced
+- **Room ID** with a copy button.
+- **Version**: the room's version. If your server makes new rooms with a newer one, **Upgrade to …** (asks first) creates the new room, closes this one with a link to it, and takes you there.
+- Links to the room this one **continues** (older messages), or the room that **replaced** it.
+- **Addresses** (`#name:server`):
+  - **Add** one on your server: type just the name. The first address becomes the main one.
+  - **Make main**: the address used in links.
+  - **Publish / Unpublish**: whether it's listed in the room's details.
+  - The bin deletes an address from your server.
 
 Controls you don't have permission for are shown read-only.
 
@@ -90,4 +100,4 @@ Right-click → Leave, `/leave`, or Room settings → Leave room. You're asked t
 
 ## Room upgrades
 
-If a room has been replaced by a newer version, a banner offers to follow it. Admins can upgrade with `/upgraderoom <version>`.
+A room that has been replaced by a newer version shows a banner instead of the message box, with **Go to the new room**. Admins upgrade from Room settings → Advanced, or with `/upgraderoom <version>`.

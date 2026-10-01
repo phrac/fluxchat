@@ -82,3 +82,23 @@ pub async fn deactivate_account(client: &matrix_sdk::Client, password: &str) -> 
     client.send(request).await.map_err(|e| AppError::Other(format!("{e}")))?;
     Ok(())
 }
+
+/// Users on the account's ignore list (`m.ignored_user_list`), sorted.
+pub async fn ignored_users(client: &matrix_sdk::Client) -> Result<Vec<String>, AppError> {
+    use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
+    let content = client.account().account_data::<IgnoredUserListEventContent>().await
+        .map_err(|e| AppError::Other(format!("{e}")))?
+        .and_then(|raw| raw.deserialize().ok());
+    let mut users: Vec<String> = content.map(|c| c.ignored_users.into_keys().map(|u| u.to_string()).collect()).unwrap_or_default();
+    users.sort();
+    Ok(users)
+}
+
+/// Add a user to, or remove them from, the account's ignore list. The server
+/// then stops sending us their events; other clients pick the change up too.
+pub async fn set_ignored(client: &matrix_sdk::Client, user_id: &str, ignore: bool) -> Result<(), AppError> {
+    let user_id = crate::rooms::parse_user_id(user_id)?;
+    let account = client.account();
+    let result = if ignore { account.ignore_user(&user_id).await } else { account.unignore_user(&user_id).await };
+    result.map_err(|e| AppError::Other(format!("{e}")))
+}
