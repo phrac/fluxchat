@@ -29,9 +29,16 @@ pub fn quick_switcher_id() -> iced::widget::Id {
     iced::widget::Id::new("quick_switcher_input")
 }
 
-pub(crate) const EMOJI_GRID_COLUMNS: usize = 8;
-pub(crate) const EMOJI_PANEL_HEIGHT: f32 = 280.0;
-pub(crate) const EMOJI_CELL_SIZE: f32 = 36.0;
+/// Left offset of a thread entry's icon so it lines up with its parent
+/// room's name: unread dot (8) + gap (6) + room icon (18) + gap (6).
+const THREAD_ENTRY_OFFSET: f32 = 38.0;
+/// Max height of a header-bar panel (threads, pins, files) before it scrolls.
+const HUD_PANEL_MAX_HEIGHT: f32 = 300.0;
+pub(crate) const EMOJI_GRID_COLUMNS: usize = 9;
+pub(crate) const EMOJI_PANEL_HEIGHT: f32 = 300.0;
+pub(crate) const EMOJI_CELL_SIZE: f32 = 38.0;
+/// Picker width: 9 cells + gaps + padding + scrollbar room.
+pub(crate) const EMOJI_PANEL_WIDTH: f32 = 400.0;
 pub(crate) const EMOJI_FREQ_COUNT: usize = 24;
 
 /// Fixed ID for the message scrollable so we can snap to bottom.
@@ -57,7 +64,7 @@ pub(crate) fn thin_scrollbar(_theme: &Theme, status: iced::widget::scrollable::S
         background: None,
         border: iced::Border::default(),
         scroller: Scroller {
-            background: Color::from_rgba(1.0, 1.0, 1.0, scroller_alpha).into(),
+            background: theme::tint(scroller_alpha).into(),
             border: iced::Border { radius: 2.0.into(), ..Default::default() },
         },
     };
@@ -211,7 +218,6 @@ impl FluxChat {
         // Offset to align with message content area (timestamp + nick + avatar + separator)
         Some(
             row![
-                Space::new().width(Length::Fixed(170.0)),
                 Space::new().width(Fill),
                 avatars_row,
             ]
@@ -219,6 +225,53 @@ impl FluxChat {
             .padding([0, 8])
             .into(),
         )
+    }
+
+    /// The row under a thread root: reply count plus the latest reply's
+    /// sender and preview (from the SDK thread summary). Opens the thread.
+    fn view_thread_summary<'a>(
+        &'a self,
+        room_id: &str,
+        msg: &'a fluxchat_core::MessageInfo,
+        count: u32,
+    ) -> Element<'a, Message> {
+        let label = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
+        let handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_THREAD);
+        let mut summary = row![
+            iced::widget::svg(handle)
+                .width(12).height(12)
+                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
+            text(label).font(self.sidebar_font()).size(12).color(theme::colors().accent),
+        ].spacing(6).align_y(iced::Alignment::Center);
+        if let Some(latest) = &msg.thread_latest {
+            let preview: String = latest.body.lines().next().unwrap_or("").chars().take(80).collect();
+            summary = summary
+                .push(self.render_avatar_with_initial(latest.avatar_url.as_deref(), &latest.sender_name, 16.0))
+                .push(text(latest.sender_name.as_str()).font(self.sidebar_font()).size(12)
+                    .color(theme::nick_color(&latest.sender_name)))
+                .push(text(preview).font(self.sidebar_font()).size(12)
+                    .color(theme::colors().text_dim)
+                    .wrapping(iced::widget::text::Wrapping::None));
+        }
+        summary = summary.push(
+            text("\u{203A}").font(self.sidebar_font()).size(13).color(theme::colors().text_dim),
+        );
+        row![
+            Space::new().width(Length::Fixed(self.msg_content_indent() - 6.0)),
+            button(summary)
+                .on_press(Message::OpenThread(room_id.to_string(), msg.event_id.clone()))
+                .padding([2, 6])
+                .clip(true)
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(theme::with_alpha(theme::colors().accent, 0.1).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+        ].spacing(0).into()
     }
 
     /// Render a cached avatar image, or a blank space fallback.
@@ -242,6 +295,148 @@ impl FluxChat {
 
     /// Render a cached avatar with an initial letter fallback.
     pub(crate) fn render_avatar_with_initial<'a>(&self, mxc: Option<&str>, name: &str, size: f32) -> Element<'a, Message> {
+        self.render_avatar_shaped(mxc, name, size, size / 2.0)
+    }
+
+    /// A panel under the header bar: title + count + close, then a
+    /// scrollable list (so long lists don't push the messages away).
+    fn hud_panel<'a>(
+        &'a self,
+        title: &'a str,
+        items: Vec<Element<'a, Message>>,
+        on_close: Message,
+        empty: &'a str,
+    ) -> Element<'a, Message> {
+        let count = items.len();
+        let header = row![
+            text(title.to_uppercase()).font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
+            text(if count > 0 { count.to_string() } else { String::new() })
+                .font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
+            Space::new().width(Fill),
+            button(crate::ui::icon(SVG_CLOSE, 14.0, theme::colors().text_dim))
+                .on_press(on_close)
+                .padding(4)
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        let body: Element<'a, Message> = if items.is_empty() {
+            text(empty).font(self.sidebar_font()).size(13).color(theme::colors().text_dim).into()
+        } else {
+            let mut list = column![].spacing(1);
+            for item in items {
+                list = list.push(item);
+            }
+            container(
+                scrollable(container(list).padding(iced::Padding { right: 8.0, ..Default::default() }))
+                    .direction(iced::widget::scrollable::Direction::Vertical(
+                        iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                    ))
+                    .style(thin_scrollbar),
+            )
+            .max_height(HUD_PANEL_MAX_HEIGHT)
+            .into()
+        };
+        container(column![header, body].spacing(4))
+            .padding([8, 12])
+            .width(Fill)
+            .style(theme::container_panel)
+            .into()
+    }
+
+    /// One clickable entry in a header-bar panel: sender, optional meta, preview.
+    fn hud_row<'a>(&self, sender: &str, meta: Option<String>, body: &str, on_press: Message) -> Element<'a, Message> {
+        let preview: String = body.lines().next().unwrap_or("").chars().take(120).collect();
+        let mut head = row![
+            text(sender.to_string()).font(self.sidebar_font()).size(13).color(theme::nick_color(sender)),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+        if let Some(meta) = meta {
+            head = head.push(text(meta).font(self.sidebar_font()).size(12).color(theme::colors().text_dim));
+        }
+        button(
+            column![
+                head,
+                text(preview).font(self.sidebar_font()).size(13).color(theme::colors().text_muted)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            ]
+            .spacing(2),
+        )
+        .on_press(on_press)
+        .padding([5, 8])
+        .width(Fill)
+        .style(crate::ui::row_style(false))
+        .into()
+    }
+
+    /// Command-palette card (search, quick switcher): icon + borderless
+    /// input, divider, results, keyboard hint footer.
+    fn palette<'a>(&self, input: iced::widget::TextInput<'a, Message>, body: Element<'a, Message>, hint: &'a str, width: f32) -> Element<'a, Message> {
+        let input = input
+            .font(self.sidebar_font())
+            .size(16)
+            .padding([6, 4])
+            .style(|_: &Theme, _| iced::widget::text_input::Style {
+                background: Color::TRANSPARENT.into(),
+                border: iced::Border::default(),
+                icon: theme::colors().text_dim,
+                placeholder: theme::colors().text_dim,
+                value: theme::colors().text_bright,
+                selection: theme::with_alpha(theme::colors().accent, 0.35),
+            });
+        container(
+            column![
+                row![crate::ui::icon(SVG_SEARCH, 16.0, theme::colors().text_dim), input]
+                    .spacing(10)
+                    .align_y(iced::Alignment::Center)
+                    .padding([8, 14]),
+                crate::ui::divider(),
+                container(
+                    scrollable(container(body).padding(6))
+                        .direction(iced::widget::scrollable::Direction::Vertical(
+                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                        ))
+                        .style(thin_scrollbar),
+                )
+                .max_height(380.0),
+                crate::ui::divider(),
+                container(text(hint).font(self.sidebar_font()).size(11).color(theme::colors().text_dim))
+                    .padding([6, 14]),
+            ],
+        )
+        .width(Length::Fixed(width))
+        .clip(true)
+        .style(crate::ui::dialog_style)
+        .into()
+    }
+
+    /// Dimmed full-window layer holding a palette near the top; clicking
+    /// outside sends `on_dismiss`.
+    fn palette_layer<'a>(&self, card: Element<'a, Message>, on_dismiss: Message) -> Element<'a, Message> {
+        opaque(
+            mouse_area(
+                container(column![Space::new().height(90), opaque(card)])
+                    .width(Fill)
+                    .center_x(Fill)
+                    .height(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(on_dismiss),
+        )
+    }
+
+    /// Rounded-square avatar for rooms and spaces.
+    pub(crate) fn render_room_avatar<'a>(&self, mxc: Option<&str>, name: &str, size: f32) -> Element<'a, Message> {
+        self.render_avatar_shaped(mxc, name, size, (size * 0.25).round())
+    }
+
+    /// Avatar image clipped to `radius`, or the name's initial on a tint of
+    /// its nick colour.
+    pub(crate) fn render_avatar_shaped<'a>(&self, mxc: Option<&str>, name: &str, size: f32, radius: f32) -> Element<'a, Message> {
         if let Some(handle) = mxc.and_then(|m| self.avatar_cache.get(m)) {
             container(
                 iced::widget::image(handle.clone())
@@ -250,20 +445,22 @@ impl FluxChat {
             )
             .width(size).height(size).clip(true)
             .style(move |_: &Theme| container::Style {
-                border: iced::Border { radius: (size / 2.0).into(), ..Default::default() },
+                border: iced::Border { radius: radius.into(), ..Default::default() },
                 ..Default::default()
             })
             .into()
         } else {
-            let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
+            let trimmed = name.trim_start_matches(['#', '@', '!']);
+            let initial = trimmed.chars().next().unwrap_or('?').to_uppercase().to_string();
+            let tint = theme::nick_color(name);
             container(
-                text(initial).font(self.sidebar_font()).size(size * 0.45).color(theme::colors().text_muted)
+                text(initial).font(self.sidebar_font()).size(size * 0.45).color(tint)
             )
             .width(size).height(size)
             .center_x(size).center_y(size)
             .style(move |_: &Theme| container::Style {
-                background: Some(theme::colors().bg_light.into()),
-                border: iced::Border { radius: (size / 2.0).into(), ..Default::default() },
+                background: Some(theme::with_alpha(tint, 0.18).into()),
+                border: iced::Border { radius: radius.into(), ..Default::default() },
                 ..Default::default()
             })
             .into()
@@ -488,228 +685,102 @@ impl FluxChat {
                 ),
             );
         }
-        // Search modal overlay (same style as quick switcher)
+        // Search overlay (command-palette style, shared with the switcher)
         if self.search_open {
-            let mut results_col = column![].spacing(0);
-            let selected_idx = self.search_selected;
+            let mut results_col = column![].spacing(1);
             for (i, result) in self.search_results.iter().take(20).enumerate() {
                 let local_secs = local_time_of_day(result.timestamp);
-                let h = local_secs / 3600;
-                let m = (local_secs % 3600) / 60;
-                let time_str = format!("{h:02}:{m:02}");
-                let nick_col = theme::nick_color(&result.sender_name);
-                let body_line = result.body.lines().next().unwrap_or("");
-                let body_trunc = if body_line.len() > 100 {
-                    let mut end = 97;
-                    while !body_line.is_char_boundary(end) { end -= 1; }
-                    format!("{}...", &body_line[..end])
-                } else {
-                    body_line.to_string()
-                };
-                let is_selected = selected_idx == Some(i);
-                let bg = if is_selected {
-                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
-                } else {
-                    None
-                };
+                let time_str = format!("{:02}:{:02}", local_secs / 3600, (local_secs % 3600) / 60);
+                let body_line: String = result.body.lines().next().unwrap_or("").chars().take(120).collect();
                 results_col = results_col.push(
                     button(
                         row![
                             text(time_str).font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
-                            text(&result.sender_name).font(self.sidebar_font()).size(13).color(nick_col)
+                            text(&result.sender_name).font(self.sidebar_font()).size(13)
+                                .color(theme::nick_color(&result.sender_name))
                                 .wrapping(iced::widget::text::Wrapping::None),
-                            text(body_trunc).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
+                            text(body_line).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
                                 .wrapping(iced::widget::text::Wrapping::None),
-                        ].spacing(8).align_y(iced::Alignment::Center),
+                        ].spacing(10).align_y(iced::Alignment::Center),
                     )
                     .on_press(Message::SearchSelectResult(i))
-                    .padding([6, 14])
+                    .padding([7, 10])
                     .width(Fill)
-                    .style(move |_, status| button::Style {
-                        background: if matches!(status, button::Status::Hovered) {
-                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
-                        } else {
-                            bg
-                        },
-                        ..Default::default()
-                    }),
+                    .style(crate::ui::row_style(self.search_selected == Some(i))),
                 );
             }
-
-            let search_card = container(
-                column![
-                    text_input("Search messages...", &self.search_query)
-                        .id(search_input_id())
-                        .on_input(Message::SearchQueryChanged)
-                        .on_submit(Message::SearchSubmit)
-                        .font(self.sidebar_font())
-                        .size(16)
-                        .padding(10),
-                    scrollable(results_col)
-                        .height(Length::Shrink)
-                        .direction(iced::widget::scrollable::Direction::Vertical(
-                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
-                        ))
-                        .style(thin_scrollbar),
-                ].spacing(0),
-            )
-            .max_height(400.0)
-            .width(Length::Fixed(560.0))
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::colors().bg_dark.into()),
-                border: iced::Border {
-                    color: theme::colors().accent,
-                    width: 1.0,
-                    radius: 8.0.into(),
-                },
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 20.0,
-                },
-                ..Default::default()
-            });
-
-            layers.push(
-                opaque(
-                    mouse_area(
-                        container(
-                            column![
-                                Space::new().height(80),
-                                search_card,
-                            ]
-                        )
-                        .width(Fill)
-                        .center_x(Fill)
-                        .height(Fill)
-                        .style(|_: &Theme| container::Style {
-                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
-                            ..Default::default()
-                        }),
-                    )
-                    .on_press(Message::ToggleSearch),
-                ),
+            let body: Element<Message> = if !self.search_results.is_empty() {
+                results_col.into()
+            } else if self.search_done {
+                crate::ui::empty_state(SVG_SEARCH, "No messages found", Some("Try different words.".into()))
+            } else {
+                crate::ui::empty_state(SVG_SEARCH, "Search this room",
+                    Some("Type and press Enter to search the server.".into()))
+            };
+            let card = self.palette(
+                text_input("Search messages", &self.search_query)
+                    .id(search_input_id())
+                    .on_input(Message::SearchQueryChanged)
+                    .on_submit(Message::SearchSubmit),
+                body,
+                "\u{2191}\u{2193} select   \u{21b5} search / open   esc close",
+                580.0,
             );
+            layers.push(self.palette_layer(card, Message::ToggleSearch));
         }
 
         // Quick switcher overlay
         if self.quick_switcher_open {
             let matches = self.quick_switcher_matches();
-            let mut results_col = column![].spacing(0);
+            let mut results_col = column![].spacing(1);
             for (i, room_id) in matches.iter().enumerate() {
-                if let Some(room) = self.rooms.iter().find(|r| r.room_id == *room_id) {
-                    let is_selected = i == self.quick_switcher_selected;
-                    let bg = if is_selected {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.1).into())
+                let Some(room) = self.rooms.iter().find(|r| r.room_id == *room_id) else { continue };
+                let detail = room.space_name.clone()
+                    .unwrap_or_else(|| if room.is_direct { "Direct message".into() } else { String::new() });
+                let mut label = row![
+                    text(&room.name).font(self.sidebar_font()).size(14).color(theme::colors().text_bright)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                    text(detail).font(self.sidebar_font()).size(12).color(theme::colors().text_dim)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                ]
+                .spacing(10)
+                .align_y(iced::Alignment::Center);
+                if room.highlight_count > 0 || room.unread_count > 0 {
+                    let (n, color) = if room.highlight_count > 0 {
+                        (room.highlight_count, theme::colors().red)
                     } else {
-                        None
+                        (room.unread_count, theme::colors().accent)
                     };
-                    let space_prefix = room.space_name.as_ref()
-                        .map(|s| format!("{s}/"))
-                        .unwrap_or_default();
-                    let rid = room_id.clone();
-                    let avatar_el: Element<Message> = if let Some(handle) = room.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
-                        container(
-                            iced::widget::image(handle.clone())
-                                .width(20).height(20)
-                                .content_fit(iced::ContentFit::Cover),
-                        )
-                        .width(20).height(20).clip(true)
-                        .style(|_: &Theme| container::Style {
-                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                            ..Default::default()
-                        })
-                        .into()
-                    } else {
-                        let initial = room.name.chars().next().unwrap_or('#').to_uppercase().to_string();
-                        container(
-                            text(initial).font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
-                        )
-                        .width(20).height(20)
-                        .center_x(20).center_y(20)
-                        .style(|_: &Theme| container::Style {
-                            background: Some(theme::colors().bg_light.into()),
-                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                            ..Default::default()
-                        })
-                        .into()
-                    };
-                    results_col = results_col.push(
-                        button(
-                            row![
-                                avatar_el,
-                                text(format!("{space_prefix}{}", room.name))
-                                    .font(self.sidebar_font()).size(14).color(theme::colors().text_normal),
-                            ].spacing(10).align_y(iced::Alignment::Center),
-                        )
-                        .on_press(Message::SelectRoom(rid))
-                        .padding([8, 14])
-                        .width(Fill)
-                        .style(move |_, status| button::Style {
-                            background: if matches!(status, button::Status::Hovered) {
-                                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
-                            } else {
-                                bg
-                            },
-                            ..Default::default()
-                        }),
-                    );
+                    label = label.push(Space::new().width(Fill)).push(crate::ui::badge(n.to_string(), color));
                 }
-            }
-            let switcher = container(
-                column![
-                    text_input("Switch to room...", &self.quick_switcher_query)
-                        .id(quick_switcher_id())
-                        .on_input(Message::QuickSwitcherQuery)
-                        .on_submit(Message::QuickSwitcherSelect)
-                        .font(self.sidebar_font())
-                        .size(16)
-                        .padding(10),
-                    scrollable(results_col)
-                        .height(Length::Shrink)
-                        .direction(iced::widget::scrollable::Direction::Vertical(
-                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
-                        ))
-                        .style(thin_scrollbar),
-                ].spacing(0),
-            )
-            .max_height(400.0)
-            .width(Length::Fixed(500.0))
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::colors().bg_dark.into()),
-                border: iced::Border {
-                    color: theme::colors().accent,
-                    width: 1.0,
-                    radius: 8.0.into(),
-                },
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, 4.0),
-                    blur_radius: 20.0,
-                },
-                ..Default::default()
-            });
-
-            layers.push(
-                opaque(
-                    mouse_area(
-                        container(
-                            column![
-                                Space::new().height(80),
-                                switcher,
-                            ]
-                        )
-                        .width(Fill)
-                        .center_x(Fill)
-                        .height(Fill)
-                        .style(|_: &Theme| container::Style {
-                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.4).into()),
-                            ..Default::default()
-                        }),
+                results_col = results_col.push(
+                    button(
+                        row![
+                            self.render_room_avatar(room.avatar_url.as_deref(), &room.name, 22.0),
+                            label,
+                        ].spacing(10).align_y(iced::Alignment::Center),
                     )
-                    .on_press(Message::ToggleQuickSwitcher),
-                ),
+                    .on_press(Message::SelectRoom(room_id.clone()))
+                    .padding([6, 10])
+                    .width(Fill)
+                    .style(crate::ui::row_style(i == self.quick_switcher_selected)),
+                );
+            }
+            let body: Element<Message> = if matches.is_empty() {
+                crate::ui::empty_state(SVG_HASH, "No matching rooms", None)
+            } else {
+                results_col.into()
+            };
+            let card = self.palette(
+                text_input("Jump to a room", &self.quick_switcher_query)
+                    .id(quick_switcher_id())
+                    .on_input(Message::QuickSwitcherQuery)
+                    .on_submit(Message::QuickSwitcherSelect),
+                body,
+                "\u{2191}\u{2193} select   \u{21b5} open   esc close",
+                520.0,
             );
+            layers.push(self.palette_layer(card, Message::ToggleQuickSwitcher));
         }
         // Context menu overlay
         if let Some(ref ctx) = self.context_menu {
@@ -719,21 +790,8 @@ impl FluxChat {
                     mouse_area(
                         container(
                             container(menu_items)
-                                .padding([4, 0])
-                                .style(|_: &Theme| container::Style {
-                                    background: Some(theme::colors().bg_dark.into()),
-                                    border: iced::Border {
-                                        color: theme::colors().border,
-                                        width: 1.0,
-                                        radius: 6.0.into(),
-                                    },
-                                    shadow: iced::Shadow {
-                                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                                        offset: iced::Vector::new(0.0, 2.0),
-                                        blur_radius: 12.0,
-                                    },
-                                    ..Default::default()
-                                }),
+                                .padding(4)
+                                .style(crate::ui::dialog_style),
                         )
                         .padding(iced::Padding { top: self.context_menu_position.1, left: self.context_menu_position.0, ..Default::default() })
                         .width(Fill)
@@ -749,7 +807,7 @@ impl FluxChat {
 
     /// Context menu items for rooms or spaces.
     fn view_context_menu(&self, ctx: &crate::state::ContextMenu) -> Element<'_, Message> {
-        let mut col = column![].spacing(0).width(180);
+        let mut col = column![].spacing(1).width(200);
 
         match ctx {
             crate::state::ContextMenu::Room { room_id, is_dm } => {
@@ -802,7 +860,7 @@ impl FluxChat {
             crate::state::ContextMenu::Space { space_id } => {
                 let sid = space_id.clone();
                 col = col.push(self.context_menu_item(
-                    "Space Details", SVG_INFO, sid.clone(), "space_details",
+                    "Manage Space", SVG_SETTINGS, sid.clone(), "space_details",
                 ));
                 col = col.push(self.context_menu_item(
                     "Invite to Space", SVG_USER_PLUS, sid.clone(), "space_invite",
@@ -829,16 +887,9 @@ impl FluxChat {
             ].spacing(8).align_y(iced::Alignment::Center),
         )
         .on_press(Message::ContextMenuAction(action, target))
-        .padding([6, 12])
+        .padding([6, 10])
         .width(Fill)
-        .style(|_, status| button::Style {
-            background: if matches!(status, button::Status::Hovered) {
-                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
-            } else {
-                None
-            },
-            ..Default::default()
-        })
+        .style(crate::ui::row_style(false))
         .into()
     }
 
@@ -854,28 +905,19 @@ impl FluxChat {
             ].spacing(8).align_y(iced::Alignment::Center),
         )
         .on_press(Message::ContextMenuAction(action, target))
-        .padding([6, 12])
+        .padding([6, 10])
         .width(Fill)
         .style(|_, status| button::Style {
-            background: if matches!(status, button::Status::Hovered) {
-                Some(Color::from_rgba(1.0, 0.2, 0.2, 0.1).into())
-            } else {
-                None
-            },
+            background: matches!(status, button::Status::Hovered)
+                .then(|| theme::with_alpha(theme::colors().red, 0.12).into()),
+            border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
             ..Default::default()
         })
         .into()
     }
 
     fn context_menu_divider(&self) -> Element<'_, Message> {
-        container(rule::horizontal(1).style(|_: &Theme| rule::Style {
-            color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
-            radius: 0.0.into(),
-            fill_mode: rule::FillMode::Full,
-            snap: true,
-        }))
-        .padding([2, 8])
-        .into()
+        container(crate::ui::divider()).padding([4, 6]).into()
     }
 
     /// Left space sidebar (icons).
@@ -1159,18 +1201,58 @@ impl FluxChat {
             .as_deref()
             .unwrap_or("fluxchat")
             .to_string();
-        let mut header_row = row![
-            text(header_text)
+        let title: Element<Message> = match &self.selected_space_id {
+            // A space's name opens its dialog (rooms, members, settings).
+            Some(space_id) => crate::ui::with_tooltip(
+                button(
+                    row![
+                        text(header_text)
+                            .font(self.sidebar_font())
+                            .size(14)
+                            .color(theme::colors().text_bright)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                        crate::ui::icon(crate::icons::SVG_CHEVRON_DOWN, 12.0, theme::colors().text_dim),
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Alignment::Center),
+                )
+                .on_press(Message::OpenSpaceDetails(space_id.clone()))
+                .padding([2, 6])
+                .style(crate::ui::row_style(false)),
+                "Manage space",
+            ),
+            None => text(header_text)
                 .font(self.sidebar_font())
                 .size(14)
-                .color(theme::colors().text_bright),
-            Space::new().width(Fill),
+                .color(theme::colors().text_bright)
+                .into(),
+        };
+        let mut header_row = row![
+            container(title).width(Fill).clip(true),
         ]
         .align_y(iced::Alignment::Center);
 
-        // Invite button for spaces
+        // Settings + invite buttons for spaces
         if let Some(space_id) = &self.selected_space_id {
             let sid = space_id.clone();
+            header_row = header_row.push(
+                button(
+                    iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_SETTINGS))
+                        .width(14).height(14)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) }),
+                )
+                .on_press(Message::OpenSpaceDetails(sid.clone()))
+                .padding([2, 4])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(theme::tint(0.08).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
             let invite_handle = iced::widget::svg::Handle::from_memory(SVG_USER_PLUS);
             header_row = header_row.push(
                 button(
@@ -1182,7 +1264,7 @@ impl FluxChat {
                 .padding([2, 4])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        Some(theme::tint(0.08).into())
                     } else {
                         None
                     },
@@ -1202,7 +1284,7 @@ impl FluxChat {
                 .padding([2, 4])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        Some(theme::tint(0.08).into())
                     } else { None },
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
@@ -1239,7 +1321,7 @@ impl FluxChat {
                 .width(Fill)
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        Some(theme::tint(0.08).into())
                     } else { None },
                     ..Default::default()
                 })
@@ -1303,7 +1385,7 @@ impl FluxChat {
                 .width(Fill)
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 0.2, 0.2, 0.08).into())
+                        Some(theme::with_alpha(theme::colors().red, 0.08).into())
                     } else {
                         None
                     },
@@ -1343,7 +1425,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains("Favourites") {
                 for room in &favourites {
                     col = col.push(self.view_room_entry(room, false));
-                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
+                    for el in self.view_thread_entries(&room.room_id, 0.0) { col = col.push(el); }
                 }
             }
         }
@@ -1354,7 +1436,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains("Channels") {
                 for room in &ungrouped {
                     col = col.push(self.view_room_entry(room, false));
-                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
+                    for el in self.view_thread_entries(&room.room_id, 0.0) { col = col.push(el); }
                 }
             }
         }
@@ -1425,7 +1507,7 @@ impl FluxChat {
                                 .padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: room_indent })
                                 .into();
                             col = col.push(entry);
-                            for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
+                            for el in self.view_thread_entries(&room.room_id, room_indent) { col = col.push(el); }
                         }
                     }
                 }
@@ -1444,7 +1526,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains(space_name) {
                 for room in rooms {
                     col = col.push(self.view_room_entry(room, false));
-                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
+                    for el in self.view_thread_entries(&room.room_id, 0.0) { col = col.push(el); }
                 }
             }
         }
@@ -1455,7 +1537,7 @@ impl FluxChat {
             if !self.collapsed_sections.contains("Direct Messages") {
                 for room in &dms {
                     col = col.push(self.view_room_entry(room, true));
-                    for el in self.view_thread_entries(&room.room_id) { col = col.push(el); }
+                    for el in self.view_thread_entries(&room.room_id, 0.0) { col = col.push(el); }
                 }
             }
         }
@@ -1525,7 +1607,7 @@ impl FluxChat {
 
         column![
             container(rule::horizontal(1).style(|_: &Theme| rule::Style {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.06),
+                color: theme::tint(0.06),
                 radius: 0.0.into(),
                 fill_mode: rule::FillMode::Full,
                 snap: true,
@@ -1536,7 +1618,7 @@ impl FluxChat {
                 .width(Fill)
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into())
+                        Some(theme::tint(0.03).into())
                     } else {
                         None
                     },
@@ -1547,39 +1629,45 @@ impl FluxChat {
     }
 
     /// Thread entries indented below their parent room in the sidebar.
-    fn view_thread_entries(&self, room_id: &str) -> Vec<Element<Message>> {
+    fn view_thread_entries(&self, room_id: &str, indent: f32) -> Vec<Element<Message>> {
         let prefix = format!("thread::{room_id}::");
         self.open_tabs.iter()
             .filter(|(tid, _, _, _)| tid.starts_with(&prefix))
             .map(|(tid, tname, _, _)| {
                 let is_selected = self.selected_room_id.as_deref() == Some(tid.as_str());
-                let name_color = if is_selected { theme::colors().text_bright } else { theme::colors().text_dim };
-                let bg = if is_selected { theme::colors().bg_light } else { Color::TRANSPARENT };
-                let tid_owned = tid.clone();
-                button(
+                let name_color = if is_selected { theme::colors().text_bright } else { theme::colors().text_muted };
+                let icon_color = if is_selected { theme::colors().accent } else { theme::colors().text_dim };
+                let entry = button(
                     row![
-                        Space::new().width(Length::Fixed(20.0)),
+                        // Same left offset as the parent room's name: unread
+                        // dot + gap + room icon + gap (see view_room_entry).
+                        Space::new().width(Length::Fixed(THREAD_ENTRY_OFFSET)),
                         iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_THREAD))
                             .width(12).height(12)
-                            .style(move |_, _| iced::widget::svg::Style { color: Some(name_color) }),
+                            .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
                         text(tname).font(self.sidebar_font()).size(12).color(name_color)
                             .wrapping(iced::widget::text::Wrapping::None),
-                    ].spacing(4).align_y(iced::Alignment::Center),
+                    ].spacing(6).align_y(iced::Alignment::Center),
                 )
-                .on_press(Message::SelectRoom(tid_owned))
-                .padding([3, 8])
+                .on_press(Message::SelectRoom(tid.clone()))
+                .padding([4, 8])
                 .width(Fill)
+                .clip(true)
                 .style(move |_, status| button::Style {
-                    background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                    } else if bg != Color::TRANSPARENT {
-                        Some(bg.into())
+                    background: if is_selected {
+                        Some(theme::colors().bg_light.into())
+                    } else if matches!(status, button::Status::Hovered) {
+                        Some(theme::tint(0.06).into())
                     } else {
                         None
                     },
+                    border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
                     ..Default::default()
-                })
-                .into()
+                });
+                // Same outer padding as room entries (+ the space indent).
+                container(entry)
+                    .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 + indent })
+                    .into()
             })
             .collect()
     }
@@ -1696,7 +1784,9 @@ impl FluxChat {
         if let Some(badge) = unread_badge {
             row_content = row_content.push(badge);
         }
-        row_content = row_content.push(room_icon);
+        // Fixed 18px slot so names line up whether the room has an avatar
+        // (18px) or a glyph (14px).
+        row_content = row_content.push(container(room_icon).width(18).center_x(18));
         row_content = row_content.push(
             text(&room.name)
                 .font(self.sidebar_font())
@@ -1728,10 +1818,14 @@ impl FluxChat {
                 .on_press(Message::SelectRoom(room_id))
                 .padding([5, 8])
                 .width(Fill)
-                .style(move |_, _| button::Style {
-                    background: Some(bg.into()),
+                .style(move |_, status| button::Style {
+                    background: Some(if !is_selected && matches!(status, button::Status::Hovered) {
+                        theme::tint(0.06)
+                    } else {
+                        bg
+                    }.into()),
                     text_color: name_color,
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
                     ..Default::default()
                 })
             )
@@ -1777,7 +1871,7 @@ impl FluxChat {
                 .padding([4, 6])
                 .style(move |_, status| button::Style {
                     background: if active || matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        Some(theme::tint(0.06).into())
                     } else {
                         None
                     },
@@ -1810,7 +1904,7 @@ impl FluxChat {
                     Message::CallJoin(selected_rid)
                 };
                 let handle = iced::widget::svg::Handle::from_memory(SVG_PHONE);
-                let icon_color = if in_call { theme::colors().green } else { Color::from_rgba(1.0, 1.0, 1.0, 0.4) };
+                let icon_color = if in_call { theme::colors().green } else { theme::tint(0.4) };
                 button(
                     iced::widget::svg(handle)
                         .width(14).height(14)
@@ -1830,7 +1924,7 @@ impl FluxChat {
                 container(
                     iced::widget::svg(handle)
                         .width(14).height(14)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.15)) })
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::tint(0.15)) })
                 )
                 .padding([4, 6])
                 .into()
@@ -1856,7 +1950,7 @@ impl FluxChat {
                 .padding([4, 6])
                 .style(move |_, status| button::Style {
                     background: if pin_active || matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                        Some(theme::tint(0.06).into())
                     } else {
                         None
                     },
@@ -1900,7 +1994,7 @@ impl FluxChat {
                         background: if is_fav {
                             Some(Color::from_rgba(1.0, 0.8, 0.0, 0.1).into())
                         } else if matches!(status, button::Status::Hovered) {
-                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                            Some(theme::tint(0.06).into())
                         } else {
                             None
                         },
@@ -2047,132 +2141,58 @@ impl FluxChat {
 
             // Search is now rendered as a modal overlay (like quick switcher)
 
-            // Panels (pinned messages, threads, files, notices)
+            // Panels (pinned messages, threads, files, notices): fixed header,
+            // scrollable body capped at HUD_PANEL_MAX_HEIGHT.
             if self.pins_open {
-                let mut panel_col = column![
-                    row![
-                        text("PINNED MESSAGES").font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
-                        Space::new().width(Fill),
-                        button(text("\u{00d7}").font(self.sidebar_font()).size(16).color(theme::colors().text_dim))
-                            .on_press(Message::TogglePins)
-                            .padding([0, 6])
-                            .style(theme::button_transparent),
-                    ].align_y(iced::Alignment::Center),
-                ].spacing(4);
-                if self.pinned_messages.is_empty() {
-                    panel_col = panel_col.push(text("No pinned messages").font(self.sidebar_font()).size(13).color(theme::colors().text_dim));
-                } else {
-                    for msg in self.pinned_messages.iter().take(20) {
-                        panel_col = panel_col.push(
-                            text(format!("{}: {}", msg.sender_name, msg.body))
-                                .font(self.sidebar_font()).size(13).color(theme::colors().text_muted)
-                        );
-                    }
-                }
-                panels_col = panels_col.push(
-                    container(panel_col).padding([8, 12]).width(Fill)
-                        .style(theme::container_panel)
-                );
+                let items: Vec<Element<Message>> = self.pinned_messages.iter().map(|msg| {
+                    self.hud_row(
+                        &msg.sender_name,
+                        None,
+                        msg.body.lines().next().unwrap_or(""),
+                        Message::JumpToEvent(msg.event_id.clone()),
+                    )
+                }).collect();
+                panels_col = panels_col.push(self.hud_panel(
+                    "Pinned messages", items, Message::TogglePins, "No pinned messages",
+                ));
             }
 
             if self.threads_open {
-                let mut panel_col = column![
-                    row![
-                        text("THREADS").font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
-                        Space::new().width(Fill),
-                        button(text("\u{00d7}").font(self.sidebar_font()).size(16).color(theme::colors().text_dim))
-                            .on_press(Message::ToggleThreads)
-                            .padding([0, 6])
-                            .style(theme::button_transparent),
-                    ].align_y(iced::Alignment::Center),
-                ].spacing(4);
-                if self.thread_messages.is_empty() {
-                    panel_col = panel_col.push(text("No threads").font(self.sidebar_font()).size(13).color(theme::colors().text_dim));
-                } else {
-                    for tmsg in self.thread_messages.iter().take(50) {
-                        let nick_col = theme::nick_color(&tmsg.sender_name);
-                        let count = tmsg.thread_count.unwrap_or(0);
-                        let count_label = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
-                        let body_preview: String = tmsg.body.lines().next().unwrap_or("").chars().take(80).collect();
-                        let thread_room_id = self.selected_room_id.clone().unwrap_or_default();
-                        let thread_event_id = tmsg.event_id.clone();
-                        panel_col = panel_col.push(
-                            button(
-                                column![
-                                    row![
-                                        text(&tmsg.sender_name).font(self.sidebar_font()).size(13).color(nick_col),
-                                        text(count_label).font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
-                                    ].spacing(8).align_y(iced::Alignment::Center),
-                                    text(body_preview).font(self.sidebar_font()).size(13).color(theme::colors().text_muted)
-                                        .wrapping(iced::widget::text::Wrapping::None),
-                                ].spacing(2),
-                            )
-                            .on_press(Message::OpenThread(thread_room_id, thread_event_id))
-                            .padding([4, 6])
-                            .width(Fill)
-                            .style(|_, status| button::Style {
-                                background: if matches!(status, button::Status::Hovered) {
-                                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
-                                } else {
-                                    None
-                                },
-                                ..Default::default()
-                            }),
-                        );
+                let thread_room_id = self.selected_room_id.clone().unwrap_or_default();
+                let items: Vec<Element<Message>> = self.thread_messages.iter().map(|tmsg| {
+                    let count = tmsg.thread_count.unwrap_or(0);
+                    let mut meta = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
+                    if let Some(latest) = &tmsg.thread_latest {
+                        meta.push_str(&format!("  \u{00b7}  last: {}", latest.sender_name));
                     }
-                }
-                panels_col = panels_col.push(
-                    container(panel_col).padding([8, 12]).width(Fill)
-                        .style(theme::container_panel)
-                );
+                    self.hud_row(
+                        &tmsg.sender_name,
+                        Some(meta),
+                        tmsg.body.lines().next().unwrap_or(""),
+                        Message::OpenThread(thread_room_id.clone(), tmsg.event_id.clone()),
+                    )
+                }).collect();
+                panels_col = panels_col.push(self.hud_panel(
+                    "Threads", items, Message::ToggleThreads, "No threads in this room",
+                ));
             }
 
             if self.files_open {
-                let mut panel_col = column![
-                    row![
-                        text("FILES").font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
-                        Space::new().width(Fill),
-                        button(text("\u{00d7}").font(self.sidebar_font()).size(16).color(theme::colors().text_dim))
-                            .on_press(Message::ToggleFiles)
-                            .padding([0, 6])
-                            .style(theme::button_transparent),
-                    ].align_y(iced::Alignment::Center),
-                ].spacing(4);
-                // Show images from messages
-                if let Some(msgs) = self.messages_by_room.get(room_id) {
-                    let files: Vec<_> = msgs.iter().filter(|m| m.image_mxc.is_some()).take(20).collect();
-                    if files.is_empty() {
-                        panel_col = panel_col.push(text("No files").font(self.sidebar_font()).size(13).color(theme::colors().text_dim));
-                    } else {
-                        for msg in files {
-                            panel_col = panel_col.push(
-                                text(format!("\u{1f4ce} {}", msg.body)).font(self.sidebar_font()).size(13).color(theme::colors().accent)
-                            );
-                        }
-                    }
-                }
-                panels_col = panels_col.push(
-                    container(panel_col).padding([8, 12]).width(Fill)
-                        .style(theme::container_panel)
-                );
+                let items: Vec<Element<Message>> = self.messages_by_room.get(room_id)
+                    .map(|msgs| msgs.iter().rev()
+                        .filter(|m| m.image_mxc.is_some() || m.file_mxc.is_some() || m.video_mxc.is_some())
+                        .map(|m| self.hud_row(&m.sender_name, None, &m.body, Message::JumpToEvent(m.event_id.clone())))
+                        .collect())
+                    .unwrap_or_default();
+                panels_col = panels_col.push(self.hud_panel(
+                    "Files", items, Message::ToggleFiles, "No files in the loaded history",
+                ));
             }
 
             if self.notices_open {
-                let panel_col = column![
-                    row![
-                        text("NOTICES").font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
-                        Space::new().width(Fill),
-                        button(text("\u{00d7}").font(self.sidebar_font()).size(16).color(theme::colors().text_dim))
-                            .on_press(Message::ToggleNotices)
-                            .padding([0, 6])
-                            .style(theme::button_transparent),
-                    ].align_y(iced::Alignment::Center),
-                    text("No server notices").font(self.sidebar_font()).size(13).color(theme::colors().text_dim),
-                ].spacing(4);
-                panels_col = panels_col.push(
-                    container(panel_col).padding([8, 12]).width(Fill)
-                        .style(theme::container_panel)
-                );
+                panels_col = panels_col.push(self.hud_panel(
+                    "Notices", Vec::new(), Message::ToggleNotices, "No server notices",
+                ));
             }
 
             // Always push the panels column — empty when no panels are open
@@ -2221,74 +2241,49 @@ impl FluxChat {
                 if top_spacer > 0.0 {
                     msg_col = msg_col.push(Space::new().width(Fill).height(top_spacer));
                 }
-                for msg in &rows[start..end] {
-                    let mut row_col = column![self.view_message(msg)].spacing(0).width(Fill);
+                for (i, msg) in rows.iter().enumerate().take(end).skip(start) {
+                    let continuation = i > 0 && is_continuation(rows[i - 1], msg);
+                    let mut row_col = column![self.view_message(msg, continuation)].spacing(0).width(Fill);
                     // Unread divider: show after the last-read message
                     let is_last_read = show_divider && !divider_shown
                         && last_read.as_deref() == Some(msg.event_id.as_str());
-                    if is_last_read {
-                        divider_shown = true;
-                        // Read receipts for this message
-                        if let Some(receipt_row) = self.view_read_receipts(msg) {
-                            row_col = row_col.push(receipt_row);
-                        }
-                                row_col = row_col.push(
-                                    container(
-                                        row![
-                                            rule::horizontal(1).style(|_: &Theme| rule::Style {
-                                                color: theme::colors().red,
-                                                radius: 0.0.into(),
-                                                fill_mode: rule::FillMode::Full,
-                                                snap: true,
-                                            }),
-                                            text(" NEW ").font(self.sidebar_font()).size(11).color(theme::colors().red),
-                                            rule::horizontal(1).style(|_: &Theme| rule::Style {
-                                                color: theme::colors().red,
-                                                radius: 0.0.into(),
-                                                fill_mode: rule::FillMode::Full,
-                                                snap: true,
-                                            }),
-                                        ].spacing(8).align_y(iced::Alignment::Center)
-                                    ).padding([4.0, 8.0])
-                                );
-                    } else {
-                    // Thread indicator from derived counts (not relying on msg.thread_count)
+                    // Thread summary under a root. The SDK's summary count
+                    // (`thread_count`) covers replies that aren't loaded;
+                    // loaded replies are counted too in case it lags.
                     if !is_thread_view {
-                        if let Some(&count) = thread_counts.get(msg.event_id.as_str()) {
-                            let label = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
-                            let handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_THREAD);
-                            let current_room = room_id.to_string();
-                            let eid = msg.event_id.clone();
-                            row_col = row_col.push(
-                                row![
-                                    Space::new().width(Length::Fixed(196.0)),
-                                    button(
-                                        row![
-                                            iced::widget::svg(handle)
-                                                .width(12).height(12)
-                                                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
-                                            text(label).font(self.sidebar_font()).size(12).color(theme::colors().accent),
-                                        ].spacing(4).align_y(iced::Alignment::Center),
-                                    )
-                                    .on_press(Message::OpenThread(current_room, eid))
-                                    .padding([2, 6])
-                                    .style(|_, status| button::Style {
-                                        background: if matches!(status, button::Status::Hovered) {
-                                            Some(theme::with_alpha(theme::colors().accent, 0.1).into())
-                                        } else {
-                                            None
-                                        },
-                                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                        ..Default::default()
-                                    }),
-                                ].spacing(0),
-                            );
+                        let count = thread_counts.get(msg.event_id.as_str()).copied()
+                            .unwrap_or(0)
+                            .max(msg.thread_count.unwrap_or(0));
+                        if count > 0 {
+                            row_col = row_col.push(self.view_thread_summary(room_id, msg, count));
                         }
                     }
-                        // Read receipts for this message
-                        if let Some(receipt_row) = self.view_read_receipts(msg) {
-                            row_col = row_col.push(receipt_row);
-                        }
+                    // Read receipts for this message
+                    if let Some(receipt_row) = self.view_read_receipts(msg) {
+                        row_col = row_col.push(receipt_row);
+                    }
+                    // Unread divider: show after the last-read message
+                    if is_last_read {
+                        divider_shown = true;
+                        row_col = row_col.push(
+                            container(
+                                row![
+                                    rule::horizontal(1).style(|_: &Theme| rule::Style {
+                                        color: theme::colors().red,
+                                        radius: 0.0.into(),
+                                        fill_mode: rule::FillMode::Full,
+                                        snap: true,
+                                    }),
+                                    text(" NEW ").font(self.sidebar_font()).size(11).color(theme::colors().red),
+                                    rule::horizontal(1).style(|_: &Theme| rule::Style {
+                                        color: theme::colors().red,
+                                        radius: 0.0.into(),
+                                        fill_mode: rule::FillMode::Full,
+                                        snap: true,
+                                    }),
+                                ].spacing(8).align_y(iced::Alignment::Center)
+                            ).padding([4.0, 8.0])
+                        );
                     }
                     msg_col = msg_col.push(crate::measured::Measured::new(
                         msg.event_id.clone(), &self.row_heights, row_col.into(),
@@ -2367,12 +2362,29 @@ impl FluxChat {
                 content = content.push(element);
             }
         } else {
+            // Nothing selected: a short welcome with the common next steps.
+            use crate::ui::{self, Tone};
+            let shortcut = if cfg!(target_os = "macos") { "\u{2318}K" } else { "Ctrl+K" };
             content = content.push(
                 center(
-                    text("select a room")
-                        .font(self.sidebar_font())
-                        .size(16)
-                        .color(theme::colors().text_dim),
+                    column![
+                        ui::icon(SVG_CHAT, 40.0, theme::colors().text_dim),
+                        text("Pick a conversation").font(self.sidebar_font()).size(18).color(theme::colors().text_bright),
+                        text(format!("Choose a room from the sidebar, or press {shortcut} to jump to one."))
+                            .font(self.sidebar_font()).size(13).color(theme::colors().text_muted),
+                        Space::new().height(6),
+                        row![
+                            ui::icon_btn(SVG_SEARCH, format!("Jump to room  {shortcut}"), Tone::Secondary,
+                                Some(Message::ToggleQuickSwitcher)),
+                            ui::icon_btn(SVG_PERSON, "New message", Tone::Secondary,
+                                Some(Message::OpenModal(crate::state::Modal::CreateDm))),
+                            ui::icon_btn(SVG_GLOBE, "Explore rooms", Tone::Secondary,
+                                Some(Message::OpenModal(crate::state::Modal::Directory))),
+                        ]
+                        .spacing(8),
+                    ]
+                    .spacing(10)
+                    .align_x(iced::Alignment::Center),
                 )
                 .height(Fill),
             );
@@ -2396,22 +2408,22 @@ impl FluxChat {
 
         let sep = || text(" \u{2502} ").font(self.sidebar_font()).size(13).color(theme::colors().text_dim);
 
-        // Settings gear SVG
-        let gear_handle = iced::widget::svg::Handle::from_memory(
-            br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>"#.as_slice(),
-        );
-        bar = bar.push(
-            button(
-                iced::widget::svg(gear_handle)
-                    .width(14).height(14)
-                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) }),
-            )
-            .on_press(Message::OpenModal(crate::state::Modal::Settings {
-                tab: "account".into(),
-            }))
-            .padding([2, 6])
-            .style(theme::button_transparent),
-        );
+        let open_security = Message::OpenModal(crate::state::Modal::Settings { tab: "security".into() });
+        // Status-bar text that opens a settings tab when clicked.
+        let link = |label: String, color: Color, msg: Message| -> Element<Message> {
+            button(text(label).font(self.sidebar_font()).size(13).color(color))
+                .on_press(msg)
+                .padding([1, 4])
+                .style(crate::ui::row_style(false))
+                .into()
+        };
+        bar = bar.push(crate::ui::with_tooltip(
+            button(crate::ui::icon(SVG_SETTINGS, 14.0, theme::colors().text_dim))
+                .on_press(Message::OpenModal(crate::state::Modal::Settings { tab: "account".into() }))
+                .padding([3, 6])
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+            "Settings",
+        ));
 
         // User ID in green (like IRC)
         bar = bar.push(
@@ -2420,11 +2432,17 @@ impl FluxChat {
 
         // Current room info
         if let Some(room_id) = &self.selected_room_id {
-            let room = self.rooms.iter().find(|r| r.room_id == *room_id);
-            let room_name = room.map(|r| r.name.as_str()).unwrap_or(room_id);
+            let real_room = fluxchat_core::timeline::real_room_id(room_id);
+            let room = self.rooms.iter().find(|r| r.room_id == real_room);
+            let room_name = room.map(|r| r.name.as_str()).unwrap_or(real_room);
+            let label = match room {
+                Some(r) if r.is_direct => room_name.to_string(),
+                _ => format!("#{room_name}"),
+            };
+            let label = if room_id.starts_with("thread::") { format!("{label} \u{203a} thread") } else { label };
 
             bar = bar.push(sep());
-            bar = bar.push(text(format!("#{room_name}")).font(self.sidebar_font()).size(13).color(theme::colors().text_normal));
+            bar = bar.push(text(label).font(self.sidebar_font()).size(13).color(theme::colors().text_normal));
 
             // Power level badge
             if let Some(members) = self.members_by_room.get(room_id) {
@@ -2489,21 +2507,15 @@ impl FluxChat {
         if let Some(ref sec) = self.security_state {
             bar = bar.push(sep());
             if sec.is_verified {
-                bar = bar.push(
-                    text("\u{2713} verified").font(self.sidebar_font()).size(13).color(theme::colors().green)
-                );
+                bar = bar.push(link("\u{2713} verified".into(), theme::colors().green, open_security.clone()));
             } else {
-                bar = bar.push(
-                    text("\u{2717} unverified").font(self.sidebar_font()).size(13).color(theme::colors().yellow)
-                );
+                bar = bar.push(link("\u{2717} unverified".into(), theme::colors().yellow, open_security.clone()));
             }
             // A server-side key backup this session isn't using means missing
             // keys for old messages that could simply be fetched.
             if sec.backup_exists && !sec.backup_enabled {
                 bar = bar.push(sep());
-                bar = bar.push(
-                    text("key backup not connected").font(self.sidebar_font()).size(13).color(theme::colors().yellow)
-                );
+                bar = bar.push(link("key backup not connected".into(), theme::colors().yellow, open_security));
             }
         }
 
@@ -2681,6 +2693,16 @@ const VIRTUAL_OVERSCAN: f32 = 600.0;
 
 /// Rows whose [top, bottom) range intersects the pixel range [lo, hi], plus
 /// the summed heights of the rows before and after them.
+/// Whether `msg` continues a run from the same sender started by `prev`
+/// (shown without repeating avatar / with a dimmed nick).
+fn is_continuation(prev: &fluxchat_core::MessageInfo, msg: &fluxchat_core::MessageInfo) -> bool {
+    prev.sender == msg.sender
+        && !prev.is_system() && !msg.is_system()
+        && !prev.is_emote && !msg.is_emote
+        && msg.reply_to_id.is_none()
+        && msg.timestamp.saturating_sub(prev.timestamp) < crate::view_messages::MSG_GROUP_SECS
+}
+
 fn window_for(heights: &[f32], lo: f32, hi: f32) -> (usize, usize, f32, f32) {
     let mut start = heights.len();
     let mut end = heights.len();

@@ -449,8 +449,8 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         // --- Encryption ---
         "/rotatekeys" => {
-            if let Some(ref room_id) = state.selected_room_id {
-                CommandResult::Messages(vec![Message::RotateRoomKeys(room_id.clone())])
+            if let Some(room_id) = state.active_real_room() {
+                CommandResult::Messages(vec![Message::RotateRoomKeys(room_id.to_string())])
             } else {
                 CommandResult::Help("No room selected".into())
             }
@@ -515,7 +515,8 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         // --- Clear ---
         "/clear" => {
-            if let Some(room_id) = &current_room {
+            // The view on screen (a thread key in thread views), not its room.
+            if let Some(room_id) = &state.selected_room_id {
                 CommandResult::Messages(vec![Message::SyncEvent(
                     crate::message::SyncEvent::MessagesUpdated(room_id.clone(), Vec::new()),
                 )])

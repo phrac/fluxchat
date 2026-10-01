@@ -44,7 +44,7 @@ impl FluxChat {
                 .padding([2, 4])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        Some(theme::tint(0.08).into())
                     } else {
                         None
                     },
@@ -340,7 +340,7 @@ impl FluxChat {
             .width(Fill)
             .style(|_, status| button::Style {
                 background: if matches!(status, button::Status::Hovered) {
-                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.04).into())
+                    Some(theme::tint(0.04).into())
                 } else {
                     None
                 },

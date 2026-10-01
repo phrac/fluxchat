@@ -9,6 +9,7 @@ pub mod models;
 pub mod preview;
 pub mod profile;
 pub mod rooms;
+pub mod spaces;
 pub mod state;
 pub mod sync_service;
 pub mod voice;

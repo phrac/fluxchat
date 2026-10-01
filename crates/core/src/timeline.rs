@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use futures_util::{FutureExt, StreamExt};
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk_ui::eyeball_im::{Vector, VectorDiff};
 use matrix_sdk_ui::timeline::{
-    EventSendState, EventTimelineItem, Timeline, TimelineBuilder, TimelineFocus, TimelineItem,
-    TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
+    EventSendState, EventTimelineItem, Timeline, TimelineBuilder, TimelineDetails, TimelineFocus,
+    TimelineItem, TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
 };
 use tokio::sync::Notify;
 
@@ -201,47 +202,119 @@ async fn watch_timeline(
         .collect();
     sink(room_id.clone(), flatten_messages(&items));
 
-    let loaded = items.iter().flatten().filter(|m| !m.is_system()).count();
-    if loaded < INITIAL_BACKFILL as usize {
-        let timeline = timeline.clone();
-        let room_id = room_id.clone();
-        tokio::spawn(async move {
-            if let Err(e) = timeline.paginate_backwards(INITIAL_BACKFILL).await {
-                tracing::warn!("Initial back-pagination failed for {room_id}: {e}");
-            }
-        });
-    }
+    let backfill = Arc::new(Backfill::default());
+    backfill.maybe_run(&timeline, &room_id, &items);
 
     futures_util::pin_mut!(stream);
     loop {
         tokio::select! {
             batch = stream.next() => {
                 let Some(batch) = batch else { break };
-                apply_diffs(&mut items, batch);
+                let mut reset = apply_diffs(&mut items, batch);
                 // Coalesce diffs that are already queued into one emit.
                 let mut ended = false;
                 loop {
                     match stream.next().now_or_never() {
-                        Some(Some(more)) => apply_diffs(&mut items, more),
+                        Some(Some(more)) => reset |= apply_diffs(&mut items, more),
                         Some(None) => { ended = true; break; }
                         None => break,
                     }
                 }
                 sink(room_id.clone(), flatten_messages(&items));
                 if ended { break; }
+                // The SDK clears a timeline when its event cache resets (gappy
+                // sync, lagged updates); that starts a fresh fill.
+                if reset {
+                    backfill.restart();
+                }
+                // Each completed page lands here as diffs, so this keeps
+                // paginating until the view has enough rows to show.
+                backfill.maybe_run(&timeline, &room_id, &items);
             }
             _ = resend.notified() => {
                 sink(room_id.clone(), flatten_messages(&items));
+            }
+            _ = backfill.finished.notified() => {
+                backfill.maybe_run(&timeline, &room_id, &items);
             }
         }
     }
     tracing::warn!("Timeline diff stream ended for {room_id}");
 }
 
-fn apply_diffs(items: &mut Vector<Option<MessageInfo>>, diffs: Vec<VectorDiff<Arc<TimelineItem>>>) {
+/// Keeps a view filled with at least `INITIAL_BACKFILL` rows it will actually
+/// display. Counting raw events isn't enough: a room whose recent history is
+/// all thread replies, edits and reactions has nothing to show in its main
+/// view, so pages are fetched one at a time until visible rows appear, the
+/// start of the room is reached, a page fails, or `MAX_BACKFILL_PAGES` runs
+/// out (until the next `restart`).
+#[derive(Default)]
+struct Backfill {
+    running: AtomicBool,
+    done: AtomicBool,
+    pages: std::sync::atomic::AtomicU32,
+    /// Signalled when a page finishes, so the watcher re-checks even if the
+    /// page only added events it doesn't show.
+    finished: Notify,
+}
+
+/// Upper bound on automatic back-pagination per fill (pages of
+/// `INITIAL_BACKFILL` events), so a huge thread-only stretch can't page forever.
+const MAX_BACKFILL_PAGES: u32 = 20;
+
+impl Backfill {
+    fn restart(&self) {
+        self.done.store(false, Ordering::Release);
+        self.pages.store(0, Ordering::Release);
+    }
+
+    fn maybe_run(self: &Arc<Self>, timeline: &Arc<Timeline>, key: &str, items: &Vector<Option<MessageInfo>>) {
+        if self.done.load(Ordering::Acquire) {
+            return;
+        }
+        let is_thread = parse_thread_key(key).is_some();
+        let visible = items.iter().flatten()
+            .filter(|m| !m.is_system() && (is_thread || m.thread_root.is_none()))
+            .count();
+        if visible >= INITIAL_BACKFILL as usize {
+            self.done.store(true, Ordering::Release);
+            return;
+        }
+        if self.running.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if self.pages.fetch_add(1, Ordering::AcqRel) >= MAX_BACKFILL_PAGES {
+            self.done.store(true, Ordering::Release);
+            self.running.store(false, Ordering::Release);
+            return;
+        }
+        let this = self.clone();
+        let timeline = timeline.clone();
+        let key = key.to_string();
+        tokio::spawn(async move {
+            match timeline.paginate_backwards(INITIAL_BACKFILL).await {
+                Ok(true) => this.done.store(true, Ordering::Release),
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!("Back-pagination failed for {key}: {e}");
+                    this.done.store(true, Ordering::Release);
+                }
+            }
+            this.running.store(false, Ordering::Release);
+            this.finished.notify_one();
+        });
+    }
+}
+
+/// Apply a batch of diffs to the mirror. Returns true if the batch cleared or
+/// replaced the whole list.
+fn apply_diffs(items: &mut Vector<Option<MessageInfo>>, diffs: Vec<VectorDiff<Arc<TimelineItem>>>) -> bool {
+    let mut reset = false;
     for diff in diffs {
+        reset |= matches!(diff, VectorDiff::Clear | VectorDiff::Reset { .. });
         diff.map(|item| timeline_item_to_message_info(&item)).apply(items);
     }
+    reset
 }
 
 /// Short user-facing explanation for an SDK `UtdCause` (by its Debug name).
@@ -291,6 +364,24 @@ pub fn timeline_item_to_message_info(item: &TimelineItem) -> Option<MessageInfo>
 
 /// Convert an EventTimelineItem to MessageInfo.
 fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
+    let mut info = convert_event(ev)?;
+    info.thread_latest = ev.content().thread_summary().and_then(|summary| {
+        let TimelineDetails::Ready(latest) = summary.latest_event else { return None };
+        let sender = latest.sender.to_string();
+        let (sender_name, avatar_url) = match &latest.sender_profile {
+            TimelineDetails::Ready(p) => (
+                p.display_name.clone().unwrap_or_else(|| latest.sender.localpart().to_string()),
+                p.avatar_url.as_ref().map(|u| u.to_string()),
+            ),
+            _ => (latest.sender.localpart().to_string(), None),
+        };
+        let body = latest.content.as_message().map(|m| m.body().to_string()).unwrap_or_default();
+        Some(crate::models::ThreadLatest { sender, sender_name, avatar_url, body })
+    });
+    Some(info)
+}
+
+fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
     let event_id = if let Some(eid) = ev.event_id() {
         eid.to_string()
     } else {
@@ -471,6 +562,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     utd: None,
                     is_edited,
                     send_state: send_state.clone(),
+                    thread_latest: None,
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -491,6 +583,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     utd: None,
                     is_edited,
                     send_state: send_state.clone(),
+                    thread_latest: None,
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -522,6 +615,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     utd: None,
                     is_edited,
                     send_state: send_state.clone(),
+                    thread_latest: None,
                 })
             } else {
                 // Distinguish encryption failures (missing key) from genuinely
@@ -575,6 +669,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     utd,
                     is_edited: false,
                     send_state,
+                    thread_latest: None,
                 })
             }
         }
@@ -609,6 +704,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 utd: None,
             is_edited: false,
             send_state: None,
+            thread_latest: None,
             })
         }
 
@@ -627,6 +723,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 utd: None,
             is_edited: false,
             send_state: None,
+            thread_latest: None,
             })
         }
 
@@ -664,6 +761,7 @@ fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 utd: None,
             is_edited: false,
             send_state: None,
+            thread_latest: None,
             })
         }
 

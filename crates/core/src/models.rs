@@ -62,6 +62,19 @@ pub struct MessageInfo {
     /// Local echo state; `None` once the server has accepted the event.
     #[serde(default)]
     pub send_state: Option<SendState>,
+    /// For a thread root: the thread's most recent reply, from the SDK's
+    /// thread summary (available even when the replies aren't loaded).
+    #[serde(default)]
+    pub thread_latest: Option<ThreadLatest>,
+}
+
+/// The latest reply in a thread, shown in the root's thread summary row.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ThreadLatest {
+    pub sender: String,
+    pub sender_name: String,
+    pub avatar_url: Option<String>,
+    pub body: String,
 }
 
 /// Delivery state of a message we sent.
@@ -126,6 +139,19 @@ pub struct MemberInfo {
     pub presence: String,
     pub status_msg: Option<String>,
     pub server_name: String,
+    /// Seconds since the user was last active, if the server reported it.
+    #[serde(default)]
+    pub last_active_secs: Option<u64>,
+}
+
+/// A user's presence as reported by their homeserver.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Presence {
+    /// "online", "idle" or "offline".
+    pub state: String,
+    pub status_msg: Option<String>,
+    pub last_active_secs: Option<u64>,
+    pub currently_active: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

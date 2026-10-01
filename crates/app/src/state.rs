@@ -66,6 +66,14 @@ pub enum Modal {
 
 
 
+/// Tabs of the space dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceTab {
+    Rooms,
+    Members,
+    Settings,
+}
+
 /// What action selecting an emoji should perform.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EmojiPickerMode {
@@ -242,6 +250,8 @@ pub struct FluxChat {
     pub search_query: String,
     pub search_results: Vec<fluxchat_core::messages::SearchResult>,
     pub search_selected: Option<usize>,
+    /// The current query has been searched (results, possibly none, arrived).
+    pub search_done: bool,
     pub highlight_event_id: Option<String>,
 
     // Sync state
@@ -298,11 +308,24 @@ pub struct FluxChat {
     // Room settings modal state
     pub room_settings_name: String,
     pub room_settings_topic: String,
+    /// Notification mode of the room in Room Settings ("all"/"mentions"/"mute").
+    pub room_notify_mode: Option<String>,
+    /// Spaces the room in Room Settings belongs to (`None` while loading).
+    pub room_parent_spaces: Option<Vec<String>>,
+    /// Spaces we may add rooms to (for Room Settings' "Add to space").
+    pub manageable_spaces: Vec<String>,
+    /// Space picked in Room Settings' "Add to space" picker.
+    pub room_settings_add_space: Option<String>,
 
     // Profile modal state
     pub profile_power_input: String,
     /// Whether the user shown in profile modal is verified (None = not yet loaded)
     pub profile_user_verified: Option<bool>,
+    /// Moderation action awaiting confirmation on the profile card.
+    pub profile_confirm: Option<String>,
+    /// Presence fetched from the server when the profile opened
+    /// (`Some(None)` = server wouldn't say).
+    pub profile_presence: Option<Option<fluxchat_core::Presence>>,
 
     // Forward modal state
     pub forward_search: String,
@@ -317,8 +340,21 @@ pub struct FluxChat {
     pub dm_results: Vec<fluxchat_core::rooms::UserSearchResult>,
 
     // Space details modal state
-    pub space_detail_rooms: Vec<fluxchat_core::RoomInfo>,
+    /// Space dialog: children (`None` while loading), members, permissions.
+    pub space_detail_rooms: Option<Vec<fluxchat_core::spaces::SpaceChild>>,
     pub space_detail_members: Vec<fluxchat_core::MemberInfo>,
+    pub space_perms: fluxchat_core::spaces::SpacePermissions,
+    pub space_tab: SpaceTab,
+    pub space_filter: String,
+    /// Showing the "add existing rooms" picker instead of the children list.
+    pub space_adding: bool,
+    /// Child awaiting remove confirmation.
+    pub space_confirm_remove: Option<String>,
+    /// Rooms with an add/remove/join in flight.
+    pub space_busy: HashSet<String>,
+    pub space_name_input: String,
+    pub space_topic_input: String,
+    pub space_status: Option<String>,
 
     /// Measured height of each message row (by event ID), filled in by the
     /// `Measured` wrapper during layout. Unmeasured rows use an estimate.
@@ -522,6 +558,7 @@ impl FluxChat {
             search_query: String::new(),
             search_results: Vec::new(),
             search_selected: None,
+            search_done: false,
             highlight_event_id: None,
             timeline_tx,
             sync_running: false,
@@ -555,16 +592,31 @@ impl FluxChat {
             create_room_is_space: false,
             room_settings_name: String::new(),
             room_settings_topic: String::new(),
+            room_notify_mode: None,
+            room_parent_spaces: None,
+            manageable_spaces: Vec::new(),
+            room_settings_add_space: None,
             profile_power_input: String::new(),
             profile_user_verified: None,
+            profile_confirm: None,
+            profile_presence: None,
             forward_search: String::new(),
             invite_search: String::new(),
             dm_search: String::new(),
             dm_results: Vec::new(),
             invite_results: Vec::new(),
             invite_target_id: None,
-            space_detail_rooms: Vec::new(),
+            space_detail_rooms: None,
             space_detail_members: Vec::new(),
+            space_perms: Default::default(),
+            space_tab: SpaceTab::Rooms,
+            space_filter: String::new(),
+            space_adding: false,
+            space_confirm_remove: None,
+            space_busy: HashSet::new(),
+            space_name_input: String::new(),
+            space_topic_input: String::new(),
+            space_status: None,
             tick_count: 0,
             row_heights: Default::default(),
             messages_viewport_h: 700.0,

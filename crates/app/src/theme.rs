@@ -268,6 +268,16 @@ pub fn nick_color(name: &str) -> Color {
     NICK_COLORS[nick_color_index(name)]
 }
 
+/// Hover / selection overlay that reads on both dark and light themes:
+/// the theme's text colour at `alpha` (a light wash on dark themes, a dark
+/// wash on light ones).
+pub fn tint(alpha: f32) -> Color {
+    let t = active();
+    // Dark ink on a light background needs a little more weight to show.
+    let alpha = if t.dark { alpha } else { alpha * 1.4 };
+    with_alpha(t.text_normal, alpha)
+}
+
 /// Transparent button with no background.
 pub fn button_transparent(_: &Theme, _: button::Status) -> button::Style {
     button::Style { background: None, ..Default::default() }

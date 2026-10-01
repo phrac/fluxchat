@@ -592,6 +592,39 @@ pub async fn get_pinned_messages(client: &matrix_sdk::Client, room_id: &str) -> 
     Ok(messages)
 }
 
+/// Rooms with at most this many members get presence fetched per member
+/// (sliding sync delivers no presence, so the store has none).
+const PRESENCE_FETCH_LIMIT: usize = 50;
+/// Concurrent presence requests when filling a member list.
+const PRESENCE_FETCH_CONCURRENCY: usize = 8;
+/// Per-request timeout for presence lookups.
+const PRESENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn presence_label(state: &matrix_sdk::ruma::presence::PresenceState) -> &'static str {
+    match state {
+        matrix_sdk::ruma::presence::PresenceState::Online => "online",
+        matrix_sdk::ruma::presence::PresenceState::Unavailable => "idle",
+        _ => "offline",
+    }
+}
+
+/// Ask the user's homeserver for their current presence. Fails if the
+/// server has presence disabled or hides it from us.
+pub async fn fetch_presence(client: &matrix_sdk::Client, user_id: &str) -> Result<crate::models::Presence, AppError> {
+    use matrix_sdk::ruma::api::client::presence::get_presence;
+    let uid = crate::rooms::parse_user_id(user_id)?;
+    let resp = tokio::time::timeout(PRESENCE_TIMEOUT, client.send(get_presence::v3::Request::new(uid)))
+        .await
+        .map_err(|_| AppError::Other("Presence request timed out".into()))?
+        .map_err(|e| AppError::Other(format!("Presence unavailable: {e}")))?;
+    Ok(crate::models::Presence {
+        state: presence_label(&resp.presence).to_string(),
+        status_msg: resp.status_msg.filter(|s| !s.is_empty()),
+        last_active_secs: resp.last_active_ago.map(|d| d.as_secs()),
+        currently_active: resp.currently_active.unwrap_or(false),
+    })
+}
+
 /// Fetch the member list for a room with presence and power level info.
 pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Result<Vec<MemberInfo>, AppError> {
     let room_id = parse_room_id(room_id)?;
@@ -608,18 +641,9 @@ pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Res
         };
         let role = if power_level >= 100 { "Admin" } else if power_level >= 50 { "Moderator" } else { "Member" }.to_string();
         let (presence, status_msg) = match store.get_presence_event(m.user_id()).await {
-            Ok(Some(raw)) => {
-                let (p, s) = raw.deserialize().ok().map(|ev| {
-                    let p = match ev.content.presence {
-                        matrix_sdk::ruma::presence::PresenceState::Online => "online",
-                        matrix_sdk::ruma::presence::PresenceState::Unavailable => "idle",
-                        _ => "offline",
-                    }.to_string();
-                    let s = ev.content.status_msg.clone();
-                    (p, s)
-                }).unwrap_or(("offline".to_string(), None));
-                (p, s)
-            }
+            Ok(Some(raw)) => raw.deserialize().ok()
+                .map(|ev| (presence_label(&ev.content.presence).to_string(), ev.content.status_msg.clone()))
+                .unwrap_or(("offline".to_string(), None)),
             _ => ("offline".to_string(), None),
         };
         result.push(MemberInfo {
@@ -628,7 +652,31 @@ pub async fn get_room_members(client: &matrix_sdk::Client, room_id: &str) -> Res
             avatar_url: m.avatar_url().map(|mxc| mxc.to_string()),
             power_level, role, presence, status_msg,
             server_name: m.user_id().server_name().to_string(),
+            last_active_secs: None,
         });
+    }
+    // Sliding sync carries no presence, so the store is usually empty: ask
+    // the servers directly for small rooms.
+    if result.len() <= PRESENCE_FETCH_LIMIT {
+        use futures_util::StreamExt;
+        let ids: Vec<(usize, String)> = result.iter().map(|m| m.user_id.clone()).enumerate().collect();
+        let fetched: Vec<Option<(usize, crate::models::Presence)>> = futures_util::stream::iter(ids)
+            .map(|(i, uid)| {
+                let client = client.clone();
+                async move { fetch_presence(&client, &uid).await.ok().map(|p| (i, p)) }
+            })
+            .buffer_unordered(PRESENCE_FETCH_CONCURRENCY)
+            .collect()
+            .await;
+        let fetched = fetched.into_iter().flatten();
+        for (i, p) in fetched {
+            let m = &mut result[i];
+            m.presence = p.state;
+            m.last_active_secs = p.last_active_secs;
+            if p.status_msg.is_some() {
+                m.status_msg = p.status_msg;
+            }
+        }
     }
     result.sort_by(|a, b| b.power_level.cmp(&a.power_level).then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase())));
     Ok(result)

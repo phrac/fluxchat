@@ -22,7 +22,9 @@ pub enum Message {
     NoSavedSession,
     /// The window was resized (logical width, height).
     WindowResized(f32, f32),
-    /// The user clicked a desktop notification for this room.
+    /// The user clicked a desktop notification for this room (only
+    /// freedesktop backends report clicks).
+    #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
     NotificationClicked(String),
     /// Re-enable the send queue and retry failed sends in a room.
     RetrySend(String),
@@ -141,6 +143,14 @@ pub enum Message {
     SetSidebarFontFamily(String),
     SetTheme(String), // theme name
 
+    /// Handle several messages in order (for task callbacks that need more
+    /// than one follow-up).
+    Batch(Vec<Message>),
+    RoomNotifyModeLoaded(String, String),       // room_id, mode
+    RoomParentSpacesLoaded(String, Vec<String>, Vec<String>), // room_id, parent space_ids, manageable space_ids
+    RoomSettingsPickSpace(String),              // space_id chosen in "Add to space"
+    ReloadRoomSettingsExtras,
+    SetRoomNotifyMode(String),                  // mode for the active room
     // --- Notifications ---
     SetNotificationsEnabled(bool),
     SetNotifyMentionsOnly(bool),
@@ -154,7 +164,32 @@ pub enum Message {
     LeaveRoom(String),                          // room_id
     InviteUser(String, String),                 // room_id, user_id
     SpaceInvite(String),                        // space_id — opens invite modal targeting space
-    SpaceDetailsLoaded(Vec<fluxchat_core::RoomInfo>, Vec<fluxchat_core::MemberInfo>),
+    // --- Space dialog ---
+    OpenSpaceDetails(String),                   // space_id
+    /// Children, members and our permissions for the open space dialog.
+    SpaceDetailsLoaded(
+        String,
+        Result<Vec<fluxchat_core::spaces::SpaceChild>, String>,
+        Vec<fluxchat_core::MemberInfo>,
+        fluxchat_core::spaces::SpacePermissions,
+    ),
+    SpaceTabChanged(crate::state::SpaceTab),
+    SpaceFilterChanged(String),
+    SpaceToggleAdding,
+    SpaceAddChild(String, String),              // space_id, room_id
+    SpaceAskRemove(Option<String>),             // child room_id awaiting confirm
+    SpaceRemoveChild(String, String),           // space_id, room_id
+    SpaceJoinChild(String, String),             // space_id, room_id
+    /// An add/remove/join finished: (space_id, room_id, error).
+    SpaceChildOpDone(String, String, Option<String>),
+    SpaceNameChanged(String),
+    SpaceTopicChanged(String),
+    SpaceSaveDetails(String),                   // space_id
+    SpaceUploadAvatar(String),                  // space_id
+    SpaceRemoveAvatar(String),                  // space_id
+    SpaceDetailsSaved(String, Option<String>),  // space_id, error
+    SpaceCreateRoom(String),                    // space_id
+    SpaceOpenChild(String),                     // room_id — close dialog, select room
     KickUser(String, String, Option<String>),   // room_id, user_id, reason
     BanUser(String, String, Option<String>),    // room_id, user_id, reason
     UnbanUser(String),                          // user_id or display name
@@ -332,6 +367,9 @@ pub enum Message {
     // --- Profile actions ---
     ToggleIgnoreUser(String), // user_id
     SendDmToUser(String),     // user_id
+    MentionUser(String),      // display name — insert "@name " into the input
+    ProfileConfirm(Option<String>), // pending "kick" / "ban" on the profile card
+    ProfilePresenceLoaded(String, Option<fluxchat_core::Presence>), // user_id, presence
     DmCreated(Box<fluxchat_core::RoomInfo>),
     StartVerification(String),          // user_id — interactive SAS
     StartDeviceVerification(String),    // device_id — verify specific session

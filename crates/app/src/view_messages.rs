@@ -1,6 +1,6 @@
 use iced::widget::{
     button, column, container, mouse_area, row, scrollable, stack,
-    text, text_input, Space,
+    text, Space,
 };
 use iced::{Color, Element, Fill, Length, Theme};
 
@@ -13,8 +13,36 @@ use crate::theme;
 use crate::update::extract_urls;
 use crate::view::{
     emoji_search_id, local_time_of_day, thin_scrollbar, EMOJI_CELL_SIZE, EMOJI_FREQ_COUNT,
-    EMOJI_GRID_COLUMNS, EMOJI_PANEL_HEIGHT,
+    EMOJI_GRID_COLUMNS, EMOJI_PANEL_HEIGHT, EMOJI_PANEL_WIDTH,
 };
+
+/// Gap between the columns of a message row (time, nick, avatar, separator, text).
+pub(crate) const MSG_COL_GAP: f32 = 6.0;
+/// Messages from the same sender within this many seconds are grouped.
+pub(crate) const MSG_GROUP_SECS: u64 = 300;
+
+/// Column geometry of a message row (see `FluxChat::msg_columns`).
+pub(crate) struct MsgColumns {
+    pub time_size: f32,
+    pub time_w: f32,
+    pub nick_w: f32,
+    pub avatar: f32,
+}
+
+/// Emoji picker tabs: (icon, name). Index 0 is "frequently used"; 1..=9
+/// map to `emojis::Group` in order.
+const EMOJI_CATEGORIES: [(&[u8], &str); 10] = [
+    (SVG_CLOCK, "Frequently used"),
+    (SVG_SMILE, "Smileys & emotion"),
+    (SVG_HAND, "People & body"),
+    (SVG_LEAF, "Animals & nature"),
+    (SVG_COFFEE, "Food & drink"),
+    (SVG_PLANE, "Travel & places"),
+    (SVG_TROPHY, "Activities"),
+    (SVG_LIGHTBULB, "Objects"),
+    (SVG_SHAPES, "Symbols"),
+    (SVG_FLAG, "Flags"),
+];
 
 impl FluxChat {
     /// Compute selection range for a specific widget, based on global selection state.
@@ -113,8 +141,37 @@ impl FluxChat {
     }
 
     /// Render a single message row: [time] [nick] | [body]
-    pub(crate) fn view_message<'a>(&'a self, msg: &'a fluxchat_core::MessageInfo) -> Element<'a, Message> {
+    /// Column geometry of a message row, scaled to the message font size.
+    pub(crate) fn msg_columns(&self) -> MsgColumns {
         let fs = self.msg_font_size;
+        let time_size = (fs * 0.85).max(11.0);
+        let time_chars = match self.timestamp_format.as_str() {
+            "off" => 0.0,
+            "full" => 8.0,
+            _ => 5.0,
+        };
+        MsgColumns {
+            time_size,
+            // Digits are ~0.6em in most fonts; a little slack avoids clipping.
+            time_w: if time_chars == 0.0 { 0.0 } else { (time_chars * time_size * 0.62 + 6.0).ceil() },
+            nick_w: (fs * 7.4).max(96.0).round(),
+            avatar: (fs + 4.0).round(),
+        }
+    }
+
+    /// Distance from the row's left edge to the message text.
+    pub(crate) fn msg_content_indent(&self) -> f32 {
+        let c = self.msg_columns();
+        // time + nick + avatar + 1px separator, with a 6px gap after each.
+        c.time_w + c.nick_w + c.avatar + 1.0 + 4.0 * MSG_COL_GAP
+    }
+
+    /// One message row. `continuation`: same sender as the row above within a
+    /// few minutes — the nick is dimmed and the avatar left out so runs of
+    /// messages read as one block.
+    pub(crate) fn view_message<'a>(&'a self, msg: &'a fluxchat_core::MessageInfo, continuation: bool) -> Element<'a, Message> {
+        let fs = self.msg_font_size;
+        let cols = self.msg_columns();
         // Timestamp
         let time_str = if self.timestamp_format == "off" {
             String::new()
@@ -153,17 +210,19 @@ impl FluxChat {
             return row![
                 text(time_str)
                     .font(self.msg_font())
-                    .size(14)
+                    .size(cols.time_size)
                     .color(theme::colors().text_dim)
-                    .width(Length::Fixed(50.0)),
+                    .width(Length::Fixed(cols.time_w)),
+                Space::new().width(Length::Fixed(self.msg_content_indent() - cols.time_w - MSG_COL_GAP)),
                 text(&msg.body)
                     .font(self.msg_font())
-                    .size(14)
+                    .size((fs - 1.0).max(11.0))
                     .color(theme::colors().text_dim)
                     .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                     .width(Fill),
             ]
-            .spacing(6)
+            .align_y(iced::Alignment::Center)
+            .padding([1, 0])
             .width(Fill)
             .into();
         }
@@ -174,10 +233,14 @@ impl FluxChat {
             return row![
                 text(time_str)
                     .font(self.msg_font())
-                    .size(14)
+                    .size(cols.time_size)
                     .color(theme::colors().text_dim)
-                    .width(Length::Fixed(50.0)),
-                text(format!("* {} {}", msg.sender_name, msg.body))
+                    .width(Length::Fixed(cols.time_w)),
+                container(text("*").font(self.msg_font()).size(fs).color(nick_col))
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .width(Length::Fixed(cols.nick_w + MSG_COL_GAP + cols.avatar)),
+                Space::new().width(Length::Fixed(1.0)),
+                text(format!("{} {}", msg.sender_name, msg.body))
                     .font(self.msg_font())
                     .size(fs)
                     .color(nick_col)
@@ -189,31 +252,31 @@ impl FluxChat {
             .into();
         }
 
-        let time_width = if self.timestamp_format == "off" {
-            0.0
-        } else {
-            50.0
-        };
-
         let time = text(time_str)
             .font(self.msg_font())
-            .size(14)
+            .size(cols.time_size)
             .color(theme::colors().text_dim)
-            .width(Length::Fixed(time_width));
+            .width(Length::Fixed(cols.time_w));
 
-        // Nick (right-aligned in fixed width)
+        // Nick (right-aligned, truncated to the column; dimmed on continuations)
         let nick_col = theme::nick_color(&msg.sender_name);
         let nick = container(
             text(&msg.sender_name)
                 .font(self.msg_font())
                 .size(fs)
-                .color(nick_col),
+                .color(if continuation { theme::with_alpha(nick_col, 0.35) } else { nick_col })
+                .wrapping(iced::widget::text::Wrapping::None),
         )
         .align_x(iced::alignment::Horizontal::Right)
-        .width(Length::Fixed(100.0));
+        .width(Length::Fixed(cols.nick_w))
+        .clip(true);
 
-        // Avatar
-        let msg_avatar: Element<'a, Message> = self.render_avatar(msg.avatar_url.as_deref(), 16.0);
+        // Avatar (initial on a colour tint when they have none); blank on continuations
+        let msg_avatar: Element<'a, Message> = if continuation {
+            Space::new().width(cols.avatar).height(1).into()
+        } else {
+            self.render_avatar_with_initial(msg.avatar_url.as_deref(), &msg.sender_name, cols.avatar)
+        };
 
         // Separator — vertical line spanning full message height
         let make_sep = || -> Element<'a, Message> {
@@ -221,7 +284,7 @@ impl FluxChat {
                 .width(1)
                 .height(Fill)
                 .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().text_dim.into()),
+                    background: Some(theme::with_alpha(theme::colors().text_dim, 0.45).into()),
                     ..Default::default()
                 })
                 .into()
@@ -268,7 +331,7 @@ impl FluxChat {
                 );
             }
 
-            return row![time, nick, msg_avatar, make_sep(), poll_col].spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
+            return row![time, nick, msg_avatar, make_sep(), poll_col].spacing(MSG_COL_GAP).width(Fill).align_y(iced::Alignment::Start).into();
         }
 
         // Build the content element — image, video, or text
@@ -782,7 +845,7 @@ impl FluxChat {
                                     .padding([2, 8])
                                     .style(|_, status| button::Style {
                                         background: if matches!(status, button::Status::Hovered) {
-                                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                                            Some(theme::tint(0.06).into())
                                         } else { None },
                                         ..Default::default()
                                     }),
@@ -1051,7 +1114,7 @@ impl FluxChat {
                 )
                 .padding([2, 6])
                 .style(|_: &Theme| container::Style {
-                    background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into()),
+                    background: Some(theme::tint(0.03).into()),
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 })
@@ -1078,17 +1141,17 @@ impl FluxChat {
         let eid_hover = msg.event_id.clone();
 
         let base_row: Element<'a, Message> = row![time, nick, msg_avatar, make_sep(), body_element]
-            .spacing(6).width(Fill).align_y(iced::Alignment::Start).into();
+            .spacing(MSG_COL_GAP).width(Fill).align_y(iced::Alignment::Start).into();
 
         // Wrap in container with hover highlight
         let hover_bg = if is_hovered {
-            Color::from_rgba(1.0, 1.0, 1.0, 0.03)
+            theme::tint(0.03)
         } else {
             Color::TRANSPARENT
         };
         let base_row: Element<'a, Message> = container(base_row)
             .width(Fill)
-            .padding([2, 0])
+            .padding(iced::Padding { top: if continuation { 1.0 } else { 6.0 }, right: 0.0, bottom: 1.0, left: 0.0 })
             .style(move |_: &Theme| container::Style {
                 background: Some(hover_bg.into()),
                 ..Default::default()
@@ -1107,7 +1170,13 @@ impl FluxChat {
                 iced::widget::svg(handle)
                     .width(Length::Fixed(icon_sz)).height(Length::Fixed(icon_sz))
                     .content_fit(iced::ContentFit::Fill)
-                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_muted) }),
+                    .style(|_, status| iced::widget::svg::Style {
+                        color: Some(if matches!(status, iced::widget::svg::Status::Hovered) {
+                            theme::colors().text_bright
+                        } else {
+                            theme::colors().text_muted
+                        }),
+                    }),
             )
             .on_press(msg_action)
             .padding(btn_pad)
@@ -1115,11 +1184,11 @@ impl FluxChat {
             .height(Length::Fixed(btn_size))
             .style(|_, status| button::Style {
                 background: if matches!(status, button::Status::Hovered) {
-                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into())
+                    Some(theme::tint(0.12).into())
                 } else {
                     None
                 },
-                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
                 ..Default::default()
             });
             iced::widget::tooltip(
@@ -1129,7 +1198,7 @@ impl FluxChat {
             )
             .gap(4)
             .style(|_: &Theme| container::Style {
-                background: Some(theme::colors().bg_dark.into()),
+                background: Some(theme::colors().bg_deep.into()),
                 border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
                 ..Default::default()
             })
@@ -1193,12 +1262,12 @@ impl FluxChat {
                             border: iced::Border {
                                 color: theme::colors().border,
                                 width: 1.0,
-                                radius: 5.0.into(),
+                                radius: 8.0.into(),
                             },
                             shadow: iced::Shadow {
                                 color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
-                                offset: iced::Vector::new(0.0, 2.0),
-                                blur_radius: 8.0,
+                                offset: iced::Vector::new(0.0, 3.0),
+                                blur_radius: 10.0,
                             },
                             ..Default::default()
                         }),
@@ -1224,7 +1293,7 @@ impl FluxChat {
         .into();
 
         // URL preview cards (max 2 unless expanded)
-        let indent = time_width + 100.0 + 22.0 + 18.0;
+        let indent = self.msg_content_indent();
         let urls = extract_urls(&msg.body);
         let all_previews: Vec<&fluxchat_core::UrlPreview> = urls
             .iter()
@@ -1280,7 +1349,7 @@ impl FluxChat {
         }
 
         let mut reactions_row = row![
-            Space::new().width(Length::Fixed(time_width + 100.0 + 22.0 + 18.0)),
+            Space::new().width(Length::Fixed(self.msg_content_indent())),
         ]
         .spacing(4);
 
@@ -1291,7 +1360,7 @@ impl FluxChat {
             let bg = if is_mine {
                 theme::with_alpha(theme::colors().accent, 0.15) // ACCENT tint
             } else {
-                Color::from_rgba(1.0, 1.0, 1.0, 0.06)
+                theme::tint(0.06)
             };
 
             // Build tooltip with user names
@@ -1318,7 +1387,7 @@ impl FluxChat {
                 .padding([2, 8])
                 .style(move |_, status| button::Style {
                     background: Some(if matches!(status, button::Status::Hovered) {
-                        Color::from_rgba(1.0, 1.0, 1.0, 0.12)
+                        theme::tint(0.12)
                     } else {
                         bg
                     }.into()),
@@ -1372,64 +1441,58 @@ impl FluxChat {
 
     /// Render the emoji picker panel.
     pub(crate) fn view_emoji_picker(&self) -> Element<Message> {
+        use crate::ui::{self, Tone};
         let query_lower = self.emoji_query.to_lowercase();
+        let searching = !query_lower.is_empty();
+        let reacting = matches!(self.emoji_mode, crate::state::EmojiPickerMode::React(_));
 
-        // Header row
-        let title = if matches!(self.emoji_mode, crate::state::EmojiPickerMode::React(_)) {
-            "REACT"
-        } else {
-            "EMOJI"
-        };
+        // Header: search + close
         let header = row![
-            text(title).font(self.msg_font()).size(12).color(theme::colors().text_dim),
-            text_input("Search emoji...", &self.emoji_query)
-                .id(emoji_search_id())
-                .on_input(Message::EmojiQueryChanged)
-                .font(self.msg_font()).size(14).padding(6)
-                .width(Fill),
-            button(text("\u{00d7}").font(self.msg_font()).size(16).color(theme::colors().text_dim))
+            ui::input(
+                if reacting { "Search reactions\u{2026}" } else { "Search emoji\u{2026}" },
+                &self.emoji_query,
+                Message::EmojiQueryChanged,
+            )
+            .id(emoji_search_id())
+            .width(Fill),
+            button(ui::icon(SVG_CLOSE, 14.0, theme::colors().text_dim))
                 .on_press(Message::ToggleEmojiPicker)
-                .padding([0, 6])
-                .style(theme::button_transparent),
-        ].spacing(8).align_y(iced::Alignment::Center);
+                .padding(7)
+                .style(ui::button_style(Tone::Ghost)),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
 
-        // Category tabs
-        let category_labels = [
-            "\u{2b50}",          // ⭐ frequent
-            "\u{1f600}",         // 😀 SmileysAndEmotion
-            "\u{1f464}",         // 👤 PeopleAndBody
-            "\u{1f43e}",         // 🐾 AnimalsAndNature
-            "\u{1f34e}",         // 🍎 FoodAndDrink
-            "\u{1f30d}",         // 🌍 TravelAndPlaces
-            "\u{1f3c0}",         // 🏀 Activities
-            "\u{1f4a1}",         // 💡 Objects
-            "\u{1f523}",         // 🔣 Symbols
-            "\u{1f3f4}",         // 🏴 Flags
-        ];
+        // Category tabs: an icon per category, equal widths so all ten fit.
         let mut tabs = row![].spacing(2);
-        for (i, label) in category_labels.iter().enumerate() {
-            let is_active = self.emoji_category == i as u8;
-            tabs = tabs.push(
-                button(text(*label).size(18).center().width(EMOJI_CELL_SIZE))
-                    .on_press(Message::EmojiCategoryChanged(i as u8))
-                    .padding([2, 0])
-                    .style(move |_, status| button::Style {
-                        background: Some(if is_active {
-                            Color::from_rgba(1.0, 1.0, 1.0, 0.12)
-                        } else if matches!(status, button::Status::Hovered) {
-                            Color::from_rgba(1.0, 1.0, 1.0, 0.06)
-                        } else {
-                            Color::TRANSPARENT
-                        }.into()),
-                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+        for (i, (icon_svg, label)) in EMOJI_CATEGORIES.iter().enumerate() {
+            let active = !searching && self.emoji_category == i as u8;
+            let color = if active { theme::colors().accent } else { theme::colors().text_dim };
+            let tab = button(
+                column![
+                    container(ui::icon(icon_svg, 16.0, color)).center_x(Fill),
+                    container(Space::new().height(2)).width(Fill).style(move |_: &Theme| container::Style {
+                        background: active.then(|| theme::colors().accent.into()),
+                        border: iced::Border { radius: 1.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
-            );
+                ]
+                .spacing(5),
+            )
+            .on_press(Message::EmojiCategoryChanged(i as u8))
+            .padding(iced::Padding { top: 6.0, right: 0.0, bottom: 0.0, left: 0.0 })
+            .width(Fill)
+            .style(move |_, status| button::Style {
+                background: (matches!(status, button::Status::Hovered) && !active)
+                    .then(|| theme::with_alpha(theme::colors().text_normal, 0.06).into()),
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+            tabs = tabs.push(container(ui::with_tooltip(tab, label)).width(Fill));
         }
 
         // Collect emojis to display
-        let emojis_to_show: Vec<&str> = if !query_lower.is_empty() {
-            // Search mode
+        let emojis_to_show: Vec<&str> = if searching {
             emojis::iter()
                 .filter(|e| e.skin_tone().is_none())
                 .filter(|e| {
@@ -1448,7 +1511,6 @@ impl FluxChat {
                 .map(|(emoji, _)| emoji.as_str())
                 .collect()
         } else {
-            // Category
             let group = match self.emoji_category {
                 1 => emojis::Group::SmileysAndEmotion,
                 2 => emojis::Group::PeopleAndBody,
@@ -1466,15 +1528,21 @@ impl FluxChat {
                 .collect()
         };
 
-        // Build emoji grid
+        let heading = if searching {
+            if emojis_to_show.len() == 1 { "1 result".to_string() } else { format!("{} results", emojis_to_show.len()) }
+        } else {
+            EMOJI_CATEGORIES.get(self.emoji_category as usize).map(|(_, l)| l.to_string()).unwrap_or_default()
+        };
+
+        // Emoji grid
         let mut grid = column![].spacing(2);
         if emojis_to_show.is_empty() {
-            let hint = if self.emoji_category == 0 && query_lower.is_empty() {
-                "No frequently used emoji yet"
+            let (title, detail) = if !searching && self.emoji_category == 0 {
+                ("Nothing here yet", Some("Emoji you use will show up here.".to_string()))
             } else {
-                "No results"
+                ("No emoji found", None)
             };
-            grid = grid.push(text(hint).font(self.msg_font()).size(13).color(theme::colors().text_dim));
+            grid = grid.push(ui::empty_state(SVG_SMILE, title, detail));
         } else {
             for chunk in emojis_to_show.chunks(EMOJI_GRID_COLUMNS) {
                 let mut row_items = row![].spacing(2);
@@ -1488,12 +1556,9 @@ impl FluxChat {
                         .on_press(Message::EmojiSelect(e))
                         .padding(0)
                         .style(|_, status| button::Style {
-                            background: Some(if matches!(status, button::Status::Hovered) {
-                                Color::from_rgba(1.0, 1.0, 1.0, 0.1)
-                            } else {
-                                Color::TRANSPARENT
-                            }.into()),
-                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            background: matches!(status, button::Status::Hovered)
+                                .then(|| theme::with_alpha(theme::colors().text_normal, 0.1).into()),
+                            border: iced::Border { radius: 6.0.into(), ..Default::default() },
                             ..Default::default()
                         }),
                     );
@@ -1505,22 +1570,22 @@ impl FluxChat {
         let panel = column![
             header,
             tabs,
+            ui::divider(),
+            ui::section_label(heading),
             scrollable(grid)
                 .height(Length::Fixed(EMOJI_PANEL_HEIGHT))
                 .direction(iced::widget::scrollable::Direction::Vertical(
                     iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
                 ))
                 .style(thin_scrollbar),
-        ].spacing(4);
+        ].spacing(8);
 
-        let picker = container(panel).padding([8, 12]).width(Length::Fixed(380.0))
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::colors().bg_dark.into()),
-                border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
-                ..Default::default()
-            });
+        let picker = container(panel)
+            .padding(12)
+            .width(Length::Fixed(EMOJI_PANEL_WIDTH))
+            .style(ui::dialog_style);
         // Right-align the picker
-        container(picker).width(Fill).align_x(iced::alignment::Horizontal::Right)
+        container(picker).width(Fill).align_x(iced::alignment::Horizontal::Right).padding(8)
             .into()
     }
 

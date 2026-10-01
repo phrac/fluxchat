@@ -9,14 +9,18 @@ mod primary_clipboard;
 mod selectable_text;
 mod state;
 mod theme;
+mod ui;
 mod update;
 mod update_call;
 mod update_settings;
+mod update_spaces;
 mod view;
 mod view_input;
 mod view_members;
 mod view_messages;
 mod view_modals;
+mod view_profile;
+mod view_space;
 
 use std::path::PathBuf;
 use std::sync::Arc;

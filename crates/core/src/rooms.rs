@@ -34,8 +34,7 @@ pub async fn build_space_map(client: &matrix_sdk::Client) -> HashMap<String, (St
             Err(_) => continue,
         };
         for event in child_events {
-            if let Ok(ev) = event.deserialize() {
-                let child_id = ev.state_key().to_string();
+            if let Some(child_id) = event.deserialize().ok().as_ref().and_then(crate::spaces::active_child_id) {
                 map.entry(child_id).or_insert_with(|| (space_name.clone(), space_id.clone()));
             }
         }
@@ -144,8 +143,7 @@ pub async fn get_space_tree(client: &matrix_sdk::Client)
             Err(_) => continue,
         };
         for event in child_events {
-            if let Ok(ev) = event.deserialize() {
-                let child_id = ev.state_key().to_string();
+            if let Some(child_id) = event.deserialize().ok().as_ref().and_then(crate::spaces::active_child_id) {
                 // Only track children that are themselves joined spaces
                 if all_spaces.contains_key(&child_id) && child_id != parent_id {
                     children_map.entry(parent_id.clone()).or_default().push(child_id.clone());
@@ -329,8 +327,8 @@ pub async fn get_space_rooms(client: &matrix_sdk::Client, space_id: &str) -> Res
         .map_err(|e| AppError::Other(e.to_string()))?;
     let mut rooms = Vec::new();
     for event in child_events {
-        let ev = match event.deserialize() { Ok(e) => e, Err(_) => continue };
-        let child_room_id = match matrix_sdk::ruma::OwnedRoomId::try_from(ev.state_key().to_string()) {
+        let Some(child_id) = event.deserialize().ok().as_ref().and_then(crate::spaces::active_child_id) else { continue };
+        let child_room_id = match matrix_sdk::ruma::OwnedRoomId::try_from(child_id) {
             Ok(id) => id, Err(_) => continue,
         };
         if let Some(room) = client.get_room(&child_room_id) {
@@ -513,18 +511,8 @@ pub async fn create_room(
 
     // Add to space if specified
     if let Some(sid) = space_id {
-        if let Ok(space_room_id) = matrix_sdk::ruma::RoomId::parse(sid) {
-            if let Some(space) = client.get_room(&space_room_id) {
-                let mut content = SpaceChildEventContent::new(Vec::new());
-                if let Some(host) = client.homeserver().host_str() {
-                    if let Ok(server) = matrix_sdk::ruma::ServerName::parse(host) {
-                        content.via = vec![server.to_owned()];
-                    }
-                }
-                if let Err(e) = space.send_state_event_for_key(room.room_id(), content).await {
-                    tracing::warn!("Failed to associate room with space: {e}");
-                }
-            }
+        if let Err(e) = crate::spaces::add_child(client, sid, room.room_id().as_str()).await {
+            tracing::warn!("Failed to associate room with space: {e}");
         }
     }
 
@@ -541,31 +529,12 @@ pub async fn create_room(
 
 /// Add an existing room to a space.
 pub async fn add_room_to_space(client: &matrix_sdk::Client, room_id: &str, space_id: &str) -> Result<(), AppError> {
-    let room_id_parsed = parse_room_id(room_id)?;
-    let space_room_id = parse_room_id(space_id)?;
-    let space = client.get_room(&space_room_id)
-        .ok_or(AppError::RoomNotFound(space_id.into()))?;
-    let mut content = SpaceChildEventContent::new(Vec::new());
-    if let Some(host) = client.homeserver().host_str() {
-        if let Ok(server) = matrix_sdk::ruma::ServerName::parse(host) {
-            content.via = vec![server.to_owned()];
-        }
-    }
-    space.send_state_event_for_key(&room_id_parsed, content).await
-        .map_err(|e| AppError::Other(format!("Failed to add room to space: {e}")))?;
-    Ok(())
+    crate::spaces::add_child(client, space_id, room_id).await
 }
 
 /// Remove a room from a space.
 pub async fn remove_room_from_space(client: &matrix_sdk::Client, room_id: &str, space_id: &str) -> Result<(), AppError> {
-    let room_id_parsed = parse_room_id(room_id)?;
-    let space_room_id = parse_room_id(space_id)?;
-    let space = client.get_room(&space_room_id)
-        .ok_or(AppError::RoomNotFound(space_id.into()))?;
-    let content = SpaceChildEventContent::new(Vec::new());
-    space.send_state_event_for_key(&room_id_parsed, content).await
-        .map_err(|e| AppError::Other(format!("Failed to remove room from space: {e}")))?;
-    Ok(())
+    crate::spaces::remove_child(client, space_id, room_id).await
 }
 
 /// Open or create a DM room with a user without sending a message.

@@ -147,7 +147,7 @@ impl FluxChat {
                                 .width(Length::FillPortion(1))
                                 .style(|_, status| button::Style {
                                     background: Some(if matches!(status, button::Status::Hovered) {
-                                        Color::from_rgba(1.0, 1.0, 1.0, 0.1)
+                                        theme::tint(0.1)
                                     } else {
                                         theme::colors().bg_dark
                                     }.into()),
@@ -455,7 +455,7 @@ impl FluxChat {
         .padding([2, 8])
         .style(|_, status| button::Style {
             background: if matches!(status, button::Status::Hovered) {
-                Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                Some(theme::tint(0.08).into())
             } else {
                 None
             },
@@ -525,7 +525,7 @@ impl FluxChat {
                 border: iced::Border::default(),
                 placeholder: theme::colors().text_dim,
                 value: theme::colors().text_bright,
-                selection: Color::from_rgba(0.23, 0.51, 0.99, 0.3),
+                selection: theme::with_alpha(theme::colors().accent, 0.35),
             });
 
         let emoji_handle = iced::widget::svg::Handle::from_memory(SVG_EMOJI);
@@ -542,7 +542,7 @@ impl FluxChat {
             .padding([2, 8])
             .style(|_, status| button::Style {
                 background: if matches!(status, button::Status::Hovered) {
-                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    Some(theme::tint(0.08).into())
                 } else {
                     None
                 },
@@ -554,7 +554,7 @@ impl FluxChat {
             iced::widget::tooltip::Position::Top,
         )
         .style(|_: &Theme| container::Style {
-            background: Some(theme::colors().bg_mid.into()),
+            background: Some(theme::colors().bg_deep.into()),
             border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
             ..Default::default()
         })
@@ -574,7 +574,7 @@ impl FluxChat {
                 .padding([2, 6])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        Some(theme::tint(0.08).into())
                     } else {
                         None
                     },
@@ -606,7 +606,7 @@ impl FluxChat {
             .padding([2, 6])
             .style(|_, status| button::Style {
                 background: if matches!(status, button::Status::Hovered) {
-                    Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                    Some(theme::tint(0.08).into())
                 } else {
                     None
                 },
@@ -633,7 +633,7 @@ impl FluxChat {
                 .padding([4, 6])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        Some(theme::tint(0.08).into())
                     } else { None },
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
@@ -646,7 +646,7 @@ impl FluxChat {
                     .padding([4, 10])
                     .style(|_, status| button::Style {
                         background: if matches!(status, button::Status::Hovered) {
-                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                            Some(theme::tint(0.06).into())
                         } else { None },
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
@@ -692,7 +692,7 @@ impl FluxChat {
                     .padding([4, 10])
                     .style(|_, status| button::Style {
                         background: if matches!(status, button::Status::Hovered) {
-                            Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into())
+                            Some(theme::tint(0.06).into())
                         } else { None },
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
@@ -744,7 +744,7 @@ impl FluxChat {
                 .padding([3, 6])
                 .style(|_, status| button::Style {
                     background: if matches!(status, button::Status::Hovered) {
-                        Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into())
+                        Some(theme::tint(0.08).into())
                     } else {
                         None
                     },
@@ -780,17 +780,9 @@ impl FluxChat {
                 container(
                     column![
                         input_row,
-                        container(fmt_bar)
-                            .padding(iced::Padding { top: 4.0, right: 0.0, bottom: 0.0, left: 0.0 })
-                            .style(|_: &Theme| container::Style {
-                                border: iced::Border {
-                                    color: theme::colors().border,
-                                    width: 1.0,
-                                    radius: 0.0.into(),
-                                },
-                                ..Default::default()
-                            }),
-                    ].spacing(4)
+                        crate::ui::divider(),
+                        fmt_bar,
+                    ].spacing(6)
                 )
                 .width(Fill)
                 .padding([10, 16])
@@ -802,9 +794,9 @@ impl FluxChat {
                         radius: 12.0.into(),
                     },
                     shadow: iced::Shadow {
-                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                        offset: iced::Vector::new(0.0, 4.0),
-                        blur_radius: 20.0,
+                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+                        offset: iced::Vector::new(0.0, 3.0),
+                        blur_radius: 14.0,
                     },
                     ..Default::default()
                 })
