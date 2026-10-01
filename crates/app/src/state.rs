@@ -98,6 +98,8 @@ impl PaletteAction {
 pub enum ResizeTarget {
     /// Room list (left).
     RoomList,
+    /// Pinned messages sidebar.
+    Pins,
     /// Threads list sidebar.
     ThreadList,
     /// Mentions inbox sidebar.
@@ -241,6 +243,8 @@ pub struct FluxChat {
     pub member_list_width: f32,
     /// Width of the threads list sidebar (resizable).
     pub thread_list_width: f32,
+    /// Width of the pinned messages sidebar (resizable).
+    pub pins_width: f32,
     /// Mentions inbox: messages that mentioned us, newest first.
     pub mentions: Vec<fluxchat_core::MentionItem>,
     pub mentions_open: bool,
@@ -622,6 +626,7 @@ impl FluxChat {
             pending_pane_focus: None,
             member_list_width: 220.0,
             thread_list_width: 280.0,
+            pins_width: 300.0,
             mentions: Vec::new(),
             mentions_open: false,
             mentions_width: 300.0,

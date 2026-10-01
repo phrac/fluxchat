@@ -813,4 +813,15 @@ mod flow_tests {
         let saved = app.core.db.get_setting(LAYOUT_KEY).expect("layout saved");
         assert!(saved.contains("!b:x"));
     }
+
+    #[tokio::test]
+    async fn pins_open_as_a_persisted_sidebar() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::TogglePins);
+        assert!(app.pins_open);
+        assert_eq!(app.core.db.get_setting("pins_open").as_deref(), Some("true"));
+        let _ = app.update(Message::TogglePins);
+        assert_eq!(app.core.db.get_setting("pins_open").as_deref(), Some("false"));
+    }
 }

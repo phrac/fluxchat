@@ -471,6 +471,81 @@ impl FluxChat {
             .into()
     }
 
+    /// Pinned messages sidebar: the room's pins (in the room's pin order).
+    /// Click to jump; the pin button unpins.
+    fn view_pins_sidebar(&self) -> Element<'_, Message> {
+        let header = row![
+            text(format!("PINNED \u{2014} {}", self.pinned_messages.len()))
+                .font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
+            Space::new().width(Fill),
+            button(crate::ui::icon(SVG_CLOSE, 14.0, theme::colors().text_dim))
+                .on_press(Message::TogglePins)
+                .padding(4)
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+        ]
+        .align_y(iced::Alignment::Center)
+        .padding([8, 12]);
+        let body: Element<Message> = if self.pinned_messages.is_empty() {
+            crate::ui::empty_state(SVG_PIN, "No pinned messages",
+                Some("Pin a message from its hover bar to keep it here.".into()))
+        } else {
+            let mut list = column![].spacing(2).padding([0, 6]);
+            for msg in &self.pinned_messages {
+                let when = format!(
+                    "{} {}",
+                    format_day(msg.timestamp),
+                    crate::view_messages::format_clock(local_time_of_day(msg.timestamp), false, self.prefs.twelve_hour),
+                );
+                let current = self.highlight_event_id.as_deref() == Some(msg.event_id.as_str());
+                let unpin = crate::ui::tooltip_at(
+                    button(crate::ui::icon(SVG_PIN, 12.0, theme::colors().text_dim))
+                        .on_press(Message::PinMessage(msg.event_id.clone()))
+                        .padding(3)
+                        .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+                    "Unpin",
+                    iced::widget::tooltip::Position::Left,
+                );
+                list = list.push(
+                    button(
+                        column![
+                            row![
+                                self.render_avatar_with_initial(msg.avatar_url.as_deref(), &msg.sender_name, 16.0),
+                                text(msg.sender_name.as_str()).font(self.sidebar_font()).size(12)
+                                    .color(theme::nick_color(&msg.sender_name))
+                                    .wrapping(iced::widget::text::Wrapping::None).width(Fill),
+                                unpin,
+                            ].spacing(6).align_y(iced::Alignment::Center),
+                            text(ellipsize(&msg.body, PIN_PREVIEW_CHARS)).font(self.sidebar_font()).size(13)
+                                .color(theme::colors().text_normal)
+                                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                            text(when).font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
+                        ].spacing(4),
+                    )
+                    .on_press(Message::JumpToEvent(msg.event_id.clone()))
+                    .padding([7, 8])
+                    .width(Fill)
+                    .clip(true)
+                    .style(crate::ui::row_style(current)),
+                );
+            }
+            scrollable(list)
+                .height(Fill)
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                ))
+                .style(thin_scrollbar)
+                .into()
+        };
+        container(column![header, body].height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().bg_deep.into()),
+                ..Default::default()
+            })
+            .into()
+    }
+
     /// Threads sidebar: the room's threads, most recently active first.
     fn view_threads_sidebar(&self) -> Element<'_, Message> {
         let room_id = self.active_real_room().unwrap_or("").to_string();
@@ -884,6 +959,13 @@ impl FluxChat {
             self.resize_handle(ResizeTarget::RoomList),
             main_content,
         ];
+
+        // Pinned messages sidebar
+        if self.pins_open && self.selected_room_id.is_some() {
+            main_area = main_area
+                .push(self.resize_handle(ResizeTarget::Pins))
+                .push(container(self.view_pins_sidebar()).width(Length::Fixed(self.pins_width)));
+        }
 
         // Threads list sidebar
         if self.threads_open && self.selected_room_id.is_some() {
@@ -2558,20 +2640,6 @@ impl FluxChat {
 
             // Panels (pinned messages, threads, files, notices): fixed header,
             // scrollable body capped at HUD_PANEL_MAX_HEIGHT.
-            if self.pins_open {
-                let items: Vec<Element<Message>> = self.pinned_messages.iter().map(|msg| {
-                    self.hud_row(
-                        &msg.sender_name,
-                        None,
-                        msg.body.lines().next().unwrap_or(""),
-                        Message::JumpToEvent(msg.event_id.clone()),
-                    )
-                }).collect();
-                panels_col = panels_col.push(self.hud_panel(
-                    "Pinned messages", items, Message::TogglePins, "No pinned messages",
-                ));
-            }
-
             if self.files_open {
                 let items: Vec<Element<Message>> = self.messages_by_room.get(room_id)
                     .map(|msgs| msgs.iter().rev()
@@ -3164,6 +3232,9 @@ pub(crate) fn is_continuation(prev: &fluxchat_core::MessageInfo, msg: &fluxchat_
 }
 
 /// Compact thread line for narrow places: "3 replies · alice · 5m".
+/// Characters of a pinned message shown in the pins sidebar.
+const PIN_PREVIEW_CHARS: usize = 280;
+
 fn thread_meta_short(t: &fluxchat_core::ThreadPreview) -> String {
     let mut parts = vec![if t.reply_count == 1 { "1 reply".to_string() } else { format!("{} replies", t.reply_count) }];
     if let Some(latest) = &t.latest_sender_name {

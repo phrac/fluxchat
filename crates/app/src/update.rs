@@ -1543,6 +1543,7 @@ impl FluxChat {
             }
             Message::TogglePins => {
                 self.pins_open = !self.pins_open;
+                let _ = self.core.db.set_setting("pins_open", if self.pins_open { "true" } else { "false" });
                 if self.pins_open {
                     if let Some(room_id) = self.active_real_room().map(str::to_string) {
                         let core = self.core.clone();
@@ -4102,12 +4103,16 @@ impl FluxChat {
                 use crate::state::ResizeTarget;
                 let window_w = self.window_size.0;
                 // Width of the panels to the right of a divider (left→right:
-                // panes | threads | mentions | members).
+                // panes | pins | threads | mentions | members).
                 let members = if self.show_member_list { self.member_list_width } else { 0.0 };
                 let mentions = if self.mentions_open { self.mentions_width } else { 0.0 };
+                let threads = if self.threads_open { self.thread_list_width } else { 0.0 };
                 match self.resizing {
                     Some(ResizeTarget::RoomList) => {
                         self.sidebar_width = (x - 56.0).clamp(150.0, 400.0);
+                    }
+                    Some(ResizeTarget::Pins) => {
+                        self.pins_width = (window_w - members - mentions - threads - x).clamp(THREAD_LIST_MIN_WIDTH, THREAD_LIST_MAX_WIDTH);
                     }
                     Some(ResizeTarget::ThreadList) => {
                         self.thread_list_width = (window_w - members - mentions - x).clamp(THREAD_LIST_MIN_WIDTH, THREAD_LIST_MAX_WIDTH);
@@ -4780,6 +4785,7 @@ impl FluxChat {
         let _ = self.core.db.set_setting("member_list_width", &format!("{:.0}", self.member_list_width));
         let _ = self.core.db.set_setting("thread_list_width", &format!("{:.0}", self.thread_list_width));
         let _ = self.core.db.set_setting("mentions_width", &format!("{:.0}", self.mentions_width));
+        let _ = self.core.db.set_setting("pins_width", &format!("{:.0}", self.pins_width));
     }
 
     pub(crate) fn close_thread_views(&mut self, keys: Vec<String>) -> Task<Message> {
@@ -5656,6 +5662,12 @@ impl FluxChat {
         }
         if let Some(json) = self.core.db.get_setting("collapsed_room_threads") {
             self.collapsed_room_threads = serde_json::from_str(&json).unwrap_or_default();
+        }
+        if let Some(v) = self.core.db.get_setting("pins_open") {
+            self.pins_open = v == "true";
+        }
+        if let Some(w) = self.core.db.get_setting("pins_width").and_then(|v| v.parse::<f32>().ok()) {
+            self.pins_width = w.clamp(THREAD_LIST_MIN_WIDTH, THREAD_LIST_MAX_WIDTH);
         }
         if let Some(v) = self.core.db.get_setting("mentions_open") {
             self.mentions_open = v == "true";
