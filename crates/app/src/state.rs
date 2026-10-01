@@ -312,6 +312,8 @@ pub struct FluxChat {
 
     // Media/avatar cache — maps MXC URI to stable image handles (avoids flicker on re-render)
     pub avatar_cache: HashMap<String, iced::widget::image::Handle>,
+    /// Room settings icon upload: "Uploading…" or an error (None when idle).
+    pub room_avatar_status: Option<String>,
     /// Avatar MXC URIs with a fetch in flight.
     pub avatar_pending: std::collections::HashSet<String>,
     /// Avatar MXC URIs whose last fetch failed, and when.
@@ -676,6 +678,7 @@ impl FluxChat {
             window_size: (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
             device_id: None,
             avatar_cache: HashMap::new(),
+            room_avatar_status: None,
             avatar_pending: Default::default(),
             avatar_failed: HashMap::new(),
             login_homeserver: "matrix.org".into(),

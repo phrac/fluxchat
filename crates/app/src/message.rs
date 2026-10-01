@@ -440,6 +440,10 @@ pub enum Message {
     RoomSettingsSaveTopic,
     EnableEncryption(String), // room_id
     RoomSettingsUploadAvatar,
+    /// Room icon file chosen: (room_id, mime, bytes).
+    RoomAvatarPicked(String, &'static str, Vec<u8>),
+    /// Room icon upload finished: (room_id, Ok((mxc, bytes)) or error).
+    RoomAvatarUploaded(String, Result<(String, Vec<u8>), String>),
     RoomSettingsRemoveAvatar,
     RoomAvatarUpdated(String, Option<String>), // room_id, new mxc url
 

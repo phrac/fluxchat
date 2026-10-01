@@ -1187,17 +1187,25 @@ impl FluxChat {
         };
 
         // --- General ---
-        let avatar_row = row![
-            self.render_room_avatar(room.avatar_url.as_deref(), &room.name, 64.0),
-            column![
-                ui::section_label("Room icon"),
-                row![
-                    ui::icon_btn(crate::icons::SVG_IMAGE, "Upload image", Tone::Secondary, Some(Message::RoomSettingsUploadAvatar)),
-                    ui::btn("Remove", Tone::Ghost, room.avatar_url.is_some().then_some(Message::RoomSettingsRemoveAvatar)),
-                ]
-                .spacing(8),
+        let uploading = self.room_avatar_status.as_deref().is_some_and(|s| s.starts_with("Uploading"));
+        let mut icon_col = column![
+            ui::section_label("Room icon"),
+            row![
+                ui::icon_btn(crate::icons::SVG_IMAGE, "Upload image", Tone::Secondary,
+                    (!uploading).then_some(Message::RoomSettingsUploadAvatar)),
+                ui::btn("Remove", Tone::Ghost,
+                    (room.avatar_url.is_some() && !uploading).then_some(Message::RoomSettingsRemoveAvatar)),
             ]
             .spacing(8),
+        ]
+        .spacing(8);
+        if let Some(status) = &self.room_avatar_status {
+            let color = if uploading { theme::colors().text_muted } else { theme::colors().red };
+            icon_col = icon_col.push(text(status.as_str()).font(MONO).size(12).color(color));
+        }
+        let avatar_row = row![
+            self.render_room_avatar(room.avatar_url.as_deref(), &room.name, 64.0),
+            icon_col,
         ]
         .spacing(16)
         .align_y(iced::Alignment::Center);

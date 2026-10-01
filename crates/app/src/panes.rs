@@ -872,4 +872,17 @@ mod flow_tests {
         let _ = app.update(Message::TimelineWheelUpAtTop);
         assert_eq!(app.paginate_empty_budget, 0);
     }
+
+    #[tokio::test]
+    async fn room_icon_upload_shows_progress_errors_and_the_new_icon() {
+        let mut app = app();
+        let _ = app.update(Message::RoomAvatarPicked("!a:x".into(), "image/png", vec![1, 2, 3]));
+        assert!(app.room_avatar_status.as_deref().is_some_and(|s| s.starts_with("Uploading")));
+        let _ = app.update(Message::RoomAvatarUploaded("!a:x".into(), Err("too big".into())));
+        assert!(app.room_avatar_status.as_deref().is_some_and(|s| s.contains("too big")));
+        let _ = app.update(Message::RoomAvatarUploaded("!a:x".into(), Ok(("mxc://x/new".into(), vec![1, 2, 3]))));
+        assert!(app.room_avatar_status.is_none());
+        // Shown from the uploaded bytes, without downloading it back.
+        assert!(app.avatar_cache.contains_key("mxc://x/new"));
+    }
 }

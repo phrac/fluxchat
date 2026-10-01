@@ -1910,6 +1910,7 @@ impl FluxChat {
                         self.room_settings_topic = room.topic.clone().unwrap_or_default();
                     }
                     self.room_notify_mode = None;
+                    self.room_avatar_status = None;
                     self.room_parent_spaces = None;
                     self.room_security = None;
                     self.room_perms = None;
@@ -3592,30 +3593,40 @@ impl FluxChat {
             }
             Message::RoomSettingsUploadAvatar => {
                 if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let handle = rfd::AsyncFileDialog::new()
-                                .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp"])
-                                .pick_file()
-                                .await?;
-                            let data = handle.read().await;
-                            let name = handle.file_name();
-                            let mime = if name.ends_with(".png") { "image/png" }
-                                else if name.ends_with(".gif") { "image/gif" }
-                                else if name.ends_with(".webp") { "image/webp" }
-                                else { "image/jpeg" };
-                            let client = core.get_client().await.ok()?;
-                            let mxc = fluxchat_core::rooms::upload_room_avatar(&client, &room_id, mime, data.to_vec()).await.ok()?;
-                            Some((room_id, Some(mxc)))
-                        },
-                        |result| match result {
-                            Some((room_id, mxc)) => Message::RoomAvatarUpdated(room_id, mxc),
-                            None => Message::Noop,
-                        },
-                    );
+                    return Task::perform(crate::update_spaces::pick_image(), move |picked| match picked {
+                        Some((mime, data)) => Message::RoomAvatarPicked(room_id.clone(), mime, data),
+                        None => Message::Noop, // picker cancelled
+                    });
                 }
             }
+            Message::RoomAvatarPicked(room_id, mime, data) => {
+                self.room_avatar_status = Some("Uploading\u{2026}".into());
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let mxc = fluxchat_core::rooms::upload_room_avatar(&client, &room_id, mime, data.clone()).await
+                            .map_err(|e| e.to_string())?;
+                        Ok::<_, String>((room_id, mxc, data))
+                    },
+                    |result| match result {
+                        Ok((room_id, mxc, data)) => Message::RoomAvatarUploaded(room_id, Ok((mxc, data))),
+                        Err(e) => Message::RoomAvatarUploaded(String::new(), Err(e)),
+                    },
+                );
+            }
+            Message::RoomAvatarUploaded(room_id, result) => match result {
+                Ok((mxc, data)) => {
+                    self.room_avatar_status = None;
+                    // Show it from the bytes we just sent rather than
+                    // downloading our own upload back.
+                    self.avatar_cache.insert(mxc.clone(), iced::widget::image::Handle::from_bytes(data));
+                    if let Some(room) = self.rooms.iter_mut().chain(self.spaces.iter_mut()).find(|r| r.room_id == room_id) {
+                        room.avatar_url = Some(mxc);
+                    }
+                }
+                Err(e) => self.room_avatar_status = Some(format!("Couldn't upload the icon: {e}")),
+            },
             Message::RoomAvatarUpdated(room_id, mxc) => {
                 // Update avatar_url in local room / space list
                 if let Some(room) = self.rooms.iter_mut().chain(self.spaces.iter_mut()).find(|r| r.room_id == room_id) {
