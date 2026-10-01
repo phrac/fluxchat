@@ -1641,6 +1641,20 @@ impl FluxChat {
                     ))
                     .style(thin_scrollbar),
             );
+            if count > 1 {
+                col = col.push(if self.decline_all_armed {
+                    ui::card(row![
+                        text(format!("Decline all {count} invites?")).font(MONO).size(13).color(theme::colors().text_normal).width(Fill),
+                        ui::btn("Cancel", Tone::Ghost, Some(Message::ArmDeclineAllInvites(false))),
+                        ui::btn("Decline all", Tone::Danger, Some(Message::DeclineAllInvites)),
+                    ].spacing(8).align_y(iced::Alignment::Center)).into()
+                } else {
+                    ui::footer(vec![
+                        ui::btn("Decline all", Tone::Ghost, Some(Message::ArmDeclineAllInvites(true))).into(),
+                        ui::btn("Accept all", Tone::Primary, Some(Message::AcceptAllInvites)).into(),
+                    ])
+                });
+            }
         }
         col.width(460).into()
     }

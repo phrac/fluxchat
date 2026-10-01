@@ -637,11 +637,12 @@ mod tests {
 
 /// Pane operations driven through the real `update()`, with no client.
 #[cfg(test)]
-mod flow_tests {
+pub(crate) mod flow_tests {
     use super::*;
     use crate::state::FluxChat;
 
-    fn app() -> FluxChat {
+    /// The app on a temp database, with no client (tasks aren't run).
+    pub(crate) fn app() -> FluxChat {
         // A counter, not the clock: parallel tests can start in the same tick.
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(

@@ -393,6 +393,92 @@ pub async fn remove_local_alias(client: &matrix_sdk::Client, room_id: &str, alia
     Ok(())
 }
 
+/// Someone asking to join a room (knock join rule).
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinRequest {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub reason: Option<String>,
+    /// Seconds since the epoch.
+    pub timestamp: Option<u64>,
+}
+
+/// The pending join requests of a room, and whether we may answer them
+/// (approving is an invite).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct JoinRequests {
+    pub can_respond: bool,
+    pub requests: Vec<JoinRequest>,
+}
+
+/// How to answer a join request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinResponse {
+    /// Invite them in.
+    Approve,
+    /// Turn them away (they can ask again).
+    Deny,
+    /// Turn them away and ban them.
+    DenyAndBan,
+}
+
+/// Watch a room's join requests: `on_update` gets the full list now and
+/// whenever it changes. Abort the returned task to stop.
+pub async fn watch_join_requests<F>(client: &matrix_sdk::Client, room_id: &str, on_update: F) -> Result<tokio::task::JoinHandle<()>, AppError>
+where
+    F: Fn(JoinRequests) + Send + 'static,
+{
+    use futures_util::StreamExt;
+    let room = room(client, room_id)?;
+    let user_id = client.user_id().ok_or_else(|| err("Not logged in"))?.to_owned();
+    let (stream, cleanup) = room.subscribe_to_knock_requests().await.map_err(err)?;
+    // The SDK's helper task lives as long as our watcher.
+    struct Cleanup(matrix_sdk::executor::JoinHandle<()>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    Ok(tokio::spawn(async move {
+        let _cleanup = Cleanup(cleanup);
+        let mut stream = std::pin::pin!(stream);
+        let mut last = None;
+        while let Some(requests) = stream.next().await {
+            let can_respond = match room.power_levels().await {
+                Ok(pl) => pl.user_can_invite(&user_id),
+                Err(_) => false,
+            };
+            let update = JoinRequests {
+                can_respond,
+                requests: requests.into_iter().map(|r| JoinRequest {
+                    user_id: r.member_info.user_id.to_string(),
+                    display_name: r.member_info.display_name,
+                    avatar_url: r.member_info.avatar_url.map(|u| u.to_string()),
+                    reason: r.member_info.reason.filter(|s| !s.trim().is_empty()),
+                    timestamp: r.timestamp.map(|t| u64::from(t) / 1000),
+                }).collect(),
+            };
+            if last.as_ref() != Some(&update) {
+                last = Some(update.clone());
+                on_update(update);
+            }
+        }
+    }))
+}
+
+/// Answer a join request.
+pub async fn respond_join_request(client: &matrix_sdk::Client, room_id: &str, user_id: &str, response: JoinResponse) -> Result<(), AppError> {
+    let room = room(client, room_id)?;
+    let user_id = crate::rooms::parse_user_id(user_id)?;
+    match response {
+        JoinResponse::Approve => room.invite_user_by_id(&user_id).await,
+        JoinResponse::Deny => room.kick_user(&user_id, None).await,
+        JoinResponse::DenyAndBan => room.ban_user(&user_id, None).await,
+    }
+    .map_err(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::full_alias;

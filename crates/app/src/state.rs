@@ -20,6 +20,28 @@ pub fn saved_window_size(db: &fluxchat_core::AppDb) -> Option<(f32, f32)> {
 pub type TimelineUpdateTx = tokio::sync::mpsc::UnboundedSender<crate::message::Message>;
 pub type TimelineUpdateRx = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
 
+/// A background task that stops when the last copy of its guard is dropped
+/// (so a `Message` can carry it, and replacing the stored guard stops it).
+#[derive(Debug, Clone)]
+pub struct TaskGuard {
+    _task: std::sync::Arc<AbortOnDrop>,
+}
+
+#[derive(Debug)]
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl TaskGuard {
+    pub fn new(handle: &tokio::task::JoinHandle<()>) -> Self {
+        Self { _task: std::sync::Arc::new(AbortOnDrop(handle.abort_handle())) }
+    }
+}
+
 /// Channel for call events from LiveKit to the Iced event loop.
 pub type CallEventTx = tokio::sync::mpsc::UnboundedSender<crate::message::Message>;
 pub type CallEventRx = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
@@ -157,6 +179,16 @@ pub struct FluxChat {
     pub space_tree: Vec<fluxchat_core::rooms::SpaceNode>,
     pub space_descendants: HashMap<String, Vec<String>>,
     pub invited_rooms: Vec<RoomInfo>,
+    /// Invites dialog: "Decline all" asked for, awaiting confirmation.
+    pub decline_all_armed: bool,
+    /// Rooms we just put in a space (room -> space) that the server's room
+    /// list may not reflect yet: applied to each rebuild until it does.
+    pub pending_space_links: HashMap<String, String>,
+    /// Join requests of the room in view (room id, requests), live while
+    /// `join_requests_watch` (same room) is kept; the list is expanded or not.
+    pub join_requests: Option<(String, fluxchat_core::room_admin::JoinRequests)>,
+    pub join_requests_watch: Option<(String, TaskGuard)>,
+    pub join_requests_open: bool,
     pub knocked_rooms: Vec<RoomInfo>,
     pub selected_room_id: Option<String>,
     pub selected_space_id: Option<String>,
@@ -578,6 +610,11 @@ impl FluxChat {
             space_tree: Vec::new(),
             space_descendants: HashMap::new(),
             invited_rooms: Vec::new(),
+            decline_all_armed: false,
+            pending_space_links: HashMap::new(),
+            join_requests: None,
+            join_requests_watch: None,
+            join_requests_open: false,
             knocked_rooms: Vec::new(),
             selected_room_id: None,
             selected_space_id: None,

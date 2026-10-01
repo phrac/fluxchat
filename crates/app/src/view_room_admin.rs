@@ -1,4 +1,5 @@
-//! Room settings → Security & Privacy and Roles & Permissions tabs.
+//! Room settings → Security & Privacy, Roles & Permissions and Advanced
+//! tabs, and the join-request bar above a room's messages.
 
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Border, Element, Fill, Length, Theme};
@@ -448,5 +449,69 @@ impl FluxChat {
         }
         col = col.push(ui::field("Addresses", addr));
         col.into()
+    }
+
+    /// "N people asking to join" above the messages of the room in view,
+    /// expandable to approve / deny each. Only for people who can invite.
+    pub(crate) fn view_join_requests(&self, room_id: &str) -> Option<Element<'_, Message>> {
+        let (rid, reqs) = self.join_requests.as_ref()?;
+        if rid != room_id || !reqs.can_respond || reqs.requests.is_empty() {
+            return None;
+        }
+        let c = theme::colors();
+        let name_of = |r: &fluxchat_core::room_admin::JoinRequest| r.display_name.clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| r.user_id.clone());
+        let summary = match reqs.requests.as_slice() {
+            [one] => format!("{} is asking to join", name_of(one)),
+            many => format!("{} people are asking to join", many.len()),
+        };
+        let bar = row![
+            ui::icon(crate::icons::SVG_USER_PLUS, 14.0, c.accent),
+            text(summary).font(MONO).size(13).color(c.text_normal).width(Fill),
+            ui::btn(if self.join_requests_open { "Hide" } else { "Review" }, Tone::Secondary, Some(Message::ToggleJoinRequests)),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        let mut col = column![bar].spacing(8);
+        if self.join_requests_open {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            for req in &reqs.requests {
+                let name = name_of(req);
+                let mut who = column![
+                    row![
+                        text(name.clone()).font(MONO).size(13).color(theme::nick_color(&name)),
+                        text(req.user_id.as_str()).font(MONO).size(11).color(c.text_dim),
+                    ].spacing(8).align_y(Alignment::Center),
+                ].spacing(2).width(Fill);
+                if let Some(reason) = &req.reason {
+                    who = who.push(text(format!("\u{201c}{reason}\u{201d}")).font(MONO).size(12).color(c.text_muted)
+                        .wrapping(text::Wrapping::WordOrGlyph));
+                }
+                if let Some(ts) = req.timestamp {
+                    who = who.push(ui::hint(crate::view_profile::ago(now.saturating_sub(ts))));
+                }
+                let uid = req.user_id.clone();
+                col = col.push(container(row![
+                    self.render_avatar_with_initial(req.avatar_url.as_deref(), &name, 28.0),
+                    who,
+                    ui::icon_only(crate::icons::SVG_BAN, "Deny and ban", Tone::Ghost,
+                        Some(Message::RespondJoinRequest(uid.clone(), fluxchat_core::room_admin::JoinResponse::DenyAndBan))),
+                    ui::btn("Deny", Tone::Ghost,
+                        Some(Message::RespondJoinRequest(uid.clone(), fluxchat_core::room_admin::JoinResponse::Deny))),
+                    ui::btn("Approve", Tone::Primary,
+                        Some(Message::RespondJoinRequest(uid, fluxchat_core::room_admin::JoinResponse::Approve))),
+                ].spacing(8).align_y(Alignment::Center)).padding([4, 0]));
+            }
+        }
+        Some(container(col)
+            .padding([8, 12])
+            .width(Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::with_alpha(theme::colors().accent, 0.06).into()),
+                border: Border { color: theme::colors().border, width: 1.0, radius: 0.0.into() },
+                ..Default::default()
+            })
+            .into())
     }
 }

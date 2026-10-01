@@ -46,6 +46,40 @@ impl FluxChat {
         Task::batch([security, perms, advanced])
     }
 
+    /// Follow the join requests of the room in view (`room_id`, a real
+    /// room): stops the previous room's watcher and starts this one's.
+    pub(crate) fn watch_join_requests(&mut self, room_id: &str) -> Task<Message> {
+        if self.join_requests_watch.as_ref().is_some_and(|(r, _)| r == room_id) {
+            return Task::none();
+        }
+        self.join_requests_watch = None;
+        self.join_requests = None;
+        self.join_requests_open = false;
+        // DMs and rooms we're not joined to have nobody to approve.
+        if !self.rooms.iter().any(|r| r.room_id == room_id && !r.is_direct) {
+            return Task::none();
+        }
+        let core = self.core.clone();
+        let tx = self.timeline_tx.clone();
+        let rid = room_id.to_string();
+        Task::perform(
+            async move {
+                let client = core.get_client().await.ok()?;
+                let r = rid.clone();
+                let handle = room_admin::watch_join_requests(&client, &rid, move |requests| {
+                    let _ = tx.send(Message::JoinRequestsUpdated(r.clone(), requests));
+                }).await
+                    .map_err(|e| tracing::warn!("Can't watch join requests in {rid}: {e}"))
+                    .ok()?;
+                Some((rid, crate::state::TaskGuard::new(&handle)))
+            },
+            |r| match r {
+                Some((rid, guard)) => Message::JoinRequestsWatching(rid, guard),
+                None => Message::Noop,
+            },
+        )
+    }
+
     /// The room whose settings dialog is open.
     fn room_settings_room(&self) -> Option<String> {
         matches!(self.modal, Some(Modal::RoomSettings))
@@ -139,6 +173,48 @@ impl FluxChat {
                 self.room_admin_change(move |client, rid| async move {
                     room_admin::set_permission(&client, &rid, &permission, level).await
                 })
+            }
+            Message::JoinRequestsWatching(room_id, guard) => {
+                // Kept only if we're still on that room (else dropped: stops).
+                if self.active_real_room() == Some(room_id.as_str()) && self.join_requests_watch.is_none() {
+                    self.join_requests_watch = Some((room_id, guard));
+                }
+                Task::none()
+            }
+            Message::JoinRequestsUpdated(room_id, requests) => {
+                if self.join_requests_watch.as_ref().is_some_and(|(r, _)| *r == room_id) {
+                    if requests.requests.is_empty() {
+                        self.join_requests_open = false;
+                    }
+                    self.join_requests = Some((room_id, requests));
+                }
+                Task::none()
+            }
+            Message::ToggleJoinRequests => {
+                self.join_requests_open = !self.join_requests_open;
+                Task::none()
+            }
+            Message::RespondJoinRequest(user_id, response) => {
+                let Some((room_id, reqs)) = self.join_requests.as_mut() else { return Some(Task::none()) };
+                // Gone at once; the watcher re-sends the list if it fails.
+                reqs.requests.retain(|r| r.user_id != user_id);
+                if reqs.requests.is_empty() {
+                    self.join_requests_open = false;
+                }
+                let room_id = room_id.clone();
+                let core = self.core.clone();
+                Task::perform(
+                    async move {
+                        match core.get_client().await {
+                            Ok(client) => room_admin::respond_join_request(&client, &room_id, &user_id, response).await.err().map(|e| e.to_string()),
+                            Err(e) => Some(e.to_string()),
+                        }
+                    },
+                    |err| match err {
+                        Some(e) => Message::ShowError(format!("Couldn't answer the join request: {e}")),
+                        None => Message::Noop,
+                    },
+                )
             }
             Message::RoomAdvancedLoaded(room_id, result) => {
                 if self.room_settings_room().as_deref() == Some(room_id.as_str()) {
@@ -249,3 +325,98 @@ impl FluxChat {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use fluxchat_core::room_admin::{JoinRequest, JoinRequests, JoinResponse};
+
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+
+    fn room(id: &str) -> fluxchat_core::RoomInfo {
+        fluxchat_core::RoomInfo {
+            room_id: id.into(), name: id.into(), is_encrypted: false, is_space: false, is_direct: false,
+            unread_count: 0, highlight_count: 0, avatar_url: None, topic: None, space_name: None,
+            space_id: None, is_favourite: false, successor: None,
+        }
+    }
+
+    fn requests(users: &[&str]) -> JoinRequests {
+        JoinRequests {
+            can_respond: true,
+            requests: users.iter().map(|u| JoinRequest {
+                user_id: u.to_string(), display_name: None, avatar_url: None, reason: None, timestamp: None,
+            }).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn join_requests_follow_the_room_in_view() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        // Updates before the watcher is registered are dropped.
+        let _ = app.update(Message::JoinRequestsUpdated("!a:x".into(), requests(&["@u:x"])));
+        assert!(app.join_requests.is_none());
+
+        let guard = crate::state::TaskGuard::new(&tokio::spawn(async {}));
+        let _ = app.update(Message::JoinRequestsWatching("!a:x".into(), guard));
+        let _ = app.update(Message::JoinRequestsUpdated("!a:x".into(), requests(&["@u:x", "@v:x"])));
+        let _ = app.update(Message::ToggleJoinRequests);
+        assert!(app.join_requests_open);
+
+        // Answering removes the row at once; the last one closes the list.
+        let _ = app.update(Message::RespondJoinRequest("@u:x".into(), JoinResponse::Approve));
+        let _ = app.update(Message::RespondJoinRequest("@v:x".into(), JoinResponse::Deny));
+        assert!(app.join_requests.as_ref().unwrap().1.requests.is_empty());
+        assert!(!app.join_requests_open);
+
+        // Another room: the old watcher and its requests go.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(app.join_requests_watch.is_none() && app.join_requests.is_none());
+        // A late update from the old room is ignored.
+        let _ = app.update(Message::JoinRequestsUpdated("!a:x".into(), requests(&["@w:x"])));
+        assert!(app.join_requests.is_none());
+    }
+
+    #[tokio::test]
+    async fn decline_all_needs_confirmation() {
+        let mut app = app();
+        app.invited_rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::DeclineAllInvites);
+        assert_eq!(app.invited_rooms.len(), 2, "not armed: nothing declined");
+        let _ = app.update(Message::ArmDeclineAllInvites(true));
+        let _ = app.update(Message::DeclineAllInvites);
+        assert!(app.invited_rooms.is_empty());
+        assert!(!app.decline_all_armed);
+    }
+
+    #[tokio::test]
+    async fn accept_all_clears_the_list() {
+        let mut app = app();
+        app.invited_rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::AcceptAllInvites);
+        assert!(app.invited_rooms.is_empty());
+        assert!(app.selected_room_id.is_none(), "accepting in bulk doesn't switch rooms");
+    }
+
+    #[tokio::test]
+    async fn new_room_stays_in_its_space_until_sync_catches_up() {
+        use crate::message::SyncEvent;
+        let list = |rooms: Vec<fluxchat_core::RoomInfo>| Message::SyncEvent(SyncEvent::RoomListUpdate(
+            rooms, vec![room("!space:x")], vec![], vec![], vec![], Default::default(),
+        ));
+        let mut app = app();
+        // Sync lists the new room before the space's m.space.child is back.
+        let _ = app.update(list(vec![room("!new:x")]));
+        let _ = app.update(Message::RoomCreated("!new:x".into(), "new".into(), false, false, Some("!space:x".into())));
+        assert_eq!(app.rooms[0].space_id.as_deref(), Some("!space:x"));
+        // Rebuilds that still lack the link don't undo it...
+        let _ = app.update(list(vec![room("!new:x")]));
+        assert_eq!(app.rooms[0].space_id.as_deref(), Some("!space:x"));
+        // ...and once the server's list has it, ours stops overriding.
+        let mut synced = room("!new:x");
+        synced.space_id = Some("!space:x".into());
+        let _ = app.update(list(vec![synced]));
+        assert!(app.pending_space_links.is_empty());
+    }
+}

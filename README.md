@@ -45,6 +45,8 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Alt+1–9 and Alt+Up/Down room hotkeys
 - Space management: browse, join, add, remove and create rooms; edit the space
 - Room settings: name, topic, icon, notifications, spaces
+- Join requests (ask to join): approve, deny, or deny and ban from a live bar above the room
+- Accept or decline all invites at once
 - Security & privacy: who can join, history visibility, guests, directory listing, encryption
 - Roles & permissions: role per action, privileged users, bans
 - Advanced: room version and upgrade, links to replaced/replacing rooms, addresses (main, published, local)

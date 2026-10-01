@@ -346,6 +346,10 @@ impl FluxChat {
                 self.utd_checked.clear();
                 self.typing_by_room.clear();
                 self.ignored_users.clear();
+                self.join_requests = None;
+                self.join_requests_watch = None;
+                self.decline_all_armed = false;
+                self.pending_space_links.clear();
                 self.deactivate_password.clear();
                 self.deactivate_armed = false;
                 self.deactivating = false;
@@ -449,6 +453,7 @@ impl FluxChat {
                             r
                         })
                         .collect();
+                    self.apply_pending_space_links();
                     // Drop the selection and thread tabs of rooms that were in
                     // the list and are gone now (left elsewhere / pruned). Views
                     // are compared by their real room — a thread key is never in
@@ -805,6 +810,7 @@ impl FluxChat {
                 self.selected_room_id = Some(room_id.clone());
                 // The focused pane shows the main view.
                 self.focus_key_in_pane(&room_id);
+                let join_requests = self.watch_join_requests(fluxchat_core::timeline::real_room_id(&room_id));
                 let _ = self.core.db.set_setting(LAST_ROOM_KEY, fluxchat_core::timeline::real_room_id(&room_id));
                 if room_changed {
                     self.read_anchor = None;
@@ -892,7 +898,7 @@ impl FluxChat {
                     if room_changed && needs_messages {
                         self.read_anchor_pending = Some(room_id.clone());
                     }
-                    return Task::batch([load, focus, call_check, pin_load, close_threads, reload_threads, Task::done(Message::ScrollToBottom)]);
+                    return Task::batch([load, focus, call_check, pin_load, close_threads, reload_threads, join_requests, Task::done(Message::ScrollToBottom)]);
                 }
                 // Re-resolve images for already-cached messages (clear pending to allow retries)
                 self.image_cache_pending.clear();
@@ -926,7 +932,7 @@ impl FluxChat {
                     Task::done(Message::ScrollToBottom)
                 };
                 let read_task = self.update(Message::SendReadReceipt);
-                return Task::batch([focus, call_check, image_task, scroll, pin_load, read_task, close_threads, reload_threads, backfill]);
+                return Task::batch([focus, call_check, image_task, scroll, pin_load, read_task, close_threads, reload_threads, backfill, join_requests]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -1869,6 +1875,9 @@ impl FluxChat {
             // --- Modals ---
             Message::OpenModal(modal) => {
                 self.create_menu_open = false;
+                if matches!(modal, crate::state::Modal::PendingInvites) {
+                    self.decline_all_armed = false;
+                }
                 // Clicking own profile opens settings instead
                 if let crate::state::Modal::Profile { ref user_id } = modal {
                     if *user_id == self.user_id {
@@ -2874,22 +2883,16 @@ impl FluxChat {
                 let rid = room_id.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        match fluxchat_core::rooms::accept_invite(&client, &rid).await {
-                            Ok(()) => {
-                                // Brief delay for server to process the join
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                Some(rid)
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to accept invite for {rid}: {e}");
-                                None
-                            }
-                        }
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::accept_invite(&client, &rid).await.map_err(|e| e.to_string())?;
+                        // Brief delay for server to process the join
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        Ok(rid)
                     },
-                    |result| match result {
-                        Some(room_id) => Message::SelectRoom(room_id),
-                        None => Message::Noop,
+                    |result: Result<String, String>| match result {
+                        Ok(room_id) => Message::SelectRoom(room_id),
+                        // The room list refresh brings the invite back.
+                        Err(e) => Message::ShowError(format!("Couldn't accept the invite: {e}")),
                     },
                 ).chain(Task::done(Message::RefreshRoomList));
             }
@@ -2900,15 +2903,42 @@ impl FluxChat {
                 let rid = room_id.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        if let Err(e) = fluxchat_core::rooms::reject_invite(&client, &rid).await {
-                            tracing::warn!("Failed to reject invite for {rid}: {e}");
-                        }
+                        let result = match core.get_client().await {
+                            Ok(client) => fluxchat_core::rooms::reject_invite(&client, &rid).await.map_err(|e| e.to_string()),
+                            Err(e) => Err(e.to_string()),
+                        };
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        Some(())
+                        result
                     },
-                    |_| Message::RefreshRoomList,
+                    |result| match result {
+                        Ok(()) => Message::RefreshRoomList,
+                        Err(e) => Message::Batch(vec![
+                            Message::RefreshRoomList,
+                            Message::ShowError(format!("Couldn't decline the invite: {e}")),
+                        ]),
+                    },
                 );
+            }
+            Message::SpaceLinked(room_id, space_id) => {
+                self.pending_space_links.insert(room_id, space_id);
+                self.apply_pending_space_links();
+            }
+            Message::ArmDeclineAllInvites(armed) => {
+                self.decline_all_armed = armed;
+            }
+            Message::AcceptAllInvites => return self.bulk_invites(true),
+            Message::DeclineAllInvites => {
+                if self.decline_all_armed {
+                    return self.bulk_invites(false);
+                }
+            }
+            Message::InvitesBulkDone(failed) => {
+                let refresh = Task::done(Message::RefreshRoomList);
+                if failed.is_empty() {
+                    return refresh;
+                }
+                let detail = failed.iter().map(|(name, e)| format!("{name} ({e})")).collect::<Vec<_>>().join(", ");
+                return Task::batch([refresh, self.update(Message::ShowError(format!("{} invite(s) failed: {detail}", failed.len())))]);
             }
 
             // --- Knocking ---
@@ -3492,6 +3522,12 @@ impl FluxChat {
                 );
             }
             Message::RoomCreated(room_id, name, encrypted, is_space, space_id) => {
+                // Sync may have listed the room already, before the space's
+                // m.space.child came back: put it in the space either way.
+                if let (Some(sid), false) = (&space_id, is_space) {
+                    self.pending_space_links.insert(room_id.clone(), sid.clone());
+                    self.apply_pending_space_links();
+                }
                 // Add to local room list immediately so sidebar updates
                 let space_name = space_id.as_ref().and_then(|sid|
                     self.spaces.iter().find(|s| s.room_id == *sid).map(|s| s.name.clone())
@@ -3747,10 +3783,15 @@ impl FluxChat {
                         async move {
                             let client = core.get_client().await.map_err(|e| e.to_string())?;
                             fluxchat_core::rooms::add_room_to_space(&client, &room_id, &space_id).await
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| e.to_string())?;
+                            Ok((room_id, space_id))
                         },
-                        |r| match r {
-                            Ok(()) => Message::Batch(vec![Message::RefreshRoomList, Message::ReloadRoomSettingsExtras]),
+                        |r: Result<(String, String), String>| match r {
+                            Ok((room_id, space_id)) => Message::Batch(vec![
+                                Message::SpaceLinked(room_id, space_id),
+                                Message::RefreshRoomList,
+                                Message::ReloadRoomSettingsExtras,
+                            ]),
                             Err(e) => Message::ShowError(format!("Couldn't add room to space: {e}")),
                         },
                     );
@@ -4408,7 +4449,9 @@ impl FluxChat {
                 | Message::RoomAliasInputChanged(_) | Message::AddRoomAlias
                 | Message::RemoveRoomAlias(_) | Message::SetMainAlias(_)
                 | Message::SetAliasPublished(..) | Message::ConfirmRoomUpgrade(_)
-                | Message::RoomUpgraded(..)) => {
+                | Message::RoomUpgraded(..) | Message::JoinRequestsWatching(..)
+                | Message::JoinRequestsUpdated(..) | Message::ToggleJoinRequests
+                | Message::RespondJoinRequest(..)) => {
                 if let Some(task) = self.handle_room_admin_message(msg) {
                     return task;
                 }
@@ -5146,6 +5189,54 @@ impl FluxChat {
             .collect();
         out.sort_by_key(|a| std::cmp::Reverse(a.last_activity));
         out
+    }
+
+    /// Put rooms we just added to a space in it, until the room list (built
+    /// from the space's synced m.space.child events) shows them there itself.
+    pub(crate) fn apply_pending_space_links(&mut self) {
+        let spaces = &self.spaces;
+        self.pending_space_links.retain(|room_id, space_id| {
+            let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == *room_id) else {
+                return true; // not listed yet
+            };
+            if room.space_id.is_some() {
+                return false; // the server's state has caught up
+            }
+            room.space_name = spaces.iter().find(|s| s.room_id == *space_id).map(|s| s.name.clone());
+            room.space_id = Some(space_id.clone());
+            true
+        });
+    }
+
+    /// Accept (or decline) every pending invite, one after another, without
+    /// switching rooms. Failures are reported together.
+    fn bulk_invites(&mut self, accept: bool) -> Task<Message> {
+        self.decline_all_armed = false;
+        let rooms: Vec<(String, String)> = std::mem::take(&mut self.invited_rooms).into_iter()
+            .map(|r| (r.room_id, r.name))
+            .collect();
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let client = match core.get_client().await {
+                    Ok(c) => c,
+                    Err(e) => return rooms.into_iter().map(|(_, name)| (name, e.to_string())).collect(),
+                };
+                let mut failed = Vec::new();
+                for (room_id, name) in rooms {
+                    let result = if accept {
+                        fluxchat_core::rooms::accept_invite(&client, &room_id).await
+                    } else {
+                        fluxchat_core::rooms::reject_invite(&client, &room_id).await
+                    };
+                    if let Err(e) = result {
+                        failed.push((name, e.to_string()));
+                    }
+                }
+                failed
+            },
+            Message::InvitesBulkDone,
+        )
     }
 
     /// Load the account-wide notification rules.

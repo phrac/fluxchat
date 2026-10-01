@@ -382,6 +382,20 @@ pub enum Message {
     // --- Invites ---
     AcceptInvite(String), // room_id
     RejectInvite(String), // room_id
+    AcceptAllInvites,
+    /// We put a room in a space: (room_id, space_id). Shown there at once.
+    SpaceLinked(String, String),
+    /// Ask for (true) or cancel (false) the "Decline all" confirmation.
+    ArmDeclineAllInvites(bool),
+    DeclineAllInvites,
+    /// A bulk accept/decline finished: rooms that failed, with the error.
+    InvitesBulkDone(Vec<(String, String)>),
+    /// Live join requests of a room (from its watcher).
+    JoinRequestsUpdated(String, fluxchat_core::room_admin::JoinRequests),
+    /// A room's join-request watcher is running (dropping the guard stops it).
+    JoinRequestsWatching(String, crate::state::TaskGuard),
+    ToggleJoinRequests,
+    RespondJoinRequest(String, fluxchat_core::room_admin::JoinResponse), // user_id
     KnockRoom(String, Option<String>), // room_id_or_alias, reason
     CancelKnock(String), // room_id
     SendLocation(String), // geo_uri (e.g. "geo:51.5074,-0.1278")

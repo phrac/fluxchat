@@ -338,7 +338,7 @@ fn banner_close<'a>() -> Element<'a, Message> {
 }
 
 /// "just now", "5m ago", "3h ago", "2d ago".
-fn ago(secs: u64) -> String {
+pub(crate) fn ago(secs: u64) -> String {
     match secs {
         0..=59 => "just now".into(),
         60..=3599 => format!("{}m ago", secs / 60),

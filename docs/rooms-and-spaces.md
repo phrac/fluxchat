@@ -6,7 +6,16 @@
 - **By address**: `/join #room:server` (or a room ID).
 - **From a link**: clicking a room link (matrix.to) opens the room if you're in it, jumping to the linked message if there is one. For a room you're not in, fluxchat asks before joining.
 - **Ask to join** a room that requires approval: `/knock <room> [reason]`. Pending requests are listed in the room list.
-- **Invites** appear under the bell in the room list with **Accept** / **Decline**. You also get a desktop notification.
+- **Invites** appear under the bell in the room list with **Accept** / **Decline**. With more than one, **Accept all** and **Decline all** (asks first) handle them in one go, without switching rooms. You also get a desktop notification.
+
+## Join requests
+
+In a room set to *Ask to join*, anyone who can invite sees a bar above the messages when people are waiting: "*name* is asking to join" or "*N* people are asking to join". **Review** lists them, with their reason and when they asked:
+- **Approve** invites them in;
+- **Deny** turns them away (they can ask again);
+- the ban icon denies and bans them.
+
+The bar updates live and disappears when nobody is waiting.
 
 ## Creating rooms
 
@@ -17,11 +26,13 @@ Room list **+** → *Create room* (or `/create [name]`). Choose:
 - whether it's **public**;
 - whether it's **end-to-end encrypted** (rooms only; can't be turned off later).
 
+A room created in a space shows under that space straight away.
+
 Direct messages: **+** → *Direct message*, `/msg <user> <text>`, `/query <user>`, or **Message** on someone's profile.
 
 ## Room settings
 
-Open with the room header's info button, right-click → Room Settings, or the palette. Three tabs:
+Open with the room header's info button, right-click → Room Settings, or the palette. Four tabs:
 
 ### General
 - **Icon**: upload or remove.

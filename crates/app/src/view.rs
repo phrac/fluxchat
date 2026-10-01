@@ -2682,6 +2682,13 @@ impl FluxChat {
 
             // Search is now rendered as a modal overlay (like quick switcher)
 
+            // People asking to join (knock), for those who can let them in.
+            if !room_id.starts_with("thread::") {
+                if let Some(bar) = self.view_join_requests(room_id) {
+                    panels_col = panels_col.push(bar);
+                }
+            }
+
             // Panels (pinned messages, threads, files, notices): fixed header,
             // scrollable body capped at HUD_PANEL_MAX_HEIGHT.
             if self.files_open {
