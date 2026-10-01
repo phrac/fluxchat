@@ -533,7 +533,9 @@ impl FluxChat {
                                 && m.poll.is_none()
                                 && m.reactions.is_empty()
                             {
-                                tracing::warn!(
+                                // debug: the watcher re-sends the whole room on
+                                // every change, so this would repeat each time.
+                                tracing::debug!(
                                     "filtering empty message: id={} sender={} ts={}",
                                     m.event_id, m.sender, m.timestamp,
                                 );
@@ -613,7 +615,7 @@ impl FluxChat {
                     // otherwise download every image they receive.
                     let in_pane = !is_active && self.shown_in_pane(&room_id);
                     let (preview_task, image_task) = if is_active || in_pane {
-                        (self.resolve_url_previews(&merged), self.resolve_images(&merged))
+                        (self.resolve_url_previews(&merged), self.resolve_images(&room_id, &merged))
                     } else {
                         (Task::none(), Task::none())
                     };
@@ -877,19 +879,25 @@ impl FluxChat {
                 }
                 // Re-resolve images for already-cached messages (clear pending to allow retries)
                 self.image_cache_pending.clear();
-                let cached_msgs: Vec<fluxchat_core::MessageInfo> = self.messages_by_room
-                    .get(&room_id)
-                    .cloned()
-                    .unwrap_or_default();
-                let image_task = self.resolve_images(&cached_msgs);
+                // Borrowed out and back rather than cloning the whole room.
+                let image_task = match self.messages_by_room.remove(&room_id) {
+                    Some(msgs) => {
+                        let t = self.resolve_images(&room_id, &msgs);
+                        self.messages_by_room.insert(room_id.clone(), msgs);
+                        t
+                    }
+                    None => Task::none(),
+                };
                 // A view whose Timeline came up empty (its initial backfill
                 // failed or was cut short) would otherwise stay blank until a
                 // new event arrives — fetch history now.
-                let nothing_visible = self.visible_rows(&room_id, &cached_msgs).iter()
-                    .all(|m| m.is_system());
+                let (nothing_visible, cached_len) = match self.messages_by_room.get(&room_id) {
+                    Some(msgs) => (self.visible_rows(&room_id, msgs).iter().all(|m| m.is_system()), msgs.len()),
+                    None => (true, 0),
+                };
                 let backfill = if nothing_visible {
                     self.paginating = true;
-                    self.paginate_msg_count = cached_msgs.len();
+                    self.paginate_msg_count = cached_len;
                     self.update(Message::PaginateBack(room_id.clone()))
                 } else {
                     Task::none()
@@ -5215,7 +5223,10 @@ impl FluxChat {
         if result.is_empty() { None } else { Some(result) }
     }
 
-    fn resolve_images(&mut self, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
+    /// Load inline images for `view_key`'s messages (cache first, then the
+    /// event itself so encrypted media decrypts). `view_key` may be a pane
+    /// that isn't the main view.
+    fn resolve_images(&mut self, view_key: &str, messages: &[fluxchat_core::MessageInfo]) -> Task<Message> {
         let mut tasks = Vec::new();
         for msg in messages {
             if let Some(ref mxc) = msg.image_mxc {
@@ -5316,8 +5327,7 @@ impl FluxChat {
                 let core = self.core.clone();
                 let mxc_clone = mxc.clone();
                 let event_id = msg.event_id.clone();
-                let room_id = self.selected_room_id.clone().unwrap_or_default();
-                let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
+                let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
                 tasks.push(Task::perform(
                     async move {
                         let client = core.get_client().await.ok()?;
