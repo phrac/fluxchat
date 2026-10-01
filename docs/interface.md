@@ -20,6 +20,7 @@ The narrow column on the far left.
   - its three most recent threads, plus **All threads**;
   - Mark as Read, Favourite, Copy Link, Open in split view, Invite, Room Settings, Leave.
 - **Resize** the room list by dragging its right edge.
+- **Hide** it for more room: the panel button in its header, or **Ctrl/⌘+[**. Bring it back with the panel button at the bottom of the spaces bar, or **Ctrl/⌘+[** again.
 
 ## Room header
 
@@ -62,7 +63,7 @@ Four optional panels on the right. Open any combination; each one is resizable a
 
 - **Threads**: every thread in the room, most recently active first. See [Threads](threads.md).
 - **Mentions** (**Ctrl/⌘+I**): every message that mentioned you, across all rooms. See [Notifications](notifications.md#mentions-inbox).
-- **Users**: the member list with roles, presence dots and a filter box.
+- **Users**: the member list with roles, presence dots and a filter box. Hide it with its panel button, the people button in the room header, or **Ctrl/⌘+]**.
 
 ## Status bar
 

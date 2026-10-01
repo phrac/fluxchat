@@ -25,6 +25,8 @@ When a window has more than one pane, each pane gets a title bar: drag handle, n
 
 A non-focused pane shows a room's latest 300 messages; focus it to scroll through the full history.
 
+Need more space for panes? Hide the room list (**Ctrl/⌘+[**) and the member list (**Ctrl/⌘+]**).
+
 ## Windows
 
 Windows are separate pane layouts, like tmux windows or browser tabs.

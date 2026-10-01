@@ -9,6 +9,8 @@
 | Ctrl/⌘ + K | Command palette (rooms and actions; `>` for actions only) |
 | Ctrl/⌘ + I | Mentions inbox |
 | Ctrl/⌘ + F | Search the current room |
+| Ctrl/⌘ + [ | Hide / show the room list |
+| Ctrl/⌘ + ] | Hide / show the member list |
 | Ctrl/⌘ + C | Copy selected text |
 | Ctrl/⌘ + V | Paste an image from the clipboard as an attachment |
 | Alt + 1–9 | Go to the Nth room in the room list |

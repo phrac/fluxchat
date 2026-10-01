@@ -1532,6 +1532,10 @@ impl FluxChat {
             Message::ShowTmuxHelp => {
                 self.help_text = Some(crate::panes::TMUX_HELP.into());
             }
+            Message::ToggleRoomList => {
+                self.room_list_collapsed = !self.room_list_collapsed;
+                let _ = self.core.db.set_setting("room_list_collapsed", if self.room_list_collapsed { "true" } else { "false" });
+            }
             Message::ToggleMemberList => {
                 self.show_member_list = !self.show_member_list;
                 let _ = self.core.db.set_setting("show_member_list", if self.show_member_list { "true" } else { "false" });
@@ -4587,6 +4591,7 @@ impl FluxChat {
             A::new("Notification settings", "Desktop alerts and account rules", settings("notifications")),
             A::new("Voice & video settings", "Microphone, speaker, audio processing", settings("voice")),
             A::new("Security", "Encryption, backup and recovery", settings("security")),
+            A::new(if self.room_list_collapsed { "Show room list" } else { "Hide room list" }, "More room for panes  Ctrl/\u{2318}+[", Message::ToggleRoomList),
             A::new("Create room", "Start a new room or space", Message::OpenModal(Modal::CreateRoom)),
             A::new("New direct message", "Start a conversation", Message::OpenModal(Modal::CreateDm)),
             A::new("Explore rooms", "Search the public room directory", Message::OpenModal(Modal::Directory)),
@@ -4613,7 +4618,7 @@ impl FluxChat {
                 A::new("Invite people", "Invite to this room", Message::OpenModal(Modal::Invite)),
                 A::new("Search messages", "Search this room", Message::ToggleSearch),
                 A::new(if self.threads_open { "Hide threads" } else { "Show threads" }, "Threads sidebar", Message::ToggleThreads),
-                A::new(if self.show_member_list { "Hide members" } else { "Show members" }, "Member list", Message::ToggleMemberList),
+                A::new(if self.show_member_list { "Hide members" } else { "Show members" }, "Member list  Ctrl/\u{2318}+]", Message::ToggleMemberList),
                 A::new("Mark as read", "Clear this room's unread count", Message::ContextMenuAction("mark_read".into(), room.clone())),
                 A::new("Leave room", "Leave this room", Message::AskLeaveRoom(room)),
             ]);
@@ -5716,6 +5721,9 @@ impl FluxChat {
         }
         if let Some(json) = self.core.db.get_setting("collapsed_room_threads") {
             self.collapsed_room_threads = serde_json::from_str(&json).unwrap_or_default();
+        }
+        if let Some(v) = self.core.db.get_setting("room_list_collapsed") {
+            self.room_list_collapsed = v == "true";
         }
         if let Some(v) = self.core.db.get_setting("pins_open") {
             self.pins_open = v == "true";

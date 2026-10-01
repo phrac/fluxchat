@@ -74,7 +74,7 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - 9 built-in themes plus your own TOML themes (light and dark)
 - Message and sidebar fonts, text size
 - Preferences for timestamps (12/24h), compact layout, message grouping, big emoji, link previews, GIF autoplay, send shortcut, markdown, privacy (read receipts, typing, presence)
-- Resizable room list, panes and sidebars (pins, threads, mentions, members)
+- Resizable room list, panes and sidebars (pins, threads, mentions, members); hide the room and member lists for more room (Ctrl/Cmd+[ and ])
 
 ### Power users
 - 57+ slash commands with Tab completion (`/help` lists them)

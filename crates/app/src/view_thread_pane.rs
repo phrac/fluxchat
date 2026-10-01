@@ -13,6 +13,13 @@ use crate::view::thin_scrollbar;
 
 /// Most recent rows a room shows in a non-focused pane (not virtualized).
 const SIDE_PANE_ROWS: usize = 300;
+/// Spaces bar width (see view_sidebar).
+const SPACES_BAR_WIDTH: f32 = 56.0;
+/// Gap between panes (pane_grid spacing).
+const PANE_SPACING: f32 = 4.0;
+/// Width taken by a title bar's controls, padding and borders: what's left
+/// is the most the title may use.
+const TITLE_BAR_RESERVED: f32 = 124.0;
 /// Rooms offered in an empty pane's picker (the rest via search).
 const EMPTY_PANE_ROOMS: usize = 8;
 /// Width of the empty-pane room picker.
@@ -24,6 +31,7 @@ impl FluxChat {
         let window = self.window();
         let multiple = window.grid.len() > 1;
         let maximized = window.grid.maximized().is_some();
+        let widths = self.pane_widths();
         pane_grid(&window.grid, move |pane, slot, _is_max| {
             let focused = pane == window.focus;
             let body: Element<Message> = match slot.key.as_deref() {
@@ -47,7 +55,13 @@ impl FluxChat {
             let mut content = pane_grid::Content::new(framed);
             if multiple || maximized {
                 content = content.title_bar(
-                    pane_grid::TitleBar::new(self.view_pane_title(slot.key.as_deref(), focused))
+                    pane_grid::TitleBar::new(
+                        // iced hides a title that doesn't fit beside the
+                        // controls (instead of shortening it): cap and clip it.
+                        container(self.view_pane_title(slot.key.as_deref(), focused))
+                            .max_width((widths.get(&pane).copied().unwrap_or(0.0) - TITLE_BAR_RESERVED).max(40.0))
+                            .clip(true),
+                    )
                         .controls(pane_grid::Controls::new(self.view_pane_controls(pane, maximized)))
                         .always_show_controls()
                         .padding([4, 8])
@@ -65,11 +79,44 @@ impl FluxChat {
         })
         .width(Fill)
         .height(Fill)
-        .spacing(4)
+        .spacing(PANE_SPACING)
         .on_click(Message::PaneClicked)
         .on_drag(Message::PaneDragged)
         .on_resize(8, Message::PaneResized)
         .into()
+    }
+
+    /// Width of each pane in the active window: the window minus the panels
+    /// around the grid, split as the grid's layout says.
+    fn pane_widths(&self) -> std::collections::BTreeMap<pane_grid::Pane, f32> {
+        let handle = crate::view::RESIZE_HANDLE_WIDTH;
+        let room_open = self.selected_room_id.is_some();
+        let mut grid_w = self.window_size.0 - SPACES_BAR_WIDTH;
+        if !self.room_list_collapsed {
+            grid_w -= self.sidebar_width + handle;
+        }
+        if self.pins_open && room_open {
+            grid_w -= self.pins_width + handle;
+        }
+        if self.threads_open && room_open {
+            grid_w -= self.thread_list_width + handle;
+        }
+        if self.mentions_open {
+            grid_w -= self.mentions_width + handle;
+        }
+        if self.show_member_list && room_open {
+            grid_w -= self.member_list_width + handle;
+        }
+        let grid_w = grid_w.max(0.0);
+        let grid = &self.window().grid;
+        if let Some(max) = grid.maximized() {
+            return [(max, grid_w)].into_iter().collect();
+        }
+        grid.layout()
+            .pane_regions(PANE_SPACING, 0.0, iced::Size::new(grid_w, self.window_size.1))
+            .into_iter()
+            .map(|(pane, r)| (pane, r.width))
+            .collect()
     }
 
     /// Pane title: icon/avatar, name, short context. Dragging it moves the pane.

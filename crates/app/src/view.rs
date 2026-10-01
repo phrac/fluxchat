@@ -47,7 +47,7 @@ const THREAD_PREVIEW_WIDTH: f32 = 360.0;
 /// Width of right-click menus.
 const CONTEXT_MENU_WIDTH: f32 = 300.0;
 /// Grab width of panel dividers.
-const RESIZE_HANDLE_WIDTH: f32 = 3.0;
+pub(crate) const RESIZE_HANDLE_WIDTH: f32 = 3.0;
 /// Read-receipt avatars shown under a message before "+N".
 const READ_RECEIPT_AVATARS: usize = 5;
 /// Left offset of a thread entry's icon so it lines up with its parent
@@ -953,12 +953,13 @@ impl FluxChat {
         let main_content = self.view_pane_grid();
 
         use crate::state::ResizeTarget;
-        let mut main_area = row![
-            sidebar,
-            container(room_list).width(Length::Fixed(self.sidebar_width)),
-            self.resize_handle(ResizeTarget::RoomList),
-            main_content,
-        ];
+        let mut main_area = row![sidebar];
+        if !self.room_list_collapsed {
+            main_area = main_area
+                .push(container(room_list).width(Length::Fixed(self.sidebar_width)))
+                .push(self.resize_handle(ResizeTarget::RoomList));
+        }
+        let mut main_area = main_area.push(main_content);
 
         // Pinned messages sidebar
         if self.pins_open && self.selected_room_id.is_some() {
@@ -1470,7 +1471,22 @@ impl FluxChat {
             col = col.push(btn);
         }
 
-        container(scrollable(col).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
+        let spaces = scrollable(col).height(Fill)
+            .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4)))
+            .style(thin_scrollbar);
+        let mut bar = column![spaces].align_x(iced::Alignment::Center);
+        if self.room_list_collapsed {
+            let tip = if cfg!(target_os = "macos") { "Show room list (\u{2318}[)" } else { "Show room list (Ctrl+[)" };
+            bar = bar.push(container(crate::ui::tooltip_at(
+                button(crate::ui::icon(crate::icons::SVG_PANEL_LEFT_OPEN, 18.0, theme::colors().text_muted))
+                    .on_press(Message::ToggleRoomList)
+                    .padding(8)
+                    .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+                tip,
+                iced::widget::tooltip::Position::Right,
+            )).padding([8, 0]));
+        }
+        container(bar)
             .width(56)
             .height(Fill)
             .style(|_: &Theme| container::Style {
@@ -1708,6 +1724,15 @@ impl FluxChat {
             );
         }
 
+        let shortcut = if cfg!(target_os = "macos") { "Hide room list (\u{2318}[)" } else { "Hide room list (Ctrl+[)" };
+        header_row = header_row.push(crate::ui::tooltip_at(
+            button(crate::ui::icon(crate::icons::SVG_PANEL_LEFT_CLOSE, 14.0, theme::colors().text_dim))
+                .on_press(Message::ToggleRoomList)
+                .padding([2, 4])
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+            shortcut,
+            iced::widget::tooltip::Position::Bottom,
+        ));
         header_row = header_row.push(
             button(
                 iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PLUS))
@@ -3118,6 +3143,12 @@ impl FluxChat {
                     if let iced::keyboard::Key::Character(c) = key {
                         if c.as_str() == "k" || c.as_str() == "K" {
                             return Some(Message::ToggleQuickSwitcher);
+                        }
+                        if c.as_str() == "[" {
+                            return Some(Message::ToggleRoomList);
+                        }
+                        if c.as_str() == "]" {
+                            return Some(Message::ToggleMemberList);
                         }
                         if c.as_str() == "i" || c.as_str() == "I" {
                             return Some(Message::ToggleMentions);

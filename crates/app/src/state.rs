@@ -245,6 +245,8 @@ pub struct FluxChat {
     pub thread_list_width: f32,
     /// Width of the pinned messages sidebar (resizable).
     pub pins_width: f32,
+    /// Room list hidden to give the panes more room (persisted).
+    pub room_list_collapsed: bool,
     /// Mentions inbox: messages that mentioned us, newest first.
     pub mentions: Vec<fluxchat_core::MentionItem>,
     pub mentions_open: bool,
@@ -635,6 +637,7 @@ impl FluxChat {
             member_list_width: 220.0,
             thread_list_width: 280.0,
             pins_width: 300.0,
+            room_list_collapsed: false,
             mentions: Vec::new(),
             mentions_open: false,
             mentions_width: 300.0,

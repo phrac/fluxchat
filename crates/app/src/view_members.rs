@@ -51,7 +51,16 @@ impl FluxChat {
                     border: iced::Border { radius: 4.0.into(), ..Default::default() },
                     ..Default::default()
                 }),
+                crate::ui::tooltip_at(
+                    button(crate::ui::icon(crate::icons::SVG_PANEL_RIGHT_CLOSE, 14.0, theme::colors().text_dim))
+                        .on_press(Message::ToggleMemberList)
+                        .padding([2, 4])
+                        .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+                    if cfg!(target_os = "macos") { "Hide users (\u{2318}])" } else { "Hide users (Ctrl+])" },
+                    iced::widget::tooltip::Position::Bottom,
+                ),
             ]
+            .spacing(2)
             .align_y(iced::Alignment::Center),
         )
         .padding([8, 12])

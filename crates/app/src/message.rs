@@ -164,6 +164,8 @@ pub enum Message {
     RefreshRoomList,
     InvitesRefreshed(Vec<fluxchat_core::RoomInfo>),
     ToggleCreateMenu,
+    /// Collapse / expand the room list (Ctrl/Cmd+[).
+    ToggleRoomList,
     DmSearchChanged(String),
     DmSearchSubmit,
     DmSearchResults(Vec<fluxchat_core::rooms::UserSearchResult>),

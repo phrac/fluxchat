@@ -885,4 +885,14 @@ mod flow_tests {
         // Shown from the uploaded bytes, without downloading it back.
         assert!(app.avatar_cache.contains_key("mxc://x/new"));
     }
+
+    #[tokio::test]
+    async fn room_list_collapses_and_remembers() {
+        let mut app = app();
+        let _ = app.update(Message::ToggleRoomList);
+        assert!(app.room_list_collapsed);
+        assert_eq!(app.core.db.get_setting("room_list_collapsed").as_deref(), Some("true"));
+        let _ = app.update(Message::ToggleRoomList);
+        assert!(!app.room_list_collapsed);
+    }
 }
