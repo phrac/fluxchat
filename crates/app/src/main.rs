@@ -7,6 +7,7 @@
 mod commands;
 mod html;
 mod icons;
+mod isolated;
 mod measured;
 mod panes;
 mod prefs;

@@ -130,6 +130,12 @@ impl FluxChat {
         iced::widget::Id::from(format!("pane-scroll:{key}"))
     }
 
+    /// Scroll a side pane to its newest message. Its list is `anchor_bottom`,
+    /// so offsets count from the bottom: `snap_to_end` would go to the *top*.
+    pub(crate) fn pane_snap_bottom<T>(key: &str) -> Task<T> {
+        iced::widget::operation::snap_to(Self::pane_scroll_id(key), iced::widget::scrollable::RelativeOffset::START)
+    }
+
     /// Persist the window/pane layout.
     pub(crate) fn save_layout(&self) {
         let saved = SavedLayout {
@@ -448,7 +454,7 @@ impl FluxChat {
                             Err(e) => Message::ShowError(format!("Couldn't send: {e}")),
                         },
                     ),
-                    iced::widget::operation::snap_to_end(Self::pane_scroll_id(&key)),
+                    Self::pane_snap_bottom(&key),
                 ])
             }
             Message::TmuxPrefix => {

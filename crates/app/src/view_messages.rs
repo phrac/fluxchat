@@ -21,6 +21,8 @@ const CAPTION_PART_INDEX: usize = 10_000;
 
 /// Size multiplier for emoji-only messages.
 const BIG_EMOJI_SCALE: f32 = 2.2;
+/// Lines a collapsed code block shows before "Show more".
+const CODE_BLOCK_LINES: usize = 5;
 
 /// Gap between the columns of a message row (time, nick, avatar, separator, text).
 pub(crate) const MSG_COL_GAP: f32 = 6.0;
@@ -812,15 +814,18 @@ impl FluxChat {
         } else if let Some(ref formatted) = msg.formatted_body {
             let has_code_block = formatted.contains("<pre>");
             let has_table = formatted.contains("<table");
-            // The set holds messages toggled away from the default.
-            let is_expanded = self.expanded_code_blocks.contains(&msg.event_id) != self.prefs.expand_code_blocks;
+            // Per code block: long enough to collapse, and expanded? The set
+            // holds blocks toggled away from the default.
+            let long_blocks = if has_code_block { long_code_blocks(formatted, CODE_BLOCK_LINES) } else { Vec::new() };
+            let expanded: Vec<bool> = (0..long_blocks.len())
+                .map(|i| self.expanded_code_blocks.contains(&(msg.event_id.clone(), i)) != self.prefs.expand_code_blocks)
+                .collect();
 
             let rendered = self.body_cache.get_or_insert(
-                ("html", formatted.as_str(), is_expanded, fs.to_bits()),
+                ("html", formatted.as_str(), &expanded, fs.to_bits()),
                 || {
-                    // Collapse code blocks: truncate <pre> content to ~5 lines if not expanded
-                    let mut display_html = if has_code_block && !is_expanded {
-                        collapse_code_blocks(formatted, 5)
+                    let mut display_html = if has_code_block {
+                        collapse_code_blocks(formatted, CODE_BLOCK_LINES, &expanded)
                     } else {
                         formatted.clone()
                     };
@@ -845,6 +850,7 @@ impl FluxChat {
                 let parts = parts.clone();
                 let mut body_col = column![].spacing(4).width(Fill);
                 let mut part_idx = 0usize;
+                let mut block_idx = 0usize;
 
                 for part in parts {
                     match part {
@@ -876,13 +882,13 @@ impl FluxChat {
                             part_idx += 1;
                         }
                         crate::html::MessagePart::CodeBlock(spans) => {
-                            let eid = msg.event_id.clone();
+                            let block = block_idx;
+                            block_idx += 1;
                             let wid = crate::selectable_text::SelectionWidgetId {
                                 event_id: msg.event_id.clone(), part_index: part_idx,
                             };
                             let sel_range = self.selection_range_for(&wid);
                             let sel_active = self.selection.active;
-                            let label = if is_expanded { "Show less" } else { "Show more" };
                             let code_col = column![
                                 selectable_rich_text(spans)
                                     .font(self.msg_font())
@@ -898,16 +904,24 @@ impl FluxChat {
                                         crate::selectable_text::SelectionEvent::Moved(id, l, i) => Message::SelectionMoved(id, l, i),
                                         crate::selectable_text::SelectionEvent::Ended => Message::SelectionEnded,
                                     }),
-                                button(text(label).font(self.msg_font()).size(11).color(theme::colors().accent))
-                                    .on_press(Message::ToggleCodeBlock(eid))
-                                    .padding([2, 8])
-                                    .style(|_, status| button::Style {
-                                        background: if matches!(status, button::Status::Hovered) {
-                                            Some(theme::tint(0.06).into())
-                                        } else { None },
-                                        ..Default::default()
-                                    }),
                             ].spacing(4).width(Fill);
+                            // Only blocks with lines to hide get the toggle.
+                            let code_col = if long_blocks.get(block).copied().unwrap_or(false) {
+                                let label = if expanded[block] { "Show less" } else { "Show more" };
+                                code_col.push(
+                                    button(text(label).font(self.msg_font()).size(11).color(theme::colors().accent))
+                                        .on_press(Message::ToggleCodeBlock(msg.event_id.clone(), block))
+                                        .padding([2, 8])
+                                        .style(|_, status| button::Style {
+                                            background: if matches!(status, button::Status::Hovered) {
+                                                Some(theme::tint(0.06).into())
+                                            } else { None },
+                                            ..Default::default()
+                                        }),
+                                )
+                            } else {
+                                code_col
+                            };
 
                             let code_container_bg = theme::colors().code_bg;
                             body_col = body_col.push(
@@ -1851,53 +1865,59 @@ fn convert_markdown_headings(html: &str) -> String {
     result
 }
 
-/// Truncate code inside `<pre>` blocks to `max_lines` lines.
-fn collapse_code_blocks(html: &str, max_lines: usize) -> String {
-    let mut result = String::new();
-    let mut remaining = html;
-
-    while let Some(pre_start) = remaining.find("<pre>").or_else(|| remaining.find("<pre><code")) {
-        // Copy everything before <pre>
-        result.push_str(&remaining[..pre_start]);
-
-        // Find the opening tag end
-        let tag_and_rest = &remaining[pre_start..];
-        let content_start = tag_and_rest.find('>').map(|i| i + 1).unwrap_or(0);
-
-        // Handle nested <code> tag
-        let after_pre = &tag_and_rest[content_start..];
-        let (code_start_offset, end_marker) = if after_pre.starts_with("<code") {
-            let inner_end = after_pre.find('>').map(|i| i + 1).unwrap_or(0);
-            (content_start + inner_end, "</code></pre>")
+/// Byte range of each `<pre>` block's code (inside `<pre>` / `<pre><code ..>`),
+/// in document order — the order `html_to_parts` yields `CodeBlock`s.
+fn code_block_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut pos = 0;
+    while let Some(found) = html[pos..].find("<pre") {
+        let tag = pos + found;
+        // `<pre>` or `<pre attr..>`, not e.g. `<prefix>`.
+        if !html[tag + 4..].starts_with(['>', ' ', '\t', '\n']) {
+            pos = tag + 4;
+            continue;
+        }
+        let Some(gt) = html[tag..].find('>') else { break };
+        let content_start = tag + gt + 1;
+        let (code_start, end_marker) = if html[content_start..].starts_with("<code") {
+            match html[content_start..].find('>') {
+                Some(i) => (content_start + i + 1, "</code></pre>"),
+                None => break,
+            }
         } else {
             (content_start, "</pre>")
         };
+        let Some(len) = html[code_start..].find(end_marker) else { break };
+        ranges.push(code_start..code_start + len);
+        pos = code_start + len + end_marker.len();
+    }
+    ranges
+}
 
-        let code_region = &tag_and_rest[code_start_offset..];
-        if let Some(end_pos) = code_region.find(end_marker) {
-            let full_code = &code_region[..end_pos];
-            let lines: Vec<&str> = full_code.split('\n').collect();
+/// Whether each code block is longer than `max_lines` (worth a Show more).
+fn long_code_blocks(html: &str, max_lines: usize) -> Vec<bool> {
+    code_block_ranges(html).into_iter()
+        .map(|r| html[r].split('\n').nth(max_lines).is_some())
+        .collect()
+}
 
-            // Copy the opening tags
-            result.push_str(&tag_and_rest[..code_start_offset]);
-
-            if lines.len() > max_lines {
-                // Truncate
-                result.push_str(&lines[..max_lines].join("\n"));
-                result.push_str(&format!("\n... ({} more lines)", lines.len() - max_lines));
-            } else {
-                result.push_str(full_code);
-            }
-
-            result.push_str(end_marker);
-            remaining = &code_region[end_pos + end_marker.len()..];
-        } else {
-            // No closing tag found, copy as-is
-            result.push_str(tag_and_rest);
-            break;
+/// Truncate code blocks to `max_lines` lines, except those `expanded[i]`.
+fn collapse_code_blocks(html: &str, max_lines: usize, expanded: &[bool]) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut copied = 0;
+    for (i, range) in code_block_ranges(html).into_iter().enumerate() {
+        if expanded.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let lines: Vec<&str> = html[range.clone()].split('\n').collect();
+        if lines.len() > max_lines {
+            result.push_str(&html[copied..range.start]);
+            result.push_str(&lines[..max_lines].join("\n"));
+            result.push_str(&format!("\n... ({} more lines)", lines.len() - max_lines));
+            copied = range.end;
         }
     }
-    result.push_str(remaining);
+    result.push_str(&html[copied..]);
     result
 }
 
@@ -1931,7 +1951,22 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_word, format_clock};
+    use super::{collapse_code_blocks, contains_word, format_clock, long_code_blocks};
+
+    #[test]
+    fn code_blocks_collapse_one_at_a_time() {
+        let long = "a\nb\nc\nd";
+        let html = format!("<p>x</p><pre><code class=\"language-sh\">{long}</code></pre><pre>one</pre><pre class=\"y\">{long}</pre>");
+        // Only blocks longer than the limit offer Show more.
+        assert_eq!(long_code_blocks(&html, 2), vec![true, false, true]);
+        // Expanding the first leaves the last one collapsed.
+        let out = collapse_code_blocks(&html, 2, &[true, false, false]);
+        assert!(out.contains(&format!(">{long}</code></pre>")));
+        assert!(out.contains("<pre class=\"y\">a\nb\n... (2 more lines)</pre>"));
+        assert!(out.contains("<pre>one</pre>"));
+        // Nothing to collapse: unchanged.
+        assert_eq!(collapse_code_blocks("<prefix>a\nb\nc</prefix>", 1, &[]), "<prefix>a\nb\nc</prefix>");
+    }
 
     #[test]
     fn whole_word_matching() {

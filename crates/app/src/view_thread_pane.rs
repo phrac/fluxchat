@@ -38,7 +38,9 @@ impl FluxChat {
                 // A lone empty pane is the welcome view; in a split it's a picker.
                 None if multiple => self.view_empty_pane(pane),
                 _ if focused => self.view_content(),
-                Some(key) => self.view_pane_body(key),
+                // Own tree node: never inherits the full view's widget
+                // state (its scroll offset would read upside down here).
+                Some(key) => crate::isolated::Isolated::new(self.view_pane_body(key)).into(),
                 None => self.view_empty_pane(pane),
             };
             let framed = container(body)
@@ -266,11 +268,12 @@ impl FluxChat {
                 }
                 scrollable(list)
                     .id(Self::pane_scroll_id(key))
-                    .anchor_bottom()
                     .height(Fill)
                     .direction(iced::widget::scrollable::Direction::Vertical(
                         iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
                     ))
+                    // After `direction`, which replaces the scrollbar (anchor included).
+                    .anchor_bottom()
                     .style(thin_scrollbar)
                     .into()
             }

@@ -399,7 +399,7 @@ pub enum Message {
     ScrollToReadAnchor,
 
     // --- Code blocks ---
-    ToggleCodeBlock(String), // event_id
+    ToggleCodeBlock(String, usize), // event_id, code block index in the message
 
     // --- Reporting ---
     ReportReasonChanged(String),

@@ -183,7 +183,7 @@ pub struct FluxChat {
     pub voice_record_start: Option<std::time::Instant>,
     pub voice_ready: Option<(Vec<u8>, u64)>, // encoded ogg bytes + duration_ms, waiting to send
     pub new_messages_below: bool, // true when msgs arrived while scrolled up
-    pub expanded_code_blocks: HashSet<String>, // event_ids with expanded code
+    pub expanded_code_blocks: HashSet<(String, usize)>, // (event_id, block index) toggled from the default
     pub report_reason: String,
     pub quick_switcher_open: bool,
     pub quick_switcher_query: String,

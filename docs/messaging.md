@@ -19,6 +19,8 @@ Unsent text is kept per room, so switching rooms doesn't lose a half-written mes
 | `- item` | bulleted list |
 | `$x^2$` | inline maths (converted to Unicode) |
 
+Code blocks longer than five lines are shown collapsed, each with its own **Show more** / **Show less** (Preferences → *Expand code blocks* flips the default).
+
 The toolbar under the message box inserts these for you. To send text exactly as typed, turn off *Markdown* in Preferences, or use `/plain`. `/html` sends raw HTML.
 
 To send a message that starts with `/` (not a command), start it with `//`. For example, `//shrug` sends `/shrug`.

@@ -674,7 +674,9 @@ impl FluxChat {
                         tasks.push(self.update(Message::SendReadReceipt));
                     }
                     if in_pane {
-                        tasks.push(iced::widget::operation::snap_to_end(Self::pane_scroll_id(&room_id)));
+                        // No scroll here: the pane's list is anchored to the
+                        // bottom, so it follows new messages while at the end
+                        // and stays put while you read further up.
                         // Visible in a pane while the window is focused: read.
                         if self.app_focused {
                             let core = self.core.clone();
@@ -3292,9 +3294,10 @@ impl FluxChat {
             }
 
             // --- Code blocks ---
-            Message::ToggleCodeBlock(event_id) => {
-                if !self.expanded_code_blocks.remove(&event_id) {
-                    self.expanded_code_blocks.insert(event_id);
+            Message::ToggleCodeBlock(event_id, block) => {
+                let key = (event_id, block);
+                if !self.expanded_code_blocks.remove(&key) {
+                    self.expanded_code_blocks.insert(key);
                 }
             }
 
