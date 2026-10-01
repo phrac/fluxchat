@@ -231,7 +231,13 @@ pub async fn send_attachment(
 
     let mut config = AttachmentConfig::default();
     if mime_type.starts_with("image/") {
-        if let Some((thumb, w, h)) = crate::media::generate_thumbnail(&data, 320, 240) {
+        // Decoding + resizing a large image is CPU-bound: keep it off the
+        // async worker (block_in_place avoids copying the image to move it).
+        let make = || crate::media::generate_thumbnail(&data, 320, 240);
+        let multi_thread = tokio::runtime::Handle::try_current()
+            .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+        let thumb = if multi_thread { tokio::task::block_in_place(make) } else { make() };
+        if let Some((thumb, w, h)) = thumb {
             use matrix_sdk::ruma::UInt;
             config.thumbnail = Some(matrix_sdk::attachment::Thumbnail {
                 size: UInt::try_from(thumb.len()).unwrap_or_default(),

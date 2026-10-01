@@ -4268,7 +4268,9 @@ impl FluxChat {
 
                     // Refresh member list for presence/status changes. Joins and
                     // leaves trigger an immediate reload from MessagesUpdated.
-                    if slow_tick {
+                    // Only while it's on screen: each reload also asks every
+                    // member's server for presence (small rooms).
+                    if slow_tick && self.show_member_list {
                         if let Some(room_id) = self.selected_room_id.clone() {
                             tasks.push(self.reload_members(room_id));
                         }
