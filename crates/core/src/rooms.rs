@@ -343,10 +343,28 @@ pub async fn get_space_rooms(client: &matrix_sdk::Client, space_id: &str) -> Res
 
 /// Join a room by ID or alias.
 pub async fn join_room(client: &matrix_sdk::Client, room_id_or_alias: &str) -> Result<RoomInfo, AppError> {
+    join_room_via(client, room_id_or_alias, &[]).await
+}
+
+/// Join through the given servers (from a link's `via=`): needed to join a
+/// room on another server by its ID.
+pub async fn join_room_via(client: &matrix_sdk::Client, room_id_or_alias: &str, via: &[String]) -> Result<RoomInfo, AppError> {
     let room_or_alias = <&RoomOrAliasId>::try_from(room_id_or_alias)
         .map_err(|_| AppError::Other("Invalid room ID or alias".into()))?;
-    let room = client.join_room_by_id_or_alias(room_or_alias, &[]).await?;
+    let servers: Vec<matrix_sdk::ruma::OwnedServerName> = via.iter()
+        .filter_map(|s| matrix_sdk::ruma::ServerName::parse(s).ok())
+        .collect();
+    let room = client.join_room_by_id_or_alias(room_or_alias, &servers).await?;
     Ok(room_to_info(&room, None).await)
+}
+
+/// Resolve a room alias to its room ID and the servers that know it.
+pub async fn resolve_alias(client: &matrix_sdk::Client, alias: &str) -> Result<(String, Vec<String>), AppError> {
+    let alias = matrix_sdk::ruma::RoomAliasId::parse(alias)
+        .map_err(|_| AppError::Other("Invalid room alias".into()))?;
+    let response = client.resolve_room_alias(&alias).await
+        .map_err(|e| AppError::Other(format!("Couldn't resolve {alias}: {e}")))?;
+    Ok((response.room_id.to_string(), response.servers.iter().map(|s| s.to_string()).collect()))
 }
 
 /// Leave a room.

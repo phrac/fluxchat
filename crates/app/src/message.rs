@@ -227,6 +227,10 @@ pub enum Message {
 
     // --- Room commands (async) ---
     JoinRoom(String),                           // room_id or alias
+    /// Join through specific servers (room link `via=`).
+    JoinRoomVia(String, Vec<String>),
+    /// A matrix.to link was clicked: (room id / alias / user id, event id, via servers).
+    OpenMatrixLink(String, Option<String>, Vec<String>),
     RoomCreated(String, String, bool, bool, Option<String>), // room_id, name, encrypted, is_space, space_id
     LeaveRoom(String),                          // room_id
     InviteUser(String, String),                 // room_id, user_id

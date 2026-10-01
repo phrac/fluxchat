@@ -4,6 +4,7 @@
 
 - **Explore rooms**: the room-list **+** menu, the palette, or `/directory [query]`. Search your server's public rooms (or matrixrooms.info); click **Join**.
 - **By address**: `/join #room:server` (or a room ID).
+- **From a link**: clicking a room link (matrix.to) opens the room if you're in it, jumping to the linked message if there is one. For a room you're not in, fluxchat asks before joining.
 - **Ask to join** a room that requires approval: `/knock <room> [reason]`. Pending requests are listed in the room list.
 - **Invites** appear under the bell in the room list with **Accept** / **Decline**. You also get a desktop notification.
 

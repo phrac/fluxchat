@@ -56,6 +56,8 @@ pub enum Modal {
     Invite,
     Report { event_id: String, room_id: String },
     ConfirmLeave { room_id: String, name: String },
+    /// A link points to a room we're not in: ask before joining.
+    ConfirmJoin { target: String, via: Vec<String> },
     /// Raw event JSON for "View source".
     EventSource { event_id: String, json: String },
     SpaceDetails { space_id: String },

@@ -2183,11 +2183,14 @@ impl FluxChat {
 
             // --- Room commands ---
             Message::JoinRoom(room_or_alias) => {
+                return self.update(Message::JoinRoomVia(room_or_alias, Vec::new()));
+            }
+            Message::JoinRoomVia(room_or_alias, via) => {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.map_err(|e| e.to_string())?;
-                        let result = fluxchat_core::rooms::join_room(&client, &room_or_alias).await
+                        let result = fluxchat_core::rooms::join_room_via(&client, &room_or_alias, &via).await
                             .map_err(|e| e.to_string())?;
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         Ok::<_, String>(result)
@@ -3045,11 +3048,13 @@ impl FluxChat {
             Message::PlayVideo(event_id, room_id) => {
                 let core = self.core.clone();
                 let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
+                // The file name is the sender's text: only its extension is
+                // used, and only from a known list (see video_temp_path).
                 let filename = self.messages_by_room
                     .get(&real_room)
                     .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
                     .map(|m| m.body.clone())
-                    .unwrap_or_else(|| "video.mp4".to_string());
+                    .unwrap_or_default();
                 let eid = event_id.clone();
                 return Task::perform(
                     async move {
@@ -3060,7 +3065,7 @@ impl FluxChat {
                         }
                         let client = core.get_client().await.ok()?;
                         let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &eid).await.ok()?;
-                        let tmp = std::env::temp_dir().join(format!("fluxchat_video_{filename}"));
+                        let tmp = video_temp_path(&event_id, &filename);
                         std::fs::write(&tmp, &data).ok()?;
                         Some((event_id, tmp))
                     },
@@ -4110,32 +4115,47 @@ impl FluxChat {
                 }
             }
             Message::OpenUrl(url) => {
-                // Handle matrix.to room links by navigating to the room
-                if let Some(rest) = url.strip_prefix("https://matrix.to/#/") {
-                    let decoded = rest.replace("%3A", ":").replace("%23", "#");
-                    let id = decoded.split('?').next().unwrap_or(&decoded);
-                    if id.starts_with('!') {
-                        // Room ID — open it if joined, otherwise join it
-                        if self.rooms.iter().any(|r| r.room_id == id) {
-                            return self.update(Message::SelectRoom(id.to_string()));
-                        }
-                        return self.update(Message::JoinRoom(id.to_string()));
-                    } else if id.starts_with('#') {
-                        // Room alias — find matching room by alias-like name
-                        if let Some(room) = self.rooms.iter().find(|r| {
-                            // Check if any part of the alias matches the room name
-                            let alias_name = id.split(':').next().unwrap_or(id).trim_start_matches('#');
-                            r.name.eq_ignore_ascii_case(alias_name)
-                        }) {
-                            return self.update(Message::SelectRoom(room.room_id.clone()));
-                        }
-                        return self.update(Message::JoinRoom(id.to_string()));
-                    } else if id.starts_with('@') {
-                        // User mention — open profile modal
-                        return self.update(Message::OpenModal(crate::state::Modal::Profile { user_id: id.to_string() }));
-                    }
+                if let Some((target, event, via)) = parse_matrix_to(&url) {
+                    return self.update(Message::OpenMatrixLink(target, event, via));
                 }
-                let _ = open::that(&url);
+                // Links come from other people's messages: only hand web and
+                // mail links to the OS (not file://, app schemes, …).
+                let scheme = url.split(':').next().unwrap_or("").to_ascii_lowercase();
+                if matches!(scheme.as_str(), "http" | "https" | "mailto") {
+                    if let Err(e) = open::that(&url) {
+                        return self.update(Message::ShowError(format!("Couldn't open link: {e}")));
+                    }
+                } else {
+                    return self.update(Message::ShowError(format!("Not opening a {scheme}: link")));
+                }
+            }
+            Message::OpenMatrixLink(target, event, via) => {
+                if target.starts_with('@') {
+                    return self.update(Message::OpenModal(crate::state::Modal::Profile { user_id: target }));
+                }
+                if target.starts_with('#') {
+                    // Aliases resolve on the server (room names aren't aliases).
+                    let core = self.core.clone();
+                    return Task::perform(
+                        async move {
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::resolve_alias(&client, &target).await
+                                .map_err(|_| target)
+                        },
+                        move |result| match result {
+                            Ok((room_id, servers)) => Message::OpenMatrixLink(room_id, event.clone(), servers),
+                            // Unresolvable here: let the join try (it reports errors).
+                            Err(alias) => Message::OpenModal(crate::state::Modal::ConfirmJoin { target: alias, via: via.clone() }),
+                        },
+                    );
+                }
+                if self.rooms.iter().any(|r| r.room_id == target) {
+                    return match event {
+                        Some(event_id) => self.update(Message::OpenMention(target, event_id)),
+                        None => self.update(Message::SelectRoom(target)),
+                    };
+                }
+                self.modal = Some(crate::state::Modal::ConfirmJoin { target, via });
             }
             Message::Escape => {
                 // Priority: quick switcher > overflow > completions > modal > panels > reply/edit
@@ -5286,7 +5306,7 @@ impl FluxChat {
                             ).await.ok()?;
                             // GStreamer reads a file and blocks: off the async workers.
                             let (data, w, h) = tokio::task::spawn_blocking(move || {
-                                let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{event_id}.tmp"));
+                                let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{}.tmp", safe_file_stem(&event_id)));
                                 std::fs::write(&tmp, &data).ok()?;
                                 let result = extract_video_thumbnail(&tmp);
                                 let _ = std::fs::remove_file(&tmp);
@@ -5892,4 +5912,118 @@ fn gif_frames_task(core: std::sync::Arc<fluxchat_core::AppState>, mxc: String, d
             None => Message::Noop,
         },
     )
+}
+
+/// Parse a `https://matrix.to/#/<id>[/<event>][?via=…]` link into
+/// (room id / alias / user id, event id, via servers), percent-decoded.
+fn parse_matrix_to(url: &str) -> Option<(String, Option<String>, Vec<String>)> {
+    let rest = url.strip_prefix("https://matrix.to/#/")?;
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let mut parts = path.split('/').map(percent_decode).filter(|p| !p.is_empty());
+    let target = parts.next()?;
+    if !target.starts_with(['!', '#', '@']) {
+        return None;
+    }
+    let event = parts.next().filter(|e| e.starts_with('$'));
+    let via = query.split('&')
+        .filter_map(|kv| kv.strip_prefix("via="))
+        .map(percent_decode)
+        .filter(|s| !s.is_empty())
+        .collect();
+    Some((target, event, via))
+}
+
+/// Decode `%XX` escapes (invalid escapes are kept as-is).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            // Bytes, not a str slice: a multi-byte char after `%` isn't a boundary.
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(b) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn matrix_to_links() {
+        assert_eq!(
+            parse_matrix_to("https://matrix.to/#/!abc%3Aexample.org/%24ev1?via=example.org&via=other.net"),
+            Some(("!abc:example.org".into(), Some("$ev1".into()), vec!["example.org".into(), "other.net".into()])),
+        );
+        assert_eq!(
+            parse_matrix_to("https://matrix.to/#/%23room%3Aserver.org"),
+            Some(("#room:server.org".into(), None, vec![])),
+        );
+        assert_eq!(parse_matrix_to("https://matrix.to/#/@me:x.org"), Some(("@me:x.org".into(), None, vec![])));
+        assert_eq!(parse_matrix_to("https://example.org/#/!a:b"), None);
+        assert_eq!(parse_matrix_to("https://matrix.to/#/"), None);
+    }
+
+    #[test]
+    fn percent_decoding_keeps_bad_escapes() {
+        assert_eq!(percent_decode("a%3Ab%2"), "a:b%2");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("caf%C3%A9"), "café");
+        assert_eq!(percent_decode("%é and %"), "%é and %");
+    }
+}
+
+/// `s` reduced to `[A-Za-z0-9_-]` (event IDs, names from other users), so
+/// it can't change directories or pick a file type.
+fn safe_file_stem(s: &str) -> String {
+    let stem: String = s.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(80)
+        .collect();
+    if stem.is_empty() { "file".into() } else { stem }
+}
+
+/// Temp file for playing a video. Both parts of the name come from other
+/// people (the event and its file name), so: a sanitized event ID, and the
+/// extension only if it's a known video type. Otherwise a sender could write
+/// outside the temp folder (`../`) or have the fallback "open with default
+/// app" run a script (`.command`, `.app`, …).
+fn video_temp_path(event_id: &str, filename: &str) -> std::path::PathBuf {
+    const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "mov", "webm", "mkv", "ogv", "avi"];
+    let ext = filename.rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .filter(|e| VIDEO_EXTS.contains(&e.as_str()))
+        .unwrap_or_else(|| "mp4".into());
+    std::env::temp_dir().join(format!("fluxchat_video_{}.{ext}", safe_file_stem(event_id)))
+}
+
+#[cfg(test)]
+mod temp_path_tests {
+    use super::*;
+
+    #[test]
+    fn video_temp_paths_stay_in_temp_with_video_extensions() {
+        let tmp = std::env::temp_dir();
+        for (eid, name) in [
+            ("$abc", "../../../Library/LaunchAgents/x.plist"),
+            ("$../../evil", "clip.command"),
+            ("$e", "movie.MOV"),
+            ("", ""),
+        ] {
+            let p = video_temp_path(eid, name);
+            assert_eq!(p.parent(), Some(tmp.as_path()), "{p:?}");
+            let ext = p.extension().unwrap().to_str().unwrap();
+            assert!(["mp4", "mov"].contains(&ext), "{p:?}");
+        }
+        assert_eq!(video_temp_path("$e", "movie.MOV").extension().unwrap(), "mov");
+    }
 }

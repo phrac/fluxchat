@@ -69,6 +69,10 @@ Hover a message and click the smiley to pick a reaction, or click an existing re
 
 Click the microphone in the message box to record, click again to stop, preview, then send. Voice messages play inline with a progress bar.
 
+## Links
+
+Web and email links open in your browser or mail app. Links to rooms, messages and people (matrix.to) open inside fluxchat. Other kinds of links (local files, app links) aren't opened, for safety.
+
 ## Forwarding and pins
 
 - **Forward**: hover a message → forward arrow → pick a room.

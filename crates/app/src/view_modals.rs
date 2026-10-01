@@ -76,6 +76,17 @@ impl FluxChat {
                     ]),
                 ].spacing(ui::GAP).width(Length::Fixed(400.0)).into()
             }
+            crate::state::Modal::ConfirmJoin { target, via } => {
+                column![
+                    ui::header(format!("Join {target}?"), None),
+                    ui::hint("This link points to a room you're not in. Joining lets its members see you."),
+                    ui::footer(vec![
+                        ui::btn("Cancel", Tone::Ghost, Some(Message::CloseModal)).into(),
+                        ui::btn("Join room", Tone::Primary,
+                            Some(Message::Batch(vec![Message::CloseModal, Message::JoinRoomVia(target.clone(), via.clone())]))).into(),
+                    ]),
+                ].spacing(ui::GAP).width(Length::Fixed(400.0)).into()
+            }
             crate::state::Modal::Report { .. } => {
                 column![
                     ui::header("Report message", Some("Reports go to your homeserver's administrators.".into())),
