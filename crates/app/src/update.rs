@@ -2077,10 +2077,18 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::verification::confirm_verification(&client, &user_id, &flow_id).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::verification::confirm_verification(&client, &user_id, &flow_id)
+                            .await
+                            .map_err(|e| e.to_string())
                     },
-                    |_| Message::CloseModal,
+                    |result| match result {
+                        Ok(()) => Message::CloseModal,
+                        Err(e) => Message::Batch(vec![
+                            Message::CloseModal,
+                            Message::ShowError(format!("Verification failed: {e}")),
+                        ]),
+                    },
                 );
             }
             Message::VerificationCancel(user_id, flow_id) => {

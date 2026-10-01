@@ -118,23 +118,28 @@ impl FluxChat {
                 let core = self.core.clone();
                 Some(Task::perform(
                     async move {
-                        let handle = rfd::AsyncFileDialog::new()
+                        let Some(handle) = rfd::AsyncFileDialog::new()
                             .add_filter("Image", &["png", "jpg", "jpeg", "gif", "webp"])
                             .pick_file()
-                            .await?;
+                            .await
+                        else {
+                            return Ok(false); // dialog cancelled
+                        };
                         let data = handle.read().await;
-                        let name = handle.file_name();
+                        let name = handle.file_name().to_lowercase();
                         let mime = if name.ends_with(".png") { "image/png" }
                             else if name.ends_with(".gif") { "image/gif" }
                             else if name.ends_with(".webp") { "image/webp" }
                             else { "image/jpeg" };
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::upload_avatar(&client, mime, data.to_vec()).await.ok()?;
-                        Some(())
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::profile::upload_avatar(&client, mime, data.to_vec()).await
+                            .map(|_| true)
+                            .map_err(|e| e.to_string())
                     },
                     |result| match result {
-                        Some(()) => Message::SettingsLoadProfile,
-                        None => Message::Noop,
+                        Ok(true) => Message::SettingsLoadProfile,
+                        Ok(false) => Message::Noop,
+                        Err(e) => Message::SettingsStatus(format!("Failed to upload avatar: {e}")),
                     },
                 ))
             }
@@ -546,15 +551,15 @@ impl FluxChat {
                 let core = self.core.clone();
                 Some(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let room_id = fluxchat_core::rooms::open_dm(&client, &user_id).await.ok()?;
-                        let rid = fluxchat_core::ruma::RoomId::parse(&room_id).ok()?;
-                        let room = client.get_room(&rid)?;
-                        Some(fluxchat_core::rooms::room_to_info(&room, None).await)
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let room_id = fluxchat_core::rooms::open_dm(&client, &user_id).await.map_err(|e| e.to_string())?;
+                        let rid = fluxchat_core::ruma::RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+                        let room = client.get_room(&rid).ok_or_else(|| "the new room isn't known yet".to_string())?;
+                        Ok::<_, String>(fluxchat_core::rooms::room_to_info(&room, None).await)
                     },
                     |result| match result {
-                        Some(info) => Message::DmCreated(Box::new(info)),
-                        None => Message::Noop,
+                        Ok(info) => Message::DmCreated(Box::new(info)),
+                        Err(e) => Message::ShowError(format!("Couldn't open a direct message: {e}")),
                     },
                 ))
             }
