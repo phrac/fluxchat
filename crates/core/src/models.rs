@@ -223,3 +223,17 @@ pub struct EmojiInfo {
     pub symbol: String,
     pub description: String,
 }
+
+/// A thread in a room's thread list (right-click menu, threads panel).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ThreadPreview {
+    pub root_id: String,
+    pub sender: String,
+    pub sender_name: String,
+    /// First line of the root message.
+    pub body: String,
+    pub reply_count: u32,
+    /// Latest activity (latest reply, else the root), seconds since epoch.
+    pub last_activity: u64,
+    pub latest_sender_name: Option<String>,
+}

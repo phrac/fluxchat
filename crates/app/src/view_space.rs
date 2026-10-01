@@ -401,6 +401,7 @@ impl FluxChat {
 /// Vertical scroller with the thin scrollbar used across the app.
 fn scroll<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     scrollable(container(content).padding(iced::Padding { right: 8.0, ..Default::default() }))
+        .id(crate::view::dialog_scroll_id())
         .height(Fill)
         .direction(iced::widget::scrollable::Direction::Vertical(
             iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),

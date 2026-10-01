@@ -106,6 +106,10 @@ pub enum Message {
     // --- Threads ---
     OpenThread(String, String), // room_id, thread_root_event_id — opens the thread pane
     CloseThreadPane,
+    /// Server thread list for a room: (room_id, for the context menu?, threads).
+    ThreadListLoaded(String, bool, Vec<fluxchat_core::ThreadPreview>),
+    /// "All threads" from a room's menu: open the room with its threads panel.
+    ShowRoomThreads(String),
     /// Show the pane's thread in the full main view instead.
     ExpandThreadPane,
     ThreadInputAction(iced::widget::text_editor::Action),

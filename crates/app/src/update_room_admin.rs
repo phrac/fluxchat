@@ -66,7 +66,7 @@ impl FluxChat {
         let task = match message {
             Message::RoomSettingsTabChanged(tab) => {
                 self.room_settings_tab = tab;
-                Task::none()
+                crate::view::scroll_dialog_to_top()
             }
             Message::RoomSecurityLoaded(room_id, result) => {
                 if self.room_settings_room().as_deref() == Some(room_id.as_str()) {

@@ -63,7 +63,7 @@ impl FluxChat {
                     list = list.push(item);
                 }
                 if rows.len() <= 1 {
-                    list = list.push(ui::empty_state(crate::icons::SVG_CHAT, "No replies yet", Some("Start the thread below.".into())));
+                    list = list.push(ui::empty_state(crate::icons::SVG_THREAD, "No replies yet", Some("Start the thread below.".into())));
                 }
                 scrollable(list)
                     .id(crate::view::thread_scrollable_id())

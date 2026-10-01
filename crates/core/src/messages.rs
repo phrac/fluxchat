@@ -624,6 +624,58 @@ pub async fn fetch_presence(client: &matrix_sdk::Client, user_id: &str) -> Resul
     })
 }
 
+/// A room's threads, most recently active first (server `/threads`, with
+/// each root's bundled thread summary).
+pub async fn recent_threads(client: &matrix_sdk::Client, room_id: &str, limit: u32) -> Result<Vec<crate::models::ThreadPreview>, AppError> {
+    use matrix_sdk::room::ListThreadsOptions;
+    let rid = parse_room_id(room_id)?;
+    let room = client.get_room(&rid).ok_or_else(|| AppError::RoomNotFound(room_id.into()))?;
+    let opts = ListThreadsOptions {
+        limit: Some(matrix_sdk::ruma::UInt::from(limit)),
+        ..Default::default()
+    };
+    let roots = room.list_threads(opts).await.map_err(|e| AppError::Other(format!("Couldn't load threads: {e}")))?;
+    let name_of = |uid: &str| {
+        let room = room.clone();
+        let uid = uid.to_string();
+        async move {
+            let Ok(user) = matrix_sdk::ruma::UserId::parse(&uid) else { return uid };
+            room.get_member_no_sync(&user).await.ok().flatten()
+                .and_then(|m| m.display_name().map(str::to_string))
+                .unwrap_or_else(|| user.localpart().to_string())
+        }
+    };
+    let mut out = Vec::new();
+    for ev in roots.chunk {
+        let Ok(json) = ev.raw().deserialize_as::<serde_json::Value>() else { continue };
+        let Some(root_id) = json["event_id"].as_str() else { continue };
+        let sender = json["sender"].as_str().unwrap_or_default().to_string();
+        let body = json["content"]["body"].as_str()
+            .map(|b| b.lines().next().unwrap_or("").chars().take(120).collect::<String>())
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "(message)".into());
+        let thread = &json["unsigned"]["m.relations"]["m.thread"];
+        let latest = &thread["latest_event"];
+        let ts = |v: &serde_json::Value| v["origin_server_ts"].as_u64().map(|ms| ms / 1000);
+        let latest_sender = latest["sender"].as_str().map(str::to_string);
+        out.push(crate::models::ThreadPreview {
+            root_id: root_id.to_string(),
+            sender_name: name_of(&sender).await,
+            sender,
+            body,
+            reply_count: thread["count"].as_u64().unwrap_or(0) as u32,
+            last_activity: ts(latest).or_else(|| ts(&json)).unwrap_or(0),
+            latest_sender_name: match latest_sender {
+                Some(s) => Some(name_of(&s).await),
+                None => None,
+            },
+        });
+    }
+    // The server orders by latest activity; keep that, newest first.
+    out.sort_by_key(|a| std::cmp::Reverse(a.last_activity));
+    Ok(out)
+}
+
 /// Set our own presence (online, or offline to stop sharing activity).
 pub async fn set_own_presence(client: &matrix_sdk::Client, online: bool) -> Result<(), AppError> {
     use matrix_sdk::ruma::api::client::presence::set_presence;

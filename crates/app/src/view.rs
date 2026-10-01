@@ -9,6 +9,17 @@ pub fn input_id() -> iced::widget::Id {
     iced::widget::Id::new("main_input")
 }
 
+/// The scrollable body of the open dialog / dialog tab.
+pub fn dialog_scroll_id() -> iced::widget::Id {
+    iced::widget::Id::new("dialog_scroll")
+}
+
+/// Scroll the open dialog's body back to the top (tab switches reuse the
+/// same scrollable, which would otherwise keep the previous offset).
+pub fn scroll_dialog_to_top<T>() -> iced::Task<T> {
+    iced::widget::operation::snap_to(dialog_scroll_id(), iced::widget::scrollable::RelativeOffset::START)
+}
+
 /// The thread pane's composer.
 pub fn thread_input_id() -> iced::widget::Id {
     iced::widget::Id::new("thread_input")
@@ -355,6 +366,68 @@ impl FluxChat {
     /// Render a cached avatar with an initial letter fallback.
     pub(crate) fn render_avatar_with_initial<'a>(&self, mxc: Option<&str>, name: &str, size: f32) -> Element<'a, Message> {
         self.render_avatar_shaped(mxc, name, size, size / 2.0)
+    }
+
+    /// Threads sidebar: the room's threads, most recently active first.
+    fn view_threads_sidebar(&self) -> Element<'_, Message> {
+        let room_id = self.active_real_room().unwrap_or("").to_string();
+        let header = row![
+            text(format!("THREADS \u{2014} {}", self.thread_list.len()))
+                .font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
+            Space::new().width(Fill),
+            button(crate::ui::icon(SVG_CLOSE, 14.0, theme::colors().text_dim))
+                .on_press(Message::ToggleThreads)
+                .padding(4)
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+        ]
+        .align_y(iced::Alignment::Center)
+        .padding([8, 12]);
+
+        let body: Element<Message> = if self.thread_list.is_empty() {
+            crate::ui::empty_state(SVG_THREAD, "No threads yet", Some("Reply in thread on any message to start one.".into()))
+        } else {
+            let mut list = column![].spacing(2).padding([0, 6]);
+            for t in &self.thread_list {
+                let open = self.thread_pane.as_deref()
+                    == Some(fluxchat_core::timeline::thread_key(&room_id, &t.root_id).as_str());
+                list = list.push(
+                    button(
+                        column![
+                            row![
+                                crate::ui::icon(SVG_THREAD, 13.0, if open { theme::colors().accent } else { theme::colors().text_dim }),
+                                text(t.sender_name.as_str()).font(self.sidebar_font()).size(12)
+                                    .color(theme::nick_color(&t.sender_name))
+                                    .wrapping(iced::widget::text::Wrapping::None),
+                            ].spacing(6).align_y(iced::Alignment::Center),
+                            text(t.body.as_str()).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
+                                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                            text(thread_meta(t)).font(self.sidebar_font()).size(11).color(theme::colors().text_dim)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                        ].spacing(3),
+                    )
+                    .on_press(Message::OpenThread(room_id.clone(), t.root_id.clone()))
+                    .padding([7, 8])
+                    .width(Fill)
+                    .clip(true)
+                    .style(crate::ui::row_style(open)),
+                );
+            }
+            scrollable(list)
+                .height(Fill)
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                ))
+                .style(thin_scrollbar)
+                .into()
+        };
+        container(column![header, body].height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().bg_deep.into()),
+                ..Default::default()
+            })
+            .into()
     }
 
     /// Draggable divider between panels (highlights while hovered/dragged).
@@ -721,6 +794,13 @@ impl FluxChat {
                 .push(container(self.view_thread_pane(key)).width(Length::Fixed(self.thread_pane_width)));
         }
 
+        // Threads list sidebar
+        if self.threads_open && self.selected_room_id.is_some() {
+            main_area = main_area
+                .push(self.resize_handle(ResizeTarget::ThreadList))
+                .push(container(self.view_threads_sidebar()).width(Length::Fixed(self.thread_list_width)));
+        }
+
         // Member list (right sidebar)
         if self.show_member_list && self.selected_room_id.is_some() {
             main_area = main_area
@@ -879,11 +959,68 @@ impl FluxChat {
 
     /// Context menu items for rooms or spaces.
     fn view_context_menu(&self, ctx: &crate::state::ContextMenu) -> Element<'_, Message> {
-        let mut col = column![].spacing(1).width(200);
+        let mut col = column![].spacing(1).width(260);
 
         match ctx {
             crate::state::ContextMenu::Room { room_id, is_dm } => {
                 let rid = room_id.clone();
+                // Recent threads (most recently active first), then "All threads".
+                if let Some((menu_room, threads)) = &self.context_threads {
+                    if menu_room == room_id {
+                        match threads {
+                            None => {
+                                col = col.push(container(
+                                    text("Loading threads\u{2026}").font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
+                                ).padding([6, 10]));
+                                col = col.push(self.context_menu_divider());
+                            }
+                            Some(list) if !list.is_empty() => {
+                                col = col.push(container(
+                                    text("RECENT THREADS").font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
+                                ).padding(iced::Padding { top: 4.0, right: 10.0, bottom: 2.0, left: 10.0 }));
+                                for t in list.iter().take(3) {
+                                    col = col.push(
+                                        button(
+                                            column![
+                                                row![
+                                                    crate::ui::icon(SVG_THREAD, 12.0, theme::colors().accent),
+                                                    text(t.body.as_str()).font(self.sidebar_font()).size(13)
+                                                        .color(theme::colors().text_normal)
+                                                        .wrapping(iced::widget::text::Wrapping::None),
+                                                ].spacing(8).align_y(iced::Alignment::Center),
+                                                text(thread_meta(t)).font(self.sidebar_font()).size(11)
+                                                    .color(theme::colors().text_dim)
+                                                    .wrapping(iced::widget::text::Wrapping::None),
+                                            ].spacing(2),
+                                        )
+                                        .on_press(Message::Batch(vec![
+                                            Message::CloseContextMenu,
+                                            Message::OpenThread(room_id.clone(), t.root_id.clone()),
+                                        ]))
+                                        .padding([5, 10])
+                                        .width(Fill)
+                                        .clip(true)
+                                        .style(crate::ui::row_style(false)),
+                                    );
+                                }
+                                col = col.push(
+                                    button(
+                                        row![
+                                            crate::ui::icon(SVG_CHEVRON_RIGHT, 14.0, theme::colors().text_dim),
+                                            text("All threads").font(self.sidebar_font()).size(13).color(theme::colors().accent),
+                                        ].spacing(8).align_y(iced::Alignment::Center),
+                                    )
+                                    .on_press(Message::ShowRoomThreads(room_id.clone()))
+                                    .padding([6, 10])
+                                    .width(Fill)
+                                    .style(crate::ui::row_style(false)),
+                                );
+                                col = col.push(self.context_menu_divider());
+                            }
+                            Some(_) => {} // no threads: nothing to show
+                        }
+                    }
+                }
                 let is_fav = self.rooms.iter()
                     .find(|r| r.room_id == *room_id)
                     .map(|r| r.is_favourite)
@@ -2238,26 +2375,6 @@ impl FluxChat {
                 ));
             }
 
-            if self.threads_open {
-                let thread_room_id = self.selected_room_id.clone().unwrap_or_default();
-                let items: Vec<Element<Message>> = self.thread_messages.iter().map(|tmsg| {
-                    let count = tmsg.thread_count.unwrap_or(0);
-                    let mut meta = if count == 1 { "1 reply".to_string() } else { format!("{count} replies") };
-                    if let Some(latest) = &tmsg.thread_latest {
-                        meta.push_str(&format!("  \u{00b7}  last: {}", latest.sender_name));
-                    }
-                    self.hud_row(
-                        &tmsg.sender_name,
-                        Some(meta),
-                        tmsg.body.lines().next().unwrap_or(""),
-                        Message::OpenThread(thread_room_id.clone(), tmsg.event_id.clone()),
-                    )
-                }).collect();
-                panels_col = panels_col.push(self.hud_panel(
-                    "Threads", items, Message::ToggleThreads, "No threads in this room",
-                ));
-            }
-
             if self.files_open {
                 let items: Vec<Element<Message>> = self.messages_by_room.get(room_id)
                     .map(|msgs| msgs.iter().rev()
@@ -2791,6 +2908,25 @@ pub(crate) fn is_continuation(prev: &fluxchat_core::MessageInfo, msg: &fluxchat_
         && !prev.is_emote && !msg.is_emote
         && msg.reply_to_id.is_none()
         && msg.timestamp.saturating_sub(prev.timestamp) < crate::view_messages::MSG_GROUP_SECS
+}
+
+/// "3 replies · alice · 5m ago" for a thread list entry.
+fn thread_meta(t: &fluxchat_core::ThreadPreview) -> String {
+    let mut parts = vec![if t.reply_count == 1 { "1 reply".to_string() } else { format!("{} replies", t.reply_count) }];
+    if let Some(latest) = &t.latest_sender_name {
+        parts.push(format!("last: {latest}"));
+    }
+    if t.last_activity > 0 {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let ago = now.saturating_sub(t.last_activity);
+        parts.push(match ago {
+            0..=59 => "just now".into(),
+            60..=3599 => format!("{}m ago", ago / 60),
+            3600..=86399 => format!("{}h ago", ago / 3600),
+            _ => format!("{}d ago", ago / 86400),
+        });
+    }
+    parts.join("  \u{00b7}  ")
 }
 
 fn window_for(heights: &[f32], lo: f32, hi: f32) -> (usize, usize, f32, f32) {

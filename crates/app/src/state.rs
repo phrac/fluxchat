@@ -73,6 +73,8 @@ pub enum ResizeTarget {
     RoomList,
     /// Thread pane (right of the timeline).
     ThreadPane,
+    /// Threads list sidebar.
+    ThreadList,
     /// Member list (far right).
     MemberList,
 }
@@ -204,6 +206,8 @@ pub struct FluxChat {
     pub thread_pane_width: f32,
     /// Width of the member list (resizable).
     pub member_list_width: f32,
+    /// Width of the threads list sidebar (resizable).
+    pub thread_list_width: f32,
     /// The thread pane's own composer.
     pub thread_input: iced::widget::text_editor::Content,
 
@@ -438,7 +442,10 @@ pub struct FluxChat {
 
     // Panels data
     pub pinned_messages: Vec<fluxchat_core::MessageInfo>,
-    pub thread_messages: Vec<fluxchat_core::MessageInfo>,
+    /// Threads panel: the room's threads, most recently active first.
+    pub thread_list: Vec<fluxchat_core::ThreadPreview>,
+    /// Right-click room menu: that room's recent threads (`None` = loading).
+    pub context_threads: Option<(String, Option<Vec<fluxchat_core::ThreadPreview>>)>,
 
     // Security tab state
     pub security_state: Option<SecurityState>,
@@ -563,6 +570,7 @@ impl FluxChat {
             thread_pane: None,
             thread_pane_width: 420.0,
             member_list_width: 220.0,
+            thread_list_width: 280.0,
             thread_input: iced::widget::text_editor::Content::new(),
             read_rooms: HashSet::new(),
             last_read_event: HashMap::new(),
@@ -691,7 +699,8 @@ impl FluxChat {
             gif_searching: false,
             gif_preview_cache: HashMap::new(),
             pinned_messages: Vec::new(),
-            thread_messages: Vec::new(),
+            thread_list: Vec::new(),
+            context_threads: None,
             settings_avatar_data: None,
             settings_avatar_handle: None,
             settings_banner_data: None,

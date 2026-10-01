@@ -16,10 +16,17 @@ const MEDIA_DB_CACHE_LIMIT: usize = 1500;
 const AVATAR_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
 /// Parallel avatar downloads per batch.
 const AVATAR_FETCH_CONCURRENCY: usize = 8;
+/// Threads shown in a room's right-click menu.
+const MENU_THREAD_COUNT: u32 = 3;
+/// Threads fetched for the threads panel.
+const THREAD_LIST_LIMIT: u32 = 50;
 /// Narrowest the thread pane can be dragged.
 const THREAD_PANE_MIN_WIDTH: f32 = 320.0;
 /// The timeline never gets narrower than this when panels are dragged.
 const MIN_TIMELINE_WIDTH: f32 = 360.0;
+/// Threads list sidebar width limits.
+const THREAD_LIST_MIN_WIDTH: f32 = 200.0;
+const THREAD_LIST_MAX_WIDTH: f32 = 480.0;
 /// Member list width limits.
 const MEMBER_LIST_MIN_WIDTH: f32 = 160.0;
 const MEMBER_LIST_MAX_WIDTH: f32 = 420.0;
@@ -574,6 +581,7 @@ impl FluxChat {
                         }
                     }
                     self.thread_counts.insert(room_id.clone(), tc);
+                    let refresh_thread_list = self.threads_open && is_active;
                     // Advance last_read_event if this is the active room
                     if self.selected_room_id.as_deref() == Some(&room_id) {
                         if let Some(last) = merged.last() {
@@ -605,6 +613,9 @@ impl FluxChat {
                         Task::none()
                     };
                     self.messages_by_room.insert(room_id.clone(), merged);
+                    if refresh_thread_list {
+                        self.merge_loaded_threads(&room_id);
+                    }
                     // Pagination delivered; the prepended rows shift content and
                     // the viewport anchor correction in MessagesScrolled compensates.
                     if is_active && self.paginating && new_count != self.paginate_msg_count {
@@ -671,6 +682,16 @@ impl FluxChat {
             Message::SelectRoom(room_id) => {
                 let _already_loaded = self.messages_by_room.contains_key(&room_id);
                 self.quick_switcher_open = false;
+                // The threads sidebar follows the room.
+                let reload_threads = if self.threads_open
+                    && fluxchat_core::timeline::real_room_id(&room_id) != self.active_real_room().unwrap_or("")
+                {
+                    let real = fluxchat_core::timeline::real_room_id(&room_id).to_string();
+                    self.thread_list = self.loaded_thread_previews(&real);
+                    self.load_thread_list(real, false, THREAD_LIST_LIMIT)
+                } else {
+                    Task::none()
+                };
                 // A thread pane belongs to its room: switching rooms closes it.
                 let close_pane = match self.thread_pane.clone() {
                     Some(pane) if fluxchat_core::timeline::real_room_id(&pane)
@@ -794,7 +815,7 @@ impl FluxChat {
                             None => Message::Noop,
                         },
                     );
-                    return Task::batch([load, focus, call_check, pin_load, close_threads, close_pane, Task::done(Message::ScrollToBottom)]);
+                    return Task::batch([load, focus, call_check, pin_load, close_threads, close_pane, reload_threads, Task::done(Message::ScrollToBottom)]);
                 }
                 // Re-resolve images for already-cached messages (clear pending to allow retries)
                 self.image_cache_pending.clear();
@@ -818,7 +839,7 @@ impl FluxChat {
                 // Use ScrollToBottom message instead of direct snap_to_end —
                 // goes through the update loop, giving iced a frame to render first
                 let read_task = self.update(Message::SendReadReceipt);
-                return Task::batch([focus, call_check, image_task, Task::done(Message::ScrollToBottom), pin_load, read_task, close_threads, close_pane, backfill]);
+                return Task::batch([focus, call_check, image_task, Task::done(Message::ScrollToBottom), pin_load, read_task, close_threads, close_pane, reload_threads, backfill]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -1404,7 +1425,6 @@ impl FluxChat {
                 // full-size). Inside a full-size thread view, stay there.
                 let room_id = fluxchat_core::timeline::real_room_id(&room_id).to_string();
                 let key = fluxchat_core::timeline::thread_key(&room_id, &thread_root_id);
-                self.threads_open = false;
                 if self.selected_room_id.as_deref() == Some(key.as_str()) {
                     return Task::none();
                 }
@@ -1539,28 +1559,31 @@ impl FluxChat {
             Message::ToggleThreads => {
                 self.threads_open = !self.threads_open;
                 if self.threads_open {
-                    // Collect thread roots from loaded messages.
-                    // Find them two ways: messages with thread_count > 0, OR
-                    // messages referenced as thread_root by other messages.
-                    if let Some(room_id) = &self.selected_room_id {
-                        if let Some(msgs) = self.messages_by_room.get(room_id) {
-                            // Collect all referenced thread root IDs
-                            let mut root_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-                            for m in msgs {
-                                if let Some(ref root) = m.thread_root {
-                                    root_ids.insert(root.clone());
-                                }
-                                if m.thread_count.map(|c| c > 0).unwrap_or(false) {
-                                    root_ids.insert(m.event_id.clone());
-                                }
-                            }
-                            self.thread_messages = msgs.iter()
-                                .filter(|m| root_ids.contains(&m.event_id))
-                                .cloned()
-                                .collect();
-                        }
+                    if let Some(room_id) = self.active_real_room().map(str::to_string) {
+                        // Loaded threads right away, then the server's full list.
+                        self.thread_list = self.loaded_thread_previews(&room_id);
+                        return self.load_thread_list(room_id, false, THREAD_LIST_LIMIT);
                     }
                 }
+            }
+            Message::ThreadListLoaded(room_id, for_menu, threads) => {
+                if for_menu {
+                    if matches!(&self.context_threads, Some((r, _)) if *r == room_id) {
+                        self.context_threads = Some((room_id, Some(threads)));
+                    }
+                } else if self.threads_open && self.active_real_room() == Some(room_id.as_str()) {
+                    self.thread_list = threads;
+                }
+            }
+            Message::ShowRoomThreads(room_id) => {
+                self.context_menu = None;
+                let select = if self.active_real_room() != Some(room_id.as_str()) {
+                    self.update(Message::SelectRoom(room_id))
+                } else {
+                    Task::none()
+                };
+                self.threads_open = false;
+                return Task::batch([select, self.update(Message::ToggleThreads)]);
             }
             Message::ToggleFiles => {
                 self.files_open = !self.files_open;
@@ -1678,7 +1701,16 @@ impl FluxChat {
             }
             Message::OpenContextMenu(menu) => {
                 self.context_menu_position = crate::view::cursor_position();
+                // A room's menu lists its most recently active threads.
+                let threads = match &menu {
+                    crate::state::ContextMenu::Room { room_id, .. } => {
+                        self.context_threads = Some((room_id.clone(), None));
+                        self.load_thread_list(room_id.clone(), true, MENU_THREAD_COUNT)
+                    }
+                    _ => Task::none(),
+                };
                 self.context_menu = Some(menu);
+                return threads;
             }
             Message::CloseContextMenu => {
                 self.context_menu = None;
@@ -1912,7 +1944,8 @@ impl FluxChat {
                     Task::none()
                 };
                 self.modal = Some(modal);
-                return task;
+                // Every dialog / tab opens scrolled to the top.
+                return Task::batch([task, crate::view::scroll_dialog_to_top()]);
             }
             Message::StartVerification(user_id) => {
                 let core = self.core.clone();
@@ -4017,15 +4050,21 @@ impl FluxChat {
                 use crate::state::ResizeTarget;
                 let window_w = self.window_size.0;
                 let member_list = if self.show_member_list { self.member_list_width } else { 0.0 };
+                let thread_list = if self.threads_open { self.thread_list_width } else { 0.0 };
                 match self.resizing {
                     Some(ResizeTarget::RoomList) => {
                         self.sidebar_width = (x - 56.0).clamp(150.0, 400.0);
                     }
                     Some(ResizeTarget::ThreadPane) => {
+                        // Panels to its right: threads list, member list.
+                        let right = member_list + thread_list;
                         // Leave the timeline at least MIN_TIMELINE_WIDTH.
-                        let max = (window_w - member_list - self.sidebar_width - 56.0 - MIN_TIMELINE_WIDTH)
+                        let max = (window_w - right - self.sidebar_width - 56.0 - MIN_TIMELINE_WIDTH)
                             .max(THREAD_PANE_MIN_WIDTH);
-                        self.thread_pane_width = (window_w - member_list - x).clamp(THREAD_PANE_MIN_WIDTH, max);
+                        self.thread_pane_width = (window_w - right - x).clamp(THREAD_PANE_MIN_WIDTH, max);
+                    }
+                    Some(ResizeTarget::ThreadList) => {
+                        self.thread_list_width = (window_w - member_list - x).clamp(THREAD_LIST_MIN_WIDTH, THREAD_LIST_MAX_WIDTH);
                     }
                     Some(ResizeTarget::MemberList) => {
                         self.member_list_width = (window_w - x).clamp(MEMBER_LIST_MIN_WIDTH, MEMBER_LIST_MAX_WIDTH);
@@ -4114,6 +4153,7 @@ impl FluxChat {
                     let _ = self.core.db.set_setting("sidebar_width", &format!("{:.0}", self.sidebar_width));
                     let _ = self.core.db.set_setting("thread_pane_width", &format!("{:.0}", self.thread_pane_width));
                     let _ = self.core.db.set_setting("member_list_width", &format!("{:.0}", self.member_list_width));
+                    let _ = self.core.db.set_setting("thread_list_width", &format!("{:.0}", self.thread_list_width));
                 }
                 if self.sync_running {
                     let mut tasks = Vec::new();
@@ -4615,6 +4655,78 @@ impl FluxChat {
         );
         let snap = iced::widget::operation::snap_to_end(crate::view::messages_scrollable_id());
         Task::batch([send, iced::widget::operation::focus(crate::view::input_id()), snap])
+    }
+
+    /// Fetch a room's thread list from the server (for the room menu or the
+    /// threads panel).
+    fn load_thread_list(&self, room_id: String, for_menu: bool, limit: u32) -> Task<Message> {
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let threads = match core.get_client().await {
+                    Ok(client) => fluxchat_core::messages::recent_threads(&client, &room_id, limit).await
+                        .map_err(|e| tracing::warn!("Thread list for {room_id}: {e}"))
+                        .unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
+                (room_id, threads)
+            },
+            move |(rid, threads)| Message::ThreadListLoaded(rid, for_menu, threads),
+        )
+    }
+
+    /// Fold live activity from the loaded timeline into the threads sidebar:
+    /// newer reply counts / activity win, new threads are added, order kept
+    /// newest first. (The server list stays the base for older threads.)
+    fn merge_loaded_threads(&mut self, room_id: &str) {
+        for live in self.loaded_thread_previews(room_id) {
+            match self.thread_list.iter_mut().find(|t| t.root_id == live.root_id) {
+                Some(t) => {
+                    if live.last_activity > t.last_activity {
+                        t.last_activity = live.last_activity;
+                        t.latest_sender_name = live.latest_sender_name.clone();
+                    }
+                    t.reply_count = t.reply_count.max(live.reply_count);
+                }
+                None => self.thread_list.push(live),
+            }
+        }
+        self.thread_list.sort_by_key(|t| std::cmp::Reverse(t.last_activity));
+    }
+
+    /// Thread previews from the room's loaded messages (shown until the
+    /// server's list arrives).
+    fn loaded_thread_previews(&self, room_id: &str) -> Vec<fluxchat_core::ThreadPreview> {
+        let Some(msgs) = self.messages_by_room.get(room_id) else { return Vec::new() };
+        let mut latest: std::collections::HashMap<&str, (u64, &str, u32)> = std::collections::HashMap::new();
+        for m in msgs {
+            if let Some(root) = m.thread_root.as_deref() {
+                let e = latest.entry(root).or_insert((0, "", 0));
+                e.2 += 1;
+                if m.timestamp >= e.0 {
+                    e.0 = m.timestamp;
+                    e.1 = &m.sender_name;
+                }
+            }
+        }
+        let mut out: Vec<fluxchat_core::ThreadPreview> = msgs.iter()
+            .filter(|m| latest.contains_key(m.event_id.as_str()) || m.thread_count.is_some_and(|c| c > 0))
+            .map(|m| {
+                let l = latest.get(m.event_id.as_str());
+                fluxchat_core::ThreadPreview {
+                    root_id: m.event_id.clone(),
+                    sender: m.sender.clone(),
+                    sender_name: m.sender_name.clone(),
+                    body: m.body.lines().next().unwrap_or("").chars().take(120).collect(),
+                    reply_count: l.map(|l| l.2).unwrap_or(0).max(m.thread_count.unwrap_or(0)),
+                    last_activity: l.map(|l| l.0).unwrap_or(m.timestamp),
+                    latest_sender_name: l.map(|l| l.1.to_string())
+                        .or_else(|| m.thread_latest.as_ref().map(|t| t.sender_name.clone())),
+                }
+            })
+            .collect();
+        out.sort_by_key(|a| std::cmp::Reverse(a.last_activity));
+        out
     }
 
     /// Load the account-wide notification rules.
@@ -5238,6 +5350,9 @@ impl FluxChat {
     /// Load persisted settings from SQLite into state.
     fn load_persisted_settings(&mut self) {
         // read_rooms is session-only — SDK notification_count is authoritative on startup
+        if let Some(w) = self.core.db.get_setting("thread_list_width").and_then(|v| v.parse::<f32>().ok()) {
+            self.thread_list_width = w.clamp(THREAD_LIST_MIN_WIDTH, THREAD_LIST_MAX_WIDTH);
+        }
         if let Some(w) = self.core.db.get_setting("member_list_width").and_then(|v| v.parse::<f32>().ok()) {
             self.member_list_width = w.clamp(MEMBER_LIST_MIN_WIDTH, MEMBER_LIST_MAX_WIDTH);
         }

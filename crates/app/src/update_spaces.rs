@@ -96,7 +96,7 @@ impl FluxChat {
                 self.space_filter.clear();
                 self.space_adding = false;
                 self.space_confirm_remove = None;
-                Task::none()
+                crate::view::scroll_dialog_to_top()
             }
             Message::SpaceFilterChanged(q) => {
                 self.space_filter = q;
@@ -106,7 +106,7 @@ impl FluxChat {
                 self.space_adding = !self.space_adding;
                 self.space_filter.clear();
                 self.space_confirm_remove = None;
-                Task::none()
+                crate::view::scroll_dialog_to_top()
             }
             Message::SpaceAskRemove(room_id) => {
                 self.space_confirm_remove = room_id;

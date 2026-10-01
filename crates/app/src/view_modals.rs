@@ -180,6 +180,7 @@ impl FluxChat {
         let content = column![
             ui::header(title, Some(subtitle.into())),
             scrollable(container(body).padding(iced::Padding { right: 12.0, bottom: 4.0, ..Default::default() }))
+                .id(crate::view::dialog_scroll_id())
                 .height(Fill)
                 .direction(iced::widget::scrollable::Direction::Vertical(
                     iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
@@ -1313,6 +1314,7 @@ impl FluxChat {
             ]),
             container(
                 scrollable(container(body).padding(iced::Padding { right: 10.0, ..Default::default() }))
+                    .id(crate::view::dialog_scroll_id())
                     .direction(iced::widget::scrollable::Direction::Vertical(
                         iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
                     ))
