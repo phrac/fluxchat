@@ -20,16 +20,6 @@ pub fn scroll_dialog_to_top<T>() -> iced::Task<T> {
     iced::widget::operation::snap_to(dialog_scroll_id(), iced::widget::scrollable::RelativeOffset::START)
 }
 
-/// The thread pane's composer.
-pub fn thread_input_id() -> iced::widget::Id {
-    iced::widget::Id::new("thread_input")
-}
-
-/// The thread pane's message list.
-pub fn thread_scrollable_id() -> iced::widget::Id {
-    iced::widget::Id::new("thread_messages")
-}
-
 /// Fixed ID for the GIF search input.
 pub fn gif_search_id() -> iced::widget::Id {
     iced::widget::Id::new("gif_search_input")
@@ -50,6 +40,12 @@ pub fn quick_switcher_id() -> iced::widget::Id {
     iced::widget::Id::new("quick_switcher_input")
 }
 
+/// Size of every icon in the spaces bar.
+const SPACE_ICON_SIZE: f32 = 40.0;
+/// Width of thread hover previews.
+const THREAD_PREVIEW_WIDTH: f32 = 360.0;
+/// Width of right-click menus.
+const CONTEXT_MENU_WIDTH: f32 = 300.0;
 /// Grab width of panel dividers.
 const RESIZE_HANDLE_WIDTH: f32 = 3.0;
 /// Read-receipt avatars shown under a message before "+N".
@@ -283,6 +279,7 @@ impl FluxChat {
                     text(tip).font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
                     iced::widget::tooltip::Position::Left,
                 )
+                .delay(crate::ui::TOOLTIP_DELAY)
                 .gap(6)
                 .padding(4)
                 .style(|_: &Theme| container::Style {
@@ -350,13 +347,10 @@ impl FluxChat {
             container(
                 iced::widget::image(handle.clone())
                     .width(size).height(size)
-                    .content_fit(iced::ContentFit::Cover),
+                    .content_fit(iced::ContentFit::Cover)
+                    .border_radius(size / 2.0),
             )
-            .width(size).height(size).clip(true)
-            .style(move |_: &Theme| container::Style {
-                border: iced::Border { radius: (size / 2.0).into(), ..Default::default() },
-                ..Default::default()
-            })
+            .width(size).height(size)
             .into()
         } else {
             Space::new().width(size).height(size).into()
@@ -366,6 +360,115 @@ impl FluxChat {
     /// Render a cached avatar with an initial letter fallback.
     pub(crate) fn render_avatar_with_initial<'a>(&self, mxc: Option<&str>, name: &str, size: f32) -> Element<'a, Message> {
         self.render_avatar_shaped(mxc, name, size, size / 2.0)
+    }
+
+    /// Wrap a thread row in a tooltip showing the whole root message and
+    /// the latest reply.
+    fn thread_hover_preview<'a>(
+        &self,
+        entry: impl Into<Element<'a, Message>>,
+        t: &fluxchat_core::ThreadPreview,
+        side: iced::widget::tooltip::Position,
+    ) -> Element<'a, Message> {
+        let mut tip = column![
+            text(t.sender_name.clone()).font(self.sidebar_font()).size(12).color(theme::nick_color(&t.sender_name)),
+            text(if t.full_body.is_empty() { t.body.clone() } else { t.full_body.clone() })
+                .font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(4)
+        .width(Length::Fixed(THREAD_PREVIEW_WIDTH));
+        if let Some(latest) = &t.latest_body {
+            tip = tip.push(crate::ui::divider());
+            tip = tip.push(
+                text(format!("Latest reply \u{00b7} {}", t.latest_sender_name.as_deref().unwrap_or("")))
+                    .font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
+            );
+            tip = tip.push(
+                text(latest.clone()).font(self.sidebar_font()).size(13).color(theme::colors().text_muted)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            );
+        }
+        tip = tip.push(text(thread_meta(t)).font(self.sidebar_font()).size(11).color(theme::colors().text_dim));
+        iced::widget::tooltip(entry, tip, side)
+            .delay(crate::ui::TOOLTIP_DELAY)
+            .gap(8)
+            .padding(10)
+            .style(crate::ui::dialog_style)
+            .into()
+    }
+
+    /// Mentions inbox: messages that mentioned us or matched a keyword,
+    /// across all rooms, newest first. Click to jump to the message.
+    fn view_mentions_sidebar(&self) -> Element<'_, Message> {
+        let header = row![
+            text(format!("MENTIONS \u{2014} {}", self.mentions.len()))
+                .font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
+            Space::new().width(Fill),
+            button(crate::ui::icon(SVG_CLOSE, 14.0, theme::colors().text_dim))
+                .on_press(Message::ToggleMentions)
+                .padding(4)
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+        ]
+        .align_y(iced::Alignment::Center)
+        .padding([8, 12]);
+        let body: Element<Message> = if self.mentions.is_empty() {
+            crate::ui::empty_state(SVG_AT_SIGN, "No mentions yet",
+                Some("Messages that mention you or a keyword show up here.".into()))
+        } else {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let mut list = column![].spacing(2).padding([0, 6]);
+            for m in &self.mentions {
+                let room = self.rooms.iter().find(|r| r.room_id == m.room_id);
+                let room_name = room.map(|r| if r.is_direct { r.name.clone() } else { format!("#{}", r.name) })
+                    .unwrap_or_else(|| m.room_id.clone());
+                let ago = now.saturating_sub(m.timestamp);
+                let when = match ago {
+                    0..=59 => "just now".to_string(),
+                    60..=3599 => format!("{}m", ago / 60),
+                    3600..=86399 => format!("{}h", ago / 3600),
+                    _ => format!("{}d", ago / 86400),
+                };
+                let current = self.selected_room_id.as_deref() == Some(m.room_id.as_str())
+                    && self.highlight_event_id.as_deref() == Some(m.event_id.as_str());
+                list = list.push(
+                    button(
+                        column![
+                            row![
+                                self.render_room_avatar(room.and_then(|r| r.avatar_url.as_deref()), &room_name, 14.0),
+                                text(room_name.clone()).font(self.sidebar_font()).size(11).color(theme::colors().accent)
+                                    .wrapping(iced::widget::text::Wrapping::None).width(Fill),
+                                text(when).font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
+                            ].spacing(6).align_y(iced::Alignment::Center),
+                            text(m.sender_name.as_str()).font(self.sidebar_font()).size(12)
+                                .color(theme::nick_color(&m.sender_name)),
+                            text(m.body.as_str()).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
+                                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                        ].spacing(3),
+                    )
+                    .on_press(Message::OpenMention(m.room_id.clone(), m.event_id.clone()))
+                    .padding([7, 8])
+                    .width(Fill)
+                    .clip(true)
+                    .style(crate::ui::row_style(current)),
+                );
+            }
+            scrollable(list)
+                .height(Fill)
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                ))
+                .style(thin_scrollbar)
+                .into()
+        };
+        container(column![header, body].height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().bg_deep.into()),
+                ..Default::default()
+            })
+            .into()
     }
 
     /// Threads sidebar: the room's threads, most recently active first.
@@ -388,10 +491,8 @@ impl FluxChat {
         } else {
             let mut list = column![].spacing(2).padding([0, 6]);
             for t in &self.thread_list {
-                let open = self.thread_pane.as_deref()
-                    == Some(fluxchat_core::timeline::thread_key(&room_id, &t.root_id).as_str());
-                list = list.push(
-                    button(
+                let open = self.shown_in_pane(&fluxchat_core::timeline::thread_key(&room_id, &t.root_id));
+                let entry = button(
                         column![
                             row![
                                 crate::ui::icon(SVG_THREAD, 13.0, if open { theme::colors().accent } else { theme::colors().text_dim }),
@@ -409,8 +510,8 @@ impl FluxChat {
                     .padding([7, 8])
                     .width(Fill)
                     .clip(true)
-                    .style(crate::ui::row_style(open)),
-                );
+                    .style(crate::ui::row_style(open));
+                list = list.push(self.thread_hover_preview(entry, t, iced::widget::tooltip::Position::Left));
             }
             scrollable(list)
                 .height(Fill)
@@ -588,13 +689,10 @@ impl FluxChat {
             container(
                 iced::widget::image(handle.clone())
                     .width(size).height(size)
-                    .content_fit(iced::ContentFit::Cover),
+                    .content_fit(iced::ContentFit::Cover)
+                    .border_radius(radius),
             )
-            .width(size).height(size).clip(true)
-            .style(move |_: &Theme| container::Style {
-                border: iced::Border { radius: radius.into(), ..Default::default() },
-                ..Default::default()
-            })
+            .width(size).height(size)
             .into()
         } else {
             let trimmed = name.trim_start_matches(['#', '@', '!']);
@@ -777,7 +875,7 @@ impl FluxChat {
     fn view_main(&self) -> Element<Message> {
         let sidebar = self.view_sidebar();
         let room_list = self.view_room_list();
-        let main_content = self.view_content();
+        let main_content = self.view_pane_grid();
 
         use crate::state::ResizeTarget;
         let mut main_area = row![
@@ -787,18 +885,18 @@ impl FluxChat {
             main_content,
         ];
 
-        // Thread pane beside the timeline
-        if let Some(key) = self.thread_pane.as_deref() {
-            main_area = main_area
-                .push(self.resize_handle(ResizeTarget::ThreadPane))
-                .push(container(self.view_thread_pane(key)).width(Length::Fixed(self.thread_pane_width)));
-        }
-
         // Threads list sidebar
         if self.threads_open && self.selected_room_id.is_some() {
             main_area = main_area
                 .push(self.resize_handle(ResizeTarget::ThreadList))
                 .push(container(self.view_threads_sidebar()).width(Length::Fixed(self.thread_list_width)));
+        }
+
+        // Mentions inbox sidebar
+        if self.mentions_open {
+            main_area = main_area
+                .push(self.resize_handle(ResizeTarget::Mentions))
+                .push(container(self.view_mentions_sidebar()).width(Length::Fixed(self.mentions_width)));
         }
 
         // Member list (right sidebar)
@@ -881,56 +979,88 @@ impl FluxChat {
             layers.push(self.palette_layer(card, Message::ToggleSearch));
         }
 
-        // Quick switcher overlay
+        // Command palette (Ctrl/Cmd+K): rooms and actions
         if self.quick_switcher_open {
-            let matches = self.quick_switcher_matches();
+            let items = self.palette_items();
             let mut results_col = column![].spacing(1);
-            for (i, room_id) in matches.iter().enumerate() {
-                let Some(room) = self.rooms.iter().find(|r| r.room_id == *room_id) else { continue };
-                let detail = room.space_name.clone()
-                    .unwrap_or_else(|| if room.is_direct { "Direct message".into() } else { String::new() });
-                let mut label = row![
-                    text(&room.name).font(self.sidebar_font()).size(14).color(theme::colors().text_bright)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                    text(detail).font(self.sidebar_font()).size(12).color(theme::colors().text_dim)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                ]
-                .spacing(10)
-                .align_y(iced::Alignment::Center);
-                if room.highlight_count > 0 || room.unread_count > 0 {
-                    let (n, color) = if room.highlight_count > 0 {
-                        (room.highlight_count, theme::colors().red)
-                    } else {
-                        (room.unread_count, theme::colors().accent)
-                    };
-                    label = label.push(Space::new().width(Fill)).push(crate::ui::badge(n.to_string(), color));
+            let mut shown_actions_label = false;
+            for (i, item) in items.iter().enumerate() {
+                let selected = i == self.quick_switcher_selected;
+                let activate = Message::PaletteActivate(Box::new(item.clone()));
+                match item {
+                    crate::state::PaletteItem::Room(room_id) => {
+                        let Some(room) = self.rooms.iter().find(|r| r.room_id == *room_id) else { continue };
+                        let detail = room.space_name.clone()
+                            .unwrap_or_else(|| if room.is_direct { "Direct message".into() } else { String::new() });
+                        let mut label = row![
+                            text(&room.name).font(self.sidebar_font()).size(14).color(theme::colors().text_bright)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                            text(detail).font(self.sidebar_font()).size(12).color(theme::colors().text_dim)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                        ]
+                        .spacing(10)
+                        .align_y(iced::Alignment::Center);
+                        if room.highlight_count > 0 || room.unread_count > 0 {
+                            let (n, color) = if room.highlight_count > 0 {
+                                (room.highlight_count, theme::colors().red)
+                            } else {
+                                (room.unread_count, theme::colors().accent)
+                            };
+                            label = label.push(Space::new().width(Fill)).push(crate::ui::badge(n.to_string(), color));
+                        }
+                        results_col = results_col.push(
+                            button(
+                                row![
+                                    self.render_room_avatar(room.avatar_url.as_deref(), &room.name, 22.0),
+                                    label,
+                                ].spacing(10).align_y(iced::Alignment::Center),
+                            )
+                            .on_press(activate)
+                            .padding([6, 10])
+                            .width(Fill)
+                            .style(crate::ui::row_style(selected)),
+                        );
+                    }
+                    crate::state::PaletteItem::Action(action) => {
+                        if !shown_actions_label {
+                            shown_actions_label = true;
+                            results_col = results_col.push(container(
+                                text("ACTIONS").font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
+                            ).padding(iced::Padding { top: 8.0, right: 10.0, bottom: 2.0, left: 10.0 }));
+                        }
+                        results_col = results_col.push(
+                            button(
+                                row![
+                                    container(crate::ui::icon(SVG_CHEVRON_RIGHT, 14.0, theme::colors().accent))
+                                        .width(22).center_x(22),
+                                    text(action.label.clone()).font(self.sidebar_font()).size(14).color(theme::colors().text_bright)
+                                        .wrapping(iced::widget::text::Wrapping::None),
+                                    text(action.hint).font(self.sidebar_font()).size(12).color(theme::colors().text_dim)
+                                        .wrapping(iced::widget::text::Wrapping::None),
+                                ].spacing(10).align_y(iced::Alignment::Center),
+                            )
+                            .on_press(activate)
+                            .padding([6, 10])
+                            .width(Fill)
+                            .clip(true)
+                            .style(crate::ui::row_style(selected)),
+                        );
+                    }
                 }
-                results_col = results_col.push(
-                    button(
-                        row![
-                            self.render_room_avatar(room.avatar_url.as_deref(), &room.name, 22.0),
-                            label,
-                        ].spacing(10).align_y(iced::Alignment::Center),
-                    )
-                    .on_press(Message::SelectRoom(room_id.clone()))
-                    .padding([6, 10])
-                    .width(Fill)
-                    .style(crate::ui::row_style(i == self.quick_switcher_selected)),
-                );
             }
-            let body: Element<Message> = if matches.is_empty() {
-                crate::ui::empty_state(SVG_HASH, "No matching rooms", None)
+            let body: Element<Message> = if items.is_empty() {
+                crate::ui::empty_state(SVG_SEARCH, "Nothing matches", Some("Type > to search actions only.".into()))
             } else {
                 results_col.into()
             };
             let card = self.palette(
-                text_input("Jump to a room", &self.quick_switcher_query)
+                text_input("Jump to a room, or type > for actions", &self.quick_switcher_query)
                     .id(quick_switcher_id())
                     .on_input(Message::QuickSwitcherQuery)
                     .on_submit(Message::QuickSwitcherSelect),
                 body,
-                "\u{2191}\u{2193} select   \u{21b5} open   esc close",
-                520.0,
+                "\u{2191}\u{2193} select   \u{21b5} open   > actions   esc close",
+                560.0,
             );
             layers.push(self.palette_layer(card, Message::ToggleQuickSwitcher));
         }
@@ -959,7 +1089,7 @@ impl FluxChat {
 
     /// Context menu items for rooms or spaces.
     fn view_context_menu(&self, ctx: &crate::state::ContextMenu) -> Element<'_, Message> {
-        let mut col = column![].spacing(1).width(260);
+        let mut col = column![].spacing(1).width(CONTEXT_MENU_WIDTH);
 
         match ctx {
             crate::state::ContextMenu::Room { room_id, is_dm } => {
@@ -978,19 +1108,24 @@ impl FluxChat {
                                 col = col.push(container(
                                     text("RECENT THREADS").font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
                                 ).padding(iced::Padding { top: 4.0, right: 10.0, bottom: 2.0, left: 10.0 }));
+                                // Fit text to the menu: ~0.62em per character, minus
+                                // padding and the icon column.
+                                let fit = |size: f32, inset: f32| ((CONTEXT_MENU_WIDTH - inset) / (size * 0.62)) as usize;
                                 for t in list.iter().take(3) {
-                                    col = col.push(
-                                        button(
+                                    let entry = button(
                                             column![
                                                 row![
                                                     crate::ui::icon(SVG_THREAD, 12.0, theme::colors().accent),
-                                                    text(t.body.as_str()).font(self.sidebar_font()).size(13)
+                                                    text(ellipsize(&t.body, fit(13.0, 46.0))).font(self.sidebar_font()).size(13)
                                                         .color(theme::colors().text_normal)
                                                         .wrapping(iced::widget::text::Wrapping::None),
                                                 ].spacing(8).align_y(iced::Alignment::Center),
-                                                text(thread_meta(t)).font(self.sidebar_font()).size(11)
-                                                    .color(theme::colors().text_dim)
-                                                    .wrapping(iced::widget::text::Wrapping::None),
+                                                row![
+                                                    Space::new().width(20),
+                                                    text(ellipsize(&thread_meta_short(t), fit(11.0, 46.0))).font(self.sidebar_font()).size(11)
+                                                        .color(theme::colors().text_dim)
+                                                        .wrapping(iced::widget::text::Wrapping::None),
+                                                ],
                                             ].spacing(2),
                                         )
                                         .on_press(Message::Batch(vec![
@@ -1000,8 +1135,8 @@ impl FluxChat {
                                         .padding([5, 10])
                                         .width(Fill)
                                         .clip(true)
-                                        .style(crate::ui::row_style(false)),
-                                    );
+                                        .style(crate::ui::row_style(false));
+                                    col = col.push(self.thread_hover_preview(entry, t, iced::widget::tooltip::Position::Right));
                                 }
                                 col = col.push(
                                     button(
@@ -1036,6 +1171,18 @@ impl FluxChat {
                 col = col.push(self.context_menu_item(
                     "Copy Link", SVG_LINK, rid.clone(), "copy_link",
                 ));
+                col = col.push(
+                    button(
+                        row![
+                            crate::ui::icon(SVG_MAXIMIZE, 14.0, theme::colors().text_dim),
+                            text("Open in split view").font(self.sidebar_font()).size(13).color(theme::colors().text_normal),
+                        ].spacing(8).align_y(iced::Alignment::Center),
+                    )
+                    .on_press(Message::OpenInPane(rid.clone()))
+                    .padding([6, 10])
+                    .width(Fill)
+                    .style(crate::ui::row_style(false)),
+                );
                 if !is_dm {
                     col = col.push(self.context_menu_item(
                         "Invite", SVG_USER_PLUS, rid.clone(), "invite",
@@ -1151,6 +1298,8 @@ impl FluxChat {
             ..Default::default()
         });
 
+        // Same outer size as the space icons (which reserve a 2px ring).
+        let home_btn = container(home_btn).padding(2);
         let mut col = column![home_btn].spacing(4).padding([8, 4]).align_x(iced::Alignment::Center);
 
         // Separator
@@ -1166,65 +1315,53 @@ impl FluxChat {
 
         for node in &self.space_tree {
             let space = &node.info;
-            let depth = node.depth;
             let space_id = space.room_id.clone();
             let is_selected = self.selected_space_id.as_deref() == Some(&space.room_id);
             let radius = if is_selected { 12.0 } else { 20.0 };
-            let opacity = if is_selected { 1.0 } else { 0.7 };
-            let glow = if is_selected {
-                iced::Shadow {
-                    color: Color::from_rgba(0.35, 0.55, 0.9, 0.6),
-                    offset: iced::Vector::ZERO,
-                    blur_radius: 10.0,
-                }
-            } else {
-                iced::Shadow::default()
-            };
+            let opacity: f32 = if is_selected { 1.0 } else { 0.7 };
 
-            // Scale icon size down for sub-spaces
-            let icon_size: u32 = if depth == 0 { 40 } else { 32 };
-            let font_size: u32 = if depth == 0 { 13 } else { 11 };
-            let indent: u32 = (depth as u32).min(3) * 4;
-
+            // Every space icon is the same square; images and fallbacks alike.
+            let icon_size = SPACE_ICON_SIZE;
+            let tint = theme::nick_color(&space.name);
             let icon_content: Element<Message> = if let Some(handle) = space.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
                 container(
                     iced::widget::image(handle.clone())
                         .width(icon_size).height(icon_size)
-                        .content_fit(iced::ContentFit::Cover),
+                        .content_fit(iced::ContentFit::Cover)
+                        .border_radius(radius),
                 )
                 .width(icon_size).height(icon_size)
-                .clip(true)
-                .style(move |_: &Theme| container::Style {
-                    border: iced::Border {
-                        radius: radius.into(),
-                        ..Default::default()
-                    },
-                    shadow: glow,
-                    ..Default::default()
-                })
                 .into()
             } else {
                 let initials: String = space.name.split_whitespace()
                     .take(2)
-                    .map(|w| w.chars().next().unwrap_or('?'))
+                    .filter_map(|w| w.chars().find(|c| c.is_alphanumeric()))
                     .collect::<String>()
                     .to_uppercase();
                 container(
-                    text(initials).font(self.sidebar_font()).size(font_size).color(Color { a: opacity, ..theme::colors().text_muted }),
+                    text(initials).font(self.sidebar_font()).size(14).color(Color { a: opacity.max(0.85), ..tint }),
                 )
                 .width(icon_size).height(icon_size)
-                .center(Fill)
+                .center_x(icon_size).center_y(icon_size)
                 .style(move |_: &Theme| container::Style {
-                    background: Some(theme::colors().bg_mid.into()),
-                    border: iced::Border {
-                        radius: radius.into(),
-                        ..Default::default()
-                    },
-                    shadow: glow,
+                    background: Some(theme::with_alpha(tint, if is_selected { 0.3 } else { 0.18 }).into()),
+                    border: iced::Border { radius: radius.into(), ..Default::default() },
                     ..Default::default()
                 })
                 .into()
             };
+            // Selected: accent ring around the icon (same outer size either way).
+            let icon_content: Element<Message> = container(icon_content)
+                .padding(2)
+                .style(move |_: &Theme| container::Style {
+                    border: iced::Border {
+                        color: if is_selected { theme::colors().accent } else { Color::TRANSPARENT },
+                        width: 2.0,
+                        radius: (radius + 2.0).into(),
+                    },
+                    ..Default::default()
+                })
+                .into();
 
             let ctx_space_id = space.room_id.clone();
             let btn = mouse_area(
@@ -1236,6 +1373,7 @@ impl FluxChat {
                     text(&space.name).font(self.sidebar_font()).size(12).color(theme::colors().text_normal),
                     iced::widget::tooltip::Position::Right,
                 )
+                .delay(crate::ui::TOOLTIP_DELAY)
                 .style(|_: &Theme| container::Style {
                     background: Some(theme::colors().bg_mid.into()),
                     border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
@@ -1247,13 +1385,7 @@ impl FluxChat {
                 crate::state::ContextMenu::Space { space_id: ctx_space_id },
             ));
 
-            let btn_el: Element<Message> = if indent > 0 {
-                row![Space::new().width(indent), btn].into()
-            } else {
-                btn.into()
-            };
-
-            col = col.push(btn_el);
+            col = col.push(btn);
         }
 
         container(scrollable(col).direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar))
@@ -1278,6 +1410,7 @@ impl FluxChat {
         let is_thread_view = room_id.starts_with("thread::");
         let p = &self.prefs;
         msgs.iter()
+            .filter(|m| m.event_id != fluxchat_core::timeline::READ_MARKER_ID)
             .filter(|m| !self.ignored_users.contains(&m.sender))
             .filter(|m| is_thread_view || m.thread_root.is_none())
             .filter(|m| match m.row_kind {
@@ -1421,7 +1554,7 @@ impl FluxChat {
             .to_string();
         let title: Element<Message> = match &self.selected_space_id {
             // A space's name opens its dialog (rooms, members, settings).
-            Some(space_id) => crate::ui::with_tooltip(
+            Some(space_id) => crate::ui::tooltip_at(
                 button(
                     row![
                         text(header_text)
@@ -1438,6 +1571,7 @@ impl FluxChat {
                 .padding([2, 6])
                 .style(crate::ui::row_style(false)),
                 "Manage space",
+                iced::widget::tooltip::Position::Bottom,
             ),
             None => text(header_text)
                 .font(self.sidebar_font())
@@ -1846,10 +1980,49 @@ impl FluxChat {
         ].spacing(0).into()
     }
 
+    /// A room's most recently active threads, indented under it (unless
+    /// collapsed). Threads open as full-size tabs are listed by the caller.
+    fn view_room_recent_threads(&self, room_id: &str, indent: f32, tab_prefix: &str) -> Vec<Element<'_, Message>> {
+        if self.collapsed_room_threads.contains(room_id) {
+            return Vec::new();
+        }
+        let Some(threads) = self.room_threads.get(room_id) else { return Vec::new() };
+        // Text width left for the title: sidebar minus paddings, offset and icon.
+        let avail = self.sidebar_width - 12.0 - indent - THREAD_ENTRY_OFFSET - 12.0 - 6.0 - 24.0;
+        let max_chars = (avail / (12.0 * 0.62)).max(8.0) as usize;
+        threads.iter()
+            .filter(|t| !self.open_tabs.iter().any(|(id, _, _, _)| *id == format!("{tab_prefix}{}", t.root_id)))
+            .take(crate::update::SIDEBAR_THREADS)
+            .map(|t| {
+                let key = fluxchat_core::timeline::thread_key(room_id, &t.root_id);
+                let shown = self.shown_in_pane(&key) || self.selected_room_id.as_deref() == Some(key.as_str());
+                let entry = button(
+                    row![
+                        Space::new().width(Length::Fixed(THREAD_ENTRY_OFFSET)),
+                        crate::ui::icon(SVG_THREAD, 12.0, if shown { theme::colors().accent } else { theme::colors().text_dim }),
+                        text(ellipsize(&t.body, max_chars)).font(self.sidebar_font()).size(12)
+                            .color(if shown { theme::colors().text_bright } else { theme::colors().text_muted })
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ].spacing(6).align_y(iced::Alignment::Center),
+                )
+                .on_press(Message::OpenThread(room_id.to_string(), t.root_id.clone()))
+                .padding([3, 8])
+                .width(Fill)
+                .clip(true)
+                .style(crate::ui::row_style(shown));
+                container(self.thread_hover_preview(entry, t, iced::widget::tooltip::Position::Right))
+                    .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 + indent })
+                    .into()
+            })
+            .collect()
+    }
+
     /// Thread entries indented below their parent room in the sidebar.
     fn view_thread_entries(&self, room_id: &str, indent: f32) -> Vec<Element<Message>> {
         let prefix = format!("thread::{room_id}::");
-        self.open_tabs.iter()
+        // Recent threads (collapsible per room), then full-size thread tabs.
+        let mut out = self.view_room_recent_threads(room_id, indent, &prefix);
+        out.extend(self.open_tabs.iter()
             .filter(|(tid, _, _, _)| tid.starts_with(&prefix))
             .map(|(tid, tname, _, _)| {
                 let is_selected = self.selected_room_id.as_deref() == Some(tid.as_str());
@@ -1887,7 +2060,8 @@ impl FluxChat {
                     .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 + indent })
                     .into()
             })
-            .collect()
+            .collect::<Vec<_>>());
+        out
     }
 
     /// Single room entry in the list.
@@ -2013,6 +2187,9 @@ impl FluxChat {
                 .wrapping(iced::widget::text::Wrapping::None),
         );
 
+        // Collapse / expand this room's threads in the sidebar.
+        let thread_count = self.room_threads.get(&room.room_id).map(|t| t.len()).unwrap_or(0);
+        let has_threads = thread_count > 0;
         // Call indicator
         if self.rooms_with_calls.contains(&room.room_id) {
             row_content = row_content.push(Space::new().width(Fill));
@@ -2026,27 +2203,42 @@ impl FluxChat {
         let room_id = room.room_id.clone();
         let ctx_room_id = room.room_id.clone();
         let ctx_menu = crate::state::ContextMenu::Room { room_id: ctx_room_id, is_dm };
-        mouse_area(
-            container(
-                button(
-                    container(row_content)
-                        .width(Fill)
-                        .clip(true)
-                )
-                .on_press(Message::SelectRoom(room_id))
-                .padding([5, 8])
+        let room_button = button(
+            container(row_content)
                 .width(Fill)
-                .style(move |_, status| button::Style {
-                    background: Some(if !is_selected && matches!(status, button::Status::Hovered) {
-                        theme::tint(0.06)
-                    } else {
-                        bg
-                    }.into()),
-                    text_color: name_color,
-                    border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
-                    ..Default::default()
-                })
-            )
+                .clip(true)
+        )
+        .on_press(Message::SelectRoom(room_id.clone()))
+        .padding([5, 8])
+        .width(Fill)
+        .style(move |_, status| button::Style {
+            background: Some(if !is_selected && matches!(status, button::Status::Hovered) {
+                theme::tint(0.06)
+            } else {
+                bg
+            }.into()),
+            text_color: name_color,
+            border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
+            ..Default::default()
+        });
+        let mut entry = row![room_button].align_y(iced::Alignment::Center);
+        if has_threads {
+            let collapsed = self.collapsed_room_threads.contains(&room.room_id);
+            entry = entry.push(crate::ui::with_tooltip(
+                button(
+                    row![
+                        crate::ui::icon(if collapsed { SVG_CHEVRON_RIGHT } else { SVG_CHEVRON_DOWN }, 11.0, theme::colors().text_dim),
+                        text(thread_count.to_string()).font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
+                    ].spacing(2).align_y(iced::Alignment::Center),
+                )
+                .on_press(Message::ToggleRoomThreads(room_id))
+                .padding([3, 4])
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+                if collapsed { "Show threads" } else { "Hide threads" },
+            ));
+        }
+        mouse_area(
+            container(entry)
             .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
         )
         .on_right_press(Message::OpenContextMenu(ctx_menu))
@@ -2054,7 +2246,7 @@ impl FluxChat {
     }
 
     /// Main content area (tabs + messages + input).
-    fn view_content(&self) -> Element<'_, Message> {
+    pub(crate) fn view_content(&self) -> Element<'_, Message> {
         let mut content = column![].width(Fill).height(Fill);
 
         // Room header bar (room name + action buttons)
@@ -2101,6 +2293,7 @@ impl FluxChat {
                     text(label).font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
                     iced::widget::tooltip::Position::Bottom,
                 )
+                .delay(crate::ui::TOOLTIP_DELAY)
                 .gap(4)
                 .style(|_: &Theme| container::Style {
                     background: Some(theme::colors().bg_dark.into()),
@@ -2180,6 +2373,7 @@ impl FluxChat {
                     text("Pins").font(self.sidebar_font()).size(11),
                     iced::widget::tooltip::Position::Bottom,
                 )
+                .delay(crate::ui::TOOLTIP_DELAY)
                 .gap(4)
                 .style(|_: &Theme| container::Style {
                     background: Some(theme::colors().bg_dark.into()),
@@ -2194,7 +2388,9 @@ impl FluxChat {
                 call_btn,
                 make_action_btn(SVG_SEARCH, Message::ToggleSearch, self.search_open, "Search"),
                 pin_btn,
+                make_action_btn(SVG_SPLIT_V, Message::PaneSplit(iced::widget::pane_grid::Axis::Vertical), false, "Split side by side (Ctrl+B %)"),
                 make_action_btn(SVG_THREAD, Message::ToggleThreads, self.threads_open, "Threads"),
+                make_action_btn(SVG_AT_SIGN, Message::ToggleMentions, self.mentions_open, "Mentions (\u{2318}/Ctrl+I)"),
                 make_action_btn(SVG_USERS, Message::ToggleMemberList, self.show_member_list, "Members"),
                 make_action_btn(SVG_INFO, Message::OpenModal(crate::state::Modal::RoomSettings), false, "Settings"),
                 {
@@ -2225,6 +2421,7 @@ impl FluxChat {
                         text("Favourite").font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
                         iced::widget::tooltip::Position::Bottom,
                     )
+                .delay(crate::ui::TOOLTIP_DELAY)
                     .gap(4)
                     .style(|_: &Theme| container::Style {
                         background: Some(theme::colors().bg_dark.into()),
@@ -2416,10 +2613,17 @@ impl FluxChat {
             }
 
             if let Some(msgs) = messages {
-                let last_read = self.last_read_event.get(room_id).cloned();
+                // "NEW" divider after the message that was last read when
+                // the room was opened (kept while the room stays open).
+                let last_read = self.read_anchor.as_ref()
+                    .filter(|(k, _)| k == room_id)
+                    .map(|(_, e)| e.clone());
                 // Don't show divider if the last read event is the very last message
+                // Only when something real follows it.
                 let show_divider = last_read.as_ref().is_some_and(|lr| {
-                    msgs.last().map(|m| &m.event_id) != Some(lr)
+                    msgs.iter().rev()
+                        .find(|m| !m.event_id.starts_with('~'))
+                        .map(|m| &m.event_id) != Some(lr)
                 });
                 let is_thread_view = room_id.starts_with("thread::");
                 // Thread counts precomputed in update.rs
@@ -2683,6 +2887,30 @@ impl FluxChat {
             }
         }
 
+        // tmux-style window list (and the armed prefix)
+        if self.windows.len() > 1 || self.tmux_prefix {
+            bar = bar.push(sep());
+            for (i, w) in self.windows.iter().enumerate() {
+                let name = w.focused_key()
+                    .map(fluxchat_core::timeline::real_room_id)
+                    .and_then(|r| self.rooms.iter().find(|x| x.room_id == r))
+                    .map(|r| crate::view::ellipsize(&r.name, 14))
+                    .unwrap_or_else(|| "empty".into());
+                let active = i == self.active_window;
+                bar = bar.push(
+                    button(text(format!("{i}:{name}{}", if active { "*" } else { "" }))
+                        .font(self.sidebar_font()).size(13)
+                        .color(if active { theme::colors().accent } else { theme::colors().text_muted }))
+                        .on_press(Message::WindowSelect(i))
+                        .padding([1, 4])
+                        .style(crate::ui::row_style(false)),
+                );
+            }
+            if self.tmux_prefix {
+                bar = bar.push(text("  [prefix]").font(self.sidebar_font()).size(13).color(theme::colors().yellow));
+            }
+        }
+
         bar = bar.push(Space::new().width(Fill));
 
         // Sync lag / connection state
@@ -2796,12 +3024,35 @@ impl FluxChat {
         // File drag-drop + sidebar resize mouse tracking + window focus + global shortcuts
         let file_drop = iced::event::listen_with(|event, _status, _window| {
             // Intercept global shortcuts before widgets consume them
-            if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = &event {
+            if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modified_key, modifiers, repeat, .. }) = &event {
+                // tmux: Ctrl+B arms the prefix, the next key is a pane command.
+                // `key` ignores Shift, so commands are read from `modified_key`
+                // (`%` rather than `5`, `"` rather than `'`). Key repeat from
+                // holding Ctrl+B neither re-arms nor cancels the prefix.
+                let ctrl_b = modifiers.control()
+                    && matches!(key, iced::keyboard::Key::Character(c) if c.as_str().eq_ignore_ascii_case("b"));
+                // The flag is flipped here, not in update(), so a quick
+                // Ctrl+B → x can't arrive before the prefix is armed.
+                if crate::panes::prefix_armed() {
+                    if *repeat || ctrl_b {
+                        return None;
+                    }
+                    let name = crate::panes::key_name(modified_key)?;
+                    crate::panes::set_prefix_armed(false);
+                    return Some(Message::TmuxKey(name));
+                }
+                if ctrl_b && !*repeat {
+                    crate::panes::set_prefix_armed(true);
+                    return Some(Message::TmuxPrefix);
+                }
                 // Ctrl/Cmd+K: quick switcher
                 if modifiers.command() || modifiers.control() {
                     if let iced::keyboard::Key::Character(c) = key {
                         if c.as_str() == "k" || c.as_str() == "K" {
                             return Some(Message::ToggleQuickSwitcher);
+                        }
+                        if c.as_str() == "i" || c.as_str() == "I" {
+                            return Some(Message::ToggleMentions);
                         }
                         if c.as_str() == "f" || c.as_str() == "F" {
                             return Some(Message::ToggleSearch);
@@ -2908,6 +3159,36 @@ pub(crate) fn is_continuation(prev: &fluxchat_core::MessageInfo, msg: &fluxchat_
         && !prev.is_emote && !msg.is_emote
         && msg.reply_to_id.is_none()
         && msg.timestamp.saturating_sub(prev.timestamp) < crate::view_messages::MSG_GROUP_SECS
+}
+
+/// Compact thread line for narrow places: "3 replies · alice · 5m".
+fn thread_meta_short(t: &fluxchat_core::ThreadPreview) -> String {
+    let mut parts = vec![if t.reply_count == 1 { "1 reply".to_string() } else { format!("{} replies", t.reply_count) }];
+    if let Some(latest) = &t.latest_sender_name {
+        parts.push(latest.clone());
+    }
+    if t.last_activity > 0 {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let ago = now.saturating_sub(t.last_activity);
+        parts.push(match ago {
+            0..=59 => "now".into(),
+            60..=3599 => format!("{}m", ago / 60),
+            3600..=86399 => format!("{}h", ago / 3600),
+            _ => format!("{}d", ago / 86400),
+        });
+    }
+    parts.join(" \u{00b7} ")
+}
+
+/// Cut `s` to at most `max` characters, ending in "…" when shortened.
+pub(crate) fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out = out.trim_end().to_string();
+    out.push('\u{2026}');
+    out
 }
 
 /// "3 replies · alice · 5m ago" for a thread list entry.
@@ -3077,5 +3358,17 @@ fn call_event_stream() -> impl futures_util::Stream<Item = Message> {
                 None => return,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ellipsize_tests {
+    use super::ellipsize;
+
+    #[test]
+    fn shortens_with_ellipsis() {
+        assert_eq!(ellipsize("short", 10), "short");
+        assert_eq!(ellipsize("add heart of the beast to seerr", 12), "add heart o\u{2026}");
+        assert_eq!(ellipsize("ab cd", 4), "ab\u{2026}");
     }
 }

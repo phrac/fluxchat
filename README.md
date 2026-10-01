@@ -4,11 +4,14 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 
 ![fluxchat screenshot](assets/screenshot.png)
 
+**[Read the user manual →](docs/README.md)**
+
 ## Highlights
 
 - **Pure Rust, GPU-rendered.** No Electron, no WebView, no JavaScript. Built on [Iced](https://iced.rs) and [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
 - **IRC feel, modern features.** Timestamp, colored nick and message columns in a monospace layout, with images, reactions, threads, spaces, encryption and voice calls.
 - **Fast.** Virtualized timeline, sliding sync, lazy-loaded member lists.
+- **Your layout.** Split the screen into tmux-style panes and windows; every sidebar opens, closes and resizes independently, and it all comes back after a restart.
 
 ## Features
 
@@ -19,15 +22,27 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Images, video, voice messages, files, GIFs, stickers, polls, locations
 - Captions: attach a file and type a message, sent together as one
 - Link previews, read receipts, typing indicators, per-room drafts
+- Rooms open at your first unread message, marked by a NEW line
 
 ### Threads
-- Thread pane beside the room, with its own reply box (or open full size)
+- Threads open in a pane beside the room, with their own reply box
+- Threads sidebar: every thread in the room, most recently active first
+- The three latest threads of each room listed under it in the room list (collapsible); right-click a room for its recent threads
+- Hover any thread for the full first message and latest reply
 - Reply counts and latest-reply previews under each thread root
 - Live updates, including bots that answer inside threads
 
+### Panes & windows
+- Split the main area side by side or stacked, as often as you like; put any room or thread in any pane
+- Drag to resize and rearrange, zoom a pane to full size
+- Multiple windows (layouts), listed in the status bar
+- tmux keys: Ctrl+B then `%` `"` `x` `z` `o` arrows `c` `n` `p` `0`–`9` `&`
+- Layout saved and restored on restart
+
 ### Rooms & spaces
 - Room list grouped by space, favourites, unread and mention badges
-- Quick switcher (Ctrl/Cmd+K), Alt+1–9 and Alt+Up/Down room hotkeys
+- Command palette (Ctrl/Cmd+K): jump to rooms or run actions (`>` for actions only)
+- Alt+1–9 and Alt+Up/Down room hotkeys
 - Space management: browse, join, add, remove and create rooms; edit the space
 - Room settings: name, topic, icon, notifications, spaces
 - Security & privacy: who can join, history visibility, guests, directory listing, encryption
@@ -53,17 +68,27 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Account-wide rules: DMs, group rooms, mentions, @room, keywords, invites, calls, bots
 - Per-room mode: all messages, mentions only, or mute
 - Mentions and keywords highlighted in the timeline
+- Mentions inbox (Ctrl/Cmd+I): every message that mentioned you, across all rooms
 
 ### Customization
 - 9 built-in themes plus your own TOML themes (light and dark)
 - Message and sidebar fonts, text size
 - Preferences for timestamps (12/24h), compact layout, message grouping, big emoji, link previews, GIF autoplay, send shortcut, markdown, privacy (read receipts, typing, presence)
-- Resizable room list, thread pane and member list
+- Resizable room list, panes and sidebars (threads, mentions, members)
 
 ### Power users
 - 57+ slash commands with Tab completion (`/help` lists them)
 - `/devtools`: room state inspector and raw event sender
 - Password and SSO/OIDC login
+
+## Documentation
+
+The [user manual](docs/README.md) covers everything:
+
+- [Getting started](docs/getting-started.md) · [The interface](docs/interface.md) · [Messaging](docs/messaging.md) · [Threads](docs/threads.md)
+- [Panes and windows](docs/panes-and-windows.md) · [Rooms and spaces](docs/rooms-and-spaces.md) · [People](docs/people.md)
+- [Notifications](docs/notifications.md) · [Voice and video](docs/calls.md) · [Settings](docs/settings.md) · [Encryption](docs/encryption.md)
+- [Keyboard shortcuts](docs/keyboard-shortcuts.md) · [Slash commands](docs/slash-commands.md) · [Themes](docs/themes.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ## Building
 

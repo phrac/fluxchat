@@ -149,21 +149,43 @@ pub fn icon_only<'a>(icon_svg: &'static [u8], tip: &'a str, tone: Tone, on_press
     with_tooltip(b, tip)
 }
 
-/// Wrap an element in the app's standard tooltip.
+/// How long the pointer must rest on something before its tooltip shows.
+/// Instant tooltips flash while moving between buttons and cover the next
+/// target; a short delay keeps them out of the way of clicks.
+pub const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// Wrap an element in the app's standard tooltip, shown above it.
 pub fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, tip: &'a str) -> Element<'a, Message> {
-    tooltip(
-        content,
-        text(tip).font(MONO).size(11).color(theme::colors().text_normal),
-        tooltip::Position::Top,
-    )
-    .gap(4)
-    .padding(4)
-    .style(|_: &Theme| container::Style {
-        background: Some(theme::colors().bg_deep.into()),
-        border: Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
-        ..Default::default()
-    })
-    .into()
+    tooltip_at(content, tip, tooltip::Position::Top)
+}
+
+/// The app's standard tooltip on a chosen side. Use `Bottom` for anything
+/// near the top edge: a tooltip that doesn't fit is pushed back into the
+/// window and ends up covering the button it describes.
+pub fn tooltip_at<'a>(
+    content: impl Into<Element<'a, Message>>,
+    tip: impl text::IntoFragment<'a>,
+    position: tooltip::Position,
+) -> Element<'a, Message> {
+    styled_tooltip(content, text(tip).font(MONO).size(11).color(theme::colors().text_normal), position)
+}
+
+/// A delayed, themed tooltip with arbitrary content.
+pub fn styled_tooltip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    tip: impl Into<Element<'a, Message>>,
+    position: tooltip::Position,
+) -> Element<'a, Message> {
+    tooltip(content, tip, position)
+        .gap(6)
+        .padding(4)
+        .delay(TOOLTIP_DELAY)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::colors().bg_deep.into()),
+            border: Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+            ..Default::default()
+        })
+        .into()
 }
 
 /// An SVG icon tinted with `color`.

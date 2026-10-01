@@ -16,6 +16,9 @@ use crate::models::{MessageInfo, PollInfo, ReactionInfo};
 /// non-state items, so a room never opens to a near-empty view.
 const INITIAL_BACKFILL: u16 = 30;
 
+/// Row id of the fully-read marker in a message list.
+pub const READ_MARKER_ID: &str = "~readmarker";
+
 /// Receives a view's complete, ordered message list every time its Timeline
 /// changes. Called only from that view's watcher task, so updates for a view
 /// are always delivered in order.
@@ -430,7 +433,12 @@ pub fn timeline_item_to_message_info(item: &TimelineItem) -> Option<MessageInfo>
             timestamp: ts.as_secs().into(),
             ..Default::default()
         }),
-        TimelineItemKind::Virtual(_) => None, // read marker / timeline start
+        // Where our fully-read marker sits — the app opens rooms here.
+        TimelineItemKind::Virtual(VirtualTimelineItem::ReadMarker) => Some(MessageInfo {
+            event_id: READ_MARKER_ID.to_string(),
+            ..Default::default()
+        }),
+        TimelineItemKind::Virtual(_) => None, // timeline start
     }
 }
 

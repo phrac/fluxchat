@@ -624,6 +624,64 @@ pub async fn fetch_presence(client: &matrix_sdk::Client, user_id: &str) -> Resul
     })
 }
 
+/// Recent messages that highlighted us (mentions / keywords), across all
+/// rooms, newest first — the server's `/notifications?only=highlight`.
+/// Encrypted ones are decrypted locally where we have the keys. (The server
+/// can't evaluate mentions inside encrypted messages; the app adds those
+/// from live notifications and loaded timelines.)
+pub async fn fetch_highlights(client: &matrix_sdk::Client, limit: u32) -> Result<Vec<crate::models::MentionItem>, AppError> {
+    use matrix_sdk::ruma::api::client::push::get_notifications;
+    use matrix_sdk::ruma::events::room::encrypted::OriginalSyncRoomEncryptedEvent;
+    let mut request = get_notifications::v3::Request::new();
+    request.limit = Some(matrix_sdk::ruma::UInt::from(limit));
+    request.only = Some("highlight".into());
+    let response = client.send(request).await
+        .map_err(|e| AppError::Other(format!("Couldn't load mentions: {e}")))?;
+
+    let mut out = Vec::new();
+    for n in response.notifications {
+        let Some(room) = client.get_room(&n.room_id) else { continue };
+        let Ok(mut json) = n.event.deserialize_as::<serde_json::Value>() else { continue };
+        if json["type"] == "m.room.encrypted" {
+            let raw = matrix_sdk::ruma::serde::Raw::<OriginalSyncRoomEncryptedEvent>::from_json(n.event.json().to_owned());
+            match room.decrypt_event(&raw, None).await {
+                Ok(ev) => match ev.raw().deserialize_as::<serde_json::Value>() {
+                    Ok(j) => json = j,
+                    Err(_) => continue,
+                },
+                Err(_) => continue, // no key: nothing to show
+            }
+        }
+        if json["type"] != "m.room.message" {
+            continue;
+        }
+        let body = json["content"]["body"].as_str().unwrap_or_default();
+        if body.trim().is_empty() {
+            continue;
+        }
+        let sender = json["sender"].as_str().unwrap_or_default().to_string();
+        let sender_name = match matrix_sdk::ruma::UserId::parse(&sender) {
+            Ok(uid) => room.get_member_no_sync(&uid).await.ok().flatten()
+                .and_then(|m| m.display_name().map(str::to_string))
+                .unwrap_or_else(|| uid.localpart().to_string()),
+            Err(_) => sender.clone(),
+        };
+        out.push(crate::models::MentionItem {
+            room_id: n.room_id.to_string(),
+            event_id: json["event_id"].as_str().unwrap_or_default().to_string(),
+            sender,
+            sender_name,
+            body: body.lines().next().unwrap_or("").chars().take(200).collect(),
+            timestamp: json["origin_server_ts"].as_u64().map(|ms| ms / 1000)
+                .unwrap_or_else(|| u64::from(n.ts.as_secs())),
+        });
+    }
+    Ok(out)
+}
+
+/// Longest text kept for hover previews.
+const PREVIEW_TEXT_LIMIT: usize = 600;
+
 /// A room's threads, most recently active first (server `/threads`, with
 /// each root's bundled thread summary).
 pub async fn recent_threads(client: &matrix_sdk::Client, room_id: &str, limit: u32) -> Result<Vec<crate::models::ThreadPreview>, AppError> {
@@ -650,8 +708,8 @@ pub async fn recent_threads(client: &matrix_sdk::Client, room_id: &str, limit: u
         let Ok(json) = ev.raw().deserialize_as::<serde_json::Value>() else { continue };
         let Some(root_id) = json["event_id"].as_str() else { continue };
         let sender = json["sender"].as_str().unwrap_or_default().to_string();
-        let body = json["content"]["body"].as_str()
-            .map(|b| b.lines().next().unwrap_or("").chars().take(120).collect::<String>())
+        let full = json["content"]["body"].as_str().unwrap_or("").trim().to_string();
+        let body = full.lines().next().map(|l| l.chars().take(120).collect::<String>())
             .filter(|b| !b.trim().is_empty())
             .unwrap_or_else(|| "(message)".into());
         let thread = &json["unsigned"]["m.relations"]["m.thread"];
@@ -669,6 +727,10 @@ pub async fn recent_threads(client: &matrix_sdk::Client, room_id: &str, limit: u
                 Some(s) => Some(name_of(&s).await),
                 None => None,
             },
+            full_body: full.chars().take(PREVIEW_TEXT_LIMIT).collect(),
+            latest_body: latest["content"]["body"].as_str()
+                .map(|b| b.trim().chars().take(PREVIEW_TEXT_LIMIT).collect::<String>())
+                .filter(|b| !b.is_empty()),
         });
     }
     // The server orders by latest activity; keep that, newest first.

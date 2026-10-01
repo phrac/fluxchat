@@ -1,9 +1,14 @@
+// matrix-sdk's async call chains nest deeply; rustc's default query depth
+// (128) overflows computing some task futures' layouts in release builds.
+#![recursion_limit = "256"]
+
 #![allow(mismatched_lifetime_syntaxes)]
 
 mod commands;
 mod html;
 mod icons;
 mod measured;
+mod panes;
 mod prefs;
 mod message;
 mod primary_clipboard;

@@ -236,4 +236,20 @@ pub struct ThreadPreview {
     /// Latest activity (latest reply, else the root), seconds since epoch.
     pub last_activity: u64,
     pub latest_sender_name: Option<String>,
+    /// Full text of the root message (capped), for hover previews.
+    pub full_body: String,
+    /// Text of the latest reply, when known (not for undecryptable replies).
+    pub latest_body: Option<String>,
+}
+
+/// A message that mentioned us or matched a keyword (mentions inbox).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MentionItem {
+    pub room_id: String,
+    pub event_id: String,
+    pub sender: String,
+    pub sender_name: String,
+    pub body: String,
+    /// Seconds since the epoch.
+    pub timestamp: u64,
 }

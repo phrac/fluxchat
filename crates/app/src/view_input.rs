@@ -489,6 +489,9 @@ impl FluxChat {
                     use iced::keyboard::Key;
                     use iced::keyboard::key::Named;
                     use iced::widget::text_editor::Binding;
+                    if let Some(b) = tmux_binding(&key_press) {
+                        return Some(b);
+                    }
                     match key_press.key {
                         // Send: Enter (Shift+Enter = newline), or with the
                         // "Ctrl+Enter to send" preference, Ctrl/Cmd+Enter
@@ -569,6 +572,7 @@ impl FluxChat {
             text("Emoji").font(self.msg_font()).size(12),
             iced::widget::tooltip::Position::Top,
         )
+                .delay(crate::ui::TOOLTIP_DELAY)
         .style(|_: &Theme| container::Style {
             background: Some(theme::colors().bg_deep.into()),
             border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
@@ -600,6 +604,7 @@ impl FluxChat {
                 text("Location").font(self.msg_font()).size(12),
                 iced::widget::tooltip::Position::Top,
             )
+                .delay(crate::ui::TOOLTIP_DELAY)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::colors().bg_mid.into()),
                 border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
@@ -771,6 +776,7 @@ impl FluxChat {
                 text(title).font(self.msg_font()).size(12),
                 iced::widget::tooltip::Position::Top,
             )
+                .delay(crate::ui::TOOLTIP_DELAY)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::colors().bg_mid.into()),
                 border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
@@ -827,4 +833,13 @@ impl FluxChat {
 
         elements
     }
+}
+
+/// Keep tmux keys out of composers: Ctrl+B and the key after it are pane
+/// commands (handled by the global key listener), not text.
+pub(crate) fn tmux_binding(key_press: &iced::widget::text_editor::KeyPress) -> Option<iced::widget::text_editor::Binding<Message>> {
+    use iced::keyboard::Key;
+    let ctrl_b = key_press.modifiers.control()
+        && matches!(&key_press.key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("b"));
+    (ctrl_b || crate::panes::prefix_armed()).then_some(iced::widget::text_editor::Binding::Custom(Message::Noop))
 }

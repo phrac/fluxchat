@@ -105,15 +105,41 @@ pub enum Message {
 
     // --- Threads ---
     OpenThread(String, String), // room_id, thread_root_event_id — opens the thread pane
-    CloseThreadPane,
+    /// Show a room in a pane beside the focused one (split view).
+    OpenInPane(String),
+    // --- Panes & windows (tmux-style, panes.rs) ---
+    /// Mouse pressed in a pane. Focus moves on release (see `pending_pane_focus`).
+    PaneClicked(iced::widget::pane_grid::Pane),
+    /// Focus a pane right away (title-bar controls).
+    PaneFocus(iced::widget::pane_grid::Pane),
+    PaneResized(iced::widget::pane_grid::ResizeEvent),
+    PaneDragged(iced::widget::pane_grid::DragEvent),
+    PaneSplit(iced::widget::pane_grid::Axis),
+    /// Close a pane (`None` = the focused one).
+    PaneClose(Option<iced::widget::pane_grid::Pane>),
+    PaneZoom,
+    PaneFocusDirection(iced::widget::pane_grid::Direction),
+    PaneCycle,
+    WindowNew,
+    WindowSelect(usize),
+    WindowNext,
+    WindowPrev,
+    WindowClose,
+    /// Composer of a non-focused pane (view key).
+    PaneInputAction(String, iced::widget::text_editor::Action),
+    PaneSend(String),
+    /// Ctrl+B pressed; the next key is a pane command.
+    TmuxPrefix,
+    TmuxKey(String),
+    ShowTmuxHelp,
     /// Server thread list for a room: (room_id, for the context menu?, threads).
     ThreadListLoaded(String, bool, Vec<fluxchat_core::ThreadPreview>),
     /// "All threads" from a room's menu: open the room with its threads panel.
     ShowRoomThreads(String),
-    /// Show the pane's thread in the full main view instead.
-    ExpandThreadPane,
-    ThreadInputAction(iced::widget::text_editor::Action),
-    ThreadSend,
+    /// Sidebar thread lists fetched at startup (room → top threads).
+    RoomThreadsLoaded(Vec<(String, Vec<fluxchat_core::ThreadPreview>)>),
+    /// Collapse / expand a room's threads in the sidebar.
+    ToggleRoomThreads(String),
 
     // --- UI panels ---
     ToggleMemberList,
@@ -356,6 +382,8 @@ pub enum Message {
 
     // --- Navigation ---
     JumpToEvent(String), // event_id — scroll to and highlight
+    /// Scroll the open room to its read anchor (first unread near the top).
+    ScrollToReadAnchor,
 
     // --- Code blocks ---
     ToggleCodeBlock(String), // event_id
@@ -366,6 +394,13 @@ pub enum Message {
 
     // --- Quick switcher ---
     ToggleQuickSwitcher,
+    /// Run a command-palette row (room or action).
+    PaletteActivate(Box<crate::state::PaletteItem>),
+    /// Mentions inbox (all mentions / keyword hits across rooms).
+    ToggleMentions,
+    MentionsLoaded(Vec<fluxchat_core::MentionItem>),
+    /// Open a mention: select its room and jump to the message.
+    OpenMention(String, String), // room_id, event_id
     QuickSwitcherQuery(String),
     QuickSwitcherSelect,
     QuickSwitcherUp,
@@ -512,7 +547,11 @@ pub enum SyncEvent {
 pub struct NotificationInfo {
     pub room_id: String,
     pub room_name: String,
+    pub sender: String,
     pub sender_name: String,
     pub body: String,
     pub is_mention: bool,
+    pub event_id: String,
+    /// Seconds since the epoch.
+    pub timestamp: u64,
 }

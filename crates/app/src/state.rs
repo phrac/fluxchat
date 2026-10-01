@@ -66,15 +66,40 @@ pub enum Modal {
 
 
 
+/// A row in the Ctrl/Cmd+K command palette.
+#[derive(Debug, Clone)]
+pub enum PaletteItem {
+    Room(String),
+    Action(PaletteAction),
+}
+
+/// A palette action: label, short description, and what it does.
+#[derive(Debug, Clone)]
+pub struct PaletteAction {
+    pub label: String,
+    pub hint: &'static str,
+    pub message: crate::message::Message,
+}
+
+impl PaletteAction {
+    pub fn new(label: &'static str, hint: &'static str, message: crate::message::Message) -> Self {
+        Self { label: label.to_string(), hint, message }
+    }
+
+    pub fn new_owned(label: String, hint: &'static str, message: crate::message::Message) -> Self {
+        Self { label, hint, message }
+    }
+}
+
 /// Resizable panels (each has a drag divider).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeTarget {
     /// Room list (left).
     RoomList,
-    /// Thread pane (right of the timeline).
-    ThreadPane,
     /// Threads list sidebar.
     ThreadList,
+    /// Mentions inbox sidebar.
+    Mentions,
     /// Member list (far right).
     MemberList,
 }
@@ -201,19 +226,35 @@ pub struct FluxChat {
 
     // Tabs
     pub open_tabs: Vec<TabEntry>,
-    /// Thread shown in the right-hand pane beside the room (a thread key).
-    pub thread_pane: Option<String>,
-    pub thread_pane_width: f32,
+    /// tmux-style windows, each a grid of panes (see `panes.rs`).
+    pub windows: Vec<crate::panes::Window>,
+    pub active_window: usize,
+    /// Ctrl+B pressed, waiting for the command key.
+    pub tmux_prefix: bool,
+    /// Pane pressed but not yet focused. Focusing swaps the pane's widgets
+    /// (full view vs. compact body), so it waits for the mouse release: the
+    /// press/release pair stays on one widget tree and the click lands.
+    pub pending_pane_focus: Option<iced::widget::pane_grid::Pane>,
     /// Width of the member list (resizable).
     pub member_list_width: f32,
     /// Width of the threads list sidebar (resizable).
     pub thread_list_width: f32,
-    /// The thread pane's own composer.
-    pub thread_input: iced::widget::text_editor::Content,
+    /// Mentions inbox: messages that mentioned us, newest first.
+    pub mentions: Vec<fluxchat_core::MentionItem>,
+    pub mentions_open: bool,
+    pub mentions_width: f32,
+    /// Jump to this message once its room's messages load (room, event).
+    pub pending_jump: Option<(String, String)>,
+    /// Composers of non-focused panes, by view key.
+    pub pane_inputs: HashMap<String, iced::widget::text_editor::Content>,
 
     // Unread tracking
     pub read_rooms: HashSet<String>,
-    pub last_read_event: HashMap<String, String>,
+    /// The open room's last-read message when it was opened (view key,
+    /// event id): the "NEW" divider sits after it until the room changes.
+    pub read_anchor: Option<(String, String)>,
+    /// View whose read anchor is still to be captured (messages not loaded yet).
+    pub read_anchor_pending: Option<String>,
     pub last_seen_timestamp: HashMap<String, u64>, // room_id → newest message timestamp we've processed
     pub thread_counts: HashMap<String, HashMap<String, u32>>, // room_id → { thread_root → reply_count }
 
@@ -444,6 +485,10 @@ pub struct FluxChat {
     pub pinned_messages: Vec<fluxchat_core::MessageInfo>,
     /// Threads panel: the room's threads, most recently active first.
     pub thread_list: Vec<fluxchat_core::ThreadPreview>,
+    /// Sidebar: each room's most recently active threads (top few).
+    pub room_threads: HashMap<String, Vec<fluxchat_core::ThreadPreview>>,
+    /// Rooms whose thread list is collapsed in the sidebar (persisted).
+    pub collapsed_room_threads: HashSet<String>,
     /// Right-click room menu: that room's recent threads (`None` = loading).
     pub context_threads: Option<(String, Option<Vec<fluxchat_core::ThreadPreview>>)>,
 
@@ -567,13 +612,20 @@ impl FluxChat {
             help_text: None,
             modal: None,
             open_tabs: Vec::new(),
-            thread_pane: None,
-            thread_pane_width: 420.0,
+            windows: vec![crate::panes::Window::new(None)],
+            active_window: 0,
+            tmux_prefix: false,
+            pending_pane_focus: None,
             member_list_width: 220.0,
             thread_list_width: 280.0,
-            thread_input: iced::widget::text_editor::Content::new(),
+            mentions: Vec::new(),
+            mentions_open: false,
+            mentions_width: 300.0,
+            pending_jump: None,
+            pane_inputs: HashMap::new(),
             read_rooms: HashSet::new(),
-            last_read_event: HashMap::new(),
+            read_anchor: None,
+            read_anchor_pending: None,
             last_seen_timestamp: HashMap::new(),
             thread_counts: HashMap::new(),
             ignored_users: HashSet::new(),
@@ -700,6 +752,8 @@ impl FluxChat {
             gif_preview_cache: HashMap::new(),
             pinned_messages: Vec::new(),
             thread_list: Vec::new(),
+            room_threads: HashMap::new(),
+            collapsed_room_threads: HashSet::new(),
             context_threads: None,
             settings_avatar_data: None,
             settings_avatar_handle: None,

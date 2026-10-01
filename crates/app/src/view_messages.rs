@@ -1295,6 +1295,7 @@ impl FluxChat {
                 text(label).font(tooltip_font).size(11).color(theme::colors().text_normal),
                 iced::widget::tooltip::Position::Top,
             )
+                .delay(crate::ui::TOOLTIP_DELAY)
             .gap(4)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::colors().bg_deep.into()),
@@ -1503,6 +1504,7 @@ impl FluxChat {
                     text(tooltip_text).font(self.msg_font()).size(11),
                     iced::widget::tooltip::Position::Top,
                 )
+                .delay(crate::ui::TOOLTIP_DELAY)
                 .style(|_: &Theme| container::Style {
                     background: Some(theme::colors().bg_dark.into()),
                     border: iced::Border {
