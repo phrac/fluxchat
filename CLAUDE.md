@@ -194,7 +194,7 @@ cargo run -p fluxchat
 
 ## Performance Notes
 - Member list lazy-loads: 30 initially, more on scroll. Avatars resolved in background batch.
-- Media caches: in-memory data-URI cache capped at `MEDIA_CACHE_LIMIT` (500); SQLite `media_cache` pruned to `MEDIA_DB_CACHE_LIMIT` (1500) entries + VACUUM at login (`prune_media_cache`). `cache_media` is INSERT OR REPLACE.
+- Media caches: in-memory data-URI cache capped at `MEDIA_CACHE_LIMIT` (500); SQLite `media_cache` pruned at login (`prune_media_cache`) to `MEDIA_DB_CACHE_LIMIT` (1500) entries and `MEDIA_DB_CACHE_BYTES` (300 MB), newest by the indexed `stamp` column (rowids aren't stable across VACUUM); entries over `MAX_CACHED_ENTRY_BYTES` (16 MB base64, i.e. videos) aren't stored. VACUUM only when >25% of pages are free. `cache_media` is INSERT OR REPLACE. Data dir is chmod 0700 on unix (token + keys).
 - Avatar cache stores `image::Handle` (cheap Arc clone) to avoid re-decoding on every render.
 - Inline image cache persisted to SQLite (base64) for instant display on restart. Cache reads, base64 and writes run in the image task (`read_cached_image`, `spawn_blocking`), never on the UI thread; both cache hits and downloads arrive as `ImageResolved`, which only builds handles (animated frames via `gif_frames_task`). Video thumbnails likewise (GStreamer in `spawn_blocking`).
 - syntect `SyntaxSet`/`ThemeSet` loaded once via `LazyLock` statics.

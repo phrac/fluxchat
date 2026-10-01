@@ -12,6 +12,8 @@ const URL_PREVIEW_LIMIT: usize = 200;
 const GIF_CACHE_LIMIT: usize = 100;
 /// Max entries kept in the SQLite media cache (avatars, inline images, GIFs).
 const MEDIA_DB_CACHE_LIMIT: usize = 1500;
+/// Total size cap of the SQLite media cache (base64 bytes).
+const MEDIA_DB_CACHE_BYTES: u64 = 300 * 1024 * 1024;
 /// How long to wait before retrying an avatar that failed to download.
 const AVATAR_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
 /// Parallel avatar downloads per batch.
@@ -5400,7 +5402,7 @@ impl FluxChat {
         // Bound the on-disk media cache (it grew without limit before).
         {
             let core = self.core.clone();
-            tokio::task::spawn_blocking(move || core.db.prune_media_cache(MEDIA_DB_CACHE_LIMIT));
+            tokio::task::spawn_blocking(move || core.db.prune_media_cache(MEDIA_DB_CACHE_LIMIT, MEDIA_DB_CACHE_BYTES));
         }
 
         // Start sync and load initial rooms

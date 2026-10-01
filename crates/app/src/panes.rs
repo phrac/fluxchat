@@ -636,11 +636,14 @@ mod flow_tests {
     use crate::state::FluxChat;
 
     fn app() -> FluxChat {
+        // A counter, not the clock: parallel tests can start in the same tick.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "fluxchat-pane-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = fluxchat_core::db::AppDb::open(&dir.join("t.db")).unwrap();
         FluxChat::new(std::sync::Arc::new(fluxchat_core::state::AppState::new(db)))

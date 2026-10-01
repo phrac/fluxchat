@@ -46,6 +46,14 @@ fn init_core() -> Arc<AppState> {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("fluxchat");
     std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
+    // The folder holds the access token and encryption keys: owner only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700)) {
+            tracing::warn!("Couldn't restrict permissions on {}: {e}", data_dir.display());
+        }
+    }
 
     let db_path = data_dir.join("fluxchat.db");
     let db = AppDb::open(&db_path).expect("Failed to open database");
