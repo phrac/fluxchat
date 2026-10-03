@@ -234,22 +234,37 @@ impl FluxChat {
     }
 
     /// Show `key` in a pane beside the focused one without moving focus:
-    /// reuse a pane already showing a thread of the same room (for threads),
-    /// else split the focused pane side by side.
+    /// reuse a pane already showing a thread of the same room (for threads;
+    /// the one next to the focused pane first), else split the focused pane
+    /// side by side. A thread opened while another thread of its room is
+    /// focused (from the sidebar or threads panel) replaces that one instead.
     pub(crate) fn show_beside(&mut self, key: String) -> Task<Message> {
         let is_thread = key.starts_with("thread::");
         let room = fluxchat_core::timeline::real_room_id(&key).to_string();
         let w = self.window_mut();
+        let in_focused_thread = w.focused_key().is_some_and(|k| {
+            k.starts_with("thread::") && fluxchat_core::timeline::real_room_id(k) == room
+        });
+        if is_thread && in_focused_thread && w.pane_with(&key).is_none() {
+            let old = w.focused_key().map(str::to_string);
+            let select = self.update(Message::SelectRoom(key));
+            return Task::batch([select, self.release_view(old)]);
+        }
+        let mut replaced = None;
         if w.pane_with(&key).is_none() {
+            let same_room_thread = |p: &pane_grid::Pane| *p != w.focus && w.grid.get(*p)
+                .and_then(|s| s.key.as_deref())
+                .is_some_and(|k| k.starts_with("thread::") && fluxchat_core::timeline::real_room_id(k) == room);
             let reuse = is_thread.then(|| {
-                w.grid.iter().find(|(p, s)| **p != w.focus && s.key.as_deref().is_some_and(|k| {
-                    k.starts_with("thread::") && fluxchat_core::timeline::real_room_id(k) == room
-                })).map(|(p, _)| *p)
+                [Direction::Down, Direction::Right, Direction::Up, Direction::Left].into_iter()
+                    .filter_map(|d| w.grid.adjacent(w.focus, d))
+                    .find(&same_room_thread)
+                    .or_else(|| w.grid.iter().map(|(p, _)| *p).find(&same_room_thread))
             }).flatten();
             match reuse {
                 Some(p) => {
                     if let Some(slot) = w.grid.get_mut(p) {
-                        slot.key = Some(key.clone());
+                        replaced = slot.key.replace(key.clone());
                     }
                 }
                 None => {
@@ -259,7 +274,7 @@ impl FluxChat {
             }
         }
         self.layout_dirty = true;
-        self.ensure_pane_view(key)
+        Task::batch([self.ensure_pane_view(key), self.release_view(replaced)])
     }
 
     /// Handle pane / window messages. Returns Some(task) if handled.
@@ -542,7 +557,7 @@ fn layout_order(node: &pane_grid::Node) -> Vec<pane_grid::Pane> {
 }
 
 /// Route a side pane's message-row message. Actions that work on "the
-/// current room" (react, reply, edit, delete, pin, menus…) go through
+/// current room" (react, reply, edit, delete, pin, open thread, menus…) go through
 /// `InView` so the pane is focused first; hover, selection, links and
 /// media controls pass straight through, so hovering a pane never moves focus.
 pub fn in_view(key: &str, message: Message) -> Message {
@@ -557,6 +572,7 @@ pub fn in_view(key: &str, message: Message) -> Message {
         | Message::EmojiSelect(..)
         | Message::DeleteMessage(..)
         | Message::JumpToEvent(..)
+        | Message::OpenThread(..)
         | Message::OpenContextMenu(..)
         | Message::OpenModal(..) => Message::InView(key.to_string(), Box::new(message)),
         other => other,
@@ -807,6 +823,66 @@ pub(crate) mod flow_tests {
         assert!(!app.pending_redactions.contains_key("!a:x"));
         // Hover / links aren't wrapped, so they never move focus.
         assert!(matches!(in_view("!b:x", Message::OpenUrl("u".into())), Message::OpenUrl(_)));
+    }
+
+    #[tokio::test]
+    async fn thread_opened_from_a_side_pane_replaces_the_thread_below_it() {
+        // Left: room a over thread t1; right: room b. Focus on t1.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let pa = pane_of(&app, Some("!a:x"));
+        click(&mut app, pa, Message::PaneFocus(pa));
+        split_stacked_from_title_bar(&mut app);
+        let t1 = fluxchat_core::timeline::thread_key("!a:x", "$t1");
+        let below = pane_of(&app, None);
+        let _ = app.update(Message::FillPane(below, t1.clone()));
+        click(&mut app, below, Message::PaneFocus(below));
+        assert_eq!(app.selected_room_id.as_deref(), Some(t1.as_str()));
+        // A new thread's summary clicked in a's (unfocused) pane.
+        let t2 = fluxchat_core::timeline::thread_key("!a:x", "$t2");
+        click(&mut app, pa, in_view("!a:x", Message::OpenThread("!a:x".into(), "$t2".into())));
+        assert_eq!(app.window().grid.len(), 3, "replaced, not split");
+        assert_eq!(pane_of(&app, Some(t2.as_str())), below);
+        assert!(!app.shown_in_pane(&t1));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"), "focus on the room it was opened from");
+    }
+
+    #[tokio::test]
+    async fn a_thread_opened_from_the_sidebar_replaces_the_focused_thread() {
+        // Room a over thread t1, focus on t1; open t2 from the sidebar.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t1".into()));
+        let t1 = fluxchat_core::timeline::thread_key("!a:x", "$t1");
+        let pt = pane_of(&app, Some(t1.as_str()));
+        click(&mut app, pt, Message::PaneFocus(pt));
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t2".into()));
+        let t2 = fluxchat_core::timeline::thread_key("!a:x", "$t2");
+        assert_eq!(app.window().grid.len(), 2, "replaced, not split");
+        assert_eq!(pane_of(&app, Some(t2.as_str())), pt);
+        assert_eq!(app.selected_room_id.as_deref(), Some(t2.as_str()));
+        assert!(app.window().pane_with("!a:x").is_some(), "the room pane stays");
+        assert!(!app.pane_inputs.contains_key(&t1));
+    }
+
+    #[tokio::test]
+    async fn a_new_thread_reuses_the_thread_pane_next_to_its_room() {
+        // Left: room a over thread t1; right: thread t9 of a too.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let t9 = fluxchat_core::timeline::thread_key("!a:x", "$t9");
+        let _ = app.update(Message::OpenInPane(t9.clone()));
+        let pa = pane_of(&app, Some("!a:x"));
+        split_stacked_from_title_bar(&mut app);
+        let t1 = fluxchat_core::timeline::thread_key("!a:x", "$t1");
+        let below = pane_of(&app, None);
+        let _ = app.update(Message::FillPane(below, t1));
+        assert_eq!(app.window().focus, pa);
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t2".into()));
+        let t2 = fluxchat_core::timeline::thread_key("!a:x", "$t2");
+        assert_eq!(pane_of(&app, Some(t2.as_str())), below);
+        assert!(app.shown_in_pane(&t9));
     }
 
     #[tokio::test]

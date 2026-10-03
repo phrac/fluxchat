@@ -15,7 +15,7 @@ A thread is a side conversation attached to one message (its *root*). Thread rep
 Opening a thread shows it in a pane **beside** the room, so you can follow both. The thread pane has its own message box; anything you send there goes into the thread. Replies from others (including bots that answer in threads) appear live.
 
 - **Reply in thread** on any message (hover → spool) starts a thread on it.
-- Open several threads from the same room and they reuse one pane.
+- Open several threads from the same room and they reuse one pane. With more than one thread pane from that room, the one next to the room pane is replaced, so clicking a new thread in a room shown above its thread puts it in the pane below. If you're in a thread pane and open another thread of that room from the sidebar or the threads panel, it replaces the thread you're in.
 - To give a thread the whole window, zoom its pane (**Ctrl+B z**) or click its title bar's zoom button.
 - Close the pane with its × or **Ctrl+B x**.
 
