@@ -1501,7 +1501,7 @@ impl FluxChat {
         use fluxchat_core::RowKind;
         let is_thread_view = room_id.starts_with("thread::");
         let p = &self.prefs;
-        msgs.iter()
+        let rows = msgs.iter()
             .filter(|m| m.event_id != fluxchat_core::timeline::READ_MARKER_ID)
             .filter(|m| !self.ignored_users.contains(&m.sender))
             .filter(|m| is_thread_view || m.thread_root.is_none())
@@ -1512,7 +1512,17 @@ impl FluxChat {
                 RowKind::Redacted => p.show_redactions,
                 RowKind::Message | RowKind::Membership => true,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // A day whose events are all hidden (thread replies, edits) would
+        // leave its divider over nothing.
+        let mut out = Vec::with_capacity(rows.len());
+        for (i, m) in rows.iter().enumerate() {
+            if m.is_date_divider() && rows.get(i + 1).is_none_or(|n| n.is_date_divider()) {
+                continue;
+            }
+            out.push(*m);
+        }
+        out
     }
 
     /// Measured height of a row, or the estimate if it hasn't been laid out yet.

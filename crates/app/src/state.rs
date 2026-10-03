@@ -407,6 +407,8 @@ pub struct FluxChat {
     // Inline image cache — maps MXC URI to image handle (full size for message images)
     pub image_cache: HashMap<String, iced::widget::image::Handle>,
     pub image_cache_pending: std::collections::HashSet<String>,
+    /// Inline images / video thumbnails whose last fetch failed, and when.
+    pub image_failed: HashMap<String, std::time::Instant>,
 
     // URL preview cache — maps URL to preview data
     pub url_previews: HashMap<String, fluxchat_core::UrlPreview>,
@@ -584,6 +586,11 @@ pub struct FluxChat {
     /// More pages that may be fetched automatically while pages keep adding
     /// nothing visible (all hidden thread replies/edits).
     pub paginate_empty_budget: u8,
+    /// The message list's content was shorter than its viewport at the last
+    /// scroll event, so history keeps loading until it fills.
+    pub messages_underfilled: bool,
+    /// Pages fetched so far to fill the current view (`MAX_UNDERFILL_PAGES`).
+    pub underfill_pages: u8,
     /// Views whose history has been loaded back to the room's start.
     pub history_start: std::collections::HashSet<String>,
 
@@ -824,6 +831,7 @@ impl FluxChat {
             settings_signout_device: None,
             image_cache: HashMap::new(),
             image_cache_pending: std::collections::HashSet::new(),
+            image_failed: HashMap::new(),
             url_previews: HashMap::new(),
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),
@@ -881,6 +889,8 @@ impl FluxChat {
             paginating: false,
             paginate_visible_before: 0,
             paginate_empty_budget: 0,
+            messages_underfilled: false,
+            underfill_pages: 0,
             history_start: std::collections::HashSet::new(),
             gif_frames_cache: crate::anim::FramesCache::new(crate::anim::FRAMES_CACHE_BYTES),
             gif_results: Vec::new(),

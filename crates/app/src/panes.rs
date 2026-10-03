@@ -869,6 +869,48 @@ pub(crate) mod flow_tests {
     }
 
     #[tokio::test]
+    async fn an_underfilled_view_keeps_loading_until_it_fills() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.last_scroll_offset = 0.0;
+        app.messages_underfilled = true;
+        let _ = app.start_back_pagination("!a:x".into(), 0);
+        // The page showed a row, but the view is still short: next page,
+        // with a fresh budget.
+        app.messages_by_room.insert("!a:x".into(), vec![fluxchat_core::MessageInfo {
+            event_id: "$1".into(), body: "hi".into(), ..Default::default()
+        }]);
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(false)));
+        assert!(app.paginating);
+        assert_eq!(app.paginate_empty_budget, crate::update::MAX_EMPTY_PAGES);
+
+        // Pages of only hidden events (thread replies, edits) don't stop it
+        // either, up to its own cap.
+        for _ in 0..3 {
+            let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(false)));
+            assert!(app.paginating);
+            assert_eq!(app.paginate_empty_budget, crate::update::MAX_EMPTY_PAGES);
+        }
+        app.underfill_pages = u8::MAX;
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(false)));
+        assert_eq!(app.paginate_empty_budget, crate::update::MAX_EMPTY_PAGES - 1);
+        app.underfill_pages = 0;
+
+        // A failed page is retried (after a delay) while it doesn't fill...
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), None));
+        assert!(!app.paginating);
+        let _ = app.update(Message::PaginateRetry("!a:x".into(), 2));
+        assert!(app.paginating);
+        assert_eq!(app.paginate_empty_budget, 2);
+
+        // ...but not once it fills.
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), None));
+        app.messages_underfilled = false;
+        let _ = app.update(Message::PaginateRetry("!a:x".into(), 1));
+        assert!(!app.paginating);
+    }
+
+    #[tokio::test]
     async fn scrolling_up_at_the_top_loads_more() {
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));

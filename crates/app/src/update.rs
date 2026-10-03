@@ -16,7 +16,14 @@ const PAGINATE_TOP_ZONE: f32 = 100.0;
 /// Events requested per back-pagination page.
 const PAGINATE_PAGE_EVENTS: u16 = 20;
 /// Extra pages fetched automatically when a page adds nothing visible.
-const MAX_EMPTY_PAGES: u8 = 5;
+pub(crate) const MAX_EMPTY_PAGES: u8 = 5;
+/// Events per page while the view doesn't fill: its recent history may be
+/// thousands of hidden thread replies / edits (a bot streaming answers).
+const UNDERFILL_PAGE_EVENTS: u16 = 100;
+/// Pages fetched to fill a view (per room open) before waiting for a scroll.
+const MAX_UNDERFILL_PAGES: u8 = 30;
+/// Wait before retrying a failed page while the view doesn't fill.
+const PAGINATE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 /// Wait after a page finishes before judging what it added.
 const PAGINATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// Total size cap of the SQLite media cache (base64 bytes).
@@ -25,6 +32,15 @@ const MEDIA_DB_CACHE_BYTES: u64 = 300 * 1024 * 1024;
 const AVATAR_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
 /// Parallel avatar downloads per batch.
 const AVATAR_FETCH_CONCURRENCY: usize = 8;
+/// Inline image / video downloads in flight at once, across all views. Opening
+/// a media-heavy room with an empty cache otherwise starts every download at
+/// once; they share the link and all hit the SDK's 30 s request timeout —
+/// together with the timeline/thread requests queued behind them.
+const MEDIA_FETCH_CONCURRENCY: usize = 4;
+static MEDIA_FETCHES: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(MEDIA_FETCH_CONCURRENCY));
+/// How long to wait before retrying an inline image / video thumbnail that failed.
+const IMAGE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 /// Mentions kept in the inbox / fetched from the server.
 const MENTIONS_LIMIT: usize = 200;
 const MENTIONS_FETCH: u32 = 50;
@@ -913,8 +929,7 @@ impl FluxChat {
                     }
                     return Task::batch([load, focus, call_check, pin_load, close_threads, reload_threads, join_requests, Task::done(Message::ScrollToBottom)]);
                 }
-                // Re-resolve images for already-cached messages (clear pending to allow retries)
-                self.image_cache_pending.clear();
+                // Load images not fetched yet (failed ones retry after IMAGE_RETRY_AFTER).
                 // Borrowed out and back rather than cloning the whole room.
                 let image_task = match self.messages_by_room.remove(&room_id) {
                     Some(msgs) => {
@@ -931,6 +946,7 @@ impl FluxChat {
                     Some(msgs) => self.visible_rows(&room_id, msgs).iter().all(|m| m.is_system()),
                     None => true,
                 };
+                self.underfill_pages = 0;
                 let backfill = if nothing_visible {
                     self.start_back_pagination(room_id.clone(), MAX_EMPTY_PAGES)
                 } else {
@@ -2789,8 +2805,15 @@ impl FluxChat {
             }
 
             // --- Inline images ---
+            Message::ImageFailed(key) => {
+                // Stays out of the pending set so it's fetched again (after
+                // IMAGE_RETRY_AFTER) the next time its view resolves images.
+                self.image_cache_pending.remove(&key);
+                self.image_failed.insert(key, std::time::Instant::now());
+            }
             Message::ImageResolved(mxc, data) => {
                 self.image_cache_pending.remove(&mxc);
+                self.image_failed.remove(&mxc);
                 // Animated GIF (native) or animated WebP (transcoded) frames.
                 let frames = match animated_kind(&data) {
                     Some(is_webp) if !self.gif_frames_cache.contains_key(&mxc) => {
@@ -4094,6 +4117,7 @@ impl FluxChat {
             Message::PaginateBack(room_id) => {
                 let core = self.core.clone();
                 let key = room_id.clone();
+                let events = if self.messages_underfilled { UNDERFILL_PAGE_EVENTS } else { PAGINATE_PAGE_EVENTS };
                 return Task::perform(
                     async move {
                         // get-or-create also rebuilds a Timeline whose watcher stopped.
@@ -4102,7 +4126,7 @@ impl FluxChat {
                             &client, &core.timelines, &room_id,
                         ).await.ok()?;
                         // Ok(true): reached the start of the room's history.
-                        timeline.paginate_backwards(PAGINATE_PAGE_EVENTS).await
+                        timeline.paginate_backwards(events).await
                             .map_err(|e| tracing::warn!("Back-pagination failed for {room_id}: {e}"))
                             .ok()
                     },
@@ -4117,6 +4141,11 @@ impl FluxChat {
                     move |_| Message::PaginateSettled(key.clone(), outcome),
                 );
             }
+            Message::PaginateRetry(key, budget) => {
+                if self.selected_room_id.as_deref() == Some(key.as_str()) && self.messages_underfilled {
+                    return self.start_back_pagination(key, budget);
+                }
+            }
             Message::TimelineWheelUpAtTop => {
                 if let Some(room_id) = self.selected_room_id.clone() {
                     return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
@@ -4124,24 +4153,39 @@ impl FluxChat {
             }
             Message::PaginateSettled(key, outcome) => {
                 self.paginating = false;
+                let selected = self.selected_room_id.as_deref() == Some(key.as_str());
                 match outcome {
                     Some(true) => {
                         self.history_start.insert(key.clone());
                     }
                     Some(false) => {
+                        let still_here = selected && self.last_scroll_offset < PAGINATE_TOP_ZONE;
+                        let grew = self.visible_count(&key) > self.paginate_visible_before;
+                        // The view still doesn't fill: keep going whether or not
+                        // the page showed anything (the scroll event from its
+                        // rows arrived while it was in flight and was ignored).
+                        if still_here && self.messages_underfilled && self.underfill_pages < MAX_UNDERFILL_PAGES {
+                            self.underfill_pages += 1;
+                            return self.start_back_pagination(key, MAX_EMPTY_PAGES);
+                        }
                         // Nothing visible arrived (a stretch of hidden thread
                         // replies/edits) and we're still at the top: fetch a
                         // few more pages, then wait for the next scroll.
-                        let still_here = self.selected_room_id.as_deref() == Some(key.as_str())
-                            && self.last_scroll_offset < PAGINATE_TOP_ZONE;
-                        if still_here && self.paginate_empty_budget > 0
-                            && self.visible_count(&key) <= self.paginate_visible_before
-                        {
+                        if still_here && !grew && self.paginate_empty_budget > 0 {
                             let budget = self.paginate_empty_budget - 1;
                             return self.start_back_pagination(key, budget);
                         }
                     }
-                    None => {} // failed: the next scroll up retries
+                    // Failed. A view that doesn't fill can't be scrolled to
+                    // retry, so retry a few times; otherwise the next scroll up does.
+                    None if selected && self.messages_underfilled && self.paginate_empty_budget > 0 => {
+                        let budget = self.paginate_empty_budget - 1;
+                        return Task::perform(
+                            async { tokio::time::sleep(PAGINATE_RETRY_DELAY).await },
+                            move |_| Message::PaginateRetry(key.clone(), budget),
+                        );
+                    }
+                    None => {}
                 }
                 // Looking for a message further back (gallery "Jump to message").
                 if let Some(task) = self.continue_jump_search(&key, outcome) {
@@ -4171,6 +4215,10 @@ impl FluxChat {
                 // each small page re-triggers the next one forever.
                 let moving_up = offset + 0.5 < self.last_scroll_offset;
                 let underfilled = max_scroll < 1.0;
+                self.messages_underfilled = underfilled;
+                if !underfilled {
+                    self.underfill_pages = 0;
+                }
                 // At the very top a further scroll up can't move the view (so
                 // no event here): the wheel listener takes over from there.
                 crate::view::set_timeline_at_top((offset < 1.0).then(|| viewport.bounds()));
@@ -5504,7 +5552,9 @@ impl FluxChat {
                 continue;
             }
             if let Some(ref mxc) = msg.image_mxc {
-                if self.image_cache.contains_key(mxc) || self.image_cache_pending.contains(mxc) {
+                if self.image_cache.contains_key(mxc) || self.image_cache_pending.contains(mxc)
+                    || self.image_failed.get(mxc).is_some_and(|t| t.elapsed() < IMAGE_RETRY_AFTER)
+                {
                     continue;
                 }
                 // Cache read, base64 and the download all happen off the UI
@@ -5529,6 +5579,7 @@ impl FluxChat {
                             return Some((mxc_clone, data));
                         }
                         let client = core.get_client().await.ok()?;
+                        let _permit = MEDIA_FETCHES.acquire().await.ok()?;
                         // Try event-based fetch first (handles encrypted media)
                         let event_result = fluxchat_core::media::get_event_media_bytes(
                             &client, &real_room, &event_id,
@@ -5544,7 +5595,14 @@ impl FluxChat {
                                     source: MediaSource::Plain(mxc_uri.to_owned()),
                                     format: MediaFormat::File,
                                 };
-                                client.media().get_media_content(&req, true).await.ok()?
+                                let data = client.media().get_media_content(&req, true).await.ok()?;
+                                // In an encrypted room this is ciphertext (the
+                                // event fetch, which has the keys, failed):
+                                // never show or cache it.
+                                if !looks_like_image(&data) {
+                                    return None;
+                                }
+                                data
                             }
                         };
                         // Persist for instant display on restart (detached:
@@ -5553,9 +5611,12 @@ impl FluxChat {
                         drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
                         Some((mxc_clone, data))
                     },
-                    |result| match result {
-                        Some((mxc, data)) => Message::ImageResolved(mxc, data),
-                        None => Message::Noop,
+                    {
+                        let mxc = mxc.clone();
+                        move |result| match result {
+                            Some((mxc, data)) => Message::ImageResolved(mxc, data),
+                            None => Message::ImageFailed(mxc.clone()),
+                        }
                     },
                 ));
             }
@@ -5563,13 +5624,16 @@ impl FluxChat {
             if msg.is_video && msg.image_mxc.is_none() {
                 if let Some(ref vmxc) = msg.video_mxc {
                     let thumb_key = format!("video_thumb:{vmxc}");
-                    if self.image_cache.contains_key(&thumb_key) || self.image_cache_pending.contains(&thumb_key) {
+                    if self.image_cache.contains_key(&thumb_key) || self.image_cache_pending.contains(&thumb_key)
+                        || self.image_failed.get(&thumb_key).is_some_and(|t| t.elapsed() < IMAGE_RETRY_AFTER)
+                    {
                         continue;
                     }
                     self.image_cache_pending.insert(thumb_key.clone());
                     let core = self.core.clone();
                     let event_id = msg.event_id.clone();
                     let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
+                    let failed_key = thumb_key.clone();
                     tasks.push(Task::perform(
                         async move {
                             let cache_key = format!("iced_img:{thumb_key}");
@@ -5592,9 +5656,11 @@ impl FluxChat {
                                 return Some((thumb_key, data, w, h));
                             }
                             let client = core.get_client().await.ok()?;
-                            let (data, _mime) = fluxchat_core::media::get_event_media_bytes(
-                                &client, &real_room, &event_id,
-                            ).await.ok()?;
+                            let (data, _mime) = {
+                                let _permit = MEDIA_FETCHES.acquire().await.ok()?;
+                                fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id)
+                                    .await.ok()?
+                            };
                             // GStreamer reads a file and blocks: off the async workers.
                             let (data, w, h) = tokio::task::spawn_blocking(move || {
                                 let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{}.tmp", safe_file_stem(&event_id)));
@@ -5607,9 +5673,9 @@ impl FluxChat {
                             drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
                             Some((thumb_key, data, w, h))
                         },
-                        |result| match result {
+                        move |result| match result {
                             Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
-                            None => Message::Noop,
+                            None => Message::ImageFailed(failed_key.clone()),
                         },
                     ));
                 }
@@ -6203,18 +6269,22 @@ pub(crate) fn extract_urls(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A cached inline image, if present and plausibly an image (a failed fetch
-/// once stored garbage; such entries are dropped so they're re-fetched).
-fn read_cached_image(db: &fluxchat_core::AppDb, cache_key: &str) -> Option<Vec<u8>> {
-    let data = db.get_cached_media(cache_key)?;
-    let is_valid = data.len() > 100 && (
+/// Whether `data` starts like an image format we display.
+fn looks_like_image(data: &[u8]) -> bool {
+    data.len() > 100 && (
         data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
         data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
         data.starts_with(b"GIF") ||                     // GIF
         data.starts_with(b"RIFF") ||                    // WebP
-        (data.len() > 12 && &data[4..8] == b"ftyp")    // MP4/HEIF
-    );
-    if !is_valid {
+        &data[4..8] == b"ftyp"                          // MP4/HEIF
+    )
+}
+
+/// A cached inline image, if present and plausibly an image (a failed fetch
+/// once stored garbage; such entries are dropped so they're re-fetched).
+fn read_cached_image(db: &fluxchat_core::AppDb, cache_key: &str) -> Option<Vec<u8>> {
+    let data = db.get_cached_media(cache_key)?;
+    if !looks_like_image(&data) {
         tracing::warn!("Cached image data for {cache_key} is invalid ({} bytes), re-fetching", data.len());
         db.remove_cached_media(cache_key);
         return None;

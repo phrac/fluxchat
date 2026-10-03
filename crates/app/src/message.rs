@@ -379,6 +379,8 @@ pub enum Message {
 
     // --- Inline images ---
     ImageResolved(String, Vec<u8>), // (mxc_uri, image_bytes)
+    /// An inline image or video thumbnail (its pending key) couldn't be loaded.
+    ImageFailed(String),
     GifFramesResolved(String, crate::anim::Anim), // (mxc_uri, frames)
 
     // --- URL Previews ---
@@ -596,6 +598,9 @@ pub enum Message {
     PaginateBackDone(String, Option<bool>),
     /// Evaluated shortly after PaginateBackDone, once the new rows landed.
     PaginateSettled(String, Option<bool>),
+    /// Retry a failed page for a view that doesn't fill yet: (view key,
+    /// automatic pages left).
+    PaginateRetry(String, u8),
     /// Scroll-up gesture over the timeline while it's already at the top.
     TimelineWheelUpAtTop,
     OpenUrl(String),

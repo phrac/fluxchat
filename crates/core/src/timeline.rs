@@ -327,13 +327,15 @@ async fn watch_timeline(
 /// display. Counting raw events isn't enough: a room whose recent history is
 /// all thread replies, edits and reactions has nothing to show in its main
 /// view, so pages are fetched one at a time until visible rows appear, the
-/// start of the room is reached, a page fails, or `MAX_BACKFILL_PAGES` runs
-/// out (until the next `restart`).
+/// start of the room is reached, a page fails `MAX_BACKFILL_RETRIES` times in
+/// a row, or `MAX_BACKFILL_PAGES` runs out (until the next `restart`).
 #[derive(Default)]
 struct Backfill {
     running: AtomicBool,
     done: AtomicBool,
     pages: std::sync::atomic::AtomicU32,
+    /// Consecutive failed pages.
+    failures: std::sync::atomic::AtomicU32,
     /// Signalled when a page finishes, so the watcher re-checks even if the
     /// page only added events it doesn't show.
     finished: Notify,
@@ -342,11 +344,18 @@ struct Backfill {
 /// Upper bound on automatic back-pagination per fill (pages of
 /// `INITIAL_BACKFILL` events), so a huge thread-only stretch can't page forever.
 const MAX_BACKFILL_PAGES: u32 = 20;
+/// Attempts per page before giving up. A page that times out (often a burst
+/// of other requests on a slow link) would otherwise leave a thread or room
+/// empty until it's reopened.
+const MAX_BACKFILL_RETRIES: u32 = 4;
+/// Wait before the first retry; doubles each time.
+const BACKFILL_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Backfill {
     fn restart(&self) {
         self.done.store(false, Ordering::Release);
         self.pages.store(0, Ordering::Release);
+        self.failures.store(0, Ordering::Release);
     }
 
     fn maybe_run(self: &Arc<Self>, timeline: &Arc<Timeline>, key: &str, items: &Vector<Option<MessageInfo>>) {
@@ -375,10 +384,18 @@ impl Backfill {
         tokio::spawn(async move {
             match timeline.paginate_backwards(INITIAL_BACKFILL).await {
                 Ok(true) => this.done.store(true, Ordering::Release),
-                Ok(false) => {}
+                Ok(false) => this.failures.store(0, Ordering::Release),
                 Err(e) => {
-                    tracing::warn!("Back-pagination failed for {key}: {e}");
-                    this.done.store(true, Ordering::Release);
+                    let failures = this.failures.fetch_add(1, Ordering::AcqRel) + 1;
+                    if failures >= MAX_BACKFILL_RETRIES {
+                        tracing::warn!("Back-pagination failed for {key}, giving up: {e}");
+                        this.done.store(true, Ordering::Release);
+                    } else {
+                        tracing::warn!("Back-pagination failed for {key} (attempt {failures}), retrying: {e}");
+                        // A failed page doesn't use up the page budget.
+                        this.pages.fetch_sub(1, Ordering::AcqRel);
+                        tokio::time::sleep(BACKFILL_RETRY_DELAY * 2u32.pow(failures - 1)).await;
+                    }
                 }
             }
             this.running.store(false, Ordering::Release);
