@@ -35,7 +35,7 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Rooms open at your first unread message, marked by a NEW line
 
 ### Threads
-- Threads open in a pane beside the room, with their own reply box
+- Threads open in a pane beside the room, with their own reply box; right-click a thread to open it to the right, below, in place or in a new window
 - Threads sidebar: every thread in the room, most recently active first
 - The three latest threads of each room listed under it in the room list (collapsible); right-click a room for its recent threads
 - Hover any thread for the full first message and latest reply
@@ -43,7 +43,7 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Live updates, including bots that answer inside threads
 
 ### Panes & windows
-- Split the main area side by side or stacked, as often as you like; put any room or thread in any pane
+- Split the main area side by side or stacked, as often as you like; put any room or thread in any pane — drag it from the room list onto a pane edge, middle-click / ⌘-click it, or right-click → Open to the right / below / in new window
 - Drag to resize and rearrange, zoom a pane to full size
 - Multiple windows (layouts), listed in the status bar
 - tmux keys: Ctrl+B then `%` `"` `x` `z` `o` arrows `c` `n` `p` `0`–`9` `&`

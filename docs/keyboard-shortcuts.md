@@ -18,7 +18,7 @@
 | Alt + 1–9 | Go to the Nth room in the room list |
 | Alt + ↑ / ↓ | Previous / next room |
 | Alt + Shift + ↑ / ↓ | Previous / next unread room |
-| Esc | Close the topmost menu, dialog, panel or sidebar |
+| Esc | Close the topmost menu, dialog, panel or sidebar; in a thread pane with nothing to close, go back to its room |
 
 ## Panes and windows (tmux-style)
 

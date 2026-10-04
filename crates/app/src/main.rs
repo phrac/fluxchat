@@ -6,6 +6,7 @@
 
 mod anim;
 mod commands;
+mod dnd;
 mod hover_bar;
 mod html;
 mod icons;

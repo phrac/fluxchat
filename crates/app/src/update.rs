@@ -175,6 +175,27 @@ fn room_names_changed(old: &[fluxchat_core::RoomInfo], new: &[fluxchat_core::Roo
 ///
 /// `on_click` names a room to open when the notification is activated
 /// (freedesktop/D-Bus only — macOS and Windows backends don't report clicks).
+/// `text` without `files` written out as paths or `file://` URIs — what a
+/// composer pastes as text from a file manager's copy.
+fn strip_pasted_paths(text: &str, files: &[std::path::PathBuf]) -> String {
+    // URIs before plain paths: a raw `file:///a b` contains the path `/a b`.
+    let mut forms: Vec<String> = files.iter().flat_map(|f| {
+        let path = f.to_string_lossy().to_string();
+        let uri = url::Url::from_file_path(f).map(|u| u.to_string()).ok();
+        [uri, Some(format!("file://{path}")), Some(path)].into_iter().flatten()
+    }).collect();
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    let mut out = text.to_string();
+    for form in &forms {
+        out = out.replace(form.as_str(), "");
+    }
+    if out == text {
+        return out;
+    }
+    let lines: Vec<&str> = out.lines().map(str::trim_end).collect();
+    lines.join("\n").trim_end().to_string()
+}
+
 fn show_notification(
     summary: String,
     body: String,
@@ -354,7 +375,6 @@ impl FluxChat {
                 self.selected_space_id = None;
                 self.messages_by_room.clear();
                 self.members_by_room.clear();
-                self.open_tabs.clear();
                 self.read_rooms.clear();
                 self.read_anchor = None;
                 self.read_anchor_pending = None;
@@ -488,16 +508,19 @@ impl FluxChat {
                         let room = fluxchat_core::timeline::real_room_id(key);
                         previous.contains(room) && !self.rooms.iter().any(|r| r.room_id == room)
                     };
-                    let gone_tabs: Vec<String> = self.open_tabs.iter()
-                        .map(|(id, _, _, _)| id.clone())
-                        .filter(|id| vanished(id))
+                    // Panes (any window) showing a vanished room or its threads.
+                    let mut gone_rooms: Vec<String> = self.pane_keys()
+                        .chain(self.selected_room_id.as_deref())
+                        .filter(|k| vanished(k))
+                        .map(|k| fluxchat_core::timeline::real_room_id(k).to_string())
                         .collect();
-                    let selection_gone = self.selected_room_id.as_deref().is_some_and(vanished);
-                    self.open_tabs.retain(|(id, _, _, _)| !gone_tabs.contains(id));
-                    if selection_gone {
-                        self.selected_room_id = None;
+                    gone_rooms.sort();
+                    gone_rooms.dedup();
+                    let mut close_tabs = Vec::new();
+                    for room in gone_rooms {
+                        close_tabs.push(self.forget_room_in_panes(&room));
                     }
-                    let close_tabs = self.close_thread_views(gone_tabs);
+                    let close_tabs = Task::batch(close_tabs);
 
                     // Resolve space and room avatars
                     let mut mxc_uris: Vec<String> = spaces.iter()
@@ -746,7 +769,8 @@ impl FluxChat {
                             timestamp: n.timestamp,
                         });
                     }
-                    let viewing = self.active_real_room() == Some(n.room_id.as_str()) && self.app_focused;
+                    // On screen in any pane of the active window (not just the focused one).
+                    let viewing = self.room_visible(&n.room_id) && self.app_focused;
                     let wanted = self.notifications_enabled
                         && (!self.notify_mentions_only || n.is_mention);
                     if wanted && !viewing {
@@ -800,18 +824,6 @@ impl FluxChat {
                 } else {
                     Task::none()
                 };
-                // A thread pane belongs to its room: switching rooms closes it.
-                // When navigating to a non-thread room, close thread tabs
-                let close_threads = if !room_id.starts_with("thread::") {
-                    let threads: Vec<String> = self.open_tabs.iter()
-                        .map(|(id, _, _, _)| id.clone())
-                        .filter(|id| id.starts_with("thread::") && !self.shown_in_pane(id))
-                        .collect();
-                    self.open_tabs.retain(|(id, _, _, _)| !id.starts_with("thread::"));
-                    self.close_thread_views(threads)
-                } else {
-                    Task::none()
-                };
                 // Keep unsent text per view so switching rooms doesn't lose
                 // (or misdirect) a half-written message.
                 if self.selected_room_id.as_deref() != Some(room_id.as_str()) {
@@ -837,8 +849,10 @@ impl FluxChat {
                 }
                 let room_changed = self.selected_room_id.as_deref() != Some(room_id.as_str());
                 self.selected_room_id = Some(room_id.clone());
-                // The focused pane shows the main view.
-                self.focus_key_in_pane(&room_id);
+                // The focused pane shows the main view; a thread it stops
+                // showing is closed (nothing else shows it).
+                let replaced = self.focus_key_in_pane(&room_id);
+                let close_threads = self.release_view(replaced);
                 let join_requests = self.watch_join_requests(fluxchat_core::timeline::real_room_id(&room_id));
                 let _ = self.core.db.set_setting(LAST_ROOM_KEY, fluxchat_core::timeline::real_room_id(&room_id));
                 if room_changed {
@@ -1550,26 +1564,23 @@ impl FluxChat {
 
             // --- Threads ---
             Message::OpenThread(room_id, thread_root_id) => {
-                // Threads open in a pane beside the room (tmux-style layout).
-                let room_id = fluxchat_core::timeline::real_room_id(&room_id).to_string();
-                let key = fluxchat_core::timeline::thread_key(&room_id, &thread_root_id);
-                if self.selected_room_id.as_deref() == Some(key.as_str()) {
+                let key = fluxchat_core::timeline::thread_key(fluxchat_core::timeline::real_room_id(&room_id), &thread_root_id);
+                return self.open_at(key, crate::panes::Placement::Auto);
+            }
+            Message::ListClick(key, plain) => {
+                // The release of a drag that ended back on its own row.
+                if crate::dnd::was_drag() {
                     return Task::none();
                 }
-                let select = if self.active_real_room() != Some(room_id.as_str()) {
-                    self.update(Message::SelectRoom(room_id.clone()))
-                } else {
-                    Task::none()
-                };
-                let show = self.show_beside(key.clone());
-                return Task::batch([select, show]);
-            }
-            Message::OpenInPane(room_id) => {
-                self.context_menu = None;
-                if self.selected_room_id.as_deref() == Some(room_id.as_str()) {
-                    return Task::none(); // already the main view
+                // Cmd/Ctrl+click opens beside, like a link in a new tab.
+                if crate::view::open_modifier_held() {
+                    return self.open_at(key, crate::panes::Placement::Right);
                 }
-                return self.show_beside(room_id);
+                return self.update(*plain);
+            }
+            Message::OpenAt(key, at) => {
+                self.context_menu = None;
+                return self.open_at(key, at);
             }
             Message::ShowTmuxHelp => {
                 self.help_text = Some(crate::panes::TMUX_HELP.into());
@@ -2347,15 +2358,20 @@ impl FluxChat {
             }
             Message::LeaveRoom(room_id) => {
                 self.modal = None;
-                self.open_tabs.retain(|(id, _, _, _)| fluxchat_core::timeline::real_room_id(id) != room_id);
-                if self.active_real_room() == Some(room_id.as_str()) {
-                    // Move to the neighbouring room in the sidebar, if any.
+                // Leaving the room you're in: move to its neighbour in the sidebar.
+                let next = (self.active_real_room() == Some(room_id.as_str())).then(|| {
                     let order = self.sidebar_room_order();
-                    let next = order.iter().position(|r| *r == room_id)
+                    order.iter().position(|r| *r == room_id)
                         .and_then(|i| order.get(i + 1).or_else(|| i.checked_sub(1).and_then(|j| order.get(j))))
-                        .cloned();
-                    self.selected_room_id = next.filter(|r| *r != room_id);
-                }
+                        .filter(|r| **r != room_id)
+                        .cloned()
+                }).flatten();
+                let panes = self.forget_room_in_panes(&room_id);
+                // Only into the emptied pane: a split already shows something else.
+                let neighbour = match next {
+                    Some(next) if self.selected_room_id.is_none() => self.update(Message::SelectRoom(next)),
+                    _ => Task::none(),
+                };
                 // Remove from sidebar immediately and mark as leaving
                 self.leaving_rooms.insert(room_id.clone());
                 self.rooms.retain(|r| r.room_id != room_id);
@@ -2367,7 +2383,7 @@ impl FluxChat {
                 self.members_by_room.remove(&room_id);
                 self.thread_counts.remove(&room_id);
                 let core = self.core.clone();
-                return Task::perform(
+                let leave = Task::perform(
                     async move {
                         let client = core.get_client().await.map_err(|e| e.to_string())?;
                         fluxchat_core::rooms::leave_room(&client, &room_id).await
@@ -2386,6 +2402,7 @@ impl FluxChat {
                         Task::done(Message::RefreshRoomList),
                     ]),
                 });
+                return Task::batch([panes, neighbour, leave]);
             }
             Message::SpaceInvite(space_id) => {
                 self.invite_target_id = Some(space_id);
@@ -2716,27 +2733,49 @@ impl FluxChat {
                 if self.selected_room_id.is_none() || self.modal.is_some() {
                     return Task::none();
                 }
+                // Files copied in a file manager first (they can come with an
+                // icon image too), then image data (screenshots).
                 return Task::perform(
                     async {
-                        tokio::task::spawn_blocking(|| -> Option<Vec<u8>> {
+                        tokio::task::spawn_blocking(|| -> Option<Message> {
                             let mut clipboard = arboard::Clipboard::new().ok()?;
+                            if let Ok(files) = clipboard.get().file_list() {
+                                let files: Vec<_> = files.into_iter().filter(|p| p.is_file()).collect();
+                                if !files.is_empty() {
+                                    return Some(Message::ClipboardFiles(files));
+                                }
+                            }
                             let img = clipboard.get_image().ok()?;
                             let rgba = image::RgbaImage::from_raw(
                                 img.width as u32, img.height as u32, img.bytes.into_owned(),
                             )?;
                             let mut png = std::io::Cursor::new(Vec::new());
                             rgba.write_to(&mut png, image::ImageFormat::Png).ok()?;
-                            Some(png.into_inner())
+                            let name = format!("clipboard-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+                            Some(Message::FileSelected(name, "image/png".into(), png.into_inner()))
                         }).await.ok().flatten()
                     },
-                    |png| match png {
-                        Some(data) => {
-                            let name = format!("clipboard-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-                            Message::FileSelected(name, "image/png".into(), data)
-                        }
-                        None => Message::Noop,
-                    },
+                    |pasted| pasted.unwrap_or(Message::Noop),
                 );
+            }
+            Message::ClipboardFiles(files) => {
+                // The composer may also have pasted the files' text form
+                // (a path or file:// URI per line): take that back out.
+                let text = self.input_content.text();
+                let cleaned = strip_pasted_paths(&text, &files);
+                if cleaned != text {
+                    self.input_text = cleaned;
+                    self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                    self.input_content.perform(iced::widget::text_editor::Action::Move(
+                        iced::widget::text_editor::Motion::DocumentEnd,
+                    ));
+                }
+                let mut files = files.into_iter();
+                let Some(first) = files.next() else { return Task::none() };
+                if files.next().is_some() {
+                    self.help_text = Some("One file per message: attached the first one".into());
+                }
+                return self.update(Message::FileDropped(first));
             }
             Message::MaxUploadSizeLoaded(limit) => {
                 self.max_upload_size = limit;
@@ -4272,6 +4311,7 @@ impl FluxChat {
                 self.resizing = Some(target);
             }
             Message::SidebarDragEnd => {
+                crate::dnd::released();
                 if self.resizing.take().is_some() {
                     self.layout_dirty = true;
                 }
@@ -4409,6 +4449,8 @@ impl FluxChat {
                     self.edit_event = None;
                     self.input_text.clear();
                     self.input_content = iced::widget::text_editor::Content::new();
+                } else if let Some(back) = self.escape_to_room() {
+                    return back;
                 }
             }
             Message::CloseRequested => {
@@ -4565,7 +4607,7 @@ impl FluxChat {
                 | Message::PaneFocusDirection(_) | Message::PaneCycle
                 | Message::WindowNew | Message::WindowSelect(_) | Message::WindowNext
                 | Message::WindowPrev | Message::WindowClose
-                | Message::PaneInputAction(..) | Message::PaneSend(_)
+                | Message::PaneInputAction(..) | Message::PaneSend(_) | Message::DropOnPane(..)
                 | Message::TmuxPrefix | Message::TmuxKey(_)) => {
                 if let Some(task) = self.handle_pane_message(msg) {
                     return task;
@@ -4750,10 +4792,25 @@ impl FluxChat {
         items
     }
 
-    /// Every action the palette offers right now (room actions only with a room open).
+    /// Every action the palette offers right now (room actions only with a
+    /// room open, pane / window actions only where they'd do something).
     fn palette_actions(&self) -> Vec<crate::state::PaletteAction> {
         use crate::state::{Modal, PaletteAction as A};
         let settings = |tab: &str| Message::OpenModal(Modal::Settings { tab: tab.into() });
+        let mut panes = Vec::new();
+        if self.window().grid.len() > 1 {
+            panes.push(A::new("Close pane", "Ctrl+B x", Message::PaneClose(None)));
+            panes.push(if self.window().grid.maximized().is_some() {
+                A::new("Restore panes", "Unzoom  Ctrl+B z", Message::PaneZoom)
+            } else {
+                A::new("Zoom pane", "Fill the window  Ctrl+B z", Message::PaneZoom)
+            });
+        }
+        if self.windows.len() > 1 {
+            panes.push(A::new("Next window", "Ctrl+B n", Message::WindowNext));
+            panes.push(A::new("Previous window", "Ctrl+B p", Message::WindowPrev));
+            panes.push(A::new("Close window", "Ctrl+B &", Message::WindowClose));
+        }
         let mut v = vec![
             A::new("Settings", "Account, devices and more", settings("account")),
             A::new("Preferences", "Timeline, composer and privacy", settings("preferences")),
@@ -4768,10 +4825,7 @@ impl FluxChat {
             A::new("Mentions", "Messages that mention you or match a keyword", Message::ToggleMentions),
             A::new("Split pane side by side", "Ctrl+B %", Message::PaneSplit(iced::widget::pane_grid::Axis::Vertical)),
             A::new("Split pane stacked", "Ctrl+B \"", Message::PaneSplit(iced::widget::pane_grid::Axis::Horizontal)),
-            A::new("Close pane", "Ctrl+B x", Message::PaneClose(None)),
-            A::new("Zoom pane", "Ctrl+B z \u{00b7} toggle", Message::PaneZoom),
             A::new("New window", "Ctrl+B c", Message::WindowNew),
-            A::new("Next window", "Ctrl+B n", Message::WindowNext),
             A::new("Pane shortcuts", "Ctrl+B ?", Message::ShowTmuxHelp),
             A::new(if self.compact_mode { "Comfortable layout" } else { "Compact layout" },
                 "Toggle compact message rows", Message::SetCompactMode(!self.compact_mode)),
@@ -4782,6 +4836,7 @@ impl FluxChat {
                     "Timestamp format", Message::SetPrefs(Box::new(p)))
             },
         ];
+        v.extend(panes);
         if let Some(room) = self.active_real_room().map(str::to_string) {
             v.extend([
                 A::new("Room settings", "Name, security, roles", Message::OpenModal(Modal::RoomSettings)),
@@ -6456,5 +6511,22 @@ mod temp_path_tests {
             assert!(["mp4", "mov"].contains(&ext), "{p:?}");
         }
         assert_eq!(video_temp_path("$e", "movie.MOV").extension().unwrap(), "mov");
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::strip_pasted_paths;
+    use std::path::PathBuf;
+
+    #[test]
+    fn pasted_file_text_is_taken_out_of_the_composer() {
+        let f = vec![PathBuf::from("/home/me/My Pics/cat.png")];
+        assert_eq!(strip_pasted_paths("/home/me/My Pics/cat.png", &f), "");
+        assert_eq!(strip_pasted_paths("file:///home/me/My%20Pics/cat.png\n", &f), "");
+        assert_eq!(strip_pasted_paths("look at this file:///home/me/My Pics/cat.png", &f), "look at this");
+        assert_eq!(strip_pasted_paths("hello\n/home/me/My Pics/cat.png", &f), "hello");
+        // Nothing pasted as text: left exactly as typed.
+        assert_eq!(strip_pasted_paths("hello  ", &f), "hello  ");
     }
 }

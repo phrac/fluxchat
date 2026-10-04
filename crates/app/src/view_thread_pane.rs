@@ -54,7 +54,8 @@ impl FluxChat {
                     },
                     ..Default::default()
                 });
-            let mut content = pane_grid::Content::new(framed);
+            // Rows dragged from the lists drop here (edge: split, middle: show).
+            let mut content = pane_grid::Content::new(crate::dnd::target(pane, framed));
             if multiple || maximized {
                 content = content.title_bar(
                     pane_grid::TitleBar::new(
@@ -138,11 +139,7 @@ impl FluxChat {
             .map(|r| if r.is_direct { r.name.clone() } else { format!("#{}", r.name) })
             .unwrap_or_else(|| room_id.to_string());
         let (lead, label): (Element<Message>, String) = if key.starts_with("thread::") {
-            let root = fluxchat_core::timeline::parse_thread_key(key).map(|(_, e)| e).unwrap_or("");
-            let preview = self.messages_by_room.get(key)
-                .and_then(|m| m.iter().find(|m| m.event_id == root))
-                .map(|m| crate::view::ellipsize(m.body.lines().next().unwrap_or(""), 40))
-                .unwrap_or_else(|| "Thread".into());
+            let preview = crate::view::ellipsize(&self.thread_title(key), 40);
             (ui::icon(crate::icons::SVG_THREAD, 13.0, theme::colors().accent), format!("{preview}  \u{00b7}  {room_name}"))
         } else {
             (self.render_room_avatar(room.and_then(|r| r.avatar_url.as_deref()), &room_name, 16.0), room_name)
@@ -155,6 +152,21 @@ impl FluxChat {
         .spacing(8)
         .align_y(Alignment::Center)
         .into()
+    }
+
+    /// A thread's name: the first line of its root message, from the thread's
+    /// own view, the room's, or the room's thread list; "Thread" until known.
+    pub(crate) fn thread_title(&self, key: &str) -> String {
+        let Some((room, root)) = fluxchat_core::timeline::parse_thread_key(key) else { return "Thread".into() };
+        let first_line = |body: &str| body.lines().next().unwrap_or("").trim().to_string();
+        [key, room].iter()
+            .filter_map(|k| self.messages_by_room.get(*k)?.iter().find(|m| m.event_id == root))
+            .map(|m| first_line(&m.body))
+            .chain(self.room_threads.get(room).into_iter().flatten()
+                .filter(|t| t.root_id == root)
+                .map(|t| first_line(&t.body)))
+            .find(|t| !t.is_empty())
+            .unwrap_or_else(|| "Thread".into())
     }
 
     /// Split / zoom / close buttons in a pane's title bar.
@@ -189,9 +201,8 @@ impl FluxChat {
     /// full search (which also targets this pane).
     fn view_empty_pane(&self, pane: pane_grid::Pane) -> Element<'_, Message> {
         let shortcut = if cfg!(target_os = "macos") { "\u{2318}K" } else { "Ctrl+K" };
-        let shown: std::collections::HashSet<&str> = self.window().grid.iter()
-            .filter_map(|(_, s)| s.key.as_deref())
-            .collect();
+        // Rooms open anywhere are left out: picking one would just go there.
+        let shown: std::collections::HashSet<&str> = self.pane_keys().collect();
         let mut list = column![].spacing(2).width(Length::Fixed(EMPTY_PANE_WIDTH));
         for room_id in self.sidebar_room_order().into_iter()
             .filter(|r| !shown.contains(r.as_str()))
@@ -254,14 +265,14 @@ impl FluxChat {
                 for (i, msg) in rows.iter().enumerate() {
                     let continuation = self.prefs.group_messages && !self.compact_mode
                         && i > 0 && crate::view::is_continuation(rows[i - 1], msg);
-                    // Actions act on this pane's view (it gets focus first).
-                    let row = self.view_message(key, msg, continuation)
-                        .map(move |m| crate::panes::in_view(key, m));
-                    let mut item = column![row].width(Fill);
+                    let mut item = column![self.view_message(key, msg, continuation)]
+                        .push(self.thread_summary_row(key, msg))
+                        .width(Fill);
                     if is_thread && i == 0 && msg.thread_root.is_none() && rows.len() > 1 {
                         item = item.push(container(ui::divider()).padding([6, 0]));
                     }
-                    list = list.push(item);
+                    // Actions act on this pane's view (it gets focus first).
+                    list = list.push(Element::from(item).map(move |m| crate::panes::in_view(key, m)));
                 }
                 if is_thread && rows.len() <= 1 {
                     list = list.push(ui::empty_state(crate::icons::SVG_THREAD, "No replies yet", Some("Start the thread below.".into())));

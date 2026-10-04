@@ -25,6 +25,22 @@ pub struct PaneSlot {
     pub key: Option<String>,
 }
 
+/// Where a room or thread opens (`open_at`). A plain click on a thread is
+/// `Auto`; the right-click menus, middle-click and Cmd/Ctrl+click pick the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// A thread beside its room (in a thread pane of that room if one is
+    /// open), a room beside the focused pane (`show_beside`).
+    Auto,
+    /// A new pane to the right of / below the focused one.
+    Right,
+    Below,
+    /// In the focused pane.
+    Here,
+    /// In a new window.
+    NewWindow,
+}
+
 /// A tmux "window": its own pane layout and focused pane.
 #[derive(Debug)]
 pub struct Window {
@@ -45,6 +61,20 @@ impl Window {
     /// The pane showing `key`, if any.
     pub fn pane_with(&self, key: &str) -> Option<pane_grid::Pane> {
         self.grid.iter().find(|(_, s)| s.key.as_deref() == Some(key)).map(|(p, _)| *p)
+    }
+
+    /// The first empty pane in reading order.
+    fn empty_pane(&self) -> Option<pane_grid::Pane> {
+        layout_order(self.grid.layout()).into_iter()
+            .find(|p| self.grid.get(*p).is_some_and(|s| s.key.is_none()))
+    }
+
+    /// Leave zoom unless `pane` is the zoomed one: whatever is about to be
+    /// focused or shown must be on screen (tmux unzooms the same way).
+    fn unzoom_for(&mut self, pane: pane_grid::Pane) {
+        if self.grid.maximized().is_some_and(|m| m != pane) {
+            self.grid.restore();
+        }
     }
 }
 
@@ -71,6 +101,9 @@ enum SavedNode {
 struct SavedWindow {
     layout: SavedNode,
     focus: Option<String>,
+    /// The focused pane is zoomed (zoom always follows focus).
+    #[serde(default)]
+    zoomed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,6 +153,30 @@ impl FluxChat {
         self.windows.iter().flat_map(|w| w.grid.iter().filter_map(|(_, s)| s.key.as_deref()))
     }
 
+    /// Whether `key` is on screen: in a pane of the active window.
+    pub(crate) fn visible(&self, key: &str) -> bool {
+        self.window().pane_with(key).is_some()
+    }
+
+    /// Whether any view of `room_id` (the room or one of its threads) is on screen.
+    pub(crate) fn room_visible(&self, room_id: &str) -> bool {
+        self.window().grid.iter().any(|(_, s)| {
+            s.key.as_deref().is_some_and(|k| fluxchat_core::timeline::real_room_id(k) == room_id)
+        })
+    }
+
+    /// Esc with nothing else to dismiss, in a thread pane: back to its room
+    /// if the room is on screen (the pane stays open).
+    pub(crate) fn escape_to_room(&mut self) -> Option<Task<Message>> {
+        let key = self.window().focused_key()?;
+        if !key.starts_with("thread::") {
+            return None;
+        }
+        let room = fluxchat_core::timeline::real_room_id(key).to_string();
+        let pane = self.window().pane_with(&room)?;
+        Some(self.focus_pane(pane))
+    }
+
     /// Whether `key` is visible in some pane (focused or not).
     pub(crate) fn shown_in_pane(&self, key: &str) -> bool {
         self.pane_keys().any(|k| k == key)
@@ -142,6 +199,7 @@ impl FluxChat {
             windows: self.windows.iter().map(|w| SavedWindow {
                 layout: save_node(&w.grid, w.grid.layout()),
                 focus: w.focused_key().map(str::to_string),
+                zoomed: w.grid.maximized().is_some(),
             }).collect(),
             active: self.active_window,
         };
@@ -162,11 +220,14 @@ impl FluxChat {
         let keep = |k: &str| rooms.contains(fluxchat_core::timeline::real_room_id(k));
         let mut windows = Vec::new();
         for w in saved.windows {
-            let grid = pane_grid::State::with_configuration(to_config(w.layout, &keep));
+            let mut grid = pane_grid::State::with_configuration(to_config(w.layout, &keep));
             let focus = w.focus.as_deref()
                 .and_then(|f| grid.iter().find(|(_, s)| s.key.as_deref() == Some(f)).map(|(p, _)| *p))
-                .or_else(|| grid.iter().next().map(|(p, _)| *p));
+                .or_else(|| layout_order(grid.layout()).first().copied());
             if let Some(focus) = focus {
+                if w.zoomed && grid.len() > 1 {
+                    grid.maximize(focus);
+                }
                 windows.push(Window { grid, focus });
             }
         }
@@ -215,29 +276,181 @@ impl FluxChat {
         )
     }
 
-    /// Point the focused pane at `key` (from SelectRoom). If another pane in
-    /// this window already shows it, focus that pane instead.
-    pub(crate) fn focus_key_in_pane(&mut self, key: &str) {
-        let w = self.window_mut();
-        if w.focused_key() == Some(key) {
-            return;
-        }
-        if let Some(p) = w.pane_with(key) {
-            w.focus = p;
-            return;
-        }
-        let focus = w.focus;
-        if let Some(slot) = w.grid.get_mut(focus) {
-            slot.key = Some(key.to_string());
+    /// The window and pane showing `key`: the active window first, then the
+    /// others in order.
+    pub(crate) fn locate(&self, key: &str) -> Option<(usize, pane_grid::Pane)> {
+        let active = self.active_window.min(self.windows.len() - 1);
+        std::iter::once(active)
+            .chain((0..self.windows.len()).filter(|&i| i != active))
+            .find_map(|i| self.windows[i].pane_with(key).map(|p| (i, p)))
+    }
+
+    /// Point the focused pane at `key` (from SelectRoom). If a pane already
+    /// shows it — in this window or another — focus that pane instead (a
+    /// second copy of a room is never what a click means). If this window
+    /// has an empty pane (just split, "Choose a room for this pane"), that's
+    /// where a room picked from the list or switcher goes, not over the room
+    /// you were reading.
+    ///
+    /// Returns the view the pane showed before, if it was replaced.
+    pub(crate) fn focus_key_in_pane(&mut self, key: &str) -> Option<String> {
+        if self.window().focused_key() == Some(key) {
+            return None;
         }
         self.layout_dirty = true;
+        if let Some((i, p)) = self.locate(key) {
+            self.active_window = i;
+            let w = self.window_mut();
+            w.focus = p;
+            w.unzoom_for(p);
+            return None;
+        }
+        let w = self.window_mut();
+        let target = match w.focused_key() {
+            Some(_) => w.empty_pane().unwrap_or(w.focus),
+            None => w.focus,
+        };
+        w.focus = target;
+        w.unzoom_for(target);
+        w.grid.get_mut(target).and_then(|slot| slot.key.replace(key.to_string()))
+    }
+
+    /// Open a room or thread view at `at`. One that's already open (in any
+    /// window) is focused instead, wherever it was asked to open.
+    pub(crate) fn open_at(&mut self, key: String, at: Placement) -> Task<Message> {
+        if self.selected_room_id.as_deref() == Some(key.as_str()) {
+            return Task::none();
+        }
+        if let Some((i, p)) = self.locate(&key) {
+            if i != self.active_window {
+                self.active_window = i;
+                self.layout_dirty = true;
+            }
+            return self.focus_pane(p);
+        }
+        match at {
+            Placement::NewWindow => {
+                let window = self.update(Message::WindowNew);
+                Task::batch([window, self.update(Message::SelectRoom(key))])
+            }
+            Placement::Here => self.replace_focused(key),
+            Placement::Right | Placement::Below => {
+                let axis = if at == Placement::Right { Axis::Vertical } else { Axis::Horizontal };
+                let w = self.window_mut();
+                let focus = w.focus;
+                w.grid.restore(); // the new pane must be on screen
+                let _ = w.grid.split(axis, focus, PaneSlot { key: Some(key.clone()) });
+                self.layout_dirty = true;
+                self.ensure_pane_view(key)
+            }
+            // A thread goes beside its room (opened in the focused pane
+            // first if it isn't on screen); a room beside the focused pane.
+            Placement::Auto => {
+                let room_id = fluxchat_core::timeline::real_room_id(&key).to_string();
+                let select = if key.starts_with("thread::") && self.active_real_room() != Some(room_id.as_str()) {
+                    self.update(Message::SelectRoom(room_id))
+                } else {
+                    Task::none()
+                };
+                Task::batch([select, self.show_beside(key)])
+            }
+        }
+    }
+
+    /// A room / thread dropped on `pane`: an edge splits that side, the middle
+    /// shows it in that pane. Either way it ends up focused. One that's
+    /// already open is focused instead (as everywhere else).
+    pub(crate) fn drop_on_pane(&mut self, key: String, pane: pane_grid::Pane, zone: crate::dnd::DropZone) -> Task<Message> {
+        use crate::dnd::DropZone;
+        if self.window().grid.get(pane).is_none() {
+            return Task::none();
+        }
+        if self.locate(&key).is_some() {
+            return self.open_at(key, Placement::Auto);
+        }
+        let w = self.window_mut();
+        w.unzoom_for(pane);
+        let target = match zone {
+            DropZone::Center if pane == w.focus => return self.replace_focused(key),
+            DropZone::Center => {
+                let old = w.grid.get_mut(pane).and_then(|s| s.key.replace(key.clone()));
+                self.layout_dirty = true;
+                let release = self.release_view(old);
+                return Task::batch([release, self.focus_pane(pane)]);
+            }
+            DropZone::Left | DropZone::Right => Axis::Vertical,
+            DropZone::Top | DropZone::Bottom => Axis::Horizontal,
+        };
+        w.grid.restore();
+        let Some((new, _)) = w.grid.split(target, pane, PaneSlot { key: Some(key) }) else {
+            return Task::none();
+        };
+        // split() puts the new pane right / below; swap for left / top.
+        if matches!(zone, DropZone::Left | DropZone::Top) {
+            w.grid.swap(new, pane);
+        }
+        self.layout_dirty = true;
+        self.focus_pane(new)
+    }
+
+    /// A room is gone (left, kicked, removed): close every pane showing it or
+    /// one of its threads (a window's last pane is emptied instead), drop
+    /// those thread views, and point the main view at whatever is focused now.
+    pub(crate) fn forget_room_in_panes(&mut self, room_id: &str) -> Task<Message> {
+        let of_room = |k: &str| fluxchat_core::timeline::real_room_id(k) == room_id;
+        let mut gone: Vec<String> = Vec::new();
+        for w in &mut self.windows {
+            let panes: Vec<pane_grid::Pane> = w.grid.iter()
+                .filter(|(_, s)| s.key.as_deref().is_some_and(of_room))
+                .map(|(p, _)| *p)
+                .collect();
+            for p in panes {
+                if w.grid.len() > 1 {
+                    if let Some((slot, sibling)) = w.grid.close(p) {
+                        if w.focus == p {
+                            w.focus = sibling;
+                        }
+                        gone.extend(slot.key);
+                    }
+                } else if let Some(slot) = w.grid.get_mut(p) {
+                    gone.extend(slot.key.take());
+                }
+            }
+        }
+        if gone.is_empty() && !self.selected_room_id.as_deref().is_some_and(of_room) {
+            return Task::none();
+        }
+        self.layout_dirty = true;
+        for k in &gone {
+            self.pane_inputs.remove(k);
+        }
+        if self.selected_room_id.as_deref().is_some_and(of_room) {
+            self.selected_room_id = None;
+            self.input_text.clear();
+            self.input_content = iced::widget::text_editor::Content::new();
+        }
+        let threads = self.close_thread_views(gone);
+        let focus = self.window().focus;
+        Task::batch([threads, self.focus_pane(focus)])
+    }
+
+    /// Show `key` in the focused pane — this pane, even when the window has
+    /// an empty one (where a plain SelectRoom would put it).
+    fn replace_focused(&mut self, key: String) -> Task<Message> {
+        let w = self.window_mut();
+        let focus = w.focus;
+        let old = w.grid.get_mut(focus).and_then(|s| s.key.replace(key.clone()));
+        self.layout_dirty = true;
+        let select = self.update(Message::SelectRoom(key));
+        Task::batch([select, self.release_view(old)])
     }
 
     /// Show `key` in a pane beside the focused one without moving focus:
     /// reuse a pane already showing a thread of the same room (for threads;
-    /// the one next to the focused pane first), else split the focused pane
-    /// side by side. A thread opened while another thread of its room is
-    /// focused (from the sidebar or threads panel) replaces that one instead.
+    /// the one next to the focused pane first), else an empty pane, else
+    /// split the focused pane side by side. A thread opened while another
+    /// thread of its room is focused (from the sidebar or threads panel)
+    /// replaces that one instead. Zoom is left so the result is on screen.
     pub(crate) fn show_beside(&mut self, key: String) -> Task<Message> {
         let is_thread = key.starts_with("thread::");
         let room = fluxchat_core::timeline::real_room_id(&key).to_string();
@@ -246,9 +459,7 @@ impl FluxChat {
             k.starts_with("thread::") && fluxchat_core::timeline::real_room_id(k) == room
         });
         if is_thread && in_focused_thread && w.pane_with(&key).is_none() {
-            let old = w.focused_key().map(str::to_string);
-            let select = self.update(Message::SelectRoom(key));
-            return Task::batch([select, self.release_view(old)]);
+            return self.replace_focused(key);
         }
         let mut replaced = None;
         if w.pane_with(&key).is_none() {
@@ -260,7 +471,8 @@ impl FluxChat {
                     .filter_map(|d| w.grid.adjacent(w.focus, d))
                     .find(&same_room_thread)
                     .or_else(|| w.grid.iter().map(|(p, _)| *p).find(&same_room_thread))
-            }).flatten();
+            }).flatten().or_else(|| w.empty_pane().filter(|p| *p != w.focus));
+            w.grid.restore();
             match reuse {
                 Some(p) => {
                     if let Some(slot) = w.grid.get_mut(p) {
@@ -305,15 +517,18 @@ impl FluxChat {
                     // The focused pane is the main view.
                     return Some(self.update(Message::SelectRoom(key)));
                 }
-                if let Some(other) = w.pane_with(&key) {
-                    // Already open in this window: go there instead of duplicating.
-                    return Some(self.focus_pane(other));
+                if self.locate(&key).is_some() {
+                    // Already open: go there instead of duplicating.
+                    return Some(self.open_at(key, Placement::Auto));
                 }
+                // Picked for this pane: fill it and go there.
+                let w = self.window_mut();
                 if let Some(slot) = w.grid.get_mut(pane) {
                     slot.key = Some(key.clone());
                 }
                 self.layout_dirty = true;
-                self.ensure_pane_view(key)
+                let load = self.ensure_pane_view(key);
+                Task::batch([load, self.focus_pane(pane)])
             }
             Message::PaneFocus(pane) => {
                 self.pending_pane_focus = None;
@@ -376,10 +591,11 @@ impl FluxChat {
                 let w = self.window_mut();
                 if w.grid.maximized().is_some() {
                     w.grid.restore();
-                } else {
+                } else if w.grid.len() > 1 {
                     let focus = w.focus;
                     w.grid.maximize(focus);
                 }
+                self.layout_dirty = true;
                 Task::none()
             }
             Message::PaneFocusDirection(dir) => {
@@ -443,6 +659,7 @@ impl FluxChat {
                 self.pane_inputs.entry(key).or_default().perform(action);
                 Task::none()
             }
+            Message::DropOnPane(key, pane, zone) => self.drop_on_pane(key, pane, zone),
             Message::PaneSend(key) => {
                 let Some(content) = self.pane_inputs.get_mut(&key) else { return Some(Task::none()) };
                 let mut body = content.text().trim_end_matches('\n').to_string();
@@ -510,6 +727,7 @@ impl FluxChat {
     fn focus_pane(&mut self, pane: pane_grid::Pane) -> Task<Message> {
         let w = self.window_mut();
         w.focus = pane;
+        w.unzoom_for(pane);
         let key = w.grid.get(pane).and_then(|s| s.key.clone());
         self.layout_dirty = true;
         match key {
@@ -530,7 +748,7 @@ impl FluxChat {
     }
 
     /// A pane stopped showing `key`: drop thread timelines nothing shows anymore.
-    fn release_view(&mut self, key: Option<String>) -> Task<Message> {
+    pub(crate) fn release_view(&mut self, key: Option<String>) -> Task<Message> {
         match key {
             Some(k) if k.starts_with("thread::")
                 && !self.shown_in_pane(&k)
@@ -573,6 +791,8 @@ pub fn in_view(key: &str, message: Message) -> Message {
         | Message::DeleteMessage(..)
         | Message::JumpToEvent(..)
         | Message::OpenThread(..)
+        | Message::OpenAt(..)
+        | Message::ListClick(..)
         | Message::OpenContextMenu(..)
         | Message::OpenModal(..) => Message::InView(key.to_string(), Box::new(message)),
         other => other,
@@ -720,7 +940,7 @@ pub(crate) mod flow_tests {
     async fn ctrl_b_x_closes_focused_pane() {
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
-        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Auto));
         let _ = app.update(Message::TmuxPrefix);
         let _ = app.update(Message::TmuxKey("x".into()));
         assert_eq!(keys(&app), vec![Some("!b:x".to_string())]);
@@ -746,7 +966,7 @@ pub(crate) mod flow_tests {
     async fn closing_an_unfocused_pane_keeps_the_main_view() {
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
-        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Auto));
         let pb = pane_of(&app, Some("!b:x"));
         click(&mut app, pb, Message::PaneClose(Some(pb)));
         assert_eq!(keys(&app), vec![Some("!a:x".to_string())]);
@@ -757,7 +977,7 @@ pub(crate) mod flow_tests {
     async fn closing_a_pane_from_its_title_bar_never_refocuses_it() {
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
-        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Auto));
         let pb = pane_of(&app, Some("!b:x"));
         click(&mut app, pb, Message::PaneClose(Some(pb)));
         assert!(app.window().grid.get(app.window().focus).is_some());
@@ -813,7 +1033,7 @@ pub(crate) mod flow_tests {
     async fn actions_in_a_side_pane_apply_to_that_pane() {
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
-        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Auto));
         let pb = pane_of(&app, Some("!b:x"));
         // Delete from b's hover bar: press in b, release on the button.
         let wrapped = in_view("!b:x", Message::DeleteMessage("$e".into()));
@@ -830,7 +1050,7 @@ pub(crate) mod flow_tests {
         // Left: room a over thread t1; right: room b. Focus on t1.
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
-        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Auto));
         let pa = pane_of(&app, Some("!a:x"));
         click(&mut app, pa, Message::PaneFocus(pa));
         split_stacked_from_title_bar(&mut app);
@@ -867,18 +1087,275 @@ pub(crate) mod flow_tests {
     }
 
     #[tokio::test]
+    async fn thread_roots_keep_their_summary_in_a_side_pane() {
+        // Room a split beside a thread: a is now a side pane, not the main view.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$root".into()));
+        let pt = pane_of(&app, Some(fluxchat_core::timeline::thread_key("!a:x", "$root").as_str()));
+        click(&mut app, pt, Message::PaneFocus(pt));
+        assert_ne!(app.selected_room_id.as_deref(), Some("!a:x"));
+        let root = fluxchat_core::MessageInfo { event_id: "$root".into(), thread_count: Some(3), ..Default::default() };
+        let plain = fluxchat_core::MessageInfo { event_id: "$plain".into(), ..Default::default() };
+        assert!(app.thread_summary_row("!a:x", &root).is_some());
+        assert!(app.thread_summary_row("!a:x", &plain).is_none());
+    }
+
+    #[tokio::test]
+    async fn thread_menu_opens_where_asked() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let pa = app.window().focus;
+        let t = |r: &str| fluxchat_core::timeline::thread_key("!a:x", r);
+        let at = |r: &str, p| Message::OpenAt(t(r), p);
+
+        let _ = app.update(at("$below", Placement::Below));
+        assert_eq!(app.window().grid.adjacent(pa, Direction::Down), Some(pane_of(&app, Some(t("$below").as_str()))));
+        let _ = app.update(at("$right", Placement::Right));
+        assert_eq!(app.window().grid.adjacent(pa, Direction::Right), Some(pane_of(&app, Some(t("$right").as_str()))));
+        assert_eq!(app.window().grid.len(), 3, "explicit placement never reuses a thread pane");
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"), "focus stays where you were");
+
+        // Already open: it's focused, not duplicated.
+        let _ = app.update(at("$below", Placement::Right));
+        assert_eq!(app.window().grid.len(), 3);
+        assert_eq!(app.selected_room_id.as_deref(), Some(t("$below").as_str()));
+
+        // Here: the focused pane shows it (the thread it replaces is released).
+        let _ = app.update(at("$here", Placement::Here));
+        assert_eq!(app.window().grid.len(), 3);
+        assert_eq!(app.selected_room_id.as_deref(), Some(t("$here").as_str()));
+        assert!(!app.shown_in_pane(&t("$below")));
+
+        // New window: its only pane.
+        let _ = app.update(at("$win", Placement::NewWindow));
+        assert_eq!(app.windows.len(), 2);
+        assert_eq!(keys(&app), vec![Some(t("$win"))]);
+        assert_eq!(app.selected_room_id.as_deref(), Some(t("$win").as_str()));
+    }
+
+    #[tokio::test]
+    async fn clicking_an_open_thread_goes_to_it() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t1".into()));
+        let t1 = fluxchat_core::timeline::thread_key("!a:x", "$t1");
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t1".into()));
+        assert_eq!(app.window().grid.len(), 2);
+        assert_eq!(app.selected_room_id.as_deref(), Some(t1.as_str()));
+    }
+
+    #[tokio::test]
+    async fn dropping_on_a_pane_edge_splits_that_side_and_the_middle_replaces() {
+        use crate::dnd::DropZone;
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let pa = app.window().focus;
+        let _ = app.update(Message::DropOnPane("!b:x".into(), pa, DropZone::Left));
+        let pb = pane_of(&app, Some("!b:x"));
+        assert_eq!(app.window().grid.adjacent(pa, Direction::Left), Some(pb));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"), "the dropped room is focused");
+        let _ = app.update(Message::DropOnPane("!c:x".into(), pa, DropZone::Bottom));
+        assert_eq!(app.window().grid.adjacent(pa, Direction::Down), Some(pane_of(&app, Some("!c:x"))));
+        // The middle of an unfocused pane: shown there (a's pane now holds d).
+        let _ = app.update(Message::DropOnPane("!d:x".into(), pa, DropZone::Center));
+        assert_eq!(pane_of(&app, Some("!d:x")), pa);
+        assert!(!app.shown_in_pane("!a:x"));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!d:x"));
+        // Something already open is focused, not duplicated.
+        let _ = app.update(Message::DropOnPane("!b:x".into(), pa, DropZone::Right));
+        assert_eq!(app.window().grid.len(), 3);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+    }
+
+    #[tokio::test]
+    async fn a_room_open_in_another_window_is_switched_to() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::WindowNew);
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert_eq!(app.active_window, 1);
+        // Clicking a (from the room list, a notification, …) goes back to window 0.
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        assert_eq!(app.active_window, 0);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+        assert_eq!(app.windows[1].focused_key(), Some("!b:x"), "window 1 is left as it was");
+        assert_eq!(app.pane_keys().filter(|k| *k == "!a:x").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn rooms_in_unfocused_panes_count_as_on_screen() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+        assert!(app.visible("!b:x") && app.room_visible("!b:x"));
+        let _ = app.update(Message::OpenThread("!c:x".into(), "$t".into()));
+        assert!(app.room_visible("!c:x"), "a thread puts its room on screen");
+        let _ = app.update(Message::WindowNew);
+        assert!(!app.room_visible("!b:x"), "other windows aren't on screen");
+    }
+
+    #[tokio::test]
+    async fn escape_in_a_thread_pane_goes_back_to_its_room() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t".into()));
+        let t = fluxchat_core::timeline::thread_key("!a:x", "$t");
+        let pt = pane_of(&app, Some(t.as_str()));
+        click(&mut app, pt, Message::PaneFocus(pt));
+        assert_eq!(app.selected_room_id.as_deref(), Some(t.as_str()));
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+        assert_eq!(app.window().grid.len(), 2, "the thread pane stays open");
+        // In the room, Esc with nothing to dismiss does nothing.
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+    }
+
+    #[tokio::test]
+    async fn after_a_split_the_next_room_picked_fills_the_empty_pane() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        split_stacked_from_title_bar(&mut app);
+        let empty = pane_of(&app, None);
+        // From the room list (or the switcher): a stays, b goes in the new pane.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert_eq!(pane_of(&app, Some("!b:x")), empty);
+        assert!(app.shown_in_pane("!a:x"));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        // No empty pane left: the focused pane switches as usual.
+        let _ = app.update(Message::SelectRoom("!c:x".into()));
+        assert_eq!(pane_of(&app, Some("!c:x")), empty);
+        assert!(app.shown_in_pane("!a:x"));
+    }
+
+    #[tokio::test]
+    async fn zoom_never_hides_what_you_go_to() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let pa = pane_of(&app, Some("!a:x"));
+        let _ = app.update(Message::PaneZoom);
+        assert_eq!(app.window().grid.maximized(), Some(pa));
+        // Moving focus to a hidden pane unzooms (tmux does the same).
+        let _ = app.update(Message::PaneFocusDirection(Direction::Right));
+        assert_eq!(app.window().grid.maximized(), None);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        // Opening something beside a zoomed pane unzooms so it's visible.
+        let _ = app.update(Message::PaneZoom);
+        let _ = app.update(Message::OpenThread("!b:x".into(), "$t".into()));
+        assert_eq!(app.window().grid.maximized(), None);
+        // A room picked into the zoomed pane itself keeps the zoom.
+        let pb = app.window().focus;
+        let _ = app.update(Message::PaneZoom);
+        let _ = app.update(Message::OpenAt("!c:x".into(), Placement::Here));
+        assert_eq!(app.window().grid.maximized(), Some(pb));
+        // A lone pane can't be zoomed.
+        let mut solo = super::flow_tests::app();
+        let _ = solo.update(Message::SelectRoom("!a:x".into()));
+        let _ = solo.update(Message::PaneZoom);
+        assert_eq!(solo.window().grid.maximized(), None);
+    }
+
+    #[tokio::test]
+    async fn zoom_is_restored_with_the_layout() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let _ = app.update(Message::PaneZoom);
+        app.save_layout();
+        app.rooms = ["!a:x", "!b:x"].iter()
+            .map(|id| fluxchat_core::RoomInfo { room_id: id.to_string(), ..Default::default() })
+            .collect();
+        app.windows = vec![Window::new(None)];
+        let _ = app.restore_layout();
+        assert_eq!(app.window().grid.len(), 2);
+        assert_eq!(app.window().grid.maximized(), Some(app.window().focus));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+    }
+
+    #[tokio::test]
+    async fn leaving_a_room_closes_its_panes_everywhere() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Below));
+        let _ = app.update(Message::OpenAt("!a:x".into(), Placement::Auto));
+        let _ = app.update(Message::LeaveRoom("!a:x".into()));
+        // a and its thread are gone; b is the main view, and nothing's stale.
+        assert_eq!(keys(&app), vec![Some("!b:x".to_string())]);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        assert_eq!(app.window().focused_key(), app.selected_room_id.as_deref());
+    }
+
+    #[tokio::test]
+    async fn leaving_the_only_room_on_screen_moves_to_its_neighbour() {
+        let mut app = app();
+        app.rooms = ["!a:x", "!b:x"].iter()
+            .map(|id| fluxchat_core::RoomInfo { room_id: id.to_string(), name: id.to_string(), ..Default::default() })
+            .collect();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::LeaveRoom("!a:x".into()));
+        assert_eq!(keys(&app), vec![Some("!b:x".to_string())]);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+    }
+
+    #[tokio::test]
+    async fn picking_a_room_open_in_another_window_goes_there() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::WindowNew);
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        split_stacked_from_title_bar(&mut app);
+        let empty = pane_of(&app, None);
+        let _ = app.update(Message::FillPane(empty, "!a:x".into()));
+        assert_eq!(app.active_window, 0);
+        assert_eq!(app.pane_keys().filter(|k| *k == "!a:x").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_thread_replaced_by_a_room_pick_is_released() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt(fluxchat_core::timeline::thread_key("!a:x", "$t"), Placement::Here));
+        let t = fluxchat_core::timeline::thread_key("!a:x", "$t");
+        assert!(app.pane_inputs.contains_key(&t) || app.selected_room_id.as_deref() == Some(t.as_str()));
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(!app.shown_in_pane(&t));
+        assert!(!app.pane_inputs.contains_key(&t));
+    }
+
+    #[tokio::test]
+    async fn open_here_and_drops_go_exactly_where_asked_even_with_an_empty_pane() {
+        use crate::dnd::DropZone;
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        split_stacked_from_title_bar(&mut app);
+        let pa = pane_of(&app, Some("!a:x"));
+        let empty = pane_of(&app, None);
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Here));
+        assert_eq!(pane_of(&app, Some("!b:x")), pa);
+        let _ = app.update(Message::DropOnPane("!c:x".into(), pa, DropZone::Center));
+        assert_eq!(pane_of(&app, Some("!c:x")), pa);
+        assert_eq!(pane_of(&app, None), empty, "the empty pane is still waiting");
+        assert_eq!(app.selected_room_id.as_deref(), Some("!c:x"));
+    }
+
+    #[tokio::test]
     async fn a_new_thread_reuses_the_thread_pane_next_to_its_room() {
         // Left: room a over thread t1; right: thread t9 of a too.
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
         let t9 = fluxchat_core::timeline::thread_key("!a:x", "$t9");
-        let _ = app.update(Message::OpenInPane(t9.clone()));
+        let _ = app.update(Message::OpenAt(t9.clone(), Placement::Auto));
         let pa = pane_of(&app, Some("!a:x"));
         split_stacked_from_title_bar(&mut app);
         let t1 = fluxchat_core::timeline::thread_key("!a:x", "$t1");
         let below = pane_of(&app, None);
-        let _ = app.update(Message::FillPane(below, t1));
-        assert_eq!(app.window().focus, pa);
+        let _ = app.update(Message::FillPane(below, t1.clone()));
+        assert_eq!(app.selected_room_id.as_deref(), Some(t1.as_str()), "a picked pane is focused");
+        click(&mut app, pa, Message::PaneFocus(pa));
         let _ = app.update(Message::OpenThread("!a:x".into(), "$t2".into()));
         let t2 = fluxchat_core::timeline::thread_key("!a:x", "$t2");
         assert_eq!(pane_of(&app, Some(t2.as_str())), below);
@@ -889,7 +1366,7 @@ pub(crate) mod flow_tests {
     async fn closing_the_window_saves_the_layout_immediately() {
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
-        let _ = app.update(Message::OpenInPane("!b:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Auto));
         assert!(app.layout_dirty);
         let _ = app.update(Message::CloseRequested);
         assert!(!app.layout_dirty);

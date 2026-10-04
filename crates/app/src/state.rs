@@ -54,14 +54,14 @@ pub static TIMELINE_RX: std::sync::OnceLock<std::sync::Mutex<Option<TimelineUpda
 pub static CALL_RX: std::sync::OnceLock<std::sync::Mutex<Option<CallEventRx>>> =
     std::sync::OnceLock::new();
 
-/// Tab entry: (room_id, room_name, space_name, space_avatar_mxc)
-pub type TabEntry = (String, String, Option<String>, Option<String>);
 
 #[derive(Debug, Clone)]
 pub enum ContextMenu {
     Room { room_id: String, is_dm: bool },
     Space { space_id: String },
     Message { event_id: String },
+    /// A thread (summary row, sidebar entry, threads panel): where to open it.
+    Thread { room_id: String, root_id: String },
 }
 
 /// Which modal is currently open.
@@ -300,8 +300,6 @@ pub struct FluxChat {
     pub help_text: Option<String>,
     pub modal: Option<Modal>,
 
-    // Tabs
-    pub open_tabs: Vec<TabEntry>,
     /// tmux-style windows, each a grid of panes (see `panes.rs`).
     pub windows: Vec<crate::panes::Window>,
     pub active_window: usize,
@@ -739,7 +737,6 @@ impl FluxChat {
             gif_searched: false,
             help_text: None,
             modal: None,
-            open_tabs: Vec::new(),
             windows: vec![crate::panes::Window::new(None)],
             active_window: 0,
             tmux_prefix: false,

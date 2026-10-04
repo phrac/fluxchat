@@ -1619,7 +1619,6 @@ impl FluxChat {
         // Collect emojis to display
         let emojis_to_show: Vec<&str> = if searching {
             emojis::iter()
-                .filter(|e| e.skin_tone().is_none())
                 .filter(|e| {
                     e.name().to_lowercase().contains(&query_lower)
                         || e.shortcode().is_some_and(|s| s.to_lowercase().contains(&query_lower))
@@ -1636,21 +1635,7 @@ impl FluxChat {
                 .map(|(emoji, _)| emoji.as_str())
                 .collect()
         } else {
-            let group = match self.emoji_category {
-                1 => emojis::Group::SmileysAndEmotion,
-                2 => emojis::Group::PeopleAndBody,
-                3 => emojis::Group::AnimalsAndNature,
-                4 => emojis::Group::FoodAndDrink,
-                5 => emojis::Group::TravelAndPlaces,
-                6 => emojis::Group::Activities,
-                7 => emojis::Group::Objects,
-                8 => emojis::Group::Symbols,
-                _ => emojis::Group::Flags,
-            };
-            group.emojis()
-                .filter(|e| e.skin_tone().is_none())
-                .map(|e| e.as_str())
-                .collect()
+            category_emojis(self.emoji_category)
         };
 
         let heading = if searching {
@@ -1970,9 +1955,38 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     })
 }
 
+/// The picker's emoji for category tab `category` (1–9, an `emojis::Group`).
+/// `Group::emojis()` already leaves out the non-default skin tones; don't
+/// filter on `skin_tone().is_none()` — the default 👍 is `Some(Default)`,
+/// so that dropped every hand and person that takes a skin tone.
+fn category_emojis(category: u8) -> Vec<&'static str> {
+    let group = match category {
+        1 => emojis::Group::SmileysAndEmotion,
+        2 => emojis::Group::PeopleAndBody,
+        3 => emojis::Group::AnimalsAndNature,
+        4 => emojis::Group::FoodAndDrink,
+        5 => emojis::Group::TravelAndPlaces,
+        6 => emojis::Group::Activities,
+        7 => emojis::Group::Objects,
+        8 => emojis::Group::Symbols,
+        _ => emojis::Group::Flags,
+    };
+    group.emojis().map(|e| e.as_str()).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{collapse_code_blocks, contains_word, format_clock, long_code_blocks};
+    use super::{category_emojis, collapse_code_blocks, contains_word, format_clock, long_code_blocks};
+
+    #[test]
+    fn picker_has_skin_tone_emoji_in_their_default_colour_only() {
+        let people = category_emojis(2);
+        for e in ["👍", "👋", "👏", "🙏", "👌", "🤷"] {
+            assert!(people.contains(&e), "{e} missing");
+        }
+        assert!(!people.contains(&"👍🏽"), "skin-tone variants stay out of the grid");
+        assert!(category_emojis(1).contains(&"😀"));
+    }
 
     #[test]
     fn code_blocks_collapse_one_at_a_time() {

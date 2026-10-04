@@ -296,6 +296,24 @@ impl FluxChat {
         )
     }
 
+    /// The thread summary under `msg` in room view `view_key`, if it is a
+    /// thread root. The SDK's summary count (`thread_count`) covers replies
+    /// that aren't loaded; loaded replies are counted too in case it lags.
+    pub(crate) fn thread_summary_row<'a>(
+        &'a self,
+        view_key: &str,
+        msg: &'a fluxchat_core::MessageInfo,
+    ) -> Option<Element<'a, Message>> {
+        if view_key.starts_with("thread::") {
+            return None;
+        }
+        let loaded = self.thread_counts.get(view_key)
+            .and_then(|tc| tc.get(msg.event_id.as_str()).copied())
+            .unwrap_or(0);
+        let count = loaded.max(msg.thread_count.unwrap_or(0));
+        (count > 0).then(|| self.view_thread_summary(view_key, msg, count))
+    }
+
     /// The row under a thread root: reply count plus the latest reply's
     /// sender and preview (from the SDK thread summary). Opens the thread.
     fn view_thread_summary<'a>(
@@ -325,21 +343,25 @@ impl FluxChat {
         summary = summary.push(
             text("\u{203A}").font(self.sidebar_font()).size(13).color(theme::colors().text_dim),
         );
+        let open = button(summary)
+            .on_press(Message::ListClick(
+                fluxchat_core::timeline::thread_key(fluxchat_core::timeline::real_room_id(room_id), &msg.event_id),
+                Box::new(Message::OpenThread(room_id.to_string(), msg.event_id.clone())),
+            ))
+            .padding([2, 6])
+            .clip(true)
+            .style(|_, status| button::Style {
+                background: if matches!(status, button::Status::Hovered) {
+                    Some(theme::with_alpha(theme::colors().accent, 0.1).into())
+                } else {
+                    None
+                },
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            });
         row![
             Space::new().width(Length::Fixed(self.msg_content_indent() - 6.0)),
-            button(summary)
-                .on_press(Message::OpenThread(room_id.to_string(), msg.event_id.clone()))
-                .padding([2, 6])
-                .clip(true)
-                .style(|_, status| button::Style {
-                    background: if matches!(status, button::Status::Hovered) {
-                        Some(theme::with_alpha(theme::colors().accent, 0.1).into())
-                    } else {
-                        None
-                    },
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                }),
+            self.thread_menu_area(open, room_id, &msg.event_id, false),
         ].spacing(0).into()
     }
 
@@ -601,11 +623,15 @@ impl FluxChat {
                                 .wrapping(iced::widget::text::Wrapping::None),
                         ].spacing(3),
                     )
-                    .on_press(Message::OpenThread(room_id.clone(), t.root_id.clone()))
+                    .on_press(Message::ListClick(
+                        fluxchat_core::timeline::thread_key(&room_id, &t.root_id),
+                        Box::new(Message::OpenThread(room_id.clone(), t.root_id.clone())),
+                    ))
                     .padding([7, 8])
                     .width(Fill)
                     .clip(true)
                     .style(crate::ui::row_style(open));
+                let entry = self.thread_menu_area(entry, &room_id, &t.root_id, true);
                 list = list.push(self.thread_hover_preview(entry, t, iced::widget::tooltip::Position::Left));
             }
             scrollable(list)
@@ -1251,18 +1277,19 @@ impl FluxChat {
                 col = col.push(self.context_menu_item(
                     "Copy Link", SVG_LINK, rid.clone(), "copy_link",
                 ));
-                col = col.push(
-                    button(
-                        row![
-                            crate::ui::icon(SVG_MAXIMIZE, 14.0, theme::colors().text_dim),
-                            text("Open in split view").font(self.sidebar_font()).size(13).color(theme::colors().text_normal),
-                        ].spacing(8).align_y(iced::Alignment::Center),
-                    )
-                    .on_press(Message::OpenInPane(rid.clone()))
-                    .padding([6, 10])
-                    .width(Fill)
-                    .style(crate::ui::row_style(false)),
-                );
+                {
+                    use crate::panes::Placement;
+                    let at = |p: Placement| Message::OpenAt(rid.clone(), p);
+                    if self.locate(&rid).is_some() {
+                        if self.selected_room_id.as_deref() != Some(rid.as_str()) {
+                            col = col.push(self.context_menu_entry("Go to room", SVG_HASH, at(Placement::Auto)));
+                        }
+                    } else {
+                        col = col.push(self.context_menu_entry("Open to the right", SVG_SPLIT_V, at(Placement::Right)));
+                        col = col.push(self.context_menu_entry("Open below", SVG_SPLIT_H, at(Placement::Below)));
+                        col = col.push(self.context_menu_entry("Open in new window", SVG_LAYERS, at(Placement::NewWindow)));
+                    }
+                }
                 if !is_dm {
                     col = col.push(self.context_menu_item(
                         "Invite", SVG_USER_PLUS, rid.clone(), "invite",
@@ -1293,6 +1320,21 @@ impl FluxChat {
                     col = col.push(text("Not sent yet").font(self.sidebar_font()).size(12).color(theme::colors().text_dim));
                 }
             }
+            crate::state::ContextMenu::Thread { room_id, root_id } => {
+                use crate::panes::Placement;
+                let key = fluxchat_core::timeline::thread_key(room_id, root_id);
+                let at = |p: Placement| Message::OpenAt(key.clone(), p);
+                // Already open: it would only be focused, wherever asked.
+                if self.locate(&key).is_some() {
+                    col = col.push(self.context_menu_entry("Go to thread", SVG_THREAD, at(Placement::Auto)));
+                } else {
+                    col = col.push(self.context_menu_entry("Open thread", SVG_THREAD, at(Placement::Auto)));
+                    col = col.push(self.context_menu_entry("Open to the right", SVG_SPLIT_V, at(Placement::Right)));
+                    col = col.push(self.context_menu_entry("Open below", SVG_SPLIT_H, at(Placement::Below)));
+                    col = col.push(self.context_menu_entry("Open in this pane", SVG_MAXIMIZE, at(Placement::Here)));
+                    col = col.push(self.context_menu_entry("Open in new window", SVG_LAYERS, at(Placement::NewWindow)));
+                }
+            }
             crate::state::ContextMenu::Space { space_id } => {
                 let sid = space_id.clone();
                 col = col.push(self.context_menu_item(
@@ -1312,21 +1354,47 @@ impl FluxChat {
     }
 
     fn context_menu_item<'a>(&self, label: &'a str, icon: &'static [u8], target: String, action: &str) -> Element<'a, Message> {
-        let action = action.to_string();
-        let handle = iced::widget::svg::Handle::from_memory(icon);
+        self.context_menu_entry(label, icon, Message::ContextMenuAction(action.to_string(), target))
+    }
+
+    fn context_menu_entry<'a>(&self, label: &'a str, icon: &'static [u8], on_press: Message) -> Element<'a, Message> {
         button(
             row![
-                iced::widget::svg(handle)
-                    .width(14).height(14)
-                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) }),
+                crate::ui::icon(icon, 14.0, theme::colors().text_dim),
                 text(label).font(self.sidebar_font()).size(13).color(theme::colors().text_normal),
             ].spacing(8).align_y(iced::Alignment::Center),
         )
-        .on_press(Message::ContextMenuAction(action, target))
+        .on_press(on_press)
         .padding([6, 10])
         .width(Fill)
         .style(crate::ui::row_style(false))
         .into()
+    }
+
+    /// Right-click on a thread row opens the thread menu (where to open it);
+    /// middle-click opens it beside; list rows (`draggable`) drag onto panes.
+    fn thread_menu_area<'a>(&self, row: impl Into<Element<'a, Message>>, room_id: &str, root_id: &str, draggable: bool) -> Element<'a, Message> {
+        let key = fluxchat_core::timeline::thread_key(room_id, root_id);
+        self.list_entry_area(row, key, crate::state::ContextMenu::Thread {
+            room_id: room_id.to_string(),
+            root_id: root_id.to_string(),
+        }, draggable)
+    }
+
+    /// A room / thread row: right-click opens `menu`, middle-click opens
+    /// `key` beside, and a `draggable` one can be dragged onto a pane
+    /// (not rows inside panes: a press there is also a pane click).
+    fn list_entry_area<'a>(
+        &self,
+        row: impl Into<Element<'a, Message>>,
+        key: String,
+        menu: crate::state::ContextMenu,
+        draggable: bool,
+    ) -> Element<'a, Message> {
+        let area = iced::widget::mouse_area(row)
+            .on_right_press(Message::OpenContextMenu(menu))
+            .on_middle_press(Message::OpenAt(key.clone(), crate::panes::Placement::Right));
+        if draggable { crate::dnd::source(key, area) } else { area.into() }
     }
 
     fn context_menu_item_danger<'a>(&self, label: &'a str, icon: &'static [u8], target: String, action: &str) -> Element<'a, Message> {
@@ -2091,101 +2159,105 @@ impl FluxChat {
         ].spacing(0).into()
     }
 
-    /// A room's most recently active threads, indented under it (unless
-    /// collapsed). Threads open as full-size tabs are listed by the caller.
-    fn view_room_recent_threads(&self, room_id: &str, indent: f32, tab_prefix: &str) -> Vec<Element<'_, Message>> {
+    /// Thread entries indented below their room in the sidebar (unless
+    /// collapsed): its most recently active threads, then any other thread
+    /// of it that's open in a pane (in any window), so an open thread can
+    /// always be found under its room.
+    fn view_thread_entries(&self, room_id: &str, indent: f32) -> Vec<Element<'_, Message>> {
         if self.collapsed_room_threads.contains(room_id) {
             return Vec::new();
         }
-        let Some(threads) = self.room_threads.get(room_id) else { return Vec::new() };
         // Text width left for the title: sidebar minus paddings, offset and icon.
         let avail = self.sidebar_width - 12.0 - indent - THREAD_ENTRY_OFFSET - 12.0 - 6.0 - 24.0;
         let max_chars = (avail / (12.0 * 0.62)).max(8.0) as usize;
-        threads.iter()
-            .filter(|t| !self.open_tabs.iter().any(|(id, _, _, _)| *id == format!("{tab_prefix}{}", t.root_id)))
-            .take(crate::update::SIDEBAR_THREADS)
-            .map(|t| {
-                let key = fluxchat_core::timeline::thread_key(room_id, &t.root_id);
-                let shown = self.shown_in_pane(&key) || self.selected_room_id.as_deref() == Some(key.as_str());
-                let entry = button(
-                    row![
-                        Space::new().width(Length::Fixed(THREAD_ENTRY_OFFSET)),
-                        crate::ui::icon(SVG_THREAD, 12.0, if shown { theme::colors().accent } else { theme::colors().text_dim }),
-                        text(ellipsize(&t.body, max_chars)).font(self.sidebar_font()).size(12)
-                            .color(if shown { theme::colors().text_bright } else { theme::colors().text_muted })
-                            .wrapping(iced::widget::text::Wrapping::None),
-                    ].spacing(6).align_y(iced::Alignment::Center),
-                )
-                .on_press(Message::OpenThread(room_id.to_string(), t.root_id.clone()))
-                .padding([3, 8])
-                .width(Fill)
-                .clip(true)
-                .style(crate::ui::row_style(shown));
-                container(self.thread_hover_preview(entry, t, iced::widget::tooltip::Position::Right))
-                    .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 + indent })
-                    .into()
-            })
-            .collect()
+        let recent: Vec<&fluxchat_core::ThreadPreview> = self.room_threads.get(room_id)
+            .map(|ts| ts.iter().take(crate::update::SIDEBAR_THREADS).collect())
+            .unwrap_or_default();
+        let prefix = format!("thread::{room_id}::");
+        let mut open: Vec<&str> = self.pane_keys()
+            .filter(|k| k.starts_with(&prefix))
+            .filter(|k| !recent.iter().any(|t| k.ends_with(t.root_id.as_str()) && k.len() == prefix.len() + t.root_id.len()))
+            .collect();
+        open.sort_unstable();
+        open.dedup();
+        let mut out: Vec<Element<'_, Message>> = recent.iter()
+            .map(|t| self.view_sidebar_thread(room_id, &t.root_id, ellipsize(&t.body, max_chars), Some(t), indent))
+            .collect();
+        out.extend(open.into_iter().filter_map(|k| {
+            let (_, root) = fluxchat_core::timeline::parse_thread_key(k)?;
+            Some(self.view_sidebar_thread(room_id, root, ellipsize(&self.thread_title(k), max_chars), None, indent))
+        }));
+        out
     }
 
-    /// Thread entries indented below their parent room in the sidebar.
-    fn view_thread_entries(&self, room_id: &str, indent: f32) -> Vec<Element<Message>> {
-        let prefix = format!("thread::{room_id}::");
-        // Recent threads (collapsible per room), then full-size thread tabs.
-        let mut out = self.view_room_recent_threads(room_id, indent, &prefix);
-        out.extend(self.open_tabs.iter()
-            .filter(|(tid, _, _, _)| tid.starts_with(&prefix))
-            .map(|(tid, tname, _, _)| {
-                let is_selected = self.selected_room_id.as_deref() == Some(tid.as_str());
-                let name_color = if is_selected { theme::colors().text_bright } else { theme::colors().text_muted };
-                let icon_color = if is_selected { theme::colors().accent } else { theme::colors().text_dim };
-                let entry = button(
-                    row![
-                        // Same left offset as the parent room's name: unread
-                        // dot + gap + room icon + gap (see view_room_entry).
-                        Space::new().width(Length::Fixed(THREAD_ENTRY_OFFSET)),
-                        iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_THREAD))
-                            .width(12).height(12)
-                            .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
-                        text(tname).font(self.sidebar_font()).size(12).color(name_color)
-                            .wrapping(iced::widget::text::Wrapping::None),
-                    ].spacing(6).align_y(iced::Alignment::Center),
-                )
-                .on_press(Message::SelectRoom(tid.clone()))
-                .padding([4, 8])
-                .width(Fill)
-                .clip(true)
-                .style(move |_, status| button::Style {
-                    background: if is_selected {
-                        Some(theme::colors().bg_light.into())
-                    } else if matches!(status, button::Status::Hovered) {
-                        Some(theme::tint(0.06).into())
-                    } else {
-                        None
-                    },
-                    border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
-                    ..Default::default()
-                });
-                // Same outer padding as room entries (+ the space indent).
-                container(entry)
-                    .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 + indent })
-                    .into()
-            })
-            .collect::<Vec<_>>());
-        out
+    /// One thread row under its room: highlighted like rooms are (selected /
+    /// on screen in another pane), with the thread menu, middle-click and drag.
+    fn view_sidebar_thread<'a>(
+        &'a self,
+        room_id: &str,
+        root_id: &str,
+        title: String,
+        preview: Option<&'a fluxchat_core::ThreadPreview>,
+        indent: f32,
+    ) -> Element<'a, Message> {
+        let key = fluxchat_core::timeline::thread_key(room_id, root_id);
+        let is_selected = self.selected_room_id.as_deref() == Some(key.as_str());
+        let on_screen = !is_selected && self.visible(&key);
+        let lit = is_selected || on_screen;
+        let entry = button(
+            row![
+                // Same left offset as the parent room's name: unread
+                // dot + gap + room icon + gap (see view_room_entry).
+                Space::new().width(Length::Fixed(THREAD_ENTRY_OFFSET)),
+                crate::ui::icon(SVG_THREAD, 12.0, if lit { theme::colors().accent } else { theme::colors().text_dim }),
+                text(title).font(self.sidebar_font()).size(12)
+                    .color(if lit { theme::colors().text_bright } else { theme::colors().text_muted })
+                    .wrapping(iced::widget::text::Wrapping::None),
+            ].spacing(6).align_y(iced::Alignment::Center),
+        )
+        .on_press(Message::ListClick(key, Box::new(Message::OpenThread(room_id.to_string(), root_id.to_string()))))
+        .padding([3, 8])
+        .width(Fill)
+        .clip(true)
+        .style(move |_, status| button::Style {
+            background: if is_selected {
+                Some(theme::colors().bg_light.into())
+            } else if on_screen {
+                Some(on_screen_bg().into())
+            } else if matches!(status, button::Status::Hovered) {
+                Some(theme::tint(0.06).into())
+            } else {
+                None
+            },
+            border: iced::Border { radius: crate::ui::RADIUS.into(), ..Default::default() },
+            ..Default::default()
+        });
+        let entry = self.thread_menu_area(entry, room_id, root_id, true);
+        let entry = match preview {
+            Some(t) => self.thread_hover_preview(entry, t, iced::widget::tooltip::Position::Right),
+            None => entry,
+        };
+        // Same outer padding as room entries (+ the space indent).
+        container(entry)
+            .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 + indent })
+            .into()
     }
 
     /// Single room entry in the list.
     fn view_room_entry<'a>(&self, room: &'a fluxchat_core::RoomInfo, is_dm: bool) -> Element<'a, Message> {
         let is_selected = self.selected_room_id.as_deref() == Some(&room.room_id);
+        // Shown in another pane of this window: a softer highlight.
+        let on_screen = !is_selected && self.visible(&room.room_id);
         let has_unread = room.unread_count > 0 && !self.read_rooms.contains(&room.room_id);
-        let name_color = if is_selected || has_unread {
+        let name_color = if is_selected || on_screen || has_unread {
             theme::colors().text_bright
         } else {
             theme::colors().text_muted
         };
         let bg = if is_selected {
             theme::colors().bg_light
+        } else if on_screen {
+            on_screen_bg()
         } else {
             Color::TRANSPARENT
         };
@@ -2319,7 +2391,7 @@ impl FluxChat {
                 .width(Fill)
                 .clip(true)
         )
-        .on_press(Message::SelectRoom(room_id.clone()))
+        .on_press(Message::ListClick(room_id.clone(), Box::new(Message::SelectRoom(room_id.clone()))))
         .padding([5, 8])
         .width(Fill)
         .style(move |_, status| button::Style {
@@ -2348,12 +2420,12 @@ impl FluxChat {
                 if collapsed { "Show threads" } else { "Hide threads" },
             ));
         }
-        mouse_area(
-            container(entry)
-            .padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 })
+        self.list_entry_area(
+            container(entry).padding(iced::Padding { top: 0.0, right: 4.0, bottom: 0.0, left: 12.0 }),
+            room.room_id.clone(),
+            ctx_menu,
+            true,
         )
-        .on_right_press(Message::OpenContextMenu(ctx_menu))
-        .into()
     }
 
     /// Main content area (tabs + messages + input).
@@ -2636,31 +2708,6 @@ impl FluxChat {
                 }
             }
 
-            // Thread topic bar: show thread root message preview
-            if room_id.starts_with("thread::") {
-                if let Some((_, tname, _, _)) = self.open_tabs.iter().find(|(id, _, _, _)| id == room_id) {
-                    content = content.push(
-                        container(
-                            text(tname.as_str())
-                                .font(self.sidebar_font())
-                                .size(13)
-                                .color(theme::colors().text_dim),
-                        )
-                        .padding([3, 12])
-                        .width(Fill)
-                        .style(|_: &Theme| container::Style {
-                            background: Some(theme::colors().bg_dark.into()),
-                            border: iced::Border {
-                                color: theme::colors().border,
-                                width: 1.0,
-                                radius: 0.0.into(),
-                            },
-                            ..Default::default()
-                        }),
-                    );
-                }
-            }
-
             // Collect all optional panels into a single column so the content
             // column always has the same number of children. This prevents Iced
             // from losing the messages scrollable's scroll state when panels
@@ -2719,15 +2766,6 @@ impl FluxChat {
                         .find(|m| !m.event_id.starts_with('~'))
                         .map(|m| &m.event_id) != Some(lr)
                 });
-                let is_thread_view = room_id.starts_with("thread::");
-                // Thread counts precomputed in update.rs
-                let empty_tc = std::collections::HashMap::new();
-                let thread_counts = if !is_thread_view {
-                    self.thread_counts.get(room_id).unwrap_or(&empty_tc)
-                } else {
-                    &empty_tc
-                };
-
                 // Virtualized list: only rows near the viewport become widgets;
                 // everything else is a spacer sized from measured (or estimated)
                 // row heights. See `virtual_window` / `MessagesScrolled`.
@@ -2744,16 +2782,8 @@ impl FluxChat {
                     // Unread divider: show after the last-read message
                     let is_last_read = show_divider && !divider_shown
                         && last_read.as_deref() == Some(msg.event_id.as_str());
-                    // Thread summary under a root. The SDK's summary count
-                    // (`thread_count`) covers replies that aren't loaded;
-                    // loaded replies are counted too in case it lags.
-                    if !is_thread_view {
-                        let count = thread_counts.get(msg.event_id.as_str()).copied()
-                            .unwrap_or(0)
-                            .max(msg.thread_count.unwrap_or(0));
-                        if count > 0 {
-                            row_col = row_col.push(self.view_thread_summary(room_id, msg, count));
-                        }
+                    if let Some(summary) = self.thread_summary_row(room_id, msg) {
+                        row_col = row_col.push(summary);
                     }
                     // Read receipts for this message
                     if let Some(receipt_row) = self.view_read_receipts(msg) {
@@ -3218,10 +3248,15 @@ impl FluxChat {
                 iced::Event::Window(iced::window::Event::Unfocused) => {
                     Some(Message::WindowFocusChanged(false))
                 }
+                iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) => {
+                    MODIFIERS.store(m.bits(), std::sync::atomic::Ordering::Relaxed);
+                    None
+                }
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                     // Record without emitting a Message: every Message triggers
                     // a full view rebuild, and the cursor moves constantly.
                     set_cursor_position(position.x, position.y);
+                    crate::dnd::cursor_moved(position);
                     None
                 }
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
@@ -3420,6 +3455,20 @@ fn wheel_up_at_timeline_top(delta: &iced::mouse::ScrollDelta) -> bool {
     let (x, y) = cursor_position();
     TIMELINE_AT_TOP.lock().unwrap_or_else(|e| e.into_inner())
         .is_some_and(|b| b.contains(iced::Point::new(x, y)))
+}
+
+/// Sidebar background of a room / thread shown in an unfocused pane: half
+/// way between nothing and the selected row's.
+fn on_screen_bg() -> Color {
+    theme::with_alpha(theme::colors().bg_light, 0.5)
+}
+
+/// Keyboard modifiers held right now (bits), kept by the global listener.
+static MODIFIERS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Cmd (macOS) / Ctrl held: a click on a room or thread row opens it beside.
+pub(crate) fn open_modifier_held() -> bool {
+    iced::keyboard::Modifiers::from_bits_truncate(MODIFIERS.load(std::sync::atomic::Ordering::Relaxed)).command()
 }
 
 static CURSOR_X: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

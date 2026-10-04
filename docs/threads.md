@@ -15,10 +15,22 @@ A thread is a side conversation attached to one message (its *root*). Thread rep
 Opening a thread shows it in a pane **beside** the room, so you can follow both. The thread pane has its own message box; anything you send there goes into the thread. Replies from others (including bots that answer in threads) appear live.
 
 - **Reply in thread** on any message (hover → spool) starts a thread on it.
-- Open several threads from the same room and they reuse one pane. With more than one thread pane from that room, the one next to the room pane is replaced, so clicking a new thread in a room shown above its thread puts it in the pane below. If you're in a thread pane and open another thread of that room from the sidebar or the threads panel, it replaces the thread you're in.
+
+**Clicking a thread** (its "N replies" row, the room list, the threads panel) decides where it goes like this, first match wins:
+
+1. Already open in this window: that pane is focused.
+2. You're in a thread pane of the same room: the new thread replaces it.
+3. A thread pane of that room is open: the new thread replaces it (the one next to the room first, so a room shown above its thread keeps its thread below it).
+4. Otherwise a new pane opens to the right of the room, and you stay in the room.
+
+If the room isn't on screen, it opens in the focused pane first, as clicking the room would.
+
+**Right-click a thread** (same places) to choose instead: **Open to the right**, **Open below** (a new pane next to the one you're in), **Open in this pane**, or **Open in new window**. Threads that are already open offer **Go to thread**. **Middle-click** or **⌘/Ctrl-click** opens a thread to the right, and you can **drag** one from the room list or threads panel onto a pane (see [Panes and windows](panes-and-windows.md)).
+
+**Esc** in a thread pane goes back to its room when there's nothing else to close.
 - To give a thread the whole window, zoom its pane (**Ctrl+B z**) or click its title bar's zoom button.
 - Close the pane with its × or **Ctrl+B x**.
 
-Threads opened full-size also appear in the room list under their room until you leave that room.
+Under each room, the room list shows its most recently active threads, plus any of its threads open in a pane. The ones on screen are highlighted.
 
 See [Panes and windows](panes-and-windows.md) for arranging panes.

@@ -38,6 +38,8 @@ pub enum Message {
     CompleteEmoji(usize),
     /// Ctrl+V: if the clipboard holds an image, stage it as an upload.
     PasteClipboardImage,
+    /// Files copied in a file manager (`text/uri-list`), pasted with Ctrl/Cmd+V.
+    ClipboardFiles(Vec<std::path::PathBuf>),
     /// Show a failure to the user (in the help/notice line above the input).
     ShowError(String),
     /// Open the "leave room?" confirmation for a room.
@@ -105,8 +107,12 @@ pub enum Message {
 
     // --- Threads ---
     OpenThread(String, String), // room_id, thread_root_event_id — opens the thread pane
-    /// Show a room in a pane beside the focused one (split view).
-    OpenInPane(String),
+    /// Open a room or thread view (key) in a chosen place: right-click
+    /// menus, middle-click, Cmd/Ctrl+click.
+    OpenAt(String, crate::panes::Placement),
+    /// A click on a room / thread row: `OpenAt(key, Right)` with Cmd/Ctrl
+    /// held, else the row's plain message.
+    ListClick(String, Box<Message>),
     // --- Panes & windows (tmux-style, panes.rs) ---
     /// Mouse pressed in a pane. Focus moves on release (see `pending_pane_focus`).
     PaneClicked(iced::widget::pane_grid::Pane),
@@ -119,6 +125,8 @@ pub enum Message {
     FillPane(iced::widget::pane_grid::Pane, String),
     PaneResized(iced::widget::pane_grid::ResizeEvent),
     PaneDragged(iced::widget::pane_grid::DragEvent),
+    /// A room / thread row dragged from a list and dropped on a pane.
+    DropOnPane(String, iced::widget::pane_grid::Pane, crate::dnd::DropZone),
     PaneSplit(iced::widget::pane_grid::Axis),
     /// Close a pane (`None` = the focused one).
     PaneClose(Option<iced::widget::pane_grid::Pane>),

@@ -64,6 +64,10 @@ Run it from a terminal with `FLUXCHAT_TIMING=1` set. Every update slower than 4 
 FLUXCHAT_TIMING=1 cargo run -p fluxchat --release
 ```
 
+## Can't drop files in on Wayland
+
+Dragging a file from your file manager into fluxchat works on macOS, Windows and X11, but not yet on a native Wayland session (GNOME, KDE, Sway, Hyprland, niri…). The windowing library fluxchat uses only gained Wayland drag and drop in a version it can't use yet. Until then, copy the file in your file manager (**Ctrl+C**) and paste it into the message box (**Ctrl+V**), or use the **+** button.
+
 ## Where things are stored
 
 | OS | Data folder |
