@@ -196,7 +196,7 @@ fn strip_pasted_paths(text: &str, files: &[std::path::PathBuf]) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
-fn show_notification(
+pub(crate) fn show_notification(
     summary: String,
     body: String,
     sound: bool,
@@ -698,7 +698,10 @@ impl FluxChat {
                     } else {
                         Task::none()
                     };
+                    // An agent just started a thread on your request: open it.
+                    let follow = self.thread_to_follow(&room_id, &merged);
                     self.messages_by_room.insert(room_id.clone(), merged);
+                    let new_prompts = self.refresh_agent_state(&room_id);
                     let anchor_scroll = if capture_anchor {
                         self.read_anchor_pending = None;
                         self.capture_read_anchor(&room_id)
@@ -735,6 +738,10 @@ impl FluxChat {
                     if is_active {
                         tasks.push(self.update(Message::SendReadReceipt));
                     }
+                    if let Some(thread) = follow {
+                        tasks.push(self.open_at(thread, crate::panes::Placement::Auto));
+                    }
+                    self.announce_prompts(&room_id, &new_prompts);
                     if in_pane {
                         // No scroll here: the pane's list is anchored to the
                         // bottom, so it follows new messages while at the end
@@ -779,6 +786,7 @@ impl FluxChat {
                         } else {
                             "New message".into()
                         };
+                        self.agent_runs.notified.insert(n.event_id.clone());
                         show_notification(
                             format!("{} - {}", n.sender_name, n.room_name),
                             body,
@@ -1100,6 +1108,15 @@ impl FluxChat {
                 }
                 if self.input_text.trim().is_empty() {
                     return Task::none();
+                }
+                // With an agent here: its commands go to it as `!name`, and
+                // while it's working the busy mode applies (`!steer` / `!queue`).
+                if self.edit_event.is_none() {
+                    if let Some(text) = self.selected_room_id.as_deref()
+                        .and_then(|k| self.agent_outgoing(k, &self.input_text))
+                    {
+                        self.input_text = text;
+                    }
                 }
 
                 // Handle slash commands. `//foo` escapes to a literal `/foo` message.
@@ -1566,6 +1583,39 @@ impl FluxChat {
             Message::OpenThread(room_id, thread_root_id) => {
                 let key = fluxchat_core::timeline::thread_key(fluxchat_core::timeline::real_room_id(&room_id), &thread_root_id);
                 return self.open_at(key, crate::panes::Placement::Auto);
+            }
+            Message::SetAgent(user_id, on) => {
+                let mut p = self.prefs.clone();
+                p.agents.retain(|a| *a != user_id);
+                if on {
+                    p.agents.push(user_id);
+                }
+                let set = self.update(Message::SetPrefs(Box::new(p)));
+                // Run states depend on who the agents are.
+                let keys: Vec<String> = self.messages_by_room.keys().cloned().collect();
+                for k in keys {
+                    self.refresh_agent_state(&k);
+                }
+                return set;
+            }
+            Message::SetBusyMode(mode) => {
+                let mut p = self.prefs.clone();
+                p.agent_busy_mode = mode;
+                return self.update(Message::SetPrefs(Box::new(p)));
+            }
+            Message::AgentSend(key, text) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::timeline::send_text(&client, &core.timelines, &key, &text, None, false)
+                            .await.map_err(|e| e.to_string())
+                    },
+                    |r| match r {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Couldn't send: {e}")),
+                    },
+                );
             }
             Message::ListClick(key, plain) => {
                 // The release of a drag that ended back on its own row.
@@ -4965,7 +5015,12 @@ impl FluxChat {
     fn update_completions(&mut self, text: &str) {
         // Skip escaped `//` literal messages
         if text.starts_with('/') && !text.starts_with("//") && !text.contains(' ') {
-            self.cmd_completions = crate::commands::autocomplete_entries(text);
+            let agent_room = self.selected_room_id.as_deref().is_some_and(|k| self.agent_in(k).is_some());
+            self.cmd_completions = if agent_room {
+                crate::agents::completions(text)
+            } else {
+                crate::commands::autocomplete_entries(text)
+            };
             self.cmd_completion_idx = 0;
         } else {
             self.cmd_completions.clear();
@@ -5082,6 +5137,7 @@ impl FluxChat {
             self.messages_by_room.remove(key);
             self.members_by_room.remove(key);
             self.thread_counts.remove(key);
+            self.forget_agent_view(key);
         }
         let core = self.core.clone();
         Task::perform(

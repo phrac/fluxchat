@@ -171,6 +171,11 @@ impl FluxChat {
             badges = badges.push(ui::badge("Ignored", theme::colors().red));
             any_badge = true;
         }
+        let is_agent = self.prefs.agents.iter().any(|a| a == user_id);
+        if is_agent {
+            badges = badges.push(ui::badge("AI agent", theme::colors().accent));
+            any_badge = true;
+        }
         if any_badge {
             identity = identity.push(Space::new().height(4));
             identity = identity.push(badges);
@@ -225,6 +230,13 @@ impl FluxChat {
 
         // --- Footer ---
         if !is_self {
+            let uid = user_id.to_string();
+            body = body.push(ui::toggle_row(
+                "AI agent",
+                "Send it /commands, show its runs with a Stop button, and its approvals as buttons",
+                is_agent,
+                move |on| Message::SetAgent(uid.clone(), on),
+            ));
             body = body.push(ui::divider());
             let ignore = if is_ignored {
                 ui::icon_btn(crate::icons::SVG_EYE_OFF, "Unignore", Tone::Ghost, Some(Message::ToggleIgnoreUser(user_id.to_string())))

@@ -49,6 +49,12 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - tmux keys: Ctrl+B then `%` `"` `x` `z` `o` arrows `c` `n` `p` `0`–`9` `&`
 - Layout saved and restored on restart
 
+### AI agents
+- Mark a user as an AI agent (e.g. [Hermes Agent](https://github.com/NousResearch/hermes-agent)): its `/commands` autocomplete and go to it as `!commands`
+- Run state on each request and thread (working / needs you / done / failed), with new agent threads opening beside the room as they start
+- Run bar with Stop, and Send / Steer / Queue for messages sent while it works
+- Approvals and pickers as buttons, with a desktop notification when an agent is waiting on you
+
 ### Rooms & spaces
 - Room list grouped by space, favourites, unread and mention badges
 - Command palette (Ctrl/Cmd+K): jump to rooms or run actions (`>` for actions only)

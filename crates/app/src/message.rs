@@ -110,6 +110,12 @@ pub enum Message {
     /// Open a room or thread view (key) in a chosen place: right-click
     /// menus, middle-click, Cmd/Ctrl+click.
     OpenAt(String, crate::panes::Placement),
+    /// Mark / unmark a user as an AI agent.
+    SetAgent(String, bool),
+    /// Send this text to a view as is (agent controls: `!stop`).
+    AgentSend(String, String),
+    /// What a message sent while an agent is working does.
+    SetBusyMode(crate::agents::BusyMode),
     /// A click on a room / thread row: `OpenAt(key, Right)` with Cmd/Ctrl
     /// held, else the row's plain message.
     ListClick(String, Box<Message>),

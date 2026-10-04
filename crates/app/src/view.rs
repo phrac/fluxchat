@@ -330,6 +330,23 @@ impl FluxChat {
                 .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
             text(label).font(self.sidebar_font()).size(12).color(theme::colors().accent),
         ].spacing(6).align_y(iced::Alignment::Center);
+        // The agent's run in this thread: working / needs you / done / failed.
+        let run = self.run_state(&fluxchat_core::timeline::thread_key(
+            fluxchat_core::timeline::real_room_id(room_id), &msg.event_id));
+        if let Some(state) = run {
+            summary = summary.push(
+                container(row![
+                    crate::agents::state_dot(state, 6.0),
+                    text(state.label()).font(self.sidebar_font()).size(11).color(state.color()),
+                ].spacing(4).align_y(iced::Alignment::Center))
+                .padding([0, 6])
+                .style(move |_: &Theme| container::Style {
+                    background: Some(theme::with_alpha(state.color(), 0.12).into()),
+                    border: iced::Border { radius: 8.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            );
+        }
         if let Some(latest) = &msg.thread_latest {
             let preview: String = latest.body.lines().next().unwrap_or("").chars().take(80).collect();
             summary = summary
@@ -2204,6 +2221,8 @@ impl FluxChat {
         let is_selected = self.selected_room_id.as_deref() == Some(key.as_str());
         let on_screen = !is_selected && self.visible(&key);
         let lit = is_selected || on_screen;
+        // An agent's run in it, while that's worth a look (not once done).
+        let run = self.run_state(&key).filter(|s| s.active());
         let entry = button(
             row![
                 // Same left offset as the parent room's name: unread
@@ -2213,7 +2232,10 @@ impl FluxChat {
                 text(title).font(self.sidebar_font()).size(12)
                     .color(if lit { theme::colors().text_bright } else { theme::colors().text_muted })
                     .wrapping(iced::widget::text::Wrapping::None),
-            ].spacing(6).align_y(iced::Alignment::Center),
+                Space::new().width(Fill),
+            ]
+            .push(run.map(|s| crate::ui::with_tooltip(crate::agents::state_dot(s, 7.0), s.label())))
+            .spacing(6).align_y(iced::Alignment::Center),
         )
         .on_press(Message::ListClick(key, Box::new(Message::OpenThread(room_id.to_string(), root_id.to_string()))))
         .padding([3, 8])
@@ -2373,9 +2395,19 @@ impl FluxChat {
         // Collapse / expand this room's threads in the sidebar.
         let thread_count = self.room_threads.get(&room.room_id).map(|t| t.len()).unwrap_or(0);
         let has_threads = thread_count > 0;
-        // Call indicator
-        if self.rooms_with_calls.contains(&room.room_id) {
+        // Right-hand markers: an agent waiting for you, an active call.
+        let needs_you = self.room_needs_you(&room.room_id);
+        let in_call = self.rooms_with_calls.contains(&room.room_id);
+        if needs_you || in_call {
             row_content = row_content.push(Space::new().width(Fill));
+        }
+        if needs_you {
+            row_content = row_content.push(crate::ui::with_tooltip(
+                crate::agents::state_dot(crate::agents::RunState::NeedsYou, 7.0),
+                "An agent is waiting for your answer",
+            ));
+        }
+        if in_call {
             row_content = row_content.push(
                 iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
                     .width(12).height(12)

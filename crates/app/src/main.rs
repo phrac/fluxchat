@@ -4,6 +4,7 @@
 
 #![allow(mismatched_lifetime_syntaxes)]
 
+mod agents;
 mod anim;
 mod commands;
 mod dnd;

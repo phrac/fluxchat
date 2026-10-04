@@ -50,6 +50,14 @@ pub struct Prefs {
     pub echo_cancellation: bool,
     pub noise_suppression: bool,
     pub auto_gain: bool,
+
+    // --- AI agents (see agents.rs) ---
+    /// User IDs treated as AI agents (marked on their profile card).
+    pub agents: Vec<String>,
+    /// Open the thread an agent starts on your request as it starts.
+    pub follow_agent_threads: bool,
+    /// What a message sent while an agent is working does.
+    pub agent_busy_mode: crate::agents::BusyMode,
 }
 
 impl Prefs {
@@ -91,6 +99,9 @@ impl Default for Prefs {
             echo_cancellation: true,
             noise_suppression: true,
             auto_gain: true,
+            agents: Vec::new(),
+            follow_agent_threads: true,
+            agent_busy_mode: crate::agents::BusyMode::Send,
         }
     }
 }

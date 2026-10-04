@@ -670,9 +670,41 @@ impl FluxChat {
             ui::field("Show in the timeline", section(events)),
             ui::field("Composer", section(composer)),
             ui::field("Privacy", section(privacy)),
+            ui::field("AI agents", self.view_settings_agents()),
         ]
         .spacing(ui::GAP + 4.0)
         .into()
+    }
+
+    /// Who's an AI agent (marked on their profile card) and how their runs behave.
+    fn view_settings_agents(&self) -> Element<'_, Message> {
+        let p = &self.prefs;
+        let base = p.clone();
+        let mut col = column![
+            ui::toggle_row("Open agent threads as they start",
+                "When an agent starts a thread on your message in the room you're in, open it beside the room",
+                p.follow_agent_threads, move |v| {
+                    let mut p = base.clone();
+                    p.follow_agent_threads = v;
+                    Message::SetPrefs(Box::new(p))
+                }),
+            ui::divider(),
+        ]
+        .spacing(10);
+        if p.agents.is_empty() {
+            col = col.push(ui::hint("No agents yet. Open an agent's profile (click its name) and turn on \u{201c}AI agent\u{201d}: its commands, runs and approvals then get their own controls."));
+        } else {
+            for agent in &p.agents {
+                col = col.push(row![
+                    ui::icon(crate::icons::SVG_BOT, 14.0, theme::colors().text_dim),
+                    text(agent.as_str()).font(self.sidebar_font()).size(13).color(theme::colors().text_normal),
+                    Space::new().width(Fill),
+                    ui::btn("Remove", ui::Tone::Ghost, Some(Message::SetAgent(agent.clone(), false))),
+                ].spacing(8).align_y(iced::Alignment::Center));
+            }
+            col = col.push(ui::hint("In a room with an agent, its /commands go to it (as !command), a bar shows its run with Stop, and its approvals become buttons."));
+        }
+        ui::card(col).into()
     }
 
     fn view_settings_voice(&self) -> Element<Message> {

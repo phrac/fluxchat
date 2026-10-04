@@ -352,7 +352,8 @@ impl FluxChat {
             }
         };
 
-        container(column![body, composer].height(Fill))
+        let run_bar = self.view_run_bar(key, true);
+        container(column![body].push(run_bar).push(composer).height(Fill))
             .width(Fill)
             .height(Fill)
             .style(|_: &Theme| container::Style {

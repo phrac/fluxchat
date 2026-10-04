@@ -667,6 +667,9 @@ impl FluxChat {
                     return Some(Task::none());
                 }
                 *content = iced::widget::text_editor::Content::new();
+                if let Some(text) = self.agent_outgoing(&key, &body) {
+                    body = text;
+                }
                 if self.prefs.auto_replace_emoji {
                     body = crate::prefs::replace_emoticons(&body);
                 }

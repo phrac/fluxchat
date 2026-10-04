@@ -37,6 +37,11 @@ impl FluxChat {
             }
         }
 
+        // An agent working on this view's run: status, busy mode, Stop.
+        if let Some(bar) = self.view_run_bar(room_id, false) {
+            elements.push(bar);
+        }
+
         // Reply/edit preview bar
         if let Some((_, sender, body)) = &self.reply_to {
             elements.push(
@@ -299,6 +304,7 @@ impl FluxChat {
 
         // Command autocomplete popup
         if !self.cmd_completions.is_empty() {
+            let agent_room = self.agent_in(room_id).is_some();
             let mut popup_col = column![].spacing(0);
             for (i, (name, desc)) in self.cmd_completions.iter().take(12).enumerate() {
                 let is_selected = i == self.cmd_completion_idx;
@@ -319,7 +325,15 @@ impl FluxChat {
                                 .size(14)
                                 .color(theme::colors().text_dim),
                         ]
-                        .spacing(8),
+                        // Goes to the agent (sent as !name).
+                        .push(agent_room.then(|| crate::agents::is_agent_command(name)).filter(|a| *a).map(|_| {
+                            row![
+                                Space::new().width(Fill),
+                                crate::ui::icon(crate::icons::SVG_BOT, 13.0, theme::colors().text_dim),
+                            ]
+                        }))
+                        .spacing(8)
+                        .align_y(iced::Alignment::Center),
                     )
                     .on_press(Message::CompleteCommand(i))
                     .width(Fill)

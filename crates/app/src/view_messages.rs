@@ -1477,7 +1477,12 @@ impl FluxChat {
         ]
         .spacing(4);
 
-        for reaction in &msg.reactions {
+        // An agent's approval / picker: its seeded reactions become buttons.
+        let prompt = self.agent_prompt(msg);
+        let seeded: Vec<String> = prompt.iter().map(|(e, _)| e.clone()).collect();
+        let prompt_card = (!prompt.is_empty()).then(|| self.view_prompt_card(msg, prompt));
+
+        for reaction in msg.reactions.iter().filter(|r| !seeded.contains(&r.emoji)) {
             let event_id = msg.event_id.clone();
             let emoji = reaction.emoji.clone();
             let is_mine = reaction.users.iter().any(|u| u == &self.user_id);
@@ -1546,6 +1551,7 @@ impl FluxChat {
         for el in preview_elements {
             col = col.push(el);
         }
+        col = col.push(prompt_card);
         col = col.push(reactions_row);
 
         // Thread indicator rendered in view.rs message loop (using derived counts)

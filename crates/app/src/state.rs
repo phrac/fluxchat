@@ -300,6 +300,8 @@ pub struct FluxChat {
     pub help_text: Option<String>,
     pub modal: Option<Modal>,
 
+    /// Agent run states worked out from the loaded timelines (agents.rs).
+    pub agent_runs: crate::agents::AgentRuns,
     /// tmux-style windows, each a grid of panes (see `panes.rs`).
     pub windows: Vec<crate::panes::Window>,
     pub active_window: usize,
@@ -737,6 +739,7 @@ impl FluxChat {
             gif_searched: false,
             help_text: None,
             modal: None,
+            agent_runs: Default::default(),
             windows: vec![crate::panes::Window::new(None)],
             active_window: 0,
             tmux_prefix: false,

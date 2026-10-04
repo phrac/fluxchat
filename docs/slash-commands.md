@@ -1,6 +1,6 @@
 # Slash commands
 
-Type `/` in the message box for suggestions; **Tab** cycles through them. `/help [command]` lists commands or explains one. To send text that starts with `/`, start it with `//`.
+Type `/` in the message box for suggestions; **Tab** cycles through them. `/help [command]` lists commands or explains one. To send text that starts with `/`, start it with `//`. In a room with an [AI agent](agents.md), the agent's commands take over `/`: they autocomplete and are sent to it as `!command`.
 
 Commands marked *room* need a room open. Where a command takes `<user>`, you can use a display name (spaces are fine: `/kick Bob Smith spamming` kicks "Bob Smith" with the reason "spamming") or a full `@user:server` ID.
 
