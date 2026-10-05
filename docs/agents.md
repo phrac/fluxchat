@@ -98,7 +98,9 @@ A run that shows no sign of life for two hours while "working" (no new message o
 
 ## Approvals and choices
 
-When an agent asks for approval (a command it considers dangerous) or offers a choice (`/model`, `/reasoning`…), fluxchat shows the options as buttons on the message: **Approve once**, **For this session**, **Always**, **Deny**, or the options by name. Clicking one sends the reaction the agent waits for; it stays lit until the agent acts on it. This works for agents that offer choices as reactions on their own message (Hermes, the Claude Code channel) and for the [agent protocol](agent-protocol.md)'s `choices`. Prompts older than an hour show as ordinary reactions.
+When an agent asks for approval (a command it considers dangerous) or offers a choice (`/model`, `/reasoning`…), fluxchat shows the options as buttons on the message: **Approve once**, **For this session**, **Always**, **Deny**, or the options by name. Clicking one sends the reaction the agent waits for; it stays lit until the agent acts on it. This works for agents that offer choices as reactions on their own message (Hermes, the Claude Code channel) and for the [agent protocol](agent-protocol.md)'s `choices`. Prompts older than an hour show as ordinary reactions, and so do prompts that are over: the agent has posted after it (a status line like Hermes's "⏳ Working — 3 min" doesn't count), or it was edited to say so (Hermes's "⌛ Approval timed out…").
+
+Some agents ask questions as plain text and take your reply as the answer: Hermes's "❓ Which docs should I index?" with numbered options. While one is waiting (nobody has posted after it), the run shows **waiting on you**, you're notified, and the options appear as buttons under the question; a button sends its number, which is what the agent expects. You can also just type your answer. A question without options asks you to reply below.
 
 ## Your prompts
 
@@ -126,7 +128,7 @@ A harness profile tells fluxchat how one agent framework behaves on Matrix. Prof
 | Claude Code (Matrix channel) | — | typing | — | ✅ / ❌ on the permission prompt |
 | Generic agent | `/name` | typing | — | the agent protocol |
 
-Every field is optional; leave out what doesn't apply:
+Every field is optional; leave out what doesn't apply. A file with a built-in's `id` (like the copies fluxchat puts in the folder) only needs what you change: anything it leaves out comes from the built-in, so newer settings reach older copies.
 
 ```toml
 id = "my-harness"            # how agents refer to it
@@ -145,6 +147,8 @@ done_reaction = ""
 failed_reaction = ""
 typing_means_working = true  # the agent typing = working
 reply_in_thread = false      # answers in a thread on your request (outside DMs)
+question_prefix = ""         # text questions start with this ("❓"); answered by replying
+prompt_over_markers = []     # a prompt edited to start with one of these is over (["⌛"])
 
 progress_steps = true        # progress as "emoji step" lines
 runtime_footer = false       # "model · 42% · ~/dir" under answers

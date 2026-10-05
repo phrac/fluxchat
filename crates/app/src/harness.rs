@@ -72,6 +72,13 @@ pub struct Harness {
     pub progress_steps: bool,
     /// A `model · 42% · ~/dir` footer under final answers.
     pub runtime_footer: bool,
+    /// Questions it asks as text, answered by replying (Hermes's clarify:
+    /// "❓ question", then "  1. choice" lines): the marker they start with.
+    /// Empty = it doesn't.
+    pub question_prefix: String,
+    /// A reaction prompt edited to start with one of these is over, even with
+    /// its reactions still on (Hermes: "⌛ Approval timed out…").
+    pub prompt_over_markers: Vec<String>,
     /// Labels for the choices of its reaction prompts (others get generic
     /// labels or their line in the prompt).
     pub approvals: Vec<Choice>,
@@ -100,6 +107,8 @@ impl Default for Harness {
             reply_in_thread: false,
             progress_steps: true,
             runtime_footer: false,
+            question_prefix: String::new(),
+            prompt_over_markers: Vec::new(),
             approvals: Vec::new(),
             menu: Vec::new(),
             commands: Vec::new(),
@@ -124,6 +133,20 @@ fn parse(src: &str) -> Option<Harness> {
     toml::from_str::<Harness>(src).ok().filter(|h| !h.id.is_empty())
 }
 
+/// A profile from disk: with a built-in's id, what it leaves out comes from
+/// that built-in (copies seeded by older builds lack newer settings), not
+/// from the blank defaults.
+fn parse_over_built_in(src: &str) -> Option<Harness> {
+    let mut table: toml::Table = toml::from_str(src).ok()?;
+    let id = table.get("id")?.as_str()?.to_string();
+    if let Some(base) = BUILT_IN.iter().find_map(|(_, b)| toml::from_str::<toml::Table>(b).ok().filter(|t| t.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))) {
+        for (k, v) in base {
+            table.entry(k).or_insert(v);
+        }
+    }
+    table.try_into::<Harness>().ok().filter(|h| !h.id.is_empty())
+}
+
 fn built_in() -> Vec<Arc<Harness>> {
     BUILT_IN.iter().filter_map(|(_, src)| parse(src)).map(Arc::new).collect()
 }
@@ -146,7 +169,7 @@ pub fn discover() {
             .collect();
         files.sort();
         for path in files {
-            match std::fs::read_to_string(&path).ok().as_deref().and_then(parse) {
+            match std::fs::read_to_string(&path).ok().as_deref().and_then(parse_over_built_in) {
                 Some(h) => {
                     all.retain(|x| x.id != h.id);
                     all.push(Arc::new(h));
@@ -176,6 +199,21 @@ pub fn get(id: &str) -> Arc<Harness> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_copy_of_a_built_in_gets_its_newer_settings() {
+        // A hermes.toml seeded before `reply_in_thread` / `question_prefix`
+        // existed, with one setting the user changed.
+        let old = "id = \"hermes\"\nname = \"Hermes Agent\"\ncommand_prefix = \"!\"\nstop = \"halt\"\n";
+        let h = parse_over_built_in(old).unwrap();
+        assert_eq!(h.stop, "halt", "the user's change stays");
+        assert!(h.reply_in_thread);
+        assert_eq!(h.question_prefix, "\u{2753}");
+        assert_eq!(h.working_reaction, "\u{1f440}");
+        // A profile of your own: blank defaults, as before.
+        let mine = parse_over_built_in("id = \"mine\"\n").unwrap();
+        assert!(!mine.reply_in_thread && mine.question_prefix.is_empty());
+    }
 
     #[test]
     fn built_in_profiles_parse() {

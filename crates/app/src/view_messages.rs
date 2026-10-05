@@ -1589,7 +1589,7 @@ impl FluxChat {
         // An agent's approval / picker (its seeded reactions, or protocol
         // choices — which need no reactions) as buttons, and hand-offs
         // between agents: before the reactions, whether there are any.
-        let prompt = self.agent_prompt(msg);
+        let prompt = self.agent_prompt(view_key, msg);
         // Left out of the pills: a prompt's seeded choices (they're buttons)
         // and status reactions its thread row's chip already shows.
         let seeded: Vec<String> = prompt.iter().map(|(e, _)| e.clone())
@@ -1603,6 +1603,8 @@ impl FluxChat {
         }
         if !prompt.is_empty() {
             preview_elements.push(self.view_prompt_card(msg, prompt));
+        } else if let Some(choices) = self.agent_question(view_key, msg) {
+            preview_elements.push(self.view_question_card(view_key, choices));
         }
 
         // Reactions

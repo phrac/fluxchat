@@ -160,6 +160,53 @@ pub fn request_state(h: &Harness, msg: &MessageInfo, agent: &str) -> Option<RunS
     }
 }
 
+/// Whether the agent has posted anything after `msgs[i]` in this view: it
+/// waits while a prompt of its is open, so a later message means the prompt
+/// is over (answered, timed out — Hermes edits it but leaves its reactions —
+/// or dropped).
+/// Status lines don't count: Hermes's heartbeat ("⏳ Working — 3 min")
+/// runs on its own timer and can post while a prompt waits.
+fn moved_on(msgs: &[MessageInfo], i: usize, agent: &str) -> bool {
+    msgs.get(i + 1..).into_iter().flatten()
+        .any(|m| m.sender == agent && !m.event_id.starts_with('~') && m.row_kind == fluxchat_core::RowKind::Message
+            && progress_steps(&m.body).is_none())
+}
+
+/// Whether reaction prompt `msg` says it's over (harness `h`'s markers).
+fn marked_over(msg: &MessageInfo, h: &Harness) -> bool {
+    let body = msg.body.trim_start();
+    h.prompt_over_markers.iter().any(|p| !p.is_empty() && body.starts_with(p.as_str()))
+}
+
+/// The choices of a question the agent asked as text (harness `h`'s
+/// `question_prefix`; Hermes's clarify) that's still waiting: `msgs[i]` is
+/// it, and nobody has posted after it in this view. Its numbered lines
+/// ("  1. choice") are the choices, as (number, text); an open question has
+/// none. None = not a question, or not waiting any more.
+pub fn pending_question(msgs: &[MessageInfo], i: usize, agent: &str, h: &Harness, now_ms: u64) -> Option<Vec<(String, String)>> {
+    let msg = msgs.get(i)?;
+    let prefix = h.question_prefix.as_str();
+    if prefix.is_empty() || msg.sender != agent || !msg.body.trim_start().starts_with(prefix)
+        || now_ms.saturating_sub(sent_ms(msg)) > PROMPT_MAX_AGE_MS
+    {
+        return None;
+    }
+    // Answered (your reply), expired or superseded (the agent's next message).
+    // (Your answer counts while it's still sending.)
+    if msgs[i + 1..].iter().any(|m| !m.event_id.starts_with('~') && m.row_kind == fluxchat_core::RowKind::Message
+        && (m.sender != agent || progress_steps(&m.body).is_none()))
+    {
+        return None;
+    }
+    Some(msg.body.lines()
+        .filter_map(|l| {
+            let (n, rest) = l.trim().split_once(". ")?;
+            (!n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && !rest.trim().is_empty())
+                .then(|| (n.to_string(), rest.trim().to_string()))
+        })
+        .collect())
+}
+
 /// The choices of a prompt still waiting for an answer: the emoji its
 /// sender reacted to it with, labelled. Empty when it isn't a prompt, it's
 /// been resolved, or it's too old to still be live (`now_ms`).
@@ -643,12 +690,13 @@ impl FluxChat {
     /// the thread's run bar shows (thread view), to leave out of the pills.
     /// Only ones the agent alone reacted with.
     pub(crate) fn status_reactions_hidden(&self, view_key: &str, msg: &MessageInfo) -> Vec<String> {
-        if msg.sender != self.user_id || msg.thread_root.is_some() {
+        if msg.sender != self.user_id {
             return Vec::new();
         }
-        // In the thread: the run bar says "working" while it is.
+        // In the thread: the run bar says it while the run is live.
         if let Some((_, root)) = parse_thread_key(view_key) {
-            let Some(run) = self.live_run(view_key).filter(|r| root == msg.event_id && r.state == RunState::Working) else {
+            // The request the bar is about: the root, or a later message of yours.
+            let Some(run) = self.live_run(view_key).filter(|r| root == msg.event_id || sent_ms(msg) == r.since) else {
                 return Vec::new();
             };
             let working = self.harness_of(&run.agent).working_reaction.clone();
@@ -656,6 +704,9 @@ impl FluxChat {
                 .filter(|r| !working.is_empty() && r.emoji == working && r.users.len() == 1 && r.users[0] == run.agent)
                 .map(|r| r.emoji.clone())
                 .collect();
+        }
+        if msg.thread_root.is_some() {
+            return Vec::new();
         }
         let replies = self.thread_counts.get(view_key).and_then(|c| c.get(&msg.event_id)).copied().unwrap_or(0)
             .max(msg.thread_count.unwrap_or(0));
@@ -687,7 +738,7 @@ impl FluxChat {
     }
 
     /// The prompt choices to offer on `msg` (only from an agent).
-    pub(crate) fn agent_prompt(&self, msg: &MessageInfo) -> Vec<(String, String)> {
+    pub(crate) fn agent_prompt(&self, key: &str, msg: &MessageInfo) -> Vec<(String, String)> {
         if !self.prefs.agents.contains(&msg.sender) {
             return Vec::new();
         }
@@ -699,7 +750,30 @@ impl FluxChat {
                 Vec::new()
             };
         }
-        prompt_choices(msg, now_ms(), &self.harness_of(&msg.sender).approvals)
+        // Over once the agent has posted after it in this view.
+        let over = self.messages_by_room.get(key)
+            .and_then(|msgs| msgs.iter().rposition(|m| m.event_id == msg.event_id).map(|i| moved_on(msgs, i, &msg.sender)))
+            .unwrap_or(false);
+        let h = self.harness_of(&msg.sender);
+        if over || marked_over(msg, &h) {
+            return Vec::new();
+        }
+        prompt_choices(msg, now_ms(), &h.approvals)
+    }
+
+    /// A question `msg` asks as text that's still waiting in view `key`:
+    /// its numbered choices (empty = answer in your own words).
+    pub(crate) fn agent_question(&self, key: &str, msg: &MessageInfo) -> Option<Vec<(String, String)>> {
+        if !self.prefs.agents.contains(&msg.sender) {
+            return None;
+        }
+        let h = self.harness_of(&msg.sender);
+        if h.question_prefix.is_empty() {
+            return None;
+        }
+        let msgs = self.messages_by_room.get(key)?;
+        let i = msgs.iter().rposition(|m| m.event_id == msg.event_id)?;
+        pending_question(msgs, i, &msg.sender, &h, now_ms())
     }
 
     /// What to send for typed `text` in view `key` when an agent is there:
@@ -903,8 +977,11 @@ impl FluxChat {
         let now = now_ms();
         let protocol_prompt = |m: &MessageInfo| Protocol::of(m)
             .is_some_and(|p| !p.choices.is_empty() && p.run_state() == Some(RunState::NeedsYou));
-        let prompts: Vec<&MessageInfo> = msgs.iter()
-            .filter(|m| m.sender == agent && (protocol_prompt(m) || !prompt_choices(m, now, &h.approvals).is_empty()))
+        let prompts: Vec<&MessageInfo> = msgs.iter().enumerate()
+            .filter(|(i, m)| m.sender == agent && (protocol_prompt(m)
+                || (!prompt_choices(m, now, &h.approvals).is_empty() && !moved_on(msgs, *i, &agent) && !marked_over(m, h))
+                || pending_question(msgs, *i, &agent, h, now).is_some()))
+            .map(|(_, m)| m)
             .collect();
         let fresh: Vec<String> = prompts.iter()
             .filter(|m| !self.agent_runs.announced.contains(&m.event_id))
@@ -1032,9 +1109,15 @@ impl FluxChat {
             let room_name = self.rooms.iter().find(|r| r.room_id == room).map(|r| r.name.clone()).unwrap_or_default();
             // Answer from the notification: its choices (as reactions in this
             // view), and Stop when the agent's harness has one.
-            let mut actions: Vec<(String, Message)> = self.agent_prompt(m).into_iter().take(3)
-                .map(|(emoji, label)| (format!("{emoji} {label}"), Message::AgentReact(key.to_string(), id.clone(), emoji)))
-                .collect();
+            let mut actions: Vec<(String, Message)> = match self.agent_question(key, m) {
+                // A question: answering is replying with the choice's number.
+                Some(choices) => choices.into_iter().take(3)
+                    .map(|(n, label)| (format!("{n}. {label}"), Message::AgentSend(key.to_string(), n)))
+                    .collect(),
+                None => self.agent_prompt(key, m).into_iter().take(3)
+                    .map(|(emoji, label)| (format!("{emoji} {label}"), Message::AgentReact(key.to_string(), id.clone(), emoji)))
+                    .collect(),
+            };
             if let Some(stop) = self.agent_command_text(key, &self.harness_of(&m.sender).stop) {
                 actions.push(("Stop".into(), Message::AgentSend(key.to_string(), stop)));
             }
@@ -1867,6 +1950,48 @@ impl FluxChat {
 
     /// An agent's approval / picker prompt as buttons (each sends its
     /// reaction). The one you picked stays lit until the agent resolves it.
+    /// A question the agent asked as text, still waiting: a button per
+    /// numbered choice (sends its number into the view, as the agent
+    /// expects), or — an open question — a note to answer below.
+    pub(crate) fn view_question_card<'a>(&self, view_key: &str, choices: Vec<(String, String)>) -> Element<'a, Message> {
+        let colors = crate::theme::colors();
+        let status = if choices.is_empty() { "Waiting for your answer: reply below" } else { "Waiting for you: pick one, or reply in your own words" };
+        let mut col = iced::widget::column![
+            row![
+                state_dot(RunState::NeedsYou, 7.0),
+                text(status).font(self.sidebar_font()).size(11).color(colors.text_dim),
+            ].spacing(6).align_y(Alignment::Center),
+        ].spacing(4);
+        for (n, label) in choices {
+            col = col.push(
+                button(row![
+                    text(format!("{n}.")).font(self.sidebar_font()).size(12).color(colors.accent),
+                    text(crate::view::ellipsize(&label, 90)).font(self.sidebar_font()).size(12)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                ].spacing(8).align_y(Alignment::Center))
+                .on_press(Message::AgentSend(view_key.to_string(), n))
+                .padding([4, 10])
+                .style(ui::button_style(Tone::Secondary)),
+            );
+        }
+        row![
+            Space::new().width(iced::Length::Fixed(self.msg_content_indent())),
+            container(col)
+                .padding([8, 10])
+                .clip(true)
+                .style(|_: &Theme| container::Style {
+                    background: Some(crate::theme::with_alpha(crate::theme::colors().yellow, 0.06).into()),
+                    border: iced::Border {
+                        color: crate::theme::with_alpha(crate::theme::colors().yellow, 0.3),
+                        width: 1.0,
+                        radius: ui::RADIUS.into(),
+                    },
+                    ..Default::default()
+                }),
+        ]
+        .into()
+    }
+
     pub(crate) fn view_prompt_card<'a>(&self, msg: &'a MessageInfo, choices: Vec<(String, String)>) -> Element<'a, Message> {
         let picked = |emoji: &str| msg.reactions.iter()
             .any(|r| r.emoji == emoji && r.users.contains(&self.user_id));
@@ -2100,6 +2225,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_approval_is_over_when_it_times_out_or_the_agent_moves_on() {
+        let mut app = agent_app();
+        let now = now_ms();
+        let tk = thread_key("!r:x", "$root");
+        let mut root = msg("$root", "@me:x", now - 300_000);
+        root.reactions = vec![react(WORKING, &["@bot:x"])];
+        let mut prompt = msg("$p", "@bot:x", now - 200_000);
+        prompt.thread_root = Some("$root".into());
+        prompt.body = "\u{26a0}\u{fe0f} Dangerous command\n`curl …`".into();
+        prompt.reactions = vec![react("\u{2705}", &["@bot:x", "@me:x"]), react("\u{1f300}", &["@bot:x"]), react("\u{274c}", &["@bot:x"])];
+        let mut beat = msg("$beat", "@bot:x", now - 100_000);
+        beat.thread_root = Some("$root".into());
+        beat.body = "\u{23f3} Working \u{2014} 3 min \u{2014} iteration 3/150, receiving stream response".into();
+        // Its heartbeat runs on a timer: still waiting.
+        app.messages_by_room.insert(tk.clone(), vec![root.clone(), prompt.clone(), beat.clone()]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::NeedsYou));
+        assert!(!app.agent_prompt(&tk, &prompt).is_empty());
+        // Timed out: Hermes edits it, reactions stay.
+        let mut timed_out = prompt.clone();
+        timed_out.body = "\u{231b} Approval timed out after 1 minute \u{2014} the command was NOT run.".into();
+        app.messages_by_room.insert(tk.clone(), vec![root.clone(), timed_out.clone(), beat.clone()]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Working));
+        assert!(app.agent_prompt(&tk, &timed_out).is_empty(), "no buttons");
+        // Not edited, but it carried on talking: over too.
+        let mut said = msg("$said", "@bot:x", now - 50_000);
+        said.thread_root = Some("$root".into());
+        said.body = "Let me pull the most relevant thread.".into();
+        app.messages_by_room.insert(tk.clone(), vec![root, prompt.clone(), beat, said]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Working));
+        assert!(app.agent_prompt(&tk, &prompt).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_question_asked_as_text_waits_on_you_until_you_reply() {
+        let mut app = agent_app();
+        let now = now_ms();
+        let tk = thread_key("!r:x", "$root");
+        let mut root = msg("$root", "@me:x", now - 120_000);
+        root.reactions = vec![react(DONE, &["@bot:x"])];
+        let mut ask = msg("$ask", "@me:x", now - 30_000);
+        ask.thread_root = Some("$root".into());
+        ask.reactions = vec![react(WORKING, &["@bot:x"])];
+        let mut q = msg("$q", "@bot:x", now - 20_000);
+        q.thread_root = Some("$root".into());
+        q.body = "\u{2753} Which docs should I index into Hindsight now?\n\nReply \"skip\" to skip this question.\n\n  \
+                  1. All of them in attachments/ (Recommended)\n  2. Just specific ones\n  3. Going forward only\n\n\
+                  Reply with the number, the option text, or your own answer.".into();
+        app.messages_by_room.insert(tk.clone(), vec![root.clone(), ask.clone(), q.clone()]);
+        let fresh = app.refresh_agent_state(&tk);
+        assert_eq!(fresh, vec!["$q".to_string()], "announced");
+        assert_eq!(app.run_state(&tk), Some(RunState::NeedsYou));
+        let choices = app.agent_question(&tk, &q).unwrap();
+        assert_eq!(choices.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
+        assert_eq!(choices[1].1, "Just specific ones");
+        // The bar says it: the 👀 on the request it's about isn't a pill.
+        assert_eq!(app.status_reactions_hidden(&tk, &ask), vec![WORKING.to_string()]);
+        // You answer (still sending counts): working again, no buttons.
+        let mut answer = msg("$a", "@me:x", now);
+        answer.thread_root = Some("$root".into());
+        answer.body = "1".into();
+        app.messages_by_room.insert(tk.clone(), vec![root, ask, q.clone(), answer]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Working));
+        assert_eq!(app.agent_question(&tk, &q), None);
+    }
+
+    #[tokio::test]
     async fn a_run_that_went_quiet_for_hours_is_stalled_not_working() {
         let mut app = agent_app();
         let now = now_ms();
@@ -2273,12 +2468,12 @@ mod tests {
         let mut prompt = msg("$p", "@bot:x", now);
         prompt.agent = Some(serde_json::json!({"run": "$ask", "state": "waiting",
             "choices": [{"key": "👍", "label": "Ship it"}, {"key": "👎", "label": "Not yet"}]}));
-        assert_eq!(app.agent_prompt(&prompt), vec![("👍".to_string(), "Ship it".to_string()), ("👎".to_string(), "Not yet".to_string())]);
+        assert_eq!(app.agent_prompt("!r:x", &prompt), vec![("👍".to_string(), "Ship it".to_string()), ("👎".to_string(), "Not yet".to_string())]);
         app.messages_by_room.insert(tk.clone(), vec![ask.clone(), status.clone(), prompt.clone()]);
         app.refresh_agent_state(&tk);
         assert_eq!(app.run_state(&tk), Some(RunState::NeedsYou));
         prompt.agent = Some(serde_json::json!({"run": "$ask", "state": "working", "choices": [{"key": "👍", "label": "Ship it"}]}));
-        assert!(app.agent_prompt(&prompt).is_empty());
+        assert!(app.agent_prompt("!r:x", &prompt).is_empty());
         // Answered, then the status message is edited to done: the run is
         // done, though the prompt (sent later) still says "working".
         status.agent = Some(serde_json::json!({"run": "$ask", "state": "done", "steps": 3}));

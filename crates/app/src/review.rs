@@ -113,7 +113,7 @@ impl FluxChat {
         let sender = &msgs[at].sender;
         msgs[at..].iter().rev()
             .filter(|m| m.sender == *sender)
-            .find_map(|m| Some(m.event_id.clone()).zip(Some(self.agent_prompt(m)).filter(|c| !c.is_empty())))
+            .find_map(|m| Some(m.event_id.clone()).zip(Some(self.agent_prompt(&r.view_key, m)).filter(|c| !c.is_empty())))
     }
 
     /// Approve / request changes: answer the agent's prompt if it has one

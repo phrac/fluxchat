@@ -25,6 +25,13 @@ progress_steps = true
 # `/footer on`: "model · 42% · ~/dir" under final answers.
 runtime_footer = true
 
+# Its clarify tool, as text on Matrix: "❓ question", "  1. choice" lines;
+# you answer by replying with the number or your own words.
+question_prefix = "❓"
+
+# A timed-out approval is edited to "⌛ Approval timed out…" (reactions stay).
+prompt_over_markers = ["⌛"]
+
 # Approvals: the bot reacts to its own prompt with these; you react to answer.
 approvals = [
   { emoji = "✅", label = "Approve once" },
