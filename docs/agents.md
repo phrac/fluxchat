@@ -54,8 +54,22 @@ While the agent works on the thread (or room) you're looking at, a bar above the
 
 ### Notifications
 
-- When an agent asks for approval or a choice, you're notified even with *mentions only* on, unless you're looking at the room.
+- When an agent asks for approval or a choice, you're notified even with *mentions only* on, unless you're looking at the room. On Linux and macOS the notification has the choices as buttons (and **Stop**), so you can answer without opening fluxchat.
 - When a run of 30 seconds or more finishes (or fails), you're notified unless you're looking at it. Turn this off in **Settings → Preferences → AI agents → Notify when a run finishes**; the 🔔 still works for runs you pick.
+
+## Several agents in a room
+
+A room can have more than one agent: a researcher, a coder and a reviewer, say. fluxchat follows each one's runs separately, and the room header shows a chip per agent with its own state.
+
+- **Who you're talking to** is outlined in the header and picked in the **To** switch above the message box: commands (`/stop`…) and the run controls go to that agent, the way its harness expects. By default it's the agent on the run you're looking at, else the one that spoke last. Click an agent's chip to talk to it (and open its menu).
+- **Hand-offs:** when one agent's message addresses another ("@coder can you take the tests?"), the message shows **researcher handed off to coder**. Click it to talk to the one it went to.
+
+## Review what agents change
+
+When an agent posts a diff (a `git diff` in a code block, or a `.diff` / `.patch` file), the message gets a **Review changes · 3 files +40 −12** button. It opens a review: the changed files on the left, each file's diff with old and new line numbers on the right, additions and deletions coloured.
+
+- If the agent is waiting on an approval for it, the review shows that prompt's choices (**Approve once**, **Deny**…), and picking one answers the prompt.
+- Otherwise **Approve** and **Request changes** reply in the thread, with your comment if you wrote one.
 
 ## The task board
 
@@ -64,6 +78,8 @@ In a room with an agent, the **Threads** panel (header button) becomes **Runs**:
 ## All your runs
 
 **Agent runs** (the status bar's run count, the agent chip menu, or the palette) lists every run across your rooms: waiting on you, working, then the last few hours' finished ones, with the room and current step. Click one to open it.
+
+Type in the search box to find runs by title, room or agent. Under **History** are the runs fluxchat saw happen, newest first, with how long they took, and the model and cost at the end when the agent reports them. The ⬇ button on any run exports its thread as a Markdown transcript (with the run's details at the top). The history is kept encrypted on this computer.
 
 **Watch in a window** opens a new window tiling the active runs, one pane each. It follows: runs that start later get a pane in it too (up to six). Use it as a dashboard on a second screen, or switch to it with **Ctrl+B n**.
 
@@ -83,6 +99,12 @@ When an agent asks for approval (a command it considers dangerous) or offers a c
 
 - **Ctrl+R** searches what you've sent (the palette in `<` mode): pick one to put it back in the message box.
 - `/snippet <name> <text>` saves a prompt you use often; it shows first in Ctrl+R. `/snippet` lists them, `/unsnippet <name>` removes one.
+
+Your history and snippets are kept encrypted on this computer, like the media cache.
+
+## Spotting agents
+
+If someone in a room acts like an agent you haven't marked (they react 👀 / ✅ to several of your messages, post prompts they react to themselves, post step logs or agent-protocol fields), a bar above the message box says **… looks like an AI agent (Hermes Agent)** with the harness it matches. **Mark as agent** marks it with that harness; **It isn't** stops the suggestion for that person.
 
 ## Voice
 

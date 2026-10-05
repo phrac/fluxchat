@@ -27,10 +27,13 @@ fluxchat reads what agents are doing and gives you controls for it. Mark a user 
 - The **current step** ("📖 Reading notes.md"), a step count and the time so far; a filled progress bar when the agent says how far along it is.
 - **Run state** on every request and thread (working / needs you / done / failed), with dots in the room list and **2 running · 1 waiting** in the status bar.
 - A **task board**: an agent room's threads as runs, active ones first.
+- **Several agents in one room**, each with its own state, and hand-offs between them you can follow.
+- **Run history**: duration, model and cost per run, searchable, exportable as a transcript.
 - **All your runs** across rooms in one dialog, and a **watch window** that tiles active runs and adds new ones as they start.
 
 **Stay in control**
-- **Stop** a run from the run bar or the header menu.
+- **Stop** a run from the run bar, the header menu, or the notification.
+- **Review what it changes:** a coding agent's diff opens as files with numbered, coloured lines; approve or request changes.
 - **Steer** it mid-run or **queue** the next task, instead of interrupting.
 - **Approvals and pickers as buttons**, with a desktop notification when an agent is blocked on you.
 - **Get told when a run finishes**: automatically for long runs, or with the 🔔 for any run.
@@ -50,13 +53,12 @@ See [AI agents](docs/agents.md) in the manual.
 
 ### Where it's going
 
-We think the chat client is becoming the cockpit for agents. Next:
+We think the chat client is becoming the cockpit for agents. Where things stand:
 
-- **The protocol, upstream.** Small emitters for Python and TypeScript, support in the harnesses themselves, and a Matrix spec proposal, so run state stops being inferred anywhere.
-- **Rooms with several agents.** Per-agent state when a researcher, a coder and a reviewer share a room, with hand-offs you can follow and step into.
-- **Review what agents change.** A diff viewer for coding agents' patches, with approve / reject in place.
-- **Run history.** Duration and cost per run, search across runs, and a run's transcript exported as a report.
-- **Answer from anywhere.** Approve or stop from the desktop notification itself; harness detection that suggests the right profile when an agent first reacts to you.
+- **The protocol, upstream.** Emitters for [Python and TypeScript](sdk) are here; a [Hermes Agent patch](integrations/hermes) is ready to propose, and a [Matrix spec proposal](docs/msc/agent-status.md) is drafted. Next: send them, publish the emitters to PyPI / npm, report progress from Hermes's gateway too, and an OpenClaw plugin, so run state stops being inferred anywhere.
+- **Teams of agents.** Rooms with several agents work today (per-agent state, who you're talking to, hand-offs). Next: sending one task to several agents and comparing their answers side by side.
+- **Budgets.** Cost per run is recorded; next is a spend limit per agent with a warning before it's reached.
+- **Search inside runs.** History searches titles, rooms and agents; next is full-text search across transcripts.
 
 Ideas and pull requests are welcome.
 
@@ -81,7 +83,12 @@ Ideas and pull requests are welcome.
 - Approvals and pickers as buttons; notifications when an agent waits on you or a long run finishes
 - New agent threads open beside the room as they start
 - Step logs and long answers folded; runtime footers moved to the chip and status bar
-- Prompt history (Ctrl+R) and snippets (`/snippet`)
+- Prompt history (Ctrl+R) and snippets (`/snippet`), kept encrypted
+- Rooms with several agents: a chip each, who you're talking to, hand-offs you can follow
+- Review an agent's diff (code block or `.patch`): files, numbered coloured lines, approve or request changes
+- Run history with duration, model and cost; search; export a run as a Markdown transcript
+- Answer approvals or stop a run from the desktop notification (Linux, macOS)
+- Spots agents you haven't marked and suggests the right harness
 
 ### Messaging
 - Markdown, code blocks with syntax highlighting and a copy button, highlighted diffs, inline LaTeX

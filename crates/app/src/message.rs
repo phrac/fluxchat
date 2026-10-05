@@ -112,6 +112,25 @@ pub enum Message {
     OpenAt(String, crate::panes::Placement),
     /// Mark / unmark a user as an AI agent.
     SetAgent(String, bool),
+    /// Don't suggest this user as an agent again.
+    NotAnAgent(String),
+    /// React in a given view (an answer from a notification: no view to
+    /// select). (view key, event ID, emoji)
+    AgentReact(String, String, String),
+    /// Runs dialog search text.
+    RunsQuery(String),
+    /// Save a run's thread as a Markdown transcript (view key).
+    ExportRun(String),
+    /// Review the diffs in a message (view key, event ID).
+    OpenReview(String, String),
+    /// A patch file for the open review, downloaded (event ID, text).
+    ReviewLoaded(String, String),
+    ReviewSelectFile(usize),
+    ReviewComment(String),
+    /// Approve (true) / request changes (false).
+    ReviewFinish(bool),
+    /// In a room with several agents: talk to this one (room ID, agent).
+    SetAgentTarget(String, String),
     /// Which harness profile runs this agent (user ID, profile id).
     SetAgentHarness(String, String),
     /// Send this text to a view as is (agent controls: `!stop`).

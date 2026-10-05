@@ -82,6 +82,8 @@ pub enum Modal {
     Gallery,
     /// Every agent run across rooms (agents.rs).
     Runs,
+    /// Reviewing an agent's changes (review.rs; state in `FluxChat::review`).
+    Review,
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
     Invite,
     Report { event_id: String, room_id: String },
@@ -310,6 +312,14 @@ pub struct FluxChat {
 
     /// Agent run states worked out from the loaded timelines (agents.rs).
     pub agent_runs: crate::agents::AgentRuns,
+    /// Agent runs seen live, oldest first (history.rs; encrypted).
+    pub run_history: Vec<crate::history::RunRecord>,
+    /// Runs dialog search.
+    pub runs_query: String,
+    /// A run whose transcript is to be exported once its thread loads.
+    pub pending_export: Option<String>,
+    /// The diff being reviewed (review.rs).
+    pub review: Option<crate::review::Review>,
     /// What you've sent, oldest first (prompts.rs; Ctrl+R).
     pub prompt_history: Vec<String>,
     /// Saved prompts: (name, text), by name (`/snippet`).
@@ -758,6 +768,10 @@ impl FluxChat {
             gif_searched: false,
             help_text: None,
             modal: None,
+            run_history: Vec::new(),
+            runs_query: String::new(),
+            pending_export: None,
+            review: None,
             prompt_history: Vec::new(),
             snippets: Vec::new(),
             ptt_held: None,

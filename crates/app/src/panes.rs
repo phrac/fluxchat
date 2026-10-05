@@ -799,6 +799,7 @@ pub fn in_view(key: &str, message: Message) -> Message {
         | Message::OpenThread(..)
         | Message::OpenAt(..)
         | Message::ListClick(..)
+        | Message::OpenReview(..)
         | Message::OpenContextMenu(..)
         | Message::OpenModal(..) => Message::InView(key.to_string(), Box::new(message)),
         other => other,

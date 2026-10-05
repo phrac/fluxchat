@@ -40,3 +40,5 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+# Notification action buttons (notify-rust's macOS backend has none; it uses this underneath).
+mac-notification-sys = "0.6"

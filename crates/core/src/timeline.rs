@@ -499,17 +499,20 @@ pub fn timeline_item_to_message_info(item: &TimelineItem) -> Option<MessageInfo>
 /// `m.new_content` first), if it has one. Only events that mention the key
 /// are parsed.
 fn agent_meta(ev: &EventTimelineItem) -> Option<serde_json::Value> {
-    const KEY: &str = "org.fluxchat.agent";
+    // Unstable key, then the stable one the spec proposal would give it.
+    const KEYS: [&str; 2] = ["org.fluxchat.agent", "m.agent"];
     let from = |raw: &str| -> Option<serde_json::Value> {
-        if !raw.contains(KEY) {
+        if !KEYS.iter().any(|k| raw.contains(k)) {
             return None;
         }
         let val: serde_json::Value = serde_json::from_str(raw).ok()?;
         let content = val.get("content")?;
-        content.get("m.new_content").and_then(|c| c.get(KEY))
-            .or_else(|| content.get(KEY))
-            .filter(|v| v.is_object())
-            .cloned()
+        KEYS.iter().find_map(|key| {
+            content.get("m.new_content").and_then(|c| c.get(*key))
+                .or_else(|| content.get(*key))
+                .filter(|v| v.is_object())
+                .cloned()
+        })
     };
     ev.latest_json().and_then(|r| from(r.json().get()))
         .or_else(|| ev.original_json().and_then(|r| from(r.json().get())))

@@ -7,3 +7,6 @@ src-tauri/gen/
 .DS_Store
 FluxChat.app/Contents/MacOS/
 FluxChat.app/Contents/Resources/
+__pycache__/
+*.pyc
+*.egg-info/

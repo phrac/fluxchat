@@ -2487,6 +2487,7 @@ dependencies = [
  "image 0.25.10",
  "image-webp",
  "libc",
+ "mac-notification-sys",
  "markup5ever 0.35.0",
  "matrix-sdk",
  "notify-rust",

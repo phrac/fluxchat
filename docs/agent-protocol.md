@@ -94,4 +94,16 @@ When an agent's messages carry these fields, fluxchat uses them ahead of what it
 - `choices` on a `waiting` message become buttons, and you get a desktop notification;
 - runs that go from `working` to `done` / `failed` can notify you.
 
-Without the fields, fluxchat falls back to the agent's [harness profile](agents.md#harness-profiles): Hermes's reactions, OpenClaw's typing, and so on.
+Without the fields, fluxchat falls back to the agent's [harness profile](agents.md#harness-profiles): Hermes's reactions, OpenClaw's typing, and so on. It reads the stable key `m.agent` too, for when the spec proposal is accepted.
+
+## Libraries
+
+[`sdk/`](../sdk) has small emitters for **Python** and **TypeScript**, with no Matrix SDK dependency: `Run(send, request_event_id)` with `start`, `step`, `ask` / `answered`, `done`, `failed`, plus helpers to build raw content and to match reactions to choices.
+
+## In agent frameworks
+
+- **Hermes Agent:** [`integrations/hermes/`](../integrations/hermes) has a patch for its Matrix adapter that sends approval prompts with `choices` and settles them when answered, passing Hermes's own tests. It's ready to propose upstream.
+
+## Toward a Matrix spec
+
+[`msc/agent-status.md`](msc/agent-status.md) is a draft spec proposal (MSC) for these fields, written for submission to the Matrix spec process.

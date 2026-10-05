@@ -205,6 +205,83 @@ const PDF_PREVIEW_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// Width PDF first pages are rendered at (shown smaller).
 const PDF_PREVIEW_WIDTH: u32 = 560;
 
+/// A desktop notification with buttons (an agent waiting on you): clicking
+/// one sends its message, clicking the notification opens `room`. Linux
+/// (freedesktop) and macOS show the buttons; elsewhere it's a plain one.
+pub(crate) fn show_actionable_notification(
+    summary: String,
+    body: String,
+    sound: bool,
+    actions: Vec<(String, Message)>,
+    tx: crate::state::TimelineUpdateTx,
+    room: String,
+) {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let mut n = notify_rust::Notification::new();
+            n.summary(&summary).body(&body).timeout(notify_rust::Timeout::Never);
+            if sound {
+                n.sound_name("message-new-instant");
+            }
+            n.action("default", "Open");
+            for (i, (label, _)) in actions.iter().enumerate() {
+                n.action(&format!("a{i}"), label);
+            }
+            match n.show() {
+                Ok(handle) => handle.wait_for_action(|action| {
+                    let msg = match action {
+                        "default" => Some(Message::NotificationClicked(room.clone())),
+                        a => a.strip_prefix('a').and_then(|i| i.parse::<usize>().ok())
+                            .and_then(|i| actions.get(i)).map(|(_, m)| m.clone()),
+                    };
+                    if let Some(m) = msg {
+                        let _ = tx.send(m);
+                    }
+                }),
+                Err(e) => tracing::debug!("Desktop notification failed: {e}"),
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use mac_notification_sys::{MainButton, Notification, NotificationResponse};
+            let labels: Vec<&str> = actions.iter().map(|(l, _)| l.as_str()).collect();
+            let mut n = Notification::default();
+            n.title(&summary).message(&body).wait_for_click(true);
+            if sound {
+                n.sound("default");
+            }
+            match labels.as_slice() {
+                [] => {}
+                [one] => { n.main_button(MainButton::SingleAction(one)); }
+                many => { n.main_button(MainButton::DropdownActions("Answer", many)); }
+            }
+            n.close_button("Later");
+            match n.send() {
+                Ok(NotificationResponse::ActionButton(label)) => {
+                    if let Some((_, m)) = actions.iter().find(|(l, _)| *l == label) {
+                        let _ = tx.send(m.clone());
+                    }
+                }
+                Ok(NotificationResponse::Click) => {
+                    let _ = tx.send(Message::NotificationClicked(room));
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("Desktop notification failed: {e}"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (actions, tx, room, sound);
+            let mut n = notify_rust::Notification::new();
+            n.summary(&summary).body(&body);
+            if let Err(e) = n.show() {
+                tracing::debug!("Desktop notification failed: {e}");
+            }
+        }
+    });
+}
+
 pub(crate) fn show_notification(
     summary: String,
     body: String,
@@ -482,6 +559,9 @@ impl FluxChat {
                 let ignored = self.load_ignored_users();
                 let media = self.load_media_previews();
                 let agents = self.watch_agent_rooms();
+                // Encrypted, so readable now that we're signed in.
+                self.load_prompts();
+                self.load_run_history();
                 return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media, agents]);
             }
             // --- Sync events ---
@@ -755,6 +835,7 @@ impl FluxChat {
                     }
                     self.announce_prompts(&room_id, &new_prompts);
                     self.announce_finished();
+                    tasks.push(self.export_if_pending(&room_id));
                     tasks.push(self.follow_started_runs());
                     if in_pane {
                         // No scroll here: the pane's list is anchored to the
@@ -1639,6 +1720,54 @@ impl FluxChat {
                 if !self.expanded_agent.remove(&event_id) {
                     self.expanded_agent.insert(event_id);
                 }
+            }
+            Message::NotAnAgent(user) => {
+                let mut p = self.prefs.clone();
+                if !p.not_agents.contains(&user) {
+                    p.not_agents.push(user);
+                }
+                return self.update(Message::SetPrefs(Box::new(p)));
+            }
+            Message::AgentReact(key, event_id, emoji) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.ok()?;
+                        let timeline = fluxchat_core::timeline::get_or_create_for_key(&client, &core.timelines, &key).await.ok()?;
+                        let eid = fluxchat_core::ruma::EventId::parse(&event_id).ok()?.to_owned();
+                        timeline.toggle_reaction(&fluxchat_core::TimelineEventItemId::EventId(eid), &emoji).await.ok()
+                    },
+                    |_| Message::Noop,
+                );
+            }
+            Message::RunsQuery(q) => {
+                self.runs_query = q;
+            }
+            Message::ExportRun(key) => {
+                return self.export_run(key);
+            }
+            Message::OpenReview(view_key, event_id) => {
+                return self.open_review(view_key, event_id);
+            }
+            Message::ReviewLoaded(event_id, patch) => {
+                self.review_loaded(event_id, patch);
+            }
+            Message::ReviewSelectFile(i) => {
+                if let Some(r) = self.review.as_mut() {
+                    r.selected = i;
+                }
+            }
+            Message::ReviewComment(text) => {
+                if let Some(r) = self.review.as_mut() {
+                    r.comment = text;
+                }
+            }
+            Message::ReviewFinish(approve) => {
+                return self.finish_review(approve);
+            }
+            Message::SetAgentTarget(room, agent) => {
+                self.agent_runs.target.insert(room, agent);
+                return iced::widget::operation::focus(crate::view::input_id());
             }
             Message::SetAgentHarness(user_id, harness) => {
                 let mut p = self.prefs.clone();
@@ -6327,7 +6456,6 @@ impl FluxChat {
         self.available_fonts = crate::view::discover_system_fonts();
         self.available_themes = crate::theme::discover_themes();
         crate::harness::discover();
-        self.load_prompts();
         if let Some(val) = self.core.db.get_setting("theme") {
             self.active_theme_name = val.clone();
             if let Some(theme) = self.available_themes.iter().find(|t| t.name == val) {

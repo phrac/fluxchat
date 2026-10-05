@@ -26,6 +26,7 @@ impl FluxChat {
             crate::state::Modal::Lightbox { url, from_gallery } => self.view_lightbox_modal(url, *from_gallery),
             crate::state::Modal::Gallery => self.view_gallery_modal(),
             crate::state::Modal::Runs => self.view_runs_dialog(),
+            crate::state::Modal::Review => self.view_review_modal(),
             crate::state::Modal::Forward { body, sender_name, .. } => self.view_forward_modal(body, sender_name.as_deref()),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
             crate::state::Modal::Invite => self.view_invite_modal(),

@@ -62,6 +62,8 @@ pub struct Prefs {
     pub agent_busy_mode: crate::agents::BusyMode,
     /// Notify when an agent run of 30 s or more finishes (when you're not looking).
     pub notify_agent_done: bool,
+    /// Users you said aren't agents (no "looks like an AI agent" suggestion).
+    pub not_agents: Vec<String>,
 }
 
 impl Prefs {
@@ -108,6 +110,7 @@ impl Default for Prefs {
             follow_agent_threads: true,
             agent_busy_mode: crate::agents::BusyMode::Send,
             notify_agent_done: true,
+            not_agents: Vec::new(),
         }
     }
 }

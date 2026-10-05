@@ -153,7 +153,7 @@ pub fn request_state(h: &Harness, msg: &MessageInfo, agent: &str) -> Option<RunS
 /// sender reacted to it with, labelled. Empty when it isn't a prompt, it's
 /// been resolved, or it's too old to still be live (`now_ms`).
 pub fn prompt_choices(msg: &MessageInfo, now_ms: u64, labels: &[crate::harness::Choice]) -> Vec<(String, String)> {
-    if now_ms.saturating_sub(msg.timestamp) > PROMPT_MAX_AGE_MS {
+    if now_ms.saturating_sub(sent_ms(msg)) > PROMPT_MAX_AGE_MS {
         return Vec::new();
     }
     msg.reactions.iter()
@@ -215,6 +215,12 @@ pub fn is_agent_command(h: &Harness, slash_name: &str) -> bool {
     slash_name.strip_prefix('/').is_some_and(|n| h.has_command(n))
 }
 
+/// When a message was sent, in ms (`MessageInfo.timestamp` is in seconds;
+/// everything here works in ms).
+fn sent_ms(m: &MessageInfo) -> u64 {
+    m.timestamp.saturating_mul(1000)
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -229,6 +235,11 @@ fn is_step(line: &str) -> bool {
     !tail.trim().is_empty()
         && line.chars().count() <= STEP_MAX_CHARS
         && (emojis::get(head).is_some() || emojis::get(head.trim_end_matches('\u{fe0f}')).is_some())
+}
+
+/// Whether a search found nothing (live runs, finished history).
+fn list_is_empty_hint(live: &[(String, RunInfo)], history: &[&crate::history::RunRecord]) -> bool {
+    live.is_empty() && !history.iter().any(|h| h.ended.is_some())
 }
 
 /// Add a pane for `key` to a watch window: split its newest pane, side by
@@ -406,11 +417,24 @@ pub struct RunInfo {
     pub steps: usize,
     /// How far along, when the agent says (agent protocol).
     pub progress: Option<f32>,
+    /// The agent handling it (rooms can have several).
+    pub agent: String,
 }
 
 impl RunInfo {
-    fn new(state: RunState, since: u64) -> Self {
-        RunInfo { state, since, step: None, steps: 0, progress: None }
+    pub(crate) fn new(state: RunState, since: u64) -> Self {
+        RunInfo { state, since, step: None, steps: 0, progress: None, agent: String::new() }
+    }
+
+    /// For picking between two agents' reports on one key: the livelier.
+    fn rank(&self) -> (u8, std::cmp::Reverse<u64>) {
+        let r = match self.state {
+            RunState::NeedsYou => 0,
+            RunState::Working => 1,
+            RunState::Failed => 2,
+            RunState::Done => 3,
+        };
+        (r, std::cmp::Reverse(self.since))
     }
 
     /// "45s", "3m", "1h 20m" since the request.
@@ -447,9 +471,11 @@ pub struct AgentRuns {
     pub(crate) watched: std::collections::HashSet<String>,
     /// Runs that just started, for "watch runs" windows to pick up.
     started: Vec<String>,
-    /// Rooms an agent is typing in, since when (ms): "working" for
-    /// harnesses that signal work that way.
-    typing_since: HashMap<String, u64>,
+    /// Rooms an agent is typing in: which agent, since when (ms) —
+    /// "working" for harnesses that signal work that way.
+    typing_since: HashMap<String, (String, u64)>,
+    /// Per room, the agent you're talking to when there are several.
+    pub(crate) target: HashMap<String, String>,
 }
 
 impl AgentRuns {
@@ -472,22 +498,48 @@ impl FluxChat {
     /// The agent in a view's room: a member — or, before members load, a
     /// sender or reactor (its 👀 can come before any reply) — that the user
     /// marked as an agent.
+    ///
+    /// With several agents in the room, the one you're talking to: the one
+    /// you picked (`target`), else the one on the view's run, else the one
+    /// that spoke last here.
     pub(crate) fn agent_in(&self, key: &str) -> Option<&str> {
+        let agents = self.agents_in(key);
+        if agents.len() <= 1 {
+            return agents.into_iter().next();
+        }
+        let room = real_room_id(key);
+        let pick = |a: &str| agents.iter().copied().find(|x| *x == a);
+        self.agent_runs.target.get(room).and_then(|t| pick(t))
+            .or_else(|| self.run_info(key).and_then(|r| pick(&r.agent)))
+            .or_else(|| self.messages_by_room.get(key)
+                .and_then(|msgs| msgs.iter().rev().find_map(|m| pick(&m.sender))))
+            .or_else(|| agents.first().copied())
+    }
+
+    /// Every marked agent in a view's room: members — or, before members
+    /// load, senders and reactors (an agent's 👀 can come before any reply).
+    pub(crate) fn agents_in(&self, key: &str) -> Vec<&str> {
         if self.prefs.agents.is_empty() {
-            return None;
+            return Vec::new();
         }
         let room = real_room_id(key);
         let agent = |u: &str| self.prefs.agents.iter().find(|a| *a == u).map(String::as_str);
-        [key, room].iter()
-            .filter_map(|k| self.members_by_room.get(*k))
+        let members = [key, room].into_iter()
+            .filter_map(|k| self.members_by_room.get(k))
             .flatten()
-            .find_map(|m| agent(&m.user_id))
-            .or_else(|| [key, room].iter()
-                .filter_map(|k| self.messages_by_room.get(*k))
-                .flatten()
-                .find_map(|m| agent(&m.sender).or_else(|| m.reactions.iter()
-                    .flat_map(|r| &r.users)
-                    .find_map(|u| agent(u)))))
+            .filter_map(|m| agent(&m.user_id));
+        let seen = [key, room].into_iter()
+            .filter_map(|k| self.messages_by_room.get(k))
+            .flatten()
+            .flat_map(|m| std::iter::once(m.sender.as_str()).chain(m.reactions.iter().flat_map(|r| r.users.iter().map(String::as_str))))
+            .filter_map(agent);
+        let mut found: Vec<&str> = Vec::new();
+        for a in members.chain(seen) {
+            if !found.contains(&a) {
+                found.push(a);
+            }
+        }
+        found
     }
 
     /// The harness running `agent` (its profile; Hermes unless chosen).
@@ -512,10 +564,14 @@ impl FluxChat {
 
     /// Track agents typing (a working signal for some harnesses).
     pub(crate) fn note_agent_typing(&mut self, room: &str, user_ids: &[String]) {
-        if user_ids.iter().any(|u| self.prefs.agents.contains(u)) {
-            self.agent_runs.typing_since.entry(room.to_string()).or_insert_with(now_ms);
-        } else {
-            self.agent_runs.typing_since.remove(room);
+        match user_ids.iter().find(|u| self.prefs.agents.contains(u)) {
+            Some(agent) => {
+                let entry = self.agent_runs.typing_since.entry(room.to_string()).or_insert_with(|| (agent.clone(), now_ms()));
+                if entry.0 != *agent {
+                    *entry = (agent.clone(), now_ms());
+                }
+            }
+            None => { self.agent_runs.typing_since.remove(room); }
         }
     }
 
@@ -524,9 +580,8 @@ impl FluxChat {
     pub(crate) fn live_run(&self, key: &str) -> Option<RunInfo> {
         let own = self.run_info(key).filter(|r| matches!(r.state, RunState::Working | RunState::NeedsYou)).cloned();
         own.or_else(|| {
-            let (_, h) = self.agent_harness(key)?;
-            let since = *self.agent_runs.typing_since.get(real_room_id(key)).filter(|_| h.typing_means_working)?;
-            Some(RunInfo::new(RunState::Working, since))
+            let (agent, since) = self.agent_runs.typing_since.get(real_room_id(key))?;
+            self.harness_of(agent).typing_means_working.then(|| RunInfo { agent: agent.clone(), ..RunInfo::new(RunState::Working, *since) })
         })
     }
 
@@ -617,17 +672,26 @@ impl FluxChat {
     /// newest per room. Done on every update: the watcher resends whole lists.
     pub(crate) fn take_agent_footers(&mut self, key: &str, msgs: &mut [MessageInfo]) {
         // Before `msgs` are stored: a new view's agent may only be in them.
-        let incoming = msgs.iter().find_map(|m| self.prefs.agents.iter().find(|a| **a == m.sender)).cloned();
-        let Some((agent, h)) = self.agent_harness(key)
-            .or_else(|| incoming.map(|a| { let h = self.harness_of(&a); (a, h) }))
-        else { return };
+        let mut agents: Vec<String> = self.agents_in(key).into_iter().map(str::to_string).collect();
+        for m in msgs.iter() {
+            if self.prefs.agents.contains(&m.sender) && !agents.contains(&m.sender) {
+                agents.push(m.sender.clone());
+            }
+        }
+        for agent in agents {
+            let h = self.harness_of(&agent);
+            self.take_footers_of(key, msgs, &agent, &h);
+        }
+    }
+
+    fn take_footers_of(&mut self, key: &str, msgs: &mut [MessageInfo], agent: &str, h: &Harness) {
         let room = real_room_id(key).to_string();
         // Runtime the agent reports through the protocol.
         for m in msgs.iter().filter(|m| m.sender == agent) {
             if let Some(rt) = Protocol::of(m).and_then(|p| p.runtime()) {
-                let newer = self.agent_runs.runtime.get(&room).is_none_or(|(ts, _)| m.timestamp >= *ts);
+                let newer = self.agent_runs.runtime.get(&room).is_none_or(|(ts, _)| sent_ms(m) >= *ts);
                 if newer {
-                    self.agent_runs.runtime.insert(room.clone(), (m.timestamp, rt));
+                    self.agent_runs.runtime.insert(room.clone(), (sent_ms(m), rt));
                 }
             }
         }
@@ -642,9 +706,9 @@ impl FluxChat {
             if let Some(html) = m.formatted_body.as_mut() {
                 *html = strip_footer_html(html, &footer);
             }
-            let newer = self.agent_runs.runtime.get(&room).is_none_or(|(ts, _)| m.timestamp >= *ts);
+            let newer = self.agent_runs.runtime.get(&room).is_none_or(|(ts, _)| sent_ms(m) >= *ts);
             if newer {
-                self.agent_runs.runtime.insert(room.clone(), (m.timestamp, rt));
+                self.agent_runs.runtime.insert(room.clone(), (sent_ms(m), rt));
             }
         }
     }
@@ -653,11 +717,23 @@ impl FluxChat {
     /// messages: per run, its latest status. Threaded requests go under
     /// their thread key; in a thread view, the thread's own key.
     fn protocol_runs(&self, key: &str, msgs: &[MessageInfo], agent: &str) -> Vec<(String, RunInfo)> {
+        // Per run: its status message (the newest without choices — an edit
+        // keeps its message's timestamp, so prompts mustn't outrank it), and
+        // whether a prompt of it is still open.
         let mut latest: HashMap<String, (&MessageInfo, Protocol)> = HashMap::new();
+        let mut open_prompt: std::collections::HashSet<String> = std::collections::HashSet::new();
         for m in msgs.iter().filter(|m| m.sender == agent) {
             let Some(p) = Protocol::of(m).filter(|p| p.run_state().is_some()) else { continue };
             let run_id = p.run.clone().unwrap_or_default();
-            let newer = latest.get(&run_id).is_none_or(|(old, _)| m.timestamp >= old.timestamp);
+            if !p.choices.is_empty() {
+                if p.run_state() == Some(RunState::NeedsYou) {
+                    open_prompt.insert(run_id.clone());
+                }
+                if latest.contains_key(&run_id) {
+                    continue;
+                }
+            }
+            let newer = latest.get(&run_id).is_none_or(|(old, op)| !op.choices.is_empty() || sent_ms(m) >= sent_ms(old));
             if newer {
                 latest.insert(run_id, (m, p));
             }
@@ -673,12 +749,14 @@ impl FluxChat {
             } else {
                 key.to_string()
             };
+            let state = if open_prompt.contains(&run_id) { RunState::NeedsYou } else { p.run_state()? };
             Some((target, RunInfo {
-                state: p.run_state()?,
-                since: request.map(|r| r.timestamp).unwrap_or(m.timestamp),
+                state,
+                since: request.map(sent_ms).unwrap_or_else(|| sent_ms(m)),
                 step: p.step.clone(),
                 steps: p.steps.map(|n| n as usize).unwrap_or(0),
                 progress: p.progress.map(|f| f.clamp(0.0, 1.0)),
+                agent: agent.to_string(),
             }))
         }).collect()
     }
@@ -691,8 +769,70 @@ impl FluxChat {
     /// Recompute the run states a view's messages give (after they change).
     /// Returns the event IDs of prompts that just appeared, to announce.
     pub(crate) fn refresh_agent_state(&mut self, key: &str) -> Vec<String> {
-        let Some((agent, h)) = self.agent_harness(key) else { return Vec::new() };
-        let Some(msgs) = self.messages_by_room.get(key) else { return Vec::new() };
+        let agents: Vec<String> = self.agents_in(key).into_iter().map(str::to_string).collect();
+        if agents.is_empty() || !self.messages_by_room.contains_key(key) {
+            return Vec::new();
+        }
+        let now = now_ms();
+        // Each agent's view of the runs here; for a key two report on, the
+        // livelier wins.
+        let mut merged: Vec<(String, Option<RunInfo>)> = Vec::new();
+        let mut fresh: Vec<String> = Vec::new();
+        for agent in &agents {
+            let h = self.harness_of(agent);
+            let (updates, prompts) = self.agent_updates(key, agent, &h);
+            fresh.extend(prompts);
+            for (k, run) in updates {
+                let run = run.map(|r| RunInfo { agent: agent.clone(), ..r });
+                match merged.iter_mut().find(|(m, _)| *m == k) {
+                    Some((_, slot)) => {
+                        let better = match (&*slot, &run) {
+                            (None, Some(_)) => true,
+                            (Some(old), Some(new)) => new.rank() < old.rank(),
+                            _ => false,
+                        };
+                        if better {
+                            *slot = run;
+                        }
+                    }
+                    None => merged.push((k, run)),
+                }
+            }
+        }
+        for (k, run) in merged {
+            let was_live = self.agent_runs.states.get(&k)
+                .is_some_and(|r| matches!(r.state, RunState::Working | RunState::NeedsYou));
+            let over = run.as_ref().is_some_and(|r| matches!(r.state, RunState::Done | RunState::Failed));
+            if was_live && over {
+                self.agent_runs.finished.push(k.clone());
+            }
+            let starting = !was_live && run.as_ref().is_some_and(|r| {
+                matches!(r.state, RunState::Working | RunState::NeedsYou) && now.saturating_sub(r.since) < FOLLOW_WINDOW_MS
+            });
+            if starting {
+                self.agent_runs.started.push(k.clone());
+            }
+            if let Some(r) = &run {
+                self.record_run(&k, r);
+            }
+            self.agent_runs.set(k, run);
+        }
+        self.agent_runs.recount_needs_you();
+        self.agent_runs.announced.extend(fresh.iter().cloned());
+        // Only prompts from the last couple of minutes are news (not ones
+        // found in history when a view loads).
+        let msgs = self.messages_by_room.get(key).map(Vec::as_slice).unwrap_or(&[]);
+        fresh.into_iter()
+            .filter(|id| msgs.iter().any(|m| m.event_id == *id && now.saturating_sub(sent_ms(m)) < 2 * 60 * 1000))
+            .collect()
+    }
+
+    /// What one agent's signals say about the runs in view `key` (its
+    /// harness's reactions and progress, the protocol), and the prompts of
+    /// its that are new.
+    fn agent_updates(&self, key: &str, agent: &str, h: &Harness) -> (Vec<(String, Option<RunInfo>)>, Vec<String>) {
+        let agent = agent.to_string();
+        let Some(msgs) = self.messages_by_room.get(key) else { return (Vec::new(), Vec::new()) };
         let me = self.user_id.clone();
         let now = now_ms();
         let protocol_prompt = |m: &MessageInfo| Protocol::of(m)
@@ -711,7 +851,7 @@ impl FluxChat {
                 return;
             }
             if let Some(steps) = msgs.iter().rev()
-                .filter(|m| m.sender == agent && m.timestamp >= since)
+                .filter(|m| m.sender == agent && sent_ms(m) >= since)
                 .find_map(|m| progress_steps(&m.body))
             {
                 run.step = steps.last().map(|s| s.to_string());
@@ -722,7 +862,7 @@ impl FluxChat {
         if parse_thread_key(key).is_some() {
             // A thread: its latest request (the root or a reply of yours).
             let latest = msgs.iter().rev().filter(|m| m.sender == me)
-                .find_map(|m| request_state(&h, m, &agent).map(|s| RunInfo::new(s, m.timestamp)));
+                .find_map(|m| request_state(h, m, &agent).map(|s| RunInfo::new(s, sent_ms(m))));
             let run = match (latest, needs_you) {
                 (Some(mut r), true) => { r.state = RunState::NeedsYou; Some(r) }
                 (None, true) => Some(RunInfo::new(RunState::NeedsYou, now)),
@@ -737,16 +877,16 @@ impl FluxChat {
             let loaded_replies = self.thread_counts.get(key);
             let mut latest_unthreaded: Option<RunInfo> = None;
             for m in msgs.iter().filter(|m| m.sender == me && m.thread_root.is_none()) {
-                let Some(state) = request_state(&h, m, &agent) else { continue };
+                let Some(state) = request_state(h, m, &agent) else { continue };
                 let threaded = m.thread_count.unwrap_or(0) > 0
                     || m.thread_latest.is_some()
                     || loaded_replies.and_then(|c| c.get(&m.event_id)).is_some_and(|n| *n > 0);
                 let tk = thread_key(key, &m.event_id);
                 if !self.messages_by_room.contains_key(&tk) {
-                    updates.push((tk, Some(RunInfo::new(state, m.timestamp))));
+                    updates.push((tk, Some(RunInfo::new(state, sent_ms(m)))));
                 }
                 if !threaded {
-                    latest_unthreaded = Some(RunInfo::new(state, m.timestamp));
+                    latest_unthreaded = Some(RunInfo::new(state, sent_ms(m)));
                 }
             }
             let run = match (latest_unthreaded, needs_you) {
@@ -761,29 +901,7 @@ impl FluxChat {
             updates.retain(|(u, _)| *u != k);
             updates.push((k, Some(run)));
         }
-        for (k, run) in updates {
-            let was_live = self.agent_runs.states.get(&k)
-                .is_some_and(|r| matches!(r.state, RunState::Working | RunState::NeedsYou));
-            let over = run.as_ref().is_some_and(|r| matches!(r.state, RunState::Done | RunState::Failed));
-            if was_live && over {
-                self.agent_runs.finished.push(k.clone());
-            }
-            let starting = !was_live && run.as_ref().is_some_and(|r| {
-                matches!(r.state, RunState::Working | RunState::NeedsYou) && now.saturating_sub(r.since) < FOLLOW_WINDOW_MS
-            });
-            if starting {
-                self.agent_runs.started.push(k.clone());
-            }
-            self.agent_runs.set(k, run);
-        }
-        self.agent_runs.recount_needs_you();
-        self.agent_runs.announced.extend(fresh.iter().cloned());
-        // Only prompts from the last couple of minutes are news (not ones
-        // found in history when a view loads).
-        let msgs = self.messages_by_room.get(key).map(Vec::as_slice).unwrap_or(&[]);
-        fresh.into_iter()
-            .filter(|id| msgs.iter().any(|m| m.event_id == *id && now.saturating_sub(m.timestamp) < 2 * 60 * 1000))
-            .collect()
+        (updates, fresh)
     }
 
     /// A desktop notification for each prompt that just appeared in view
@@ -806,11 +924,21 @@ impl FluxChat {
                 .unwrap_or("Waiting for your answer")
                 .chars().take(200).collect::<String>();
             let room_name = self.rooms.iter().find(|r| r.room_id == room).map(|r| r.name.clone()).unwrap_or_default();
-            crate::update::show_notification(
+            // Answer from the notification: its choices (as reactions in this
+            // view), and Stop when the agent's harness has one.
+            let mut actions: Vec<(String, Message)> = self.agent_prompt(m).into_iter().take(3)
+                .map(|(emoji, label)| (format!("{emoji} {label}"), Message::AgentReact(key.to_string(), id.clone(), emoji)))
+                .collect();
+            if let Some(stop) = self.agent_command_text(key, &self.harness_of(&m.sender).stop) {
+                actions.push(("Stop".into(), Message::AgentSend(key.to_string(), stop)));
+            }
+            crate::update::show_actionable_notification(
                 format!("{} needs you - {room_name}", m.sender_name),
                 what,
                 self.notify_sound,
-                Some((self.timeline_tx.clone(), room.clone())),
+                actions,
+                self.timeline_tx.clone(),
+                room.clone(),
             );
             self.agent_runs.notified.insert(id.clone());
         }
@@ -976,15 +1104,14 @@ impl FluxChat {
         // Only a room that was already loaded: on first load every recent
         // thread would look new.
         let old = self.messages_by_room.get(key)?;
-        let (agent, h) = self.agent_harness(key)?;
-        let agent = agent.as_str();
+        let agents = self.agents_in(key);
         let now = now_ms();
         new.iter().rev()
             .filter(|m| m.sender == self.user_id && m.thread_root.is_none())
-            .filter(|m| now.saturating_sub(m.timestamp) < FOLLOW_WINDOW_MS)
+            .filter(|m| now.saturating_sub(sent_ms(m)) < FOLLOW_WINDOW_MS)
             .filter(|m| m.thread_count.unwrap_or(0) > 0)
-            .filter(|m| request_state(&h, m, agent).is_some()
-                || m.thread_latest.as_ref().is_some_and(|l| l.sender == agent))
+            .filter(|m| agents.iter().any(|a| request_state(&self.harness_of(a), m, a).is_some()
+                || m.thread_latest.as_ref().is_some_and(|l| l.sender == *a)))
             .find(|m| !old.iter().any(|o| o.event_id == m.event_id && o.thread_count.unwrap_or(0) > 0))
             .map(|m| thread_key(key, &m.event_id))
     }
@@ -1129,9 +1256,39 @@ impl FluxChat {
     /// The agent chip in a room's header: who, and what it's up to (idle /
     /// working with a progress bar / waiting on you). Opens the agent menu.
     pub(crate) fn view_agent_marker(&self, key: &str) -> Option<Element<'_, Message>> {
-        let agent = self.agent_in(key)?;
+        let agents = self.agents_in(key);
+        let talking_to = self.agent_in(key)?;
+        if agents.len() == 1 {
+            return Some(self.agent_chip(key, talking_to, false));
+        }
+        // Several agents: a chip each; the one you're talking to is outlined.
+        let mut chips = row![].spacing(4).align_y(Alignment::Center);
+        for a in agents {
+            chips = chips.push(self.agent_chip(key, a, a == talking_to));
+        }
+        Some(chips.into())
+    }
+
+    /// The run of `agent` a header chip speaks for (in a room with several).
+    fn header_run_of(&self, key: &str, agent: &str) -> Option<RunInfo> {
+        if key.starts_with("thread::") {
+            return self.live_run(key).filter(|r| r.agent.is_empty() || r.agent == agent);
+        }
+        let prefix = format!("thread::{key}::");
+        self.agent_runs.states.iter()
+            .filter(|(k, r)| (*k == key || k.starts_with(&prefix)) && r.agent == agent)
+            .map(|(_, r)| r)
+            .filter(|r| matches!(r.state, RunState::Working | RunState::NeedsYou))
+            .max_by_key(|r| (r.state == RunState::NeedsYou, r.since))
+            .cloned()
+            .or_else(|| self.live_run(key).filter(|r| r.agent == agent))
+    }
+
+    /// One agent's chip: name, state (idle / working · 3m with a bar /
+    /// waiting on you), model and context. Click: talk to it, and its menu.
+    fn agent_chip(&self, key: &str, agent: &str, outlined: bool) -> Element<'_, Message> {
         let name = self.agent_name(key, agent);
-        let run = self.header_run(key);
+        let run = self.header_run_of(key, agent);
         let run = run.as_ref();
         let colors = crate::theme::colors();
         let (status, color) = match run {
@@ -1146,8 +1303,9 @@ impl FluxChat {
             text(status).font(self.sidebar_font()).size(11).color(color)
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
-        // Model and context fill, when its footer told us.
-        .push(self.agent_runtime(key).map(|rt| {
+        // Model and context fill, when it reports them (one agent only:
+        // runtime is kept per room).
+        .push(self.agent_runtime(key).filter(|_| self.agents_in(key).len() == 1).map(|rt| {
             let short = [rt.model.clone(), rt.context_pct.map(|p| format!("{p}%"))]
                 .into_iter().flatten().collect::<Vec<_>>().join(" ");
             text(short).font(self.sidebar_font()).size(11).color(colors.text_dim)
@@ -1161,9 +1319,14 @@ impl FluxChat {
             .spacing(3)
             .width(iced::Length::Shrink);
         let tip = run.and_then(|r| r.step.clone()).unwrap_or_else(|| "Agent commands".into());
-        Some(crate::ui::styled_tooltip(
+        let room = real_room_id(key).to_string();
+        let border = if outlined { colors.accent } else { crate::theme::with_alpha(color, 0.3) };
+        crate::ui::styled_tooltip(
             button(chip)
-                .on_press(Message::OpenContextMenu(crate::state::ContextMenu::Agent { key: key.to_string() }))
+                .on_press(Message::Batch(vec![
+                    Message::SetAgentTarget(room, agent.to_string()),
+                    Message::OpenContextMenu(crate::state::ContextMenu::Agent { key: key.to_string() }),
+                ]))
                 .padding([3, 8])
                 .style(move |_, status| button::Style {
                     background: Some(if matches!(status, button::Status::Hovered) {
@@ -1171,12 +1334,58 @@ impl FluxChat {
                     } else {
                         crate::theme::with_alpha(color, 0.08)
                     }.into()),
-                    border: iced::Border { color: crate::theme::with_alpha(color, 0.3), width: 1.0, radius: 10.0.into() },
+                    border: iced::Border { color: border, width: 1.0, radius: 10.0.into() },
                     ..Default::default()
                 }),
             text(tip).font(self.sidebar_font()).size(11),
             iced::widget::tooltip::Position::Bottom,
-        ))
+        )
+    }
+
+    /// In a room with several agents: who your messages and commands go to.
+    pub(crate) fn view_agent_target(&self, key: &str) -> Option<Element<'_, Message>> {
+        let agents = self.agents_in(key);
+        if agents.len() < 2 {
+            return None;
+        }
+        let current = self.agent_in(key)?.to_string();
+        let room = real_room_id(key).to_string();
+        let switch = ui::segmented(agents.iter()
+            .map(|a| (self.agent_name(key, a), Some(Message::SetAgentTarget(room.clone(), a.to_string())), *a == current))
+            .collect());
+        Some(container(row![
+            ui::icon(crate::icons::SVG_BOT, 13.0, crate::theme::colors().text_dim),
+            text("To").font(self.sidebar_font()).size(11).color(crate::theme::colors().text_dim),
+            container(switch).width(iced::Length::Fixed(140.0 * agents.len().min(4) as f32)),
+        ].spacing(8).align_y(Alignment::Center)).padding([2, 12]).into())
+    }
+
+    /// An agent message that addresses another agent in the room: a hand-off
+    /// you can follow (click: talk to the one it went to).
+    pub(crate) fn view_handoff<'a>(&self, view_key: &str, msg: &MessageInfo) -> Option<Element<'a, Message>> {
+        if !self.prefs.agents.contains(&msg.sender) {
+            return None;
+        }
+        let html = msg.formatted_body.as_deref().unwrap_or("");
+        let to = self.agents_in(view_key).into_iter()
+            .filter(|a| *a != msg.sender)
+            .find(|a| msg.body.contains(*a) || html.contains(*a)
+                || html.contains(&a.replace('@', "%40")))?
+            .to_string();
+        let from_name = self.agent_name(view_key, &msg.sender);
+        let to_name = self.agent_name(view_key, &to);
+        let room = real_room_id(view_key).to_string();
+        Some(row![
+            Space::new().width(iced::Length::Fixed(self.msg_content_indent())),
+            button(row![
+                ui::icon(crate::icons::SVG_FORWARD, 12.0, crate::theme::colors().accent),
+                text(format!("{from_name} handed off to {to_name}")).font(self.sidebar_font()).size(11)
+                    .color(crate::theme::colors().accent),
+            ].spacing(6).align_y(Alignment::Center))
+            .on_press(Message::SetAgentTarget(room, to))
+            .padding([1, 6])
+            .style(ui::row_style(false)),
+        ].into())
     }
 
     /// An agent's step log: collapsed to "N steps · latest", or every step.
@@ -1219,38 +1428,57 @@ impl FluxChat {
     /// Watch in a window tiles the active ones and follows new ones.
     pub(crate) fn view_runs_dialog(&self) -> Element<'_, Message> {
         let colors = crate::theme::colors();
-        let runs = self.all_runs();
-        let working = runs.iter().filter(|(_, r)| r.state == RunState::Working).count();
-        let waiting = runs.iter().filter(|(_, r)| r.state == RunState::NeedsYou).count();
+        let query = self.runs_query.trim().to_lowercase();
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let room_label = |key: &str| {
+            let room = real_room_id(key);
+            self.rooms.iter().find(|r| r.room_id == room)
+                .map(|r| if r.is_direct { r.name.clone() } else { format!("#{}", r.name) })
+                .unwrap_or_else(|| room.to_string())
+        };
+        let section = |label: &str| container(text(label.to_string()).font(self.sidebar_font()).size(10).color(colors.text_dim))
+            .padding(iced::Padding { top: 8.0, right: 10.0, bottom: 2.0, left: 10.0 });
+        let export = |key: &str| ui::with_tooltip(
+            button(ui::icon(crate::icons::SVG_DOWNLOAD, 13.0, colors.text_dim))
+                .on_press(Message::ExportRun(key.to_string()))
+                .padding(5)
+                .style(ui::button_style(Tone::Ghost)),
+            "Export the transcript (Markdown)",
+        );
+
+        // Now: what's going on.
+        let live: Vec<(String, RunInfo)> = self.all_runs().into_iter()
+            .filter(|(_, r)| matches!(r.state, RunState::Working | RunState::NeedsYou))
+            .filter(|(k, r)| {
+                let hay = format!("{} {} {}", if k.starts_with("thread::") { self.thread_title(k) } else { String::new() }, room_label(k), r.agent).to_lowercase();
+                words.iter().all(|w| hay.contains(w))
+            })
+            .collect();
+        let working = live.iter().filter(|(_, r)| r.state == RunState::Working).count();
+        let waiting = live.len() - working;
         let subtitle = if self.prefs.agents.is_empty() {
             "Mark an agent on its profile (AI agent) to follow its runs here".to_string()
         } else {
-            format!("{working} working \u{00b7} {waiting} waiting on you \u{00b7} across {} rooms", self.agent_rooms.len().max(1))
+            format!("{working} working \u{00b7} {waiting} waiting on you \u{00b7} {} in history", self.run_history.len())
         };
         let mut list = iced::widget::column![].spacing(2);
-        if runs.is_empty() {
-            list = list.push(ui::empty_state(crate::icons::SVG_BOT, "No runs yet", Some("Runs show here as your agents work.".into())));
+        if !live.is_empty() {
+            list = list.push(section("NOW"));
         }
-        for (key, run) in &runs {
-            let room = real_room_id(key);
-            let room_name = self.rooms.iter().find(|r| r.room_id == room)
-                .map(|r| if r.is_direct { r.name.clone() } else { format!("#{}", r.name) })
-                .unwrap_or_else(|| room.to_string());
+        for (key, run) in &live {
             let title = if key.starts_with("thread::") { self.thread_title(key) } else { "Request in the room".into() };
             let mut detail = row![
                 state_dot(run.state, 7.0),
                 text(format!("{} \u{00b7} {}", run.state.label(), run.elapsed())).font(self.sidebar_font()).size(11).color(run.state.color())
                     .wrapping(iced::widget::text::Wrapping::None),
-                text(room_name).font(self.sidebar_font()).size(11).color(colors.text_dim)
+                text(room_label(key)).font(self.sidebar_font()).size(11).color(colors.text_dim)
                     .wrapping(iced::widget::text::Wrapping::None),
             ].spacing(6).align_y(Alignment::Center);
-            if run.state == RunState::Working {
-                if let Some(step) = &run.step {
-                    detail = detail.push(text(step.clone()).font(self.sidebar_font()).size(11).color(colors.text_muted)
-                        .wrapping(iced::widget::text::Wrapping::None));
-                }
+            if let Some(step) = run.step.as_ref().filter(|_| run.state == RunState::Working) {
+                detail = detail.push(text(step.clone()).font(self.sidebar_font()).size(11).color(colors.text_muted)
+                    .wrapping(iced::widget::text::Wrapping::None));
             }
-            list = list.push(
+            list = list.push(row![
                 button(iced::widget::column![
                     text(crate::view::ellipsize(&title, 80)).font(self.sidebar_font()).size(13).color(colors.text_bright)
                         .wrapping(iced::widget::text::Wrapping::None),
@@ -1260,20 +1488,65 @@ impl FluxChat {
                 .padding([7, 10])
                 .width(Fill)
                 .style(ui::row_style(false)),
-            );
+                export(key),
+            ].align_y(Alignment::Center));
         }
-        let live = working + waiting > 0;
+
+        // History: runs seen live, newest first, with how long and what it cost.
+        let history: Vec<&crate::history::RunRecord> = self.matching_history(&query).into_iter()
+            .filter(|h| h.ended.is_some())
+            .take(200)
+            .collect();
+        if !history.is_empty() {
+            list = list.push(section("HISTORY"));
+        }
+        let now = now_ms();
+        for h in history {
+            let state = match h.state.as_str() {
+                "failed" => RunState::Failed,
+                "needs you" => RunState::NeedsYou,
+                "working" => RunState::Working,
+                _ => RunState::Done,
+            };
+            let when = format!("{} {}", crate::view_messages::local_day_label(h.started / 1000),
+                crate::view_messages::format_clock(crate::view::local_time_of_day(h.started / 1000), false, self.prefs.twelve_hour));
+            let extras = [Some(h.duration(now)), h.model.clone(), h.cost.clone()].into_iter().flatten().collect::<Vec<_>>().join(" \u{00b7} ");
+            list = list.push(row![
+                button(iced::widget::column![
+                    text(crate::view::ellipsize(&h.title, 80)).font(self.sidebar_font()).size(13).color(colors.text_normal)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                    container(row![
+                        state_dot(state, 7.0),
+                        text(format!("{} \u{00b7} {extras}", state.label())).font(self.sidebar_font()).size(11).color(state.color())
+                            .wrapping(iced::widget::text::Wrapping::None),
+                        text(format!("{} \u{00b7} {when}", room_label(&h.key))).font(self.sidebar_font()).size(11).color(colors.text_dim)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ].spacing(6).align_y(Alignment::Center)).clip(true),
+                ].spacing(3))
+                .on_press(Message::Batch(vec![Message::CloseModal, Message::OpenAt(h.key.clone(), crate::panes::Placement::Auto)]))
+                .padding([7, 10])
+                .width(Fill)
+                .style(ui::row_style(false)),
+                export(&h.key),
+            ].align_y(Alignment::Center));
+        }
+        if live.is_empty() && self.run_history.is_empty() {
+            list = list.push(ui::empty_state(crate::icons::SVG_BOT, "No runs yet", Some("Runs show here as your agents work.".into())));
+        } else if !words.is_empty() && list_is_empty_hint(&live, &self.matching_history(&query)) {
+            list = list.push(ui::empty_state(crate::icons::SVG_SEARCH, "Nothing matches", None));
+        }
         iced::widget::column![
             ui::header("Agent runs", Some(subtitle)),
+            ui::input("Search runs: title, room, agent", &self.runs_query, Message::RunsQuery),
             container(iced::widget::scrollable(list).height(iced::Length::Shrink))
                 .max_height(460.0),
             ui::footer(vec![
-                ui::icon_btn(crate::icons::SVG_LAYERS, if live { "Watch in a window" } else { "Watch for new runs" }, Tone::Primary,
+                ui::icon_btn(crate::icons::SVG_LAYERS, if working + waiting > 0 { "Watch in a window" } else { "Watch for new runs" }, Tone::Primary,
                     Some(Message::WatchRunsWindow)).into(),
             ]),
         ]
         .spacing(ui::GAP)
-        .width(iced::Length::Fixed(580.0))
+        .width(iced::Length::Fixed(640.0))
         .into()
     }
 
@@ -1310,6 +1583,82 @@ impl FluxChat {
         ]
         .spacing(4)
         .into()
+    }
+
+    /// Someone in view `key` who acts like an agent but isn't marked one, and
+    /// the harness it looks like: Hermes's 👀 / ✅ on your messages or its
+    /// step logs → Hermes; prompts it reacts to itself with ✅ / ❌ → Claude
+    /// Code's Matrix channel (Hermes if it offers 🌀 / ♾️); protocol fields →
+    /// generic. Only from recent messages, and never for someone you said
+    /// isn't an agent.
+    pub(crate) fn suggested_agent(&self, key: &str) -> Option<(String, &'static str)> {
+        let msgs = self.messages_by_room.get(key)?;
+        let candidate = |u: &str| u != self.user_id && !self.prefs.agents.iter().any(|a| a == u)
+            && !self.prefs.not_agents.iter().any(|a| a == u);
+        let recent = &msgs[msgs.len().saturating_sub(80)..];
+        // Status reactions (👀 / ✅ / ❌) on several of your messages by one
+        // person: Hermes's acks (people react with these too, so ≥ 3).
+        let mut acks: HashMap<&str, usize> = HashMap::new();
+        for m in recent.iter().filter(|m| m.sender == self.user_id) {
+            let mut by: Vec<&str> = m.reactions.iter()
+                .filter(|r| matches!(r.emoji.trim_end_matches('\u{fe0f}'), "\u{1f440}" | "\u{2705}" | "\u{274c}"))
+                .flat_map(|r| r.users.iter().map(String::as_str))
+                .filter(|u| candidate(u))
+                .collect();
+            by.sort_unstable();
+            by.dedup();
+            for u in by {
+                *acks.entry(u).or_default() += 1;
+            }
+        }
+        if let Some((u, _)) = acks.into_iter().filter(|(_, n)| *n >= 3).max_by_key(|(_, n)| *n) {
+            return Some((u.to_string(), "hermes"));
+        }
+        for m in recent.iter().rev() {
+            if candidate(&m.sender) && m.agent.is_some() {
+                return Some((m.sender.clone(), "generic"));
+            }
+            if candidate(&m.sender) {
+                let own: Vec<&str> = m.reactions.iter()
+                    .filter(|r| r.users.contains(&m.sender))
+                    .map(|r| r.emoji.trim_end_matches('\u{fe0f}'))
+                    .collect();
+                let approval = own.contains(&"\u{2705}") && own.contains(&"\u{274c}");
+                if approval {
+                    let hermes = own.iter().any(|e| *e == "\u{1f300}" || *e == "\u{267e}");
+                    return Some((m.sender.clone(), if hermes { "hermes" } else { "claude-code" }));
+                }
+                if progress_steps(&m.body).is_some_and(|s| s.len() > 1) {
+                    return Some((m.sender.clone(), "hermes"));
+                }
+            }
+        }
+        None
+    }
+
+    /// "@x looks like an AI agent (Hermes Agent)": mark it with that harness, or not.
+    pub(crate) fn view_agent_suggestion(&self, key: &str) -> Option<Element<'_, Message>> {
+        let (user, harness) = self.suggested_agent(key)?;
+        let name = self.agent_name(key, &user);
+        let h = crate::harness::get(harness);
+        Some(container(row![
+            ui::icon(crate::icons::SVG_BOT, 14.0, crate::theme::colors().accent),
+            text(format!("{name} looks like an AI agent ({}).", h.name)).font(self.sidebar_font()).size(12)
+                .color(crate::theme::colors().text_normal).wrapping(iced::widget::text::Wrapping::None),
+            Space::new().width(Fill),
+            ui::btn("Mark as agent", Tone::Primary, Some(Message::Batch(vec![
+                Message::SetAgentHarness(user.clone(), harness.to_string()),
+                Message::SetAgent(user.clone(), true),
+            ]))),
+            ui::btn("It isn't", Tone::Ghost, Some(Message::NotAnAgent(user))),
+        ].spacing(8).align_y(Alignment::Center))
+        .padding([4, 12])
+        .width(Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::with_alpha(crate::theme::colors().accent, 0.08).into()),
+            ..Default::default()
+        })
+        .into())
     }
 
     /// The agent menu (header chip): quick commands for this view's session.
@@ -1441,7 +1790,7 @@ mod tests {
     fn a_prompt_is_the_senders_own_reactions_and_ends_when_they_go() {
         let now = 10_000_000;
         let body = "⚠️ Dangerous command\n`rm -rf build`\n\nReact:\n✅ once\n♾️ always\n❌ deny";
-        let mut m = MessageInfo { sender: "@bot:x".into(), body: body.into(), timestamp: now - 1000, ..Default::default() };
+        let mut m = MessageInfo { sender: "@bot:x".into(), body: body.into(), timestamp: (now - 1000) / 1000, ..Default::default() };
         m.reactions = vec![react("✅", &["@bot:x"]), react("♾️", &["@bot:x"]), react("❌", &["@bot:x"])];
         let labels: Vec<String> = prompt_choices(&m, now, &hermes().approvals).into_iter().map(|(_, l)| l).collect();
         assert_eq!(labels, ["Approve once", "Always", "Deny"]);
@@ -1457,7 +1806,7 @@ mod tests {
     fn picker_choices_are_labelled_from_their_lines() {
         let body = "Pick a model\n1️⃣ `claude-opus` — Anthropic\n2️⃣ `gpt-5` — OpenAI";
         let m = MessageInfo {
-            sender: "@bot:x".into(), body: body.into(), timestamp: 5,
+            sender: "@bot:x".into(), body: body.into(), timestamp: 0,
             reactions: vec![react("1️⃣", &["@bot:x"]), react("2️⃣", &["@bot:x"])],
             ..Default::default()
         };
@@ -1473,7 +1822,8 @@ mod tests {
     }
 
     fn msg(id: &str, sender: &str, ts: u64) -> MessageInfo {
-        MessageInfo { event_id: id.into(), sender: sender.into(), body: id.into(), timestamp: ts, ..Default::default() }
+        // MessageInfo.timestamp is in seconds (the SDK's origin_server_ts / 1000).
+        MessageInfo { event_id: id.into(), sender: sender.into(), body: id.into(), timestamp: ts / 1000, ..Default::default() }
     }
 
     #[tokio::test]
@@ -1529,7 +1879,7 @@ mod tests {
         assert_eq!(app.thread_to_follow("!r:x", std::slice::from_ref(&threaded)), None);
         // An old request, or someone else's thread: no.
         let mut old = threaded.clone();
-        old.timestamp = now - FOLLOW_WINDOW_MS - 1;
+        old.timestamp = (now - FOLLOW_WINDOW_MS - 2000) / 1000;
         app.messages_by_room.insert("!r:x".into(), vec![ask.clone()]);
         assert_eq!(app.thread_to_follow("!r:x", std::slice::from_ref(&old)), None);
         // Turned off, or not the room you're in: no.
@@ -1590,7 +1940,7 @@ mod tests {
         assert_eq!(run.state, RunState::Working);
         assert_eq!(run.step.as_deref(), Some("🔍 Searching the web for odds"));
         assert_eq!(run.steps, 2);
-        assert_eq!(run.since, ask.timestamp);
+        assert_eq!(run.since, ask.timestamp * 1000);
         // The room's header shows that run; a finished one isn't shown.
         assert_eq!(app.header_run("!r:x").map(|r| r.steps), Some(2));
         ask.reactions = vec![react(DONE, &["@bot:x"])];
@@ -1649,7 +1999,7 @@ mod tests {
         app.refresh_agent_state(&tk);
         let run = app.run_info(&tk).unwrap();
         assert_eq!((run.state, run.step.as_deref(), run.steps, run.progress), (RunState::Working, Some("Running tests"), 3, Some(0.5)));
-        assert_eq!(run.since, ask.timestamp);
+        assert_eq!(run.since, ask.timestamp * 1000);
         assert_eq!(app.agent_runtime(&tk).map(|r| r.summary()).as_deref(), Some("opus-5 \u{00b7} ctx 42% \u{00b7} $0.18"));
         // A protocol prompt: live while "waiting", gone once the agent moves on.
         let mut prompt = msg("$p", "@bot:x", now);
@@ -1659,8 +2009,91 @@ mod tests {
         app.messages_by_room.insert(tk.clone(), vec![ask.clone(), status.clone(), prompt.clone()]);
         app.refresh_agent_state(&tk);
         assert_eq!(app.run_state(&tk), Some(RunState::NeedsYou));
-        prompt.agent = Some(serde_json::json!({"run": "$ask", "state": "done", "choices": [{"key": "👍", "label": "Ship it"}]}));
+        prompt.agent = Some(serde_json::json!({"run": "$ask", "state": "working", "choices": [{"key": "👍", "label": "Ship it"}]}));
         assert!(app.agent_prompt(&prompt).is_empty());
+        // Answered, then the status message is edited to done: the run is
+        // done, though the prompt (sent later) still says "working".
+        status.agent = Some(serde_json::json!({"run": "$ask", "state": "done", "steps": 3}));
+        app.messages_by_room.insert(tk.clone(), vec![ask.clone(), status, prompt]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Done));
+    }
+
+    #[tokio::test]
+    async fn rooms_with_several_agents_track_each_and_talk_to_one() {
+        let mut app = agent_app();
+        app.prefs.agents.push("@coder:x".into());
+        app.prefs.agent_harness.insert("@coder:x".into(), "generic".into());
+        let now = now_ms();
+        // Hermes works on one request; the coder reports on another (protocol).
+        let mut ask_bot = msg("$a1", "@me:x", now - 9000);
+        ask_bot.reactions = vec![react(WORKING, &["@bot:x"])];
+        let ask_coder = msg("$a2", "@me:x", now - 5000);
+        let mut coder = msg("$c1", "@coder:x", now - 1000);
+        coder.agent = Some(serde_json::json!({"run": "$a2", "state": "working", "step": "Writing tests"}));
+        app.messages_by_room.insert("!r:x".into(), vec![msg("$hi", "@bot:x", now - 20_000), ask_bot, ask_coder, coder]);
+        app.refresh_agent_state("!r:x");
+        assert_eq!(app.agents_in("!r:x"), ["@bot:x", "@coder:x"]);
+        let bot_run = app.run_info(&thread_key("!r:x", "$a1")).unwrap();
+        assert_eq!((bot_run.state, bot_run.agent.as_str()), (RunState::Working, "@bot:x"));
+        let coder_run = app.run_info("!r:x").unwrap();
+        assert_eq!((coder_run.agent.as_str(), coder_run.step.as_deref()), ("@coder:x", Some("Writing tests")));
+        // Talking to: the one on the room's run here, then whoever you pick.
+        assert_eq!(app.agent_in("!r:x"), Some("@coder:x"));
+        let _ = app.update(Message::SetAgentTarget("!r:x".into(), "@bot:x".into()));
+        assert_eq!(app.agent_in("!r:x"), Some("@bot:x"));
+        assert_eq!(app.agent_outgoing("!r:x", "/stop").as_deref(), Some("!stop"), "Hermes's way");
+        // A hand-off: the bot addresses the coder.
+        let handoff = MessageInfo { body: "@coder:x can you take the tests?".into(), ..msg("$h", "@bot:x", now) };
+        assert!(app.view_handoff("!r:x", &handoff).is_some());
+        assert!(app.view_handoff("!r:x", &msg("$n", "@bot:x", now)).is_none());
+    }
+
+    #[tokio::test]
+    async fn agents_are_suggested_from_how_they_act() {
+        let mut app = agent_app();
+        app.prefs.agents.clear();
+        let now = now_ms();
+        let mut mine: Vec<MessageInfo> = (0..3).map(|i| {
+            let mut m = msg(&format!("$m{i}"), "@me:x", now - 60_000 + i * 1000);
+            m.reactions = vec![react(DONE, &["@bot:x"])];
+            m
+        }).collect();
+        // One ack isn't enough (people react with ✅ too).
+        app.messages_by_room.insert("!r:x".into(), mine[..1].to_vec());
+        assert_eq!(app.suggested_agent("!r:x"), None);
+        app.messages_by_room.insert("!r:x".into(), mine.clone());
+        assert_eq!(app.suggested_agent("!r:x"), Some(("@bot:x".to_string(), "hermes")));
+        // Said it isn't: never again.
+        let _ = app.update(Message::NotAnAgent("@bot:x".into()));
+        assert_eq!(app.suggested_agent("!r:x"), None);
+        // A prompt someone reacts to themselves with ✅ / ❌: the Claude Code channel.
+        let mut prompt = msg("$p", "@cc:x", now);
+        prompt.reactions = vec![react("\u{2705}", &["@cc:x"]), react("\u{274c}", &["@cc:x"])];
+        mine.push(prompt);
+        app.messages_by_room.insert("!r:x".into(), mine);
+        assert_eq!(app.suggested_agent("!r:x"), Some(("@cc:x".to_string(), "claude-code")));
+        // Marked: no suggestion.
+        app.prefs.agents.push("@cc:x".into());
+        assert_eq!(app.suggested_agent("!r:x"), None);
+    }
+
+    #[tokio::test]
+    async fn a_coding_agents_diff_is_reviewed_and_answered() {
+        let mut app = agent_app();
+        let _ = app.update(Message::SelectRoom("!r:x".into()));
+        let now = now_ms();
+        let body = "Here's the fix:\n```diff\n--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-print(1)\n+print(2)\n keep\n```";
+        let patch = MessageInfo { body: body.into(), ..msg("$d", "@bot:x", now) };
+        assert_eq!(crate::review::summary(&patch), Some((1, 1, 1)));
+        app.messages_by_room.insert("!r:x".into(), vec![patch]);
+        let _ = app.update(Message::OpenReview("!r:x".into(), "$d".into()));
+        let r = app.review.as_ref().unwrap();
+        assert_eq!((r.files.len(), r.files[0].path.as_str()), (1, "x.py"));
+        assert!(matches!(app.modal, Some(crate::state::Modal::Review)));
+        let _ = app.update(Message::ReviewComment("rename it".into()));
+        let _ = app.update(Message::ReviewFinish(false));
+        assert!(app.review.is_none() && app.modal.is_none());
     }
 
     #[test]

@@ -7,8 +7,10 @@
 mod agents;
 mod anim;
 mod commands;
+mod diff;
 mod dnd;
 mod harness;
+mod history;
 mod hover_bar;
 mod html;
 mod icons;
@@ -17,6 +19,7 @@ mod measured;
 mod panes;
 mod prefs;
 mod prompts;
+mod review;
 mod progress;
 mod message;
 mod primary_clipboard;

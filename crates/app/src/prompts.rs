@@ -1,6 +1,7 @@
 //! Prompt history and snippets: what you've sent, searchable with Ctrl+R
 //! (the palette's `<` mode), and named prompts you save with `/snippet`.
-//! Both are kept in the settings table, so they survive restarts.
+//! Both hold what you wrote, so they're kept encrypted (`AppDb::set_private`,
+//! available from sign-in); a plaintext copy from before is moved there.
 
 use crate::state::FluxChat;
 
@@ -12,8 +13,20 @@ const HISTORY_KEY: &str = "prompt_history";
 const SNIPPETS_KEY: &str = "snippets";
 
 impl FluxChat {
+    /// After sign-in (the private store is unlocked then).
     pub(crate) fn load_prompts(&mut self) {
-        let load = |key: &str| self.core.db.get_setting(key);
+        let db = &self.core.db;
+        let load = |key: &str| -> Option<String> {
+            if let Some(bytes) = db.get_private(key) {
+                return String::from_utf8(bytes).ok();
+            }
+            // Kept in plain settings by an earlier version: move it.
+            let old = db.get_setting(key)?;
+            if db.set_private(key, old.as_bytes()) {
+                db.remove_setting(key);
+            }
+            Some(old)
+        };
         if let Some(json) = load(HISTORY_KEY) {
             self.prompt_history = serde_json::from_str(&json).unwrap_or_default();
         }
@@ -35,7 +48,7 @@ impl FluxChat {
             self.prompt_history.drain(..extra);
         }
         if let Ok(json) = serde_json::to_string(&self.prompt_history) {
-            let _ = self.core.db.set_setting(HISTORY_KEY, &json);
+            self.core.db.set_private(HISTORY_KEY, json.as_bytes());
         }
     }
 
@@ -47,7 +60,7 @@ impl FluxChat {
             self.snippets.sort_by_key(|(n, _)| n.to_lowercase());
         }
         if let Ok(json) = serde_json::to_string(&self.snippets) {
-            let _ = self.core.db.set_setting(SNIPPETS_KEY, &json);
+            self.core.db.set_private(SNIPPETS_KEY, json.as_bytes());
         }
     }
 

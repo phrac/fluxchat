@@ -40,6 +40,10 @@ impl AppDb {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS private_data (
+                key TEXT PRIMARY KEY,
+                data TEXT NOT NULL
             );"
         )?;
         // Recency for pruning: rowids can't be trusted for that (VACUUM may
@@ -100,6 +104,8 @@ impl AppDb {
                 let cipher = StoreCipher::new()?;
                 let export = cipher.export_with_key(store_key)?;
                 let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+                // Private data under another login's key can't be read.
+                conn.execute("DELETE FROM private_data", [])?;
                 // Plaintext media from before (or another login's): gone,
                 // including the freed pages.
                 if conn.execute("DELETE FROM media_cache", [])? > 0 {
@@ -123,7 +129,47 @@ impl AppDb {
         *self.media_cipher.write().unwrap_or_else(|e| e.into_inner()) = None;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let _ = conn.execute("DELETE FROM media_cache", []);
+        let _ = conn.execute("DELETE FROM private_data", []);
         let _ = conn.execute("DELETE FROM settings WHERE key = ?1", params![MEDIA_CIPHER_SETTING]);
+    }
+
+    // ── Private data ──
+    //
+    // Small values that hold what you wrote (prompt history, snippets, agent
+    // run history): encrypted with the media cache's cipher, keys hashed,
+    // never pruned. Unavailable (None / not stored) until the cache is
+    // unlocked at sign-in; cleared at logout and when the key changes.
+
+    /// Store a private value; false while locked.
+    pub fn set_private(&self, key: &str, data: &[u8]) -> bool {
+        let row = {
+            let cipher = self.media_cipher.read().unwrap_or_else(|e| e.into_inner());
+            let Some(cipher) = cipher.as_ref() else { return false };
+            let Ok(value) = cipher.encrypt_value_base64_data(data.to_vec()) else { return false };
+            let Ok(json) = serde_json::to_string(&value) else { return false };
+            (cipher.hash_key("private_data", key.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>(), json)
+        };
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("INSERT OR REPLACE INTO private_data (key, data) VALUES (?1, ?2)", params![row.0, row.1]).is_ok()
+    }
+
+    /// Read a private value (None while locked or unset).
+    pub fn get_private(&self, key: &str) -> Option<Vec<u8>> {
+        let cipher = self.media_cipher.read().unwrap_or_else(|e| e.into_inner());
+        let cipher = cipher.as_ref()?;
+        let row_key: String = cipher.hash_key("private_data", key.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let json: String = {
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.query_row("SELECT data FROM private_data WHERE key = ?1", params![row_key], |row| row.get(0)).ok()?
+        };
+        let value: EncryptedValueBase64 = serde_json::from_str(&json).ok()?;
+        cipher.decrypt_value_base64_data(value).ok()
+    }
+
+    /// Delete a plaintext setting (after moving it into private data).
+    pub fn remove_setting(&self, key: &str) {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = conn.execute("DELETE FROM settings WHERE key = ?1", params![key]);
     }
 
     fn media_row_key(cipher: &StoreCipher, key: &str) -> String {
@@ -289,6 +335,30 @@ mod tests {
         assert!(again.get_cached_media("mxc://a/b").is_none());
         again.forget_media_cache();
         assert!(again.get_setting(MEDIA_CIPHER_SETTING).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn private_data_is_encrypted_and_needs_the_key() {
+        let dir = std::env::temp_dir().join(format!("fluxchat-private-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+        let path = dir.join("t.db");
+        let db = AppDb::open(&path).unwrap();
+        assert!(!db.set_private("prompts", b"secret plan"), "locked: nothing stored");
+        db.unlock_media_cache(&[1; 32]).unwrap();
+        assert!(db.set_private("prompts", b"secret plan"));
+        assert_eq!(db.get_private("prompts").as_deref(), Some(&b"secret plan"[..]));
+        drop(db);
+        // Not readable on disk.
+        let raw = std::fs::read(&path).unwrap();
+        assert!(!raw.windows(11).any(|w| w == b"secret plan"));
+        // Same key: still there; another key (new login): gone.
+        let again = AppDb::open(&path).unwrap();
+        again.unlock_media_cache(&[1; 32]).unwrap();
+        assert!(again.get_private("prompts").is_some());
+        again.forget_media_cache();
+        again.unlock_media_cache(&[2; 32]).unwrap();
+        assert!(again.get_private("prompts").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

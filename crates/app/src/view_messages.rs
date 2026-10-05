@@ -1531,6 +1531,21 @@ impl FluxChat {
             );
         }
 
+        // An agent's approval / picker (its seeded reactions, or protocol
+        // choices — which need no reactions) as buttons, and hand-offs
+        // between agents: before the reactions, whether there are any.
+        let prompt = self.agent_prompt(msg);
+        let seeded: Vec<String> = prompt.iter().map(|(e, _)| e.clone()).collect();
+        if let Some(h) = self.view_handoff(view_key, msg) {
+            preview_elements.push(h);
+        }
+        if let Some(review) = self.view_review_button(view_key, msg) {
+            preview_elements.push(review);
+        }
+        if !prompt.is_empty() {
+            preview_elements.push(self.view_prompt_card(msg, prompt));
+        }
+
         // Reactions
         if msg.reactions.is_empty() && preview_elements.is_empty() {
             return msg_row;
@@ -1547,11 +1562,6 @@ impl FluxChat {
             Space::new().width(Length::Fixed(self.msg_content_indent())),
         ]
         .spacing(4);
-
-        // An agent's approval / picker: its seeded reactions become buttons.
-        let prompt = self.agent_prompt(msg);
-        let seeded: Vec<String> = prompt.iter().map(|(e, _)| e.clone()).collect();
-        let prompt_card = (!prompt.is_empty()).then(|| self.view_prompt_card(msg, prompt));
 
         for reaction in msg.reactions.iter().filter(|r| !seeded.contains(&r.emoji)) {
             let event_id = msg.event_id.clone();
@@ -1622,7 +1632,6 @@ impl FluxChat {
         for el in preview_elements {
             col = col.push(el);
         }
-        col = col.push(prompt_card);
         col = col.push(reactions_row);
 
         // Thread indicator rendered in view.rs message loop (using derived counts)
@@ -1968,6 +1977,11 @@ fn code_block_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
         pos = code_start + len + end_marker.len();
     }
     ranges
+}
+
+/// Each code block's code as plain text (for the diff review).
+pub(crate) fn code_blocks_of(html: &str) -> Vec<String> {
+    code_block_texts(html)
 }
 
 /// Each code block's code as plain text (tags dropped, entities decoded),

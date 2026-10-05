@@ -1,0 +1,14 @@
+[project]
+name = "fluxchat-agent"
+version = "0.1.0"
+description = "Emit the fluxchat agent protocol (run state, steps, progress, approvals) from Matrix agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fluxchat_agent"]

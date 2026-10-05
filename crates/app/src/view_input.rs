@@ -41,6 +41,14 @@ impl FluxChat {
         if let Some(bar) = self.view_run_bar(room_id, false) {
             elements.push(bar);
         }
+        // Someone here acts like an agent you haven't marked.
+        if let Some(s) = self.view_agent_suggestion(room_id) {
+            elements.push(s);
+        }
+        // Several agents here: who you're talking to.
+        if let Some(target) = self.view_agent_target(room_id) {
+            elements.push(target);
+        }
 
         // Reply/edit preview bar
         if let Some((_, sender, body)) = &self.reply_to {
