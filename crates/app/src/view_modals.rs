@@ -25,6 +25,7 @@ impl FluxChat {
             crate::state::Modal::Verification { info } => self.view_verification_modal(info),
             crate::state::Modal::Lightbox { url, from_gallery } => self.view_lightbox_modal(url, *from_gallery),
             crate::state::Modal::Gallery => self.view_gallery_modal(),
+            crate::state::Modal::Runs => self.view_runs_dialog(),
             crate::state::Modal::Forward { body, sender_name, .. } => self.view_forward_modal(body, sender_name.as_deref()),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
             crate::state::Modal::Invite => self.view_invite_modal(),
@@ -689,6 +690,17 @@ impl FluxChat {
                     Message::SetPrefs(Box::new(p))
                 }),
             ui::divider(),
+            {
+                let base = p.clone();
+                ui::toggle_row("Notify when a run finishes",
+                    "For runs of 30 seconds or more, when you're not looking. The bell in the run bar asks for any run",
+                    p.notify_agent_done, move |v| {
+                        let mut p = base.clone();
+                        p.notify_agent_done = v;
+                        Message::SetPrefs(Box::new(p))
+                    })
+            },
+            ui::divider(),
         ]
         .spacing(10);
         if p.agents.is_empty() {
@@ -701,7 +713,9 @@ impl FluxChat {
                     Space::new().width(Fill),
                     ui::btn("Remove", ui::Tone::Ghost, Some(Message::SetAgent(agent.clone(), false))),
                 ].spacing(8).align_y(iced::Alignment::Center));
+                col = col.push(self.view_harness_picker(agent));
             }
+            col = col.push(ui::hint("Harness profiles are TOML files in the fluxchat data folder (agents/). Copy one to describe another harness; it's picked up on the next start."));
             col = col.push(ui::hint("In a room with an agent, its /commands go to it (as !command), a bar shows its run with Stop, and its approvals become buttons."));
         }
         ui::card(col).into()

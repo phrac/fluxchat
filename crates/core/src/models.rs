@@ -82,6 +82,10 @@ pub struct MessageInfo {
     /// What this row is, for display preferences (hide joins/leaves, ...).
     #[serde(default)]
     pub row_kind: RowKind,
+    /// The fluxchat agent protocol's fields, when the sender included them
+    /// (`org.fluxchat.agent`, docs/agent-protocol.md): run state, step,
+    /// progress, runtime, choices. Read from the latest edit.
+    pub agent: Option<serde_json::Value>,
 }
 
 /// Kind of timeline row.

@@ -268,6 +268,35 @@ pub async fn send_attachment(
         .map_err(|e| crate::error::AppError::Other(format!("Failed to upload: {e}")))
 }
 
+/// Send a voice message (Ogg/Opus, MSC3245 voice flag) to a view through
+/// its Timeline: in a thread view it goes into the thread, with local echo.
+pub async fn send_voice(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+    ogg_bytes: Vec<u8>,
+    duration_ms: u64,
+) -> Result<(), crate::error::AppError> {
+    use matrix_sdk::attachment::{AttachmentInfo, BaseAudioInfo};
+    use matrix_sdk_ui::timeline::{AttachmentConfig, AttachmentSource};
+    let size = ogg_bytes.len() as u64;
+    let config = AttachmentConfig {
+        info: Some(AttachmentInfo::Voice(BaseAudioInfo {
+            duration: Some(std::time::Duration::from_millis(duration_ms)),
+            size: size.try_into().ok(),
+            waveform: None,
+        })),
+        ..Default::default()
+    };
+    let content_type: mime::Mime = "audio/ogg".parse().unwrap_or(mime::APPLICATION_OCTET_STREAM);
+    let timeline = get_or_create_for_key(client, timelines, key).await?;
+    timeline
+        .send_attachment(AttachmentSource::Data { bytes: ogg_bytes, filename: "Voice message.ogg".into() }, content_type, config)
+        .use_send_queue()
+        .await
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to send voice: {e}")))
+}
+
 /// The single consumer of a Timeline's diff stream. Keeps a converted mirror of
 /// the SDK's item list by applying each diff to it (so only changed items are
 /// re-converted), and emits the full message list after each burst of diffs.
@@ -466,6 +495,26 @@ pub fn timeline_item_to_message_info(item: &TimelineItem) -> Option<MessageInfo>
 }
 
 /// Convert an EventTimelineItem to MessageInfo.
+/// The `org.fluxchat.agent` object of an event (its latest edit's
+/// `m.new_content` first), if it has one. Only events that mention the key
+/// are parsed.
+fn agent_meta(ev: &EventTimelineItem) -> Option<serde_json::Value> {
+    const KEY: &str = "org.fluxchat.agent";
+    let from = |raw: &str| -> Option<serde_json::Value> {
+        if !raw.contains(KEY) {
+            return None;
+        }
+        let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+        let content = val.get("content")?;
+        content.get("m.new_content").and_then(|c| c.get(KEY))
+            .or_else(|| content.get(KEY))
+            .filter(|v| v.is_object())
+            .cloned()
+    };
+    ev.latest_json().and_then(|r| from(r.json().get()))
+        .or_else(|| ev.original_json().and_then(|r| from(r.json().get())))
+}
+
 fn event_to_message_info(ev: &EventTimelineItem) -> Option<MessageInfo> {
     let mut info = convert_event(ev)?;
     if let Some(message) = ev.content().as_message() {
@@ -696,6 +745,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     caption: None,
                     caption_html: None,
                     row_kind: Default::default(),
+                    agent: agent_meta(ev),
                 })
             } else if let Some(sticker) = content.as_sticker() {
                 let sc = sticker.content();
@@ -720,6 +770,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     caption: None,
                     caption_html: None,
                     row_kind: Default::default(),
+                    agent: None,
                 })
             } else if let Some(poll_state) = content.as_poll() {
                 let result = poll_state.results();
@@ -755,6 +806,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     caption: None,
                     caption_html: None,
                     row_kind: Default::default(),
+                    agent: None,
                 })
             } else {
                 // Distinguish encryption failures (missing key) from genuinely
@@ -812,6 +864,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                     caption: None,
                     caption_html: None,
                     row_kind: Default::default(),
+                    agent: None,
                 })
             }
         }
@@ -855,6 +908,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             caption: None,
             caption_html: None,
             row_kind,
+            agent: None,
             })
         }
 
@@ -877,6 +931,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             caption: None,
             caption_html: None,
             row_kind: crate::models::RowKind::Profile,
+            agent: None,
             })
         }
 
@@ -918,6 +973,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
             caption: None,
             caption_html: None,
             row_kind: crate::models::RowKind::RoomState,
+            agent: None,
             })
         }
 

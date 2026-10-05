@@ -20,40 +20,43 @@ fluxchat is a fast, native [Matrix](https://matrix.org) client written entirely 
 
 Agent frameworks increasingly use chat as their front end, and Matrix is a good fit. It's encrypted and self-hostable, threads map neatly onto agent sessions, it works on every device, and bots are first-class users. But ordinary chat clients treat an agent like any other person: its progress floods the timeline, approvals are emoji you have to decode, and stopping a runaway run means remembering the right incantation.
 
-fluxchat reads what agents are doing and gives you controls for it. Mark a user as an AI agent and:
+fluxchat reads what agents are doing and gives you controls for it. Mark a user as an AI agent, pick its harness, and:
 
 **See what it's doing**
-- An **agent chip** in the room header shows idle, *working · 3m* with a live progress bar, or *waiting on you*.
-- The **current step** ("📖 Reading notes.md", "🔍 Searching the web for …"), a step count and the time so far.
-- **Run state** on every request and thread (working / needs you / done / failed), with dots in the room list.
-- Progress logs **fold to their latest step** instead of flooding the timeline.
+- An **agent chip** in the room header: idle, *working · 3m* with a progress bar, or *waiting on you*, plus its model, context use and cost.
+- The **current step** ("📖 Reading notes.md"), a step count and the time so far; a filled progress bar when the agent says how far along it is.
+- **Run state** on every request and thread (working / needs you / done / failed), with dots in the room list and **2 running · 1 waiting** in the status bar.
+- A **task board**: an agent room's threads as runs, active ones first.
+- **All your runs** across rooms in one dialog, and a **watch window** that tiles active runs and adds new ones as they start.
 
 **Stay in control**
 - **Stop** a run from the run bar or the header menu.
-- **Steer** it mid-run (read after its next step) or **queue** the next task, instead of interrupting.
-- **Approvals as buttons:** Approve once / For this session / Always / Deny. You get a desktop notification when an agent is blocked on you, even with mentions-only on.
-- **Pickers as buttons** (model, reasoning level…) labelled with their options.
+- **Steer** it mid-run or **queue** the next task, instead of interrupting.
+- **Approvals and pickers as buttons**, with a desktop notification when an agent is blocked on you.
+- **Get told when a run finishes**: automatically for long runs, or with the 🔔 for any run.
 
 **Work with it like a terminal**
-- The agent's **`/commands` autocomplete** in its rooms and are sent the way it expects (`!goal`, `!stop`, `!model`…); skills pass straight through.
-- Quick commands one click away: Status, Usage and cost, Context window, Switch model, New session.
-- **Each request opens its own thread** beside the room as the agent starts it. Keep chatting in the room while it works.
-- Panes and windows let you watch several agents and threads side by side.
+- The agent's **`/commands` autocomplete** and are sent the way its harness expects; skills pass straight through.
+- **Ctrl+R** searches what you've sent; **`/snippet`** saves prompts you reuse.
+- **Each request opens its own thread** beside the room as the agent starts it.
+- Long answers and step logs fold; code blocks copy in one click; diffs are highlighted; PDFs preview.
+- **Hold the mic to talk**: a voice prompt, sent on release, into the thread you're in.
 
-It works today with [Hermes Agent](https://github.com/NousResearch/hermes-agent), whose Matrix conventions it follows (status reactions, threaded sessions, reaction-based approvals, `!` commands). Any agent or harness that uses the same conventions gets the same controls. See [AI agents](docs/agents.md) in the manual.
+**Pluggable harnesses.** Agent frameworks differ in the details: command prefixes, status reactions, how they ask for approval. Each is a small TOML [harness profile](docs/agents.md#harness-profiles). [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw) and Claude Code (through a [Matrix channel](https://github.com/zekker6/claude-code-channel-matrix)) are built in, and adding another (pi, a CI bot, your own) is a new file, no rebuild. Agents you write yourself can skip the guessing entirely: the open [agent protocol](docs/agent-protocol.md) is a few fields in their messages that say exactly what they're doing.
+
+**Matrix first.** fluxchat speaks Matrix, and only Matrix: one open, encrypted, self-hostable protocol, with bridges to most other networks. Want fluxchat on another platform? Have your agent build it and send us a pull request.
+
+See [AI agents](docs/agents.md) in the manual.
 
 ### Where it's going
 
-We think the chat client is becoming the cockpit for agents. What's next, roughly in order:
+We think the chat client is becoming the cockpit for agents. Next:
 
-- **A task board.** An agent room's threads as a list of runs, with state, duration and last step, filtered to what's active.
-- **Notify when a run finishes**, plus a per-thread "tell me when this is done", so you can walk away.
-- **Model, context and cost at a glance.** The agent's runtime info (model, context %, working directory) in the pane title and status bar, instead of a footer on every message.
-- **Better output.** Copy buttons on code blocks, highlighted diffs, inline PDF previews, and long answers collapsed.
-- **Prompt history and snippets.** ↑ and Ctrl+R like a shell, and saved prompts in the palette.
-- **A structured agent protocol.** A small, open set of Matrix event fields for run state, steps and approvals, so any agent or harness (coding agents, research agents, CI bots) can report precisely instead of fluxchat inferring it from reactions.
-- **Multi-agent dashboards.** A window that follows every active run across rooms, and rooms where agents work together while you watch and step in.
-- **Voice.** Push-to-talk voice prompts to agents, building on the voice messages and calls already here.
+- **The protocol, upstream.** Small emitters for Python and TypeScript, support in the harnesses themselves, and a Matrix spec proposal, so run state stops being inferred anywhere.
+- **Rooms with several agents.** Per-agent state when a researcher, a coder and a reviewer share a room, with hand-offs you can follow and step into.
+- **Review what agents change.** A diff viewer for coding agents' patches, with approve / reject in place.
+- **Run history.** Duration and cost per run, search across runs, and a run's transcript exported as a report.
+- **Answer from anywhere.** Approve or stop from the desktop notification itself; harness detection that suggests the right profile when an agent first reacts to you.
 
 Ideas and pull requests are welcome.
 
@@ -69,18 +72,22 @@ Ideas and pull requests are welcome.
 ## Features
 
 ### AI agents
-- Mark a user as an AI agent (e.g. [Hermes Agent](https://github.com/NousResearch/hermes-agent)): its `/commands` autocomplete and go to it as `!commands`
-- Run state on each request and thread (working / needs you / done / failed), with new agent threads opening beside the room as they start
-- Agent chip in the room header (idle / working / waiting on you) with quick commands: Stop, Status, Usage, Context, Model, New session
-- Live progress: current step, step count, time so far and a progress bar; multi-step progress messages folded to their latest step
-- Run bar with Stop, and Send / Steer / Queue for messages sent while it works
-- Approvals and pickers as buttons, with a desktop notification when an agent is waiting on you
+- Mark a user as an AI agent and pick its harness: Hermes Agent, OpenClaw, Claude Code (Matrix channel), generic, or your own TOML profile
+- Its `/commands` autocomplete and go out as its harness expects (`!stop`, `/stop`, with a mention where needed)
+- Run state on each request and thread (working / needs you / done / failed), from the open agent protocol or the harness's reactions and typing
+- Agent chip in the room header with model, context and cost, and quick commands (Stop, Status, Usage, Model, New session…)
+- Run bar: time so far, current step, progress bar, Stop, Send / Steer / Queue, and 🔔 tell me when it's done
+- Task board in agent rooms; Runs dialog across rooms; a watch window that tiles active runs and follows new ones
+- Approvals and pickers as buttons; notifications when an agent waits on you or a long run finishes
+- New agent threads open beside the room as they start
+- Step logs and long answers folded; runtime footers moved to the chip and status bar
+- Prompt history (Ctrl+R) and snippets (`/snippet`)
 
 ### Messaging
-- Markdown, code blocks with syntax highlighting, inline LaTeX
+- Markdown, code blocks with syntax highlighting and a copy button, highlighted diffs, inline LaTeX
 - Replies, edits, deletions, reactions, forwarding, pins
 - Mentions with autocomplete, `:emoji:` shortcodes, full emoji picker
-- Images, video, voice messages, files, GIFs, stickers, polls, locations
+- Images, video, voice messages (hold to talk), files with PDF previews, GIFs, stickers, polls, locations
 - Captions: attach a file and type a message, sent together as one
 - Gallery of every image, video and file in a room or thread, back to its first message (encrypted rooms included)
 - Link previews, read receipts, typing indicators, per-room drafts
@@ -154,7 +161,7 @@ Ideas and pull requests are welcome.
 
 The [user manual](docs/README.md) covers everything:
 
-- [Getting started](docs/getting-started.md) · [The interface](docs/interface.md) · [Messaging](docs/messaging.md) · [Threads](docs/threads.md) · [AI agents](docs/agents.md)
+- [Getting started](docs/getting-started.md) · [The interface](docs/interface.md) · [Messaging](docs/messaging.md) · [Threads](docs/threads.md) · [AI agents](docs/agents.md) · [Agent protocol](docs/agent-protocol.md)
 - [Panes and windows](docs/panes-and-windows.md) · [Rooms and spaces](docs/rooms-and-spaces.md) · [People](docs/people.md)
 - [Notifications](docs/notifications.md) · [Voice and video](docs/calls.md) · [Settings](docs/settings.md) · [Encryption](docs/encryption.md)
 - [Keyboard shortcuts](docs/keyboard-shortcuts.md) · [Slash commands](docs/slash-commands.md) · [Themes](docs/themes.md) · [Troubleshooting](docs/troubleshooting.md)
@@ -203,6 +210,7 @@ crates/
 | Video | iced_video_player 0.6 (GStreamer) |
 | Storage | rusqlite + matrix-sdk SQLite |
 | Syntax highlighting | syntect |
+| PDF previews | hayro (pure Rust) |
 
 ## License
 

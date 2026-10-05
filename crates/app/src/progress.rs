@@ -31,6 +31,8 @@ fn epoch() -> Instant {
 pub struct Working {
     height: f32,
     color: Color,
+    /// Known progress (0–1): a filled bar, no animation.
+    fraction: Option<f32>,
 }
 
 #[derive(Default)]
@@ -38,9 +40,10 @@ struct State {
     now: Option<Instant>,
 }
 
-/// A sliding bar `height` px tall in `color`, as wide as it's given.
-pub fn working<'a, Message: 'a>(height: f32, color: Color) -> Element<'a, Message> {
-    Element::new(Working { height, color })
+/// A progress bar `height` px tall in `color`, as wide as it's given:
+/// filled to `fraction` when known, else a sliding segment.
+pub fn bar<'a, Message: 'a>(height: f32, color: Color, fraction: Option<f32>) -> Element<'a, Message> {
+    Element::new(Working { height, color, fraction })
 }
 
 impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Working {
@@ -71,6 +74,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Working {
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
+        if self.fraction.is_some() {
+            return; // nothing moves
+        }
         let state = tree.state.downcast_mut::<State>();
         match event {
             Event::Window(window::Event::RedrawRequested(now)) => {
@@ -99,6 +105,20 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Working {
             renderer::Quad { bounds: b, border: iced::Border { radius, ..Default::default() }, ..Default::default() },
             Color { a: self.color.a * 0.18, ..self.color },
         );
+        if let Some(f) = self.fraction {
+            let w = b.width * f.clamp(0.0, 1.0);
+            if w > 0.0 {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: Rectangle { width: w, ..b },
+                        border: iced::Border { radius, ..Default::default() },
+                        ..Default::default()
+                    },
+                    self.color,
+                );
+            }
+            return;
+        }
         let now = tree.state.downcast_ref::<State>().now.unwrap_or_else(epoch);
         let t = (now.saturating_duration_since(epoch()).as_secs_f32() % PERIOD_SECS) / PERIOD_SECS;
         let seg = b.width * SEGMENT;

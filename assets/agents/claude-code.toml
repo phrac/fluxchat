@@ -1,0 +1,30 @@
+# Claude Code through a Matrix channel / bridge, e.g. claude-code-channel-matrix
+# (github.com/zekker6/claude-code-channel-matrix): permission prompts are
+# mirrored to Matrix pre-reacted with ✅ / ❌, and the bot types while Claude
+# works. Other bridges (matron-bridge, claudematrix) are close: adjust below.
+id = "claude-code"
+name = "Claude Code (Matrix channel)"
+about = "Claude Code sessions bridged to Matrix rooms or threads"
+url = "https://github.com/zekker6/claude-code-channel-matrix"
+
+# Messages are prompts; there are no remote commands to send.
+command_prefix = "/"
+stop = ""
+steer = ""
+queue = ""
+
+working_reaction = ""
+done_reaction = ""
+failed_reaction = ""
+typing_means_working = true
+
+progress_steps = false
+runtime_footer = false
+
+approvals = [
+  { emoji = "✅", label = "Allow" },
+  { emoji = "❌", label = "Deny" },
+]
+
+menu = []
+commands = []

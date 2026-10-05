@@ -237,6 +237,9 @@ impl FluxChat {
                 is_agent,
                 move |on| Message::SetAgent(uid.clone(), on),
             ));
+            if is_agent {
+                body = body.push(self.view_harness_picker(user_id));
+            }
             body = body.push(ui::divider());
             let ignore = if is_ignored {
                 ui::icon_btn(crate::icons::SVG_EYE_OFF, "Unignore", Tone::Ghost, Some(Message::ToggleIgnoreUser(user_id.to_string())))

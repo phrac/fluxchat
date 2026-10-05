@@ -14,6 +14,34 @@ pub fn generate_thumbnail(data: &[u8], max_w: u32, max_h: u32) -> Option<(Vec<u8
 }
 
 /// Get original image dimensions without full decode.
+/// A PDF's first page as a PNG `width` px wide (pure-Rust rendering, no
+/// system libraries), with its size. None for anything it can't render —
+/// encrypted PDFs, broken files (a panic inside the renderer included).
+pub fn pdf_preview(data: &[u8], width: u32) -> Option<(Vec<u8>, u32, u32)> {
+    use hayro::hayro_interpret::InterpreterSettings;
+    use hayro::hayro_syntax::Pdf;
+    use hayro::vello_cpu::color::palette::css::WHITE;
+    use hayro::{PixmapSettings, RenderCache, RenderSettings};
+    let data = data.to_vec();
+    std::panic::catch_unwind(move || {
+        let pdf = Pdf::new(data).ok()?;
+        let pages = pdf.pages();
+        let page = pages.first()?;
+        let (w, h) = page.render_dimensions();
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        // Scale to the width; very tall pages are capped at 3x it.
+        let scale = (width as f32 / w).min(width as f32 * 3.0 / h).clamp(0.05, 4.0);
+        let cache = RenderCache::new();
+        let pixmap = hayro::render(page, &cache, &InterpreterSettings::default(), &RenderSettings::default(),
+            &PixmapSettings { x_scale: scale, y_scale: scale, bg_color: WHITE });
+        let (pw, ph) = (pixmap.width() as u32, pixmap.height() as u32);
+        let png = pixmap.into_png().ok()?;
+        Some((png, pw, ph))
+    }).ok().flatten()
+}
+
 pub fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     let img = image::load_from_memory(data).ok()?;
     Some((img.width(), img.height()))
@@ -76,4 +104,42 @@ pub async fn get_event_media_bytes(
     let data = client.media().get_media_content(&request, false).await
         .map_err(|e| AppError::Other(format!("Failed to download: {e}")))?;
     Ok((data, mime))
+}
+
+#[cfg(test)]
+mod pdf_tests {
+    /// A one-page PDF saying "Hello" in Helvetica (a standard font: not
+    /// embedded, so it only draws with hayro's bundled fonts).
+    fn hello_pdf() -> Vec<u8> {
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            "<< /Length 41 >>\nstream\nBT /F1 36 Tf 20 35 Td (Hello) Tj ET\nendstream",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+        for o in offsets {
+            pdf.extend(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+        pdf
+    }
+
+    #[test]
+    fn renders_the_first_page_with_its_text() {
+        let (png, w, h) = super::pdf_preview(&hello_pdf(), 400).expect("renders");
+        assert_eq!((w, h), (400, 200));
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        let dark = img.pixels().filter(|p| p.0[0] < 128).count();
+        assert!(dark > 200, "the text drew ({dark} dark pixels)");
+        assert!(super::pdf_preview(b"not a pdf", 400).is_none());
+    }
 }

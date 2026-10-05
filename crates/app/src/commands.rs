@@ -95,6 +95,8 @@ static COMMANDS: &[Command] = &[
     Command { name: "/plain", usage: "<text>", description: "Send without markdown formatting", needs_room: true },
     Command { name: "/upgraderoom", usage: "<version>", description: "Upgrade room to a new version", needs_room: true },
     Command { name: "/devtools", usage: "", description: "Open developer tools", needs_room: true },
+    Command { name: "/snippet", usage: "<name> <text>", description: "Save a prompt to reuse (Ctrl+R); no text lists them", needs_room: false },
+    Command { name: "/unsnippet", usage: "<name>", description: "Remove a saved prompt", needs_room: false },
 ];
 
 /// All registered commands.
@@ -462,6 +464,26 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         }
 
         // --- Highlight ---
+        "/snippet" => {
+            match args.split_once(char::is_whitespace) {
+                Some((name, text)) if !text.trim().is_empty() => {
+                    CommandResult::Messages(vec![Message::SaveSnippet(name.to_string(), text.trim().to_string())])
+                }
+                _ if state.snippets.is_empty() => CommandResult::Help(
+                    "No snippets yet. /snippet <name> <text> saves one; Ctrl+R finds it.".into(),
+                ),
+                _ => CommandResult::Help(state.snippets.iter()
+                    .map(|(n, t)| format!("{n}: {}", t.lines().next().unwrap_or("")))
+                    .collect::<Vec<_>>().join("\n")),
+            }
+        }
+        "/unsnippet" => {
+            if args.is_empty() {
+                CommandResult::Help("Usage: /unsnippet <name>".into())
+            } else {
+                CommandResult::Messages(vec![Message::SaveSnippet(args.to_string(), String::new())])
+            }
+        }
         "/highlight" => {
             if args.is_empty() {
                 let words: Vec<_> = state.highlight_words.to_vec();

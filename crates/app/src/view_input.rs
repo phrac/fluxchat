@@ -304,7 +304,7 @@ impl FluxChat {
 
         // Command autocomplete popup
         if !self.cmd_completions.is_empty() {
-            let agent_room = self.agent_in(room_id).is_some();
+            let harness = self.agent_harness(room_id).map(|(_, h)| h);
             let mut popup_col = column![].spacing(0);
             for (i, (name, desc)) in self.cmd_completions.iter().take(12).enumerate() {
                 let is_selected = i == self.cmd_completion_idx;
@@ -316,17 +316,17 @@ impl FluxChat {
                 popup_col = popup_col.push(
                     button(
                         row![
-                            text(*name)
+                            text(name.as_str())
                                 .font(self.msg_font())
                                 .size(15)
                                 .color(theme::colors().accent),
-                            text(*desc)
+                            text(desc.as_str())
                                 .font(self.msg_font())
                                 .size(14)
                                 .color(theme::colors().text_dim),
                         ]
                         // Goes to the agent (sent as !name).
-                        .push(agent_room.then(|| crate::agents::is_agent_command(name)).filter(|a| *a).map(|_| {
+                        .push(harness.as_ref().filter(|h| crate::agents::is_agent_command(h, name)).map(|_| {
                             row![
                                 Space::new().width(Fill),
                                 crate::ui::icon(crate::icons::SVG_BOT, 13.0, theme::colors().text_dim),
@@ -630,25 +630,29 @@ impl FluxChat {
 
         // Mic button
         let mic_color = if self.voice_recording { theme::colors().red } else { theme::colors().text_dim };
+        // Hold to talk (sent on release), or tap to record and tap again to
+        // review. A press, not a click: holding is the point.
         let mic_btn: Element<Message> = {
             let handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_MIC);
-            button(
-                iced::widget::svg(handle)
-                    .width(16).height(16)
-                    .style(move |_, _| iced::widget::svg::Style { color: Some(mic_color) }),
+            let held = self.ptt_held.is_some();
+            crate::ui::with_tooltip(
+                iced::widget::mouse_area(
+                    container(
+                        iced::widget::svg(handle)
+                            .width(16).height(16)
+                            .style(move |_, _| iced::widget::svg::Style { color: Some(mic_color) }),
+                    )
+                    .padding([2, 6])
+                    .style(move |_: &Theme| container::Style {
+                        background: held.then(|| theme::with_alpha(theme::colors().red, 0.15).into()),
+                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                        ..Default::default()
+                    }),
+                )
+                .on_press(Message::MicPressed)
+                .interaction(iced::mouse::Interaction::Pointer),
+                if self.voice_recording { "Tap to stop and review" } else { "Hold to talk (sends on release) \u{00b7} tap to record" },
             )
-            .on_press(if self.voice_recording { Message::StopVoiceRecording } else { Message::StartVoiceRecording })
-            .padding([2, 6])
-            .style(|_, status| button::Style {
-                background: if matches!(status, button::Status::Hovered) {
-                    Some(theme::tint(0.08).into())
-                } else {
-                    None
-                },
-                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            })
-            .into()
         };
 
         let input_row: Element<Message> = if let Some((_, duration_ms)) = &self.voice_ready {

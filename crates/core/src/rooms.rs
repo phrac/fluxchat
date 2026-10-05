@@ -587,6 +587,31 @@ pub async fn remove_room_from_space(client: &matrix_sdk::Client, room_id: &str, 
     crate::spaces::remove_child(client, space_id, room_id).await
 }
 
+/// Joined rooms any of `user_ids` is in (a DM with them, or a joined member),
+/// from the local store — no requests. Used to follow AI agents' rooms.
+pub async fn rooms_with_members(client: &matrix_sdk::Client, user_ids: &[String]) -> Vec<String> {
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+    let users: Vec<matrix_sdk::ruma::OwnedUserId> = user_ids.iter()
+        .filter_map(|u| matrix_sdk::ruma::UserId::parse(u.as_str()).ok())
+        .collect();
+    let mut found = Vec::new();
+    for room in client.joined_rooms() {
+        let mut hit = room.direct_targets().iter().any(|t| users.iter().any(|u| t.as_str() == u.as_str()));
+        for user in &users {
+            if hit {
+                break;
+            }
+            if let Ok(Some(member)) = room.get_member_no_sync(user).await {
+                hit = matches!(member.membership(), MembershipState::Join);
+            }
+        }
+        if hit {
+            found.push(room.room_id().to_string());
+        }
+    }
+    found
+}
+
 /// Open or create a DM room with a user without sending a message.
 pub async fn open_dm(client: &matrix_sdk::Client, user_id: &str) -> Result<String, AppError> {
     let target = matrix_sdk::ruma::UserId::parse(user_id)

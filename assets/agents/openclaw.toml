@@ -1,0 +1,51 @@
+# OpenClaw over its Matrix channel.
+# From its docs (docs.openclaw.ai: channels/matrix, tools/slash-commands). Its
+# ack reaction is configurable (`ackReaction`); set working_reaction to yours.
+id = "openclaw"
+name = "OpenClaw"
+about = "Personal AI assistant, via its Matrix channel"
+url = "https://github.com/openclaw/openclaw"
+
+# Slash commands are sent as text (`/stop`). In rooms OpenClaw only takes
+# commands that start with its mention; in DMs they work as they are.
+command_prefix = "/"
+mention_commands = true
+stop = "stop"
+steer = ""
+queue = ""
+
+working_reaction = "👀"
+done_reaction = ""
+failed_reaction = ""
+# It types while it works.
+typing_means_working = true
+
+progress_steps = true
+runtime_footer = false
+
+approvals = [
+  { emoji = "✅", label = "Approve" },
+  { emoji = "❌", label = "Deny" },
+]
+
+menu = [
+  { label = "Status", command = "status" },
+  { label = "Switch model", command = "model" },
+  { label = "New session", command = "new" },
+]
+
+commands = [
+  { name = "stop", description = "Abort the current run" },
+  { name = "new", description = "Archive this session and start a fresh one (optional model)" },
+  { name = "reset", description = "Reset the session" },
+  { name = "model", description = "Show or switch the model" },
+  { name = "status", description = "Session status" },
+  { name = "approve", description = "Approve a pending action" },
+  { name = "agents", description = "List agents" },
+  { name = "session", description = "Session settings" },
+  { name = "focus", description = "Focus a session" },
+  { name = "unfocus", description = "Stop focusing" },
+  { name = "think", description = "Thinking level" },
+  { name = "verbose", description = "Verbose output" },
+  { name = "help", description = "The agent's help" },
+]

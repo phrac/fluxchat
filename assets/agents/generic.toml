@@ -1,0 +1,26 @@
+# Any agent or harness. With nothing configured fluxchat relies on the
+# structured agent protocol (docs/agent-protocol.md) and the typing indicator.
+# Copy this file to describe a new harness (pi, a CI bot, your own…): it's
+# picked up on the next start, and offered on the agent's profile card.
+id = "generic"
+name = "Generic agent"
+about = "Any agent: reads the fluxchat agent protocol and the typing indicator"
+url = ""
+
+command_prefix = "/"
+mention_commands = false
+stop = ""
+steer = ""
+queue = ""
+
+working_reaction = ""
+done_reaction = ""
+failed_reaction = ""
+typing_means_working = true
+
+progress_steps = true
+runtime_footer = false
+
+approvals = []
+menu = []
+commands = []

@@ -32,3 +32,4 @@ matrix-sdk-crypto = "0.18"
 getrandom = "0.3"
 # OS credential stores, all pure Rust (Secret Service over zbus, no libdbus).
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }
+hayro = { version = "0.8", features = ["embed-fonts"] }

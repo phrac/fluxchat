@@ -80,6 +80,8 @@ pub enum Modal {
     Lightbox { url: String, from_gallery: bool },
     /// The media gallery (`FluxChat::gallery`).
     Gallery,
+    /// Every agent run across rooms (agents.rs).
+    Runs,
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
     Invite,
     Report { event_id: String, room_id: String },
@@ -133,6 +135,8 @@ pub struct Gallery {
 pub enum PaletteItem {
     Room(String),
     Action(PaletteAction),
+    /// A past prompt or a snippet (name): puts its text in the composer.
+    Prompt(String, Option<String>),
 }
 
 /// A palette action: label, short description, and what it does.
@@ -251,6 +255,8 @@ pub struct FluxChat {
     pub gifs_open: bool,
     pub audio_playing: Option<String>,      // event_id of currently playing audio
     pub voice_recording: bool,
+    /// The mic is held down (push to talk), since when.
+    pub ptt_held: Option<std::time::Instant>,
     pub voice_record_start: Option<std::time::Instant>,
     pub voice_ready: Option<(Vec<u8>, u64)>, // encoded ogg bytes + duration_ms, waiting to send
     pub new_messages_below: bool, // true when msgs arrived while scrolled up
@@ -304,8 +310,17 @@ pub struct FluxChat {
 
     /// Agent run states worked out from the loaded timelines (agents.rs).
     pub agent_runs: crate::agents::AgentRuns,
-    /// Agent step logs shown in full (event IDs; collapsed by default).
-    pub expanded_progress: HashSet<String>,
+    /// What you've sent, oldest first (prompts.rs; Ctrl+R).
+    pub prompt_history: Vec<String>,
+    /// Saved prompts: (name, text), by name (`/snippet`).
+    pub snippets: Vec<(String, String)>,
+    /// Joined rooms an AI agent is in: their timelines stay loaded so runs
+    /// everywhere are tracked (agents.rs).
+    pub agent_rooms: Vec<String>,
+    /// Threads panel in an agent room: only runs still going (task board filter).
+    pub threads_active_only: bool,
+    /// Agent step logs and long answers shown in full (event IDs; folded by default).
+    pub expanded_agent: HashSet<String>,
     /// tmux-style windows, each a grid of panes (see `panes.rs`).
     pub windows: Vec<crate::panes::Window>,
     pub active_window: usize,
@@ -447,7 +462,7 @@ pub struct FluxChat {
     // Input state
     pub input_content: iced::widget::text_editor::Content,
     pub input_text: String, // plain text mirror of input_content
-    pub cmd_completions: Vec<(&'static str, &'static str)>, // (name, description)
+    pub cmd_completions: Vec<(String, String)>, // (name, description)
     pub cmd_completion_idx: usize,
     pub mention_completions: Vec<(String, String)>, // (user_id, display_name)
     pub mention_completion_idx: usize,
@@ -743,7 +758,12 @@ impl FluxChat {
             gif_searched: false,
             help_text: None,
             modal: None,
-            expanded_progress: HashSet::new(),
+            prompt_history: Vec::new(),
+            snippets: Vec::new(),
+            ptt_held: None,
+            agent_rooms: Vec::new(),
+            threads_active_only: false,
+            expanded_agent: HashSet::new(),
             agent_runs: Default::default(),
             windows: vec![crate::panes::Window::new(None)],
             active_window: 0,

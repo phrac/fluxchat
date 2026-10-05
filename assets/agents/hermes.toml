@@ -1,0 +1,88 @@
+# Hermes Agent (Nous Research) over its Matrix gateway.
+# Read from its adapter: plugins/platforms/matrix/adapter.py
+id = "hermes"
+name = "Hermes Agent"
+about = "Nous Research's self-improving agent, via its Matrix gateway"
+url = "https://github.com/NousResearch/hermes-agent"
+
+# Commands go out as `!name` (Matrix clients keep `/` for themselves).
+command_prefix = "!"
+stop = "stop"
+steer = "steer"
+queue = "queue"
+
+# 👀 on your message while it works, then ✅ / ❌.
+working_reaction = "👀"
+done_reaction = "✅"
+failed_reaction = "❌"
+typing_means_working = false
+
+# One message edited a line per tool ("📖 Reading notes.md").
+progress_steps = true
+# `/footer on`: "model · 42% · ~/dir" under final answers.
+runtime_footer = true
+
+# Approvals: the bot reacts to its own prompt with these; you react to answer.
+approvals = [
+  { emoji = "✅", label = "Approve once" },
+  { emoji = "🌀", label = "For this session" },
+  { emoji = "♾️", label = "Always" },
+  { emoji = "❌", label = "Deny" },
+]
+
+menu = [
+  { label = "Status", command = "status" },
+  { label = "Usage and cost", command = "usage" },
+  { label = "Context window", command = "context" },
+  { label = "Switch model", command = "model" },
+  { label = "New session", command = "new" },
+]
+
+commands = [
+  { name = "stop", description = "Interrupt the running turn and stop background processes" },
+  { name = "steer", description = "Tell the running turn something, after its next step" },
+  { name = "queue", description = "Queue a prompt for the next turn" },
+  { name = "q", description = "Queue a prompt for the next turn" },
+  { name = "bg", description = "Run a prompt in a separate background session" },
+  { name = "btw", description = "Side question, answered without interrupting" },
+  { name = "goal", description = "Set a standing goal (status, pause, resume, clear)" },
+  { name = "subgoal", description = "Add criteria to the active goal" },
+  { name = "new", description = "Start a fresh session" },
+  { name = "reset", description = "Start a fresh session" },
+  { name = "retry", description = "Resend the last message" },
+  { name = "undo", description = "Remove the last exchange" },
+  { name = "status", description = "Session info and recap" },
+  { name = "usage", description = "Tokens, cost and context" },
+  { name = "context", description = "Context-window gauge" },
+  { name = "model", description = "Show or switch the model" },
+  { name = "reasoning", description = "Reasoning effort / display" },
+  { name = "fast", description = "Fast mode" },
+  { name = "personality", description = "Apply a personality" },
+  { name = "title", description = "Show or set the session title" },
+  { name = "sessions", description = "List previous sessions" },
+  { name = "resume", description = "Resume a named session" },
+  { name = "branch", description = "Branch the session into a new thread" },
+  { name = "fork", description = "Branch the session into a new thread" },
+  { name = "compress", description = "Compress the context" },
+  { name = "tasks", description = "Active agents and running tasks" },
+  { name = "agents", description = "Active agents and running tasks" },
+  { name = "approve", description = "Approve the pending command (session, always)" },
+  { name = "deny", description = "Deny the pending command" },
+  { name = "yolo", description = "Toggle skipping approval prompts" },
+  { name = "diff", description = "Show git changes" },
+  { name = "rollback", description = "List or restore checkpoints" },
+  { name = "plan", description = "Write a plan without executing" },
+  { name = "review", description = "Have a reviewer check recent work" },
+  { name = "loop", description = "Re-run a prompt on an interval" },
+  { name = "heartbeat", description = "Recurring prompt while idle" },
+  { name = "learn", description = "Distil a reusable skill" },
+  { name = "skills", description = "Review pending skill writes" },
+  { name = "memory", description = "Review pending memory writes" },
+  { name = "footer", description = "Toggle the runtime footer" },
+  { name = "verbose", description = "Cycle tool progress display" },
+  { name = "insights", description = "Usage analytics" },
+  { name = "commands", description = "Browse all commands and skills" },
+  { name = "help", description = "The agent's help" },
+  { name = "version", description = "Agent version" },
+  { name = "restart", description = "Restart the gateway" },
+]

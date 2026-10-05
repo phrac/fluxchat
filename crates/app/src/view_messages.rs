@@ -23,6 +23,13 @@ const CAPTION_PART_INDEX: usize = 10_000;
 const BIG_EMOJI_SCALE: f32 = 2.2;
 /// Lines a collapsed code block shows before "Show more".
 const CODE_BLOCK_LINES: usize = 5;
+/// Width a PDF's first-page preview is shown at.
+const PDF_PREVIEW_SHOWN: f32 = 240.0;
+/// An agent answer longer than this many lines (or `LONG_ANSWER_CHARS`) is
+/// folded to `LONG_ANSWER_HEIGHT` px with a Show full answer button.
+const LONG_ANSWER_LINES: usize = 30;
+const LONG_ANSWER_CHARS: usize = 2500;
+const LONG_ANSWER_HEIGHT: f32 = 320.0;
 
 /// Gap between the columns of a message row (time, nick, avatar, separator, text).
 pub(crate) const MSG_COL_GAP: f32 = 6.0;
@@ -807,9 +814,28 @@ impl FluxChat {
             let mime_str = msg.file_mimetype.as_deref().unwrap_or("file");
             let eid = msg.event_id.clone();
             let rid = view_key.to_string();
+            // A PDF shows its first page above the name (click opens it).
+            let preview = msg.file_mxc.as_ref()
+                .filter(|_| msg.file_mimetype.as_deref() == Some("application/pdf"))
+                .and_then(|m| self.image_cache.get(&format!("pdf_preview:{m}")))
+                .map(|handle| {
+                    container(
+                        iced::widget::image(handle.clone())
+                            .width(Length::Fixed(PDF_PREVIEW_SHOWN))
+                            .content_fit(iced::ContentFit::ScaleDown),
+                    )
+                    .max_height(PDF_PREVIEW_SHOWN * 1.4)
+                    .clip(true)
+                    .style(|_: &Theme| container::Style {
+                        border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                        ..Default::default()
+                    })
+                });
             button(
                 container(
-                    row![
+                    column![]
+                    .push(preview)
+                    .push(row![
                         iced::widget::svg(file_icon)
                             .width(24).height(24)
                             .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().accent) }),
@@ -819,7 +845,8 @@ impl FluxChat {
                         ].spacing(2),
                     ]
                     .spacing(10)
-                    .align_y(iced::Alignment::Center),
+                    .align_y(iced::Alignment::Center))
+                    .spacing(8),
                 )
                 .padding([10, 14])
                 .style(|_: &Theme| container::Style {
@@ -872,6 +899,8 @@ impl FluxChat {
             if let crate::html::RenderedBody::Parts(parts) = &*rendered {
                 // Use structured parts to render code blocks in containers
                 let parts = parts.clone();
+                // Each block's full code, for its Copy button.
+                let code_texts = if has_code_block { code_block_texts(formatted) } else { Vec::new() };
                 let mut body_col = column![].spacing(4).width(Fill);
                 let mut part_idx = 0usize;
                 let mut block_idx = 0usize;
@@ -948,16 +977,28 @@ impl FluxChat {
                             };
 
                             let code_container_bg = theme::colors().code_bg;
-                            body_col = body_col.push(
-                                container(code_col)
-                                    .padding([8, 12])
-                                    .width(Fill)
-                                    .style(move |_| container::Style {
-                                        background: Some(code_container_bg.into()),
-                                        border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                                        ..Default::default()
-                                    }),
-                            );
+                            let code_box = container(code_col)
+                                .padding([8, 12])
+                                .width(Fill)
+                                .style(move |_| container::Style {
+                                    background: Some(code_container_bg.into()),
+                                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                                    ..Default::default()
+                                });
+                            // Copy the whole block (collapsed or not), top right.
+                            let copy = code_texts.get(block).cloned().map(|code| {
+                                container(crate::ui::with_tooltip(
+                                    button(crate::ui::icon(crate::icons::SVG_COPY, 13.0, theme::colors().text_dim))
+                                        .on_press(Message::CopyMessageText(code))
+                                        .padding(4)
+                                        .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+                                    "Copy code",
+                                ))
+                                .width(Fill)
+                                .align_x(iced::alignment::Horizontal::Right)
+                                .padding(4)
+                            });
+                            body_col = body_col.push(iced::widget::stack![code_box].push(copy));
                             part_idx += 1;
                         }
                         crate::html::MessagePart::Table { headers, rows } => {
@@ -1159,10 +1200,32 @@ impl FluxChat {
         }
 
         // An agent's step log (its progress message, edited a line per tool):
-        // the latest step and a count, all of them on demand.
+        // the latest step and a count, all of them on demand. A long answer
+        // is folded to its first screenful.
         if self.prefs.agents.contains(&msg.sender) {
-            if let Some(steps) = crate::agents::progress_steps(&msg.body).filter(|s| s.len() > 1) {
-                body_element = self.view_progress_log(msg, &steps, self.expanded_progress.contains(&msg.event_id));
+            let unfolded = self.expanded_agent.contains(&msg.event_id);
+            let steps = self.harness_of(&msg.sender).progress_steps
+                .then(|| crate::agents::progress_steps(&msg.body)).flatten();
+            if let Some(steps) = steps.filter(|s| s.len() > 1) {
+                body_element = self.view_progress_log(msg, &steps, unfolded);
+            } else if is_long_answer(&msg.body) {
+                let toggle = button(
+                    text(if unfolded { "Show less".to_string() } else { format!("Show full answer ({} lines)", msg.body.lines().count()) })
+                        .font(self.msg_font()).size(11).color(theme::colors().accent),
+                )
+                .on_press(Message::ToggleAgentFold(msg.event_id.clone()))
+                .padding([2, 8])
+                .style(|_, status| button::Style {
+                    background: matches!(status, button::Status::Hovered).then(|| theme::tint(0.06).into()),
+                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                    ..Default::default()
+                });
+                let body = if unfolded {
+                    body_element
+                } else {
+                    container(body_element).max_height(LONG_ANSWER_HEIGHT).clip(true).into()
+                };
+                body_element = column![body, toggle].spacing(4).width(Fill).into();
             }
         }
 
@@ -1907,6 +1970,33 @@ fn code_block_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
     ranges
 }
 
+/// Each code block's code as plain text (tags dropped, entities decoded),
+/// in `code_block_ranges` order.
+fn code_block_texts(html: &str) -> Vec<String> {
+    code_block_ranges(html).into_iter()
+        .map(|r| {
+            let mut out = String::with_capacity(r.len());
+            let mut in_tag = false;
+            for c in html[r].chars() {
+                match c {
+                    '<' => in_tag = true,
+                    '>' if in_tag => in_tag = false,
+                    _ if !in_tag => out.push(c),
+                    _ => {}
+                }
+            }
+            out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
+                .replace("&#39;", "'").replace("&#x27;", "'").replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+        })
+        .collect()
+}
+
+/// An answer long enough to fold.
+fn is_long_answer(body: &str) -> bool {
+    body.lines().nth(LONG_ANSWER_LINES).is_some() || body.len() > LONG_ANSWER_CHARS
+}
+
 /// Whether each code block is longer than `max_lines` (worth a Show more).
 fn long_code_blocks(html: &str, max_lines: usize) -> Vec<bool> {
     code_block_ranges(html).into_iter()
@@ -1990,7 +2080,17 @@ fn category_emojis(category: u8) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{category_emojis, collapse_code_blocks, contains_word, format_clock, long_code_blocks};
+    use super::{category_emojis, code_block_texts, collapse_code_blocks, contains_word, format_clock, is_long_answer, long_code_blocks};
+
+    #[test]
+    fn code_blocks_copy_as_plain_text_and_long_answers_fold() {
+        let html = "<p>x</p><pre><code class=\"language-rust\">if a &lt; b &amp;&amp; c {\n  <b>x</b>\n}</code></pre><pre>two</pre>";
+        assert_eq!(code_block_texts(html), vec!["if a < b && c {\n  x\n}".to_string(), "two".to_string()]);
+        assert!(!is_long_answer("short\nanswer"));
+        assert!(is_long_answer(&"line\n".repeat(40)));
+        assert!(crate::html::looks_like_diff("diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b"));
+        assert!(!crate::html::looks_like_diff("- a bullet\n+ not a diff"));
+    }
 
     #[test]
     fn picker_has_skin_tone_emoji_in_their_default_colour_only() {

@@ -607,10 +607,31 @@ impl FluxChat {
 
     /// Threads sidebar: the room's threads, most recently active first.
     fn view_threads_sidebar(&self) -> Element<'_, Message> {
+        use crate::agents::RunState;
         let room_id = self.active_real_room().unwrap_or("").to_string();
+        // With an agent here it's a task board: each thread is a run.
+        let board = self.agent_in(&room_id).is_some();
+        let run_of = |t: &fluxchat_core::ThreadPreview| self.run_info(&fluxchat_core::timeline::thread_key(&room_id, &t.root_id));
+        let live = |t: &&fluxchat_core::ThreadPreview| run_of(t).is_some_and(|r| matches!(r.state, RunState::Working | RunState::NeedsYou));
+        let mut threads: Vec<&fluxchat_core::ThreadPreview> = self.thread_list.iter()
+            .filter(|t| !(board && self.threads_active_only) || live(t))
+            .collect();
+        if board {
+            // Waiting on you, then working, then the rest by activity.
+            threads.sort_by_key(|t| match run_of(t).map(|r| r.state) {
+                Some(RunState::NeedsYou) => 0,
+                Some(RunState::Working) => 1,
+                _ => 2,
+            });
+        }
+        let live_count = self.thread_list.iter().filter(live).count();
+        let title = if board {
+            format!("RUNS \u{2014} {}", self.thread_list.len())
+        } else {
+            format!("THREADS \u{2014} {}", self.thread_list.len())
+        };
         let header = row![
-            text(format!("THREADS \u{2014} {}", self.thread_list.len()))
-                .font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
+            text(title).font(self.sidebar_font()).size(12).color(theme::colors().text_dim),
             Space::new().width(Fill),
             button(crate::ui::icon(SVG_CLOSE, 14.0, theme::colors().text_dim))
                 .on_press(Message::ToggleThreads)
@@ -619,12 +640,20 @@ impl FluxChat {
         ]
         .align_y(iced::Alignment::Center)
         .padding([8, 12]);
+        let filter = board.then(|| container(crate::ui::segmented(vec![
+            (format!("Active {live_count}"), Some(Message::SetThreadsActiveOnly(true)), self.threads_active_only),
+            ("All".to_string(), Some(Message::SetThreadsActiveOnly(false)), !self.threads_active_only),
+        ])).padding(iced::Padding { top: 0.0, right: 12.0, bottom: 8.0, left: 12.0 }));
 
-        let body: Element<Message> = if self.thread_list.is_empty() {
-            crate::ui::empty_state(SVG_THREAD, "No threads yet", Some("Reply in thread on any message to start one.".into()))
+        let body: Element<Message> = if threads.is_empty() {
+            if board && self.threads_active_only && !self.thread_list.is_empty() {
+                crate::ui::empty_state(crate::icons::SVG_BOT, "Nothing running", Some("Runs show here while the agent works on them or waits for you.".into()))
+            } else {
+                crate::ui::empty_state(SVG_THREAD, "No threads yet", Some("Reply in thread on any message to start one.".into()))
+            }
         } else {
             let mut list = column![].spacing(2).padding([0, 6]);
-            for t in &self.thread_list {
+            for t in threads {
                 let open = self.shown_in_pane(&fluxchat_core::timeline::thread_key(&room_id, &t.root_id));
                 let entry = button(
                         column![
@@ -636,9 +665,12 @@ impl FluxChat {
                             ].spacing(6).align_y(iced::Alignment::Center),
                             text(t.body.as_str()).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
                                 .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                            text(thread_meta(t)).font(self.sidebar_font()).size(11).color(theme::colors().text_dim)
-                                .wrapping(iced::widget::text::Wrapping::None),
-                        ].spacing(3),
+                        ]
+                        // The run: state, how long, what it's on.
+                        .push(run_of(t).filter(|_| board).map(|r| self.view_run_line(r, t)))
+                        .push(text(thread_meta(t)).font(self.sidebar_font()).size(11).color(theme::colors().text_dim)
+                            .wrapping(iced::widget::text::Wrapping::None))
+                        .spacing(3),
                     )
                     .on_press(Message::ListClick(
                         fluxchat_core::timeline::thread_key(&room_id, &t.root_id),
@@ -659,7 +691,7 @@ impl FluxChat {
                 .style(thin_scrollbar)
                 .into()
         };
-        container(column![header, body].height(Fill))
+        container(column![header].push(filter).push(body).height(Fill))
             .width(Fill)
             .height(Fill)
             .style(|_: &Theme| container::Style {
@@ -1144,6 +1176,27 @@ impl FluxChat {
                             .style(crate::ui::row_style(selected)),
                         );
                     }
+                    crate::state::PaletteItem::Prompt(prompt, snippet) => {
+                        let one_line = crate::view::ellipsize(&prompt.replace('\n', " \u{21b5} "), 90);
+                        results_col = results_col.push(
+                            button(
+                                row![
+                                    container(crate::ui::icon(if snippet.is_some() { crate::icons::SVG_STAR } else { crate::icons::SVG_CLOCK }, 13.0, theme::colors().text_dim))
+                                        .width(22).center_x(22),
+                                ]
+                                .push(snippet.as_ref().map(|n| text(n.clone()).font(self.sidebar_font()).size(13).color(theme::colors().accent)
+                                    .wrapping(iced::widget::text::Wrapping::None)))
+                                .push(text(one_line).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
+                                    .wrapping(iced::widget::text::Wrapping::None))
+                                .spacing(10).align_y(iced::Alignment::Center),
+                            )
+                            .on_press(activate)
+                            .padding([6, 10])
+                            .width(Fill)
+                            .clip(true)
+                            .style(crate::ui::row_style(selected)),
+                        );
+                    }
                     crate::state::PaletteItem::Action(action) => {
                         if !shown_actions_label {
                             shown_actions_label = true;
@@ -1172,12 +1225,17 @@ impl FluxChat {
                 }
             }
             let body: Element<Message> = if items.is_empty() {
-                crate::ui::empty_state(SVG_SEARCH, "Nothing matches", Some("Type > to search actions only.".into()))
+                let hint = if self.quick_switcher_query.trim_start().starts_with('<') {
+                    "Your sent messages and snippets show here. Save one with /snippet <name> <text>."
+                } else {
+                    "Type > to search actions only, < for your prompts."
+                };
+                crate::ui::empty_state(SVG_SEARCH, "Nothing matches", Some(hint.into()))
             } else {
                 results_col.into()
             };
             let card = self.palette(
-                text_input("Jump to a room, or type > for actions", &self.quick_switcher_query)
+                text_input("Jump to a room \u{00b7} > actions \u{00b7} < your prompts (Ctrl+R)", &self.quick_switcher_query)
                     .id(quick_switcher_id())
                     .on_input(Message::QuickSwitcherQuery)
                     .on_submit(Message::QuickSwitcherSelect),
@@ -1379,7 +1437,8 @@ impl FluxChat {
         self.context_menu_entry(label, icon, Message::ContextMenuAction(action.to_string(), target))
     }
 
-    fn context_menu_entry<'a>(&self, label: &'a str, icon: &'static [u8], on_press: Message) -> Element<'a, Message> {
+    fn context_menu_entry<'a>(&self, label: impl Into<String>, icon: &'static [u8], on_press: Message) -> Element<'a, Message> {
+        let label: String = label.into();
         button(
             row![
                 crate::ui::icon(icon, 14.0, theme::colors().text_dim),
@@ -3064,6 +3123,16 @@ impl FluxChat {
                     bar = bar.push(text("unencrypted").font(self.sidebar_font()).size(13).color(theme::colors().text_muted));
                 }
             }
+
+            // The agent's runtime (model · context · working dir), from its footer.
+            if let Some(rt) = self.agent_runtime(room_id).filter(|_| self.agent_in(room_id).is_some()) {
+                bar = bar.push(sep());
+                bar = bar.push(row![
+                    crate::ui::icon(crate::icons::SVG_BOT, 12.0, theme::colors().text_dim),
+                    text(rt.summary()).font(self.sidebar_font()).size(13).color(theme::colors().text_muted)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                ].spacing(4).align_y(iced::Alignment::Center));
+            }
         }
 
         // tmux-style window list (and the armed prefix)
@@ -3088,6 +3157,29 @@ impl FluxChat {
             if self.tmux_prefix {
                 bar = bar.push(text("  [prefix]").font(self.sidebar_font()).size(13).color(theme::colors().yellow));
             }
+        }
+
+        // Agent runs everywhere: "2 running · 1 waiting" → the Runs dialog.
+        let (working, waiting) = self.live_run_counts();
+        if working + waiting > 0 {
+            let color = if waiting > 0 { theme::colors().yellow } else { theme::colors().accent };
+            let label = match (working, waiting) {
+                (w, 0) => format!("{w} running"),
+                (0, n) => format!("{n} waiting on you"),
+                (w, n) => format!("{w} running \u{00b7} {n} waiting"),
+            };
+            bar = bar.push(sep());
+            bar = bar.push(crate::ui::tooltip_at(
+                button(row![
+                    crate::ui::icon(crate::icons::SVG_BOT, 12.0, color),
+                    text(label).font(self.sidebar_font()).size(13).color(color),
+                ].spacing(4).align_y(iced::Alignment::Center))
+                    .on_press(Message::OpenModal(crate::state::Modal::Runs))
+                    .padding([1, 4])
+                    .style(crate::ui::row_style(false)),
+                "Agent runs",
+                iced::widget::tooltip::Position::Top,
+            ));
         }
 
         bar = bar.push(Space::new().width(Fill));
@@ -3232,6 +3324,10 @@ impl FluxChat {
                         }
                         if c.as_str() == "k" || c.as_str() == "K" {
                             return Some(Message::ToggleQuickSwitcher);
+                        }
+                        // Ctrl+R (as in a shell): search what you've sent.
+                        if (c.as_str() == "r" || c.as_str() == "R") && !modifiers.shift() {
+                            return Some(Message::OpenPromptHistory);
                         }
                         if c.as_str() == "[" {
                             return Some(Message::ToggleRoomList);

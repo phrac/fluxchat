@@ -834,15 +834,7 @@ fn segments_to_spans_with_rooms(segments: Vec<Segment>, rooms: &[fluxchat_core::
                 spans.push(Span::new("\n"));
 
                 // Syntax highlight with syntect
-                let syntax = language
-                    .as_deref()
-                    .and_then(|l| SS.find_syntax_by_token(l))
-                    .or_else(|| {
-                        // Auto-detect language from first line if no tag
-                        let first_line = code.lines().next().unwrap_or("");
-                        SS.find_syntax_by_first_line(first_line)
-                    })
-                    .unwrap_or_else(|| SS.find_syntax_plain_text());
+                let syntax = syntax_for(&code, language.as_deref());
                 let theme = &TS.themes["base16-ocean.dark"];
 
                 let highlighter = syntect::highlighting::Highlighter::new(theme);
@@ -1007,19 +999,30 @@ fn segments_to_parts(segments: Vec<Segment>, rooms: &[fluxchat_core::RoomInfo], 
 }
 
 /// Syntax-highlight a code block into spans with line numbers.
+/// The syntax for a code block: its language tag, else a unified diff
+/// (agents post `git diff` output untagged), else a guess from the first
+/// line, else plain text.
+fn syntax_for(code: &str, language: Option<&str>) -> &'static syntect::parsing::SyntaxReference {
+    language
+        .and_then(|l| SS.find_syntax_by_token(l))
+        .or_else(|| looks_like_diff(code).then(|| SS.find_syntax_by_extension("diff")).flatten())
+        .or_else(|| SS.find_syntax_by_first_line(code.lines().next().unwrap_or("")))
+        .unwrap_or_else(|| SS.find_syntax_plain_text())
+}
+
+/// A unified diff: a `diff --git` / `@@` hunk header, or `---` and `+++` file lines.
+pub(crate) fn looks_like_diff(code: &str) -> bool {
+    let has = |prefix: &str| code.lines().any(|l| l.starts_with(prefix));
+    has("diff --git ") || has("@@ -") || (has("--- ") && has("+++ "))
+}
+
 fn highlight_code_block(code: &str, language: Option<&str>) -> Vec<Span<'static, String>> {
     use syntect::easy::HighlightLines;
 
     let is_dark = theme::colors().dark;
     let code_text = theme::colors().code_text;
 
-    let syntax = language
-        .and_then(|l| SS.find_syntax_by_token(l))
-        .or_else(|| {
-            let first_line = code.lines().next().unwrap_or("");
-            SS.find_syntax_by_first_line(first_line)
-        })
-        .unwrap_or_else(|| SS.find_syntax_plain_text());
+    let syntax = syntax_for(code, language);
     let theme = &TS.themes["base16-ocean.dark"];
     let mut h = HighlightLines::new(syntax, theme);
 

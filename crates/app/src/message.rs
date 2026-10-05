@@ -112,12 +112,26 @@ pub enum Message {
     OpenAt(String, crate::panes::Placement),
     /// Mark / unmark a user as an AI agent.
     SetAgent(String, bool),
+    /// Which harness profile runs this agent (user ID, profile id).
+    SetAgentHarness(String, String),
     /// Send this text to a view as is (agent controls: `!stop`).
     AgentSend(String, String),
     /// What a message sent while an agent is working does.
     SetBusyMode(crate::agents::BusyMode),
-    /// Show / hide all the steps of an agent's progress message.
-    ToggleProgress(String),
+    /// The palette in prompt mode (`<`): your history and snippets (Ctrl+R).
+    OpenPromptHistory,
+    /// Save a snippet (name, text); empty text removes it.
+    SaveSnippet(String, String),
+    /// Rooms an AI agent is in (to keep their timelines loaded).
+    AgentRoomsFound(Vec<String>),
+    /// Open a window tiling the active agent runs, adding new ones as they start.
+    WatchRunsWindow,
+    /// Threads panel in an agent room: active runs only / everything.
+    SetThreadsActiveOnly(bool),
+    /// Tell me / stop telling me when this run (view key) finishes.
+    WatchRun(String),
+    /// Unfold / fold an agent's step log or long answer.
+    ToggleAgentFold(String),
     /// A click on a room / thread row: `OpenAt(key, Right)` with Cmd/Ctrl
     /// held, else the row's plain message.
     ListClick(String, Box<Message>),
@@ -452,6 +466,8 @@ pub enum Message {
     VideoThumbResolved(String, Vec<u8>, u32, u32), // thumb_key, png_data, width, height
     AudioFinished,
     StartVoiceRecording,
+    /// Mic pressed: start recording (push to talk), or stop a tapped one.
+    MicPressed,
     StopVoiceRecording,
     CancelVoiceRecording,
     VoiceRecordingReady(Vec<u8>, u64), // ogg_bytes, duration_ms

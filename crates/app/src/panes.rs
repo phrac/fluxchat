@@ -46,12 +46,14 @@ pub enum Placement {
 pub struct Window {
     pub grid: pane_grid::State<PaneSlot>,
     pub focus: pane_grid::Pane,
+    /// A "watch runs" window: agent runs that start get a pane in it.
+    pub follow_runs: bool,
 }
 
 impl Window {
     pub fn new(key: Option<String>) -> Self {
         let (grid, focus) = pane_grid::State::new(PaneSlot { key });
-        Self { grid, focus }
+        Self { grid, focus, follow_runs: false }
     }
 
     pub fn focused_key(&self) -> Option<&str> {
@@ -228,7 +230,7 @@ impl FluxChat {
                 if w.zoomed && grid.len() > 1 {
                     grid.maximize(focus);
                 }
-                windows.push(Window { grid, focus });
+                windows.push(Window { grid, focus, follow_runs: false });
             }
         }
         if windows.is_empty() {
@@ -667,6 +669,7 @@ impl FluxChat {
                     return Some(Task::none());
                 }
                 *content = iced::widget::text_editor::Content::new();
+                self.remember_prompt(&body);
                 if let Some(text) = self.agent_outgoing(&key, &body) {
                     body = text;
                 }
@@ -727,7 +730,7 @@ impl FluxChat {
     }
 
     /// Focus a pane: it becomes the main view (or the welcome / picker if empty).
-    fn focus_pane(&mut self, pane: pane_grid::Pane) -> Task<Message> {
+    pub(crate) fn focus_pane(&mut self, pane: pane_grid::Pane) -> Task<Message> {
         let w = self.window_mut();
         w.focus = pane;
         w.unzoom_for(pane);
@@ -766,7 +769,7 @@ impl FluxChat {
 }
 
 /// Panes in reading order (for `o` cycling).
-fn layout_order(node: &pane_grid::Node) -> Vec<pane_grid::Pane> {
+pub(crate) fn layout_order(node: &pane_grid::Node) -> Vec<pane_grid::Pane> {
     match node {
         pane_grid::Node::Split { a, b, .. } => {
             let mut v = layout_order(a);

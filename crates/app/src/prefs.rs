@@ -54,10 +54,14 @@ pub struct Prefs {
     // --- AI agents (see agents.rs) ---
     /// User IDs treated as AI agents (marked on their profile card).
     pub agents: Vec<String>,
+    /// The harness (profile id, harness.rs) running each agent; unset = Hermes.
+    pub agent_harness: std::collections::HashMap<String, String>,
     /// Open the thread an agent starts on your request as it starts.
     pub follow_agent_threads: bool,
     /// What a message sent while an agent is working does.
     pub agent_busy_mode: crate::agents::BusyMode,
+    /// Notify when an agent run of 30 s or more finishes (when you're not looking).
+    pub notify_agent_done: bool,
 }
 
 impl Prefs {
@@ -100,8 +104,10 @@ impl Default for Prefs {
             noise_suppression: true,
             auto_gain: true,
             agents: Vec::new(),
+            agent_harness: std::collections::HashMap::new(),
             follow_agent_threads: true,
             agent_busy_mode: crate::agents::BusyMode::Send,
+            notify_agent_done: true,
         }
     }
 }

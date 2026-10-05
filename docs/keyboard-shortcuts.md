@@ -6,7 +6,8 @@
 
 | Keys | Action |
 |------|--------|
-| Ctrl/⌘ + K | Command palette (rooms and actions; `>` for actions only) |
+| Ctrl/⌘ + K | Command palette (rooms and actions; `>` for actions only, `<` for your prompts) |
+| Ctrl + R | Search what you've sent and your snippets; pick one to put it back in the message box |
 | Ctrl/⌘ + I | Mentions inbox |
 | Ctrl/⌘ + F | Search the current room |
 | Ctrl/⌘ + Shift + G | Gallery of the room's (or thread's) images, videos and files |

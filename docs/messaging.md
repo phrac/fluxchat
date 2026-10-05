@@ -19,7 +19,7 @@ Unsent text is kept per room, so switching rooms doesn't lose a half-written mes
 | `- item` | bulleted list |
 | `$x^2$` | inline maths (converted to Unicode) |
 
-Code blocks longer than five lines are shown collapsed, each with its own **Show more** / **Show less** (Preferences → *Expand code blocks* flips the default).
+Code blocks longer than five lines are shown collapsed, each with its own **Show more** / **Show less** (Preferences → *Expand code blocks* flips the default). Every code block has a **copy** button at its top right, which copies the whole block, collapsed or not. Diffs are highlighted, tagged ```` ```diff ```` or not.
 
 The toolbar under the message box inserts these for you. To send text exactly as typed, turn off *Markdown* in Preferences, or use `/plain`. `/html` sends raw HTML.
 
@@ -52,7 +52,7 @@ Hover a message and click the smiley to pick a reaction, or click an existing re
 - Attach with the **+** button, drag and drop a file, paste (**Ctrl/⌘+V**) an image or a file you copied in your file manager, or `/attach`. Dragging files in doesn't work on Linux under Wayland yet; copy and paste them instead (see [Troubleshooting](troubleshooting.md#cant-drop-files-in-on-wayland)).
 - The file appears as a card above the message box. Anything you type is sent **with** the file as its caption: one message, not two. Press **Enter** (or **Send**) to send. With an empty box, just the file is sent.
 - Images get a thumbnail. Click an image to view it large, where you can **Copy** or **Save** it. Click the image again or press **Esc** to close. GIFs animate there even with *Autoplay GIFs* off. Very large animations (over 128 MB once decoded) show as a still image.
-- Files show as download cards. Videos play inline.
+- Files show as download cards; PDFs show their first page on the card. Videos play inline.
 - Files over your server's upload limit are rejected with a message before uploading.
 
 ## Gallery
@@ -81,7 +81,7 @@ The grid button in the room header (or **Ctrl/⌘+Shift+G**, `/gallery`, or *Gal
 
 ## Voice messages
 
-Click the microphone in the message box to record, click again to stop, preview, then send. Voice messages play inline with a progress bar.
+**Hold** the microphone in the message box to talk: the message is sent when you let go. Or **tap** it to record, tap again to stop, listen, then send. In a thread view it goes into the thread. Voice messages play inline with a progress bar.
 
 ## Links
 

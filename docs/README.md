@@ -16,7 +16,8 @@ fluxchat is a native Matrix chat client with an IRC-inspired interface. This man
 - [People](people.md): profiles, presence, roles, moderation, ignoring
 - [Notifications and mentions](notifications.md): desktop alerts, rules, keywords, the mentions inbox
 - [Voice and video](calls.md): calls, voice messages, devices
-- [AI agents](agents.md): commands, runs, Stop / Steer / Queue and approvals for agents like Hermes
+- [AI agents](agents.md): harness profiles (Hermes, OpenClaw, Claude Code…), runs, Stop / Steer / Queue, approvals, the Runs dashboard, prompts
+- [Agent protocol](agent-protocol.md): fields any agent can send so clients know what it's doing
 
 ## Reference
 

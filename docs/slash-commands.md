@@ -88,4 +88,6 @@ Commands marked *room* need a room open. Where a command takes `<user>`, you can
 | `/help [command]` | Help |
 | `/settings`, `/account`, `/sessions`, `/security` | Open Settings (at a tab) |
 | `/devtools` | Room state inspector and raw event sender |
+| `/snippet <name> <text>` | Save a prompt to reuse (Ctrl+R finds it); `/snippet` alone lists them |
+| `/unsnippet <name>` | Remove a saved prompt |
 | `/quit` | Log out |

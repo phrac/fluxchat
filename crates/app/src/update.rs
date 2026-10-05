@@ -196,6 +196,15 @@ fn strip_pasted_paths(text: &str, files: &[std::path::PathBuf]) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
+/// Holding the mic at least this long is push to talk (sent on release);
+/// shorter is a tap (record until the next press, then a preview).
+const PTT_HOLD: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// PDFs bigger than this get no preview (it means downloading them).
+const PDF_PREVIEW_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// Width PDF first pages are rendered at (shown smaller).
+const PDF_PREVIEW_WIDTH: u32 = 560;
+
 pub(crate) fn show_notification(
     summary: String,
     body: String,
@@ -472,7 +481,8 @@ impl FluxChat {
                 let room_threads = self.load_all_room_threads();
                 let ignored = self.load_ignored_users();
                 let media = self.load_media_previews();
-                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media]);
+                let agents = self.watch_agent_rooms();
+                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media, agents]);
             }
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
@@ -656,6 +666,8 @@ impl FluxChat {
                     // so it replaces what we had outright — except messages we
                     // deleted whose redaction hasn't reached the timeline yet.
                     let mut merged = new_messages;
+                    // The agent's runtime footer moves to the chip / status bar.
+                    self.take_agent_footers(&room_id, &mut merged);
                     if let Some(pending) = self.pending_redactions.get_mut(&room_id) {
                         pending.retain(|id| merged.iter().any(|m| &m.event_id == id
                             && m.row_kind != fluxchat_core::RowKind::Redacted));
@@ -742,6 +754,8 @@ impl FluxChat {
                         tasks.push(self.open_at(thread, crate::panes::Placement::Auto));
                     }
                     self.announce_prompts(&room_id, &new_prompts);
+                    self.announce_finished();
+                    tasks.push(self.follow_started_runs());
                     if in_pane {
                         // No scroll here: the pane's list is anchored to the
                         // bottom, so it follows new messages while at the end
@@ -804,6 +818,7 @@ impl FluxChat {
                     return self.resolve_avatars(mxc_uris);
                 }
                 SyncEvent::TypingUpdate(room_id, user_ids) => {
+                    self.note_agent_typing(&room_id, &user_ids);
                     if user_ids.is_empty() {
                         self.typing_by_room.remove(&room_id);
                     } else {
@@ -1109,13 +1124,20 @@ impl FluxChat {
                 if self.input_text.trim().is_empty() {
                     return Task::none();
                 }
+                // For Ctrl+R (not edits: those change what was sent).
+                if self.edit_event.is_none() {
+                    let typed = self.input_text.clone();
+                    self.remember_prompt(&typed);
+                }
                 // With an agent here: its commands go to it as `!name`, and
                 // while it's working the busy mode applies (`!steer` / `!queue`).
                 if self.edit_event.is_none() {
                     if let Some(text) = self.selected_room_id.as_deref()
                         .and_then(|k| self.agent_outgoing(k, &self.input_text))
                     {
-                        self.input_text = text;
+                        // `/stop` for the agent must not run as a fluxchat
+                        // command: `//` sends it as typed.
+                        self.input_text = if text.starts_with('/') { format!("/{text}") } else { text };
                     }
                 }
 
@@ -1596,12 +1618,37 @@ impl FluxChat {
                 for k in keys {
                     self.refresh_agent_state(&k);
                 }
-                return set;
+                return Task::batch([set, self.watch_agent_rooms()]);
             }
-            Message::ToggleProgress(event_id) => {
-                if !self.expanded_progress.remove(&event_id) {
-                    self.expanded_progress.insert(event_id);
+            Message::AgentRoomsFound(rooms) => {
+                return self.load_agent_rooms(rooms);
+            }
+            Message::WatchRunsWindow => {
+                self.modal = None;
+                return self.open_runs_window();
+            }
+            Message::SetThreadsActiveOnly(on) => {
+                self.threads_active_only = on;
+            }
+            Message::WatchRun(key) => {
+                if !self.agent_runs.watched.remove(&key) {
+                    self.agent_runs.watched.insert(key);
                 }
+            }
+            Message::ToggleAgentFold(event_id) => {
+                if !self.expanded_agent.remove(&event_id) {
+                    self.expanded_agent.insert(event_id);
+                }
+            }
+            Message::SetAgentHarness(user_id, harness) => {
+                let mut p = self.prefs.clone();
+                p.agent_harness.insert(user_id, harness);
+                let set = self.update(Message::SetPrefs(Box::new(p)));
+                let keys: Vec<String> = self.messages_by_room.keys().cloned().collect();
+                for k in keys {
+                    self.refresh_agent_state(&k);
+                }
+                return set;
             }
             Message::SetBusyMode(mode) => {
                 let mut p = self.prefs.clone();
@@ -3367,6 +3414,14 @@ impl FluxChat {
             }
 
             // --- Voice recording ---
+            Message::MicPressed => {
+                if self.voice_recording {
+                    // Recording from a tap: this press stops it (preview).
+                    return self.update(Message::StopVoiceRecording);
+                }
+                self.ptt_held = Some(std::time::Instant::now());
+                return self.update(Message::StartVoiceRecording);
+            }
             Message::StartVoiceRecording => {
                 match fluxchat_core::voice::start_recording() {
                     Ok(handle) => {
@@ -3404,17 +3459,20 @@ impl FluxChat {
             }
             Message::SendVoiceMessage => {
                 if let Some((bytes, duration_ms)) = self.voice_ready.take() {
-                    if let Some(room_id) = self.selected_room_id.clone() {
-                        let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
+                    if let Some(key) = self.selected_room_id.clone() {
+                        // Through the view's Timeline: into the thread when
+                        // it's a thread view (a voice prompt to an agent).
                         let core = self.core.clone();
                         return Task::perform(
                             async move {
-                                let client = core.get_client().await.ok()?;
-                                fluxchat_core::messages::send_voice_message(
-                                    &client, &real_room, bytes, duration_ms,
-                                ).await.ok()
+                                let client = core.get_client().await.map_err(|e| e.to_string())?;
+                                fluxchat_core::timeline::send_voice(&client, &core.timelines, &key, bytes, duration_ms)
+                                    .await.map_err(|e| e.to_string())
                             },
-                            |_| Message::Noop,
+                            |r| match r {
+                                Ok(()) => Message::Noop,
+                                Err(e) => Message::ShowError(format!("Couldn't send the voice message: {e}")),
+                            },
                         );
                     }
                 }
@@ -3518,6 +3576,21 @@ impl FluxChat {
             }
 
             // --- Quick switcher ---
+            Message::OpenPromptHistory => {
+                self.quick_switcher_open = true;
+                self.quick_switcher_query = "<".into();
+                self.quick_switcher_selected = 0;
+                return iced::widget::operation::focus(crate::view::quick_switcher_id());
+            }
+            Message::SaveSnippet(name, text) => {
+                let saved = !text.trim().is_empty();
+                self.set_snippet(&name, &text);
+                self.help_text = Some(if saved {
+                    format!("Saved snippet \u{201c}{name}\u{201d}: Ctrl+R (or the palette's < mode) to use it")
+                } else {
+                    format!("Removed snippet \u{201c}{name}\u{201d}")
+                });
+            }
             Message::ToggleQuickSwitcher => {
                 self.quick_switcher_open = !self.quick_switcher_open;
                 self.quick_switcher_query.clear();
@@ -3556,6 +3629,14 @@ impl FluxChat {
                 return match *item {
                     crate::state::PaletteItem::Room(room_id) => self.update(Message::SelectRoom(room_id)),
                     crate::state::PaletteItem::Action(action) => self.update(action.message),
+                    crate::state::PaletteItem::Prompt(text, _) => {
+                        self.input_text = text;
+                        self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                        self.input_content.perform(iced::widget::text_editor::Action::Move(
+                            iced::widget::text_editor::Motion::DocumentEnd,
+                        ));
+                        iced::widget::operation::focus(crate::view::input_id())
+                    }
                 };
             }
 
@@ -4367,6 +4448,14 @@ impl FluxChat {
             }
             Message::SidebarDragEnd => {
                 crate::dnd::released();
+                // Push to talk: held long enough → send now; a tap keeps
+                // recording until the next press (then a preview).
+                if let Some(pressed) = self.ptt_held.take() {
+                    if pressed.elapsed() >= PTT_HOLD && self.voice_recording {
+                        let stop = self.update(Message::StopVoiceRecording);
+                        return Task::batch([stop, self.update(Message::SendVoiceMessage)]);
+                    }
+                }
                 if self.resizing.take().is_some() {
                     self.layout_dirty = true;
                 }
@@ -4824,6 +4913,12 @@ impl FluxChat {
     pub(crate) fn palette_items(&self) -> Vec<crate::state::PaletteItem> {
         use crate::state::PaletteItem;
         let raw = self.quick_switcher_query.trim();
+        // `<`: your prompts (history and snippets), Ctrl+R.
+        if let Some(rest) = raw.strip_prefix('<') {
+            return self.matching_prompts(rest.trim()).into_iter()
+                .map(|(text, name)| PaletteItem::Prompt(text, name))
+                .collect();
+        }
         let (actions_only, query) = match raw.strip_prefix('>') {
             Some(rest) => (true, rest.trim().to_lowercase()),
             None => (false, raw.to_lowercase()),
@@ -4878,6 +4973,8 @@ impl FluxChat {
             A::new("New direct message", "Start a conversation", Message::OpenModal(Modal::CreateDm)),
             A::new("Explore rooms", "Search the public room directory", Message::OpenModal(Modal::Directory)),
             A::new("Mentions", "Messages that mention you or match a keyword", Message::ToggleMentions),
+            A::new("Agent runs", "Every AI agent run across rooms", Message::OpenModal(Modal::Runs)),
+            A::new("Watch agent runs in a window", "Tile active runs; new ones join as they start", Message::WatchRunsWindow),
             A::new("Split pane side by side", "Ctrl+B %", Message::PaneSplit(iced::widget::pane_grid::Axis::Vertical)),
             A::new("Split pane stacked", "Ctrl+B \"", Message::PaneSplit(iced::widget::pane_grid::Axis::Horizontal)),
             A::new("New window", "Ctrl+B c", Message::WindowNew),
@@ -5020,11 +5117,12 @@ impl FluxChat {
     fn update_completions(&mut self, text: &str) {
         // Skip escaped `//` literal messages
         if text.starts_with('/') && !text.starts_with("//") && !text.contains(' ') {
-            let agent_room = self.selected_room_id.as_deref().is_some_and(|k| self.agent_in(k).is_some());
-            self.cmd_completions = if agent_room {
-                crate::agents::completions(text)
-            } else {
-                crate::commands::autocomplete_entries(text)
+            let harness = self.selected_room_id.as_deref().and_then(|k| self.agent_harness(k)).map(|(_, h)| h);
+            self.cmd_completions = match harness {
+                Some(h) => crate::agents::completions(&h, text),
+                None => crate::commands::autocomplete_entries(text).into_iter()
+                    .map(|(n, d)| (n.to_string(), d.to_string()))
+                    .collect(),
             };
             self.cmd_completion_idx = 0;
         } else {
@@ -5796,6 +5894,55 @@ impl FluxChat {
                     ));
                 }
             }
+            // PDFs: their first page, rendered here (and cached).
+            let is_pdf = msg.file_mimetype.as_deref() == Some("application/pdf");
+            let small = msg.file_size.is_none_or(|s| s <= PDF_PREVIEW_MAX_BYTES);
+            if let (true, true, Some(fmxc)) = (is_pdf, small, msg.file_mxc.as_ref()) {
+                let key = format!("pdf_preview:{fmxc}");
+                if self.image_cache.contains_key(&key) || self.image_cache_pending.contains(&key)
+                    || self.image_failed.get(&key).is_some_and(|t| t.elapsed() < IMAGE_RETRY_AFTER)
+                {
+                    continue;
+                }
+                self.image_cache_pending.insert(key.clone());
+                let core = self.core.clone();
+                let event_id = msg.event_id.clone();
+                let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
+                let failed_key = key.clone();
+                tasks.push(Task::perform(
+                    async move {
+                        let cache_key = format!("iced_img:{key}");
+                        let cached = {
+                            let core = core.clone();
+                            let cache_key = cache_key.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let data = core.db.get_cached_media(&cache_key)?;
+                                let (w, h) = image::ImageReader::new(std::io::Cursor::new(&data))
+                                    .with_guessed_format().ok()?.into_dimensions().ok()?;
+                                Some((data, w, h))
+                            }).await.ok().flatten()
+                        };
+                        if let Some((data, w, h)) = cached {
+                            return Some((key, data, w, h));
+                        }
+                        let client = core.get_client().await.ok()?;
+                        let (data, _mime) = {
+                            let _permit = MEDIA_FETCHES.acquire().await.ok()?;
+                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?
+                        };
+                        let (png, w, h) = tokio::task::spawn_blocking(move || {
+                            fluxchat_core::media::pdf_preview(&data, PDF_PREVIEW_WIDTH)
+                        }).await.ok().flatten()?;
+                        let to_store = png.clone();
+                        drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
+                        Some((key, png, w, h))
+                    },
+                    move |result| match result {
+                        Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
+                        None => Message::ImageFailed(failed_key.clone()),
+                    },
+                ));
+            }
         }
         if tasks.is_empty() { Task::none() } else { Task::batch(tasks) }
     }
@@ -6179,6 +6326,8 @@ impl FluxChat {
         }
         self.available_fonts = crate::view::discover_system_fonts();
         self.available_themes = crate::theme::discover_themes();
+        crate::harness::discover();
+        self.load_prompts();
         if let Some(val) = self.core.db.get_setting("theme") {
             self.active_theme_name = val.clone();
             if let Some(theme) = self.available_themes.iter().find(|t| t.name == val) {

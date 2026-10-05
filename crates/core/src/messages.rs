@@ -186,28 +186,6 @@ pub async fn send_plain(client: &matrix_sdk::Client, room_id: &str, text: &str) 
     Ok(result.response.event_id.to_string())
 }
 
-/// Send a voice message as OGG Opus audio with MSC3245 voice marker.
-pub async fn send_voice_message(client: &matrix_sdk::Client, room_id: &str, ogg_bytes: Vec<u8>, duration_ms: u64) -> Result<String, AppError> {
-    use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo};
-
-    let room_id_parsed = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-
-    let content_type: mime::Mime = "audio/ogg".parse().unwrap();
-    let size = ogg_bytes.len() as u64;
-
-    let config = AttachmentConfig::new()
-        .info(AttachmentInfo::Voice(BaseAudioInfo {
-            duration: Some(std::time::Duration::from_millis(duration_ms)),
-            size: size.try_into().ok(),
-            waveform: None,
-        }));
-
-    let result = room.send_attachment("Voice message", &content_type, ogg_bytes, config)
-        .await
-        .map_err(|e| AppError::Other(format!("Failed to send voice: {e}")))?;
-    Ok(result.event_id.to_string())
-}
 
 /// Report a message to the homeserver.
 pub async fn report_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str, reason: &str) -> Result<(), AppError> {

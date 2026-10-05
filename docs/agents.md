@@ -1,43 +1,39 @@
 # AI agents
 
-fluxchat has controls for AI agents you talk to over Matrix, built around [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/matrix). Other agents work as far as they use the same conventions.
+fluxchat is a Matrix client, and it treats the AI agents you talk to over Matrix as first-class: you can see what they're doing, steer or stop them, answer their approvals, and follow every run across your rooms. It works with any agent harness that has a Matrix front end. What each one does is described by a [harness profile](#harness-profiles): Hermes Agent, OpenClaw and Claude Code (through a Matrix bridge) are built in, and a new one is a small TOML file.
 
 ## Mark someone as an agent
 
-Click the agent's name or avatar to open its profile and turn on **AI agent**. It gets an *AI agent* badge, and it's listed in **Settings → Preferences → AI agents**, where you can remove it again.
+Click the agent's name or avatar to open its profile and turn on **AI agent**, then pick its **Harness** (Hermes Agent, OpenClaw, Claude Code (Matrix channel), Generic agent, or one you added). It gets an *AI agent* badge, and it's listed in **Settings → Preferences → AI agents**, where you can change its harness or remove it.
 
-A room with an agent in it (a DM with your agent, or a room it's in) gets everything below.
+A room with an agent in it (a DM with your agent, or a room it's in) gets everything below. fluxchat also keeps those rooms' timelines loaded in the background, so it knows about runs in rooms you aren't looking at.
 
 ## The agent chip
 
-The room header shows the agent next to the room name: a robot icon, its name, and what it's doing: **idle**, **working · 3m** with a moving progress bar, or **waiting on you**. Hover it for the current step. Click it for quick commands for this room or thread: **Stop the run** (while it works), **Status**, **Usage and cost**, **Context window**, **Switch model**, **New session**, and the agent's profile.
+The room header shows the agent next to the room name: a robot icon, its name, and what it's doing: **idle**, **working · 3m** with a progress bar, or **waiting on you**, plus its model and context use when it reports them. Hover it for the current step. Click it for:
+
+- **Stop the run** (while it works, if the harness has a stop command);
+- **Tell me when it's done**;
+- the harness's quick commands (Hermes: Status, Usage and cost, Context window, Switch model, New session);
+- **All agent runs**, and the agent's profile.
 
 ## Commands
 
-Hermes's commands work with `/`, the way you'd type them anywhere else: `/goal`, `/stop`, `/status`, `/model`, `/usage`, `/new`… fluxchat sends them as `!goal`, `!stop` and so on, which is how Hermes takes commands on Matrix.
+The agent's commands work with `/`, the way you'd type them anywhere else, and go out the way its harness expects: Hermes takes `!goal`, `!stop`…; OpenClaw takes `/stop` as text, starting with its mention in rooms.
 
 - Typing `/` lists the agent's commands first (marked with a robot icon), then fluxchat's.
 - Where both have a command with the same name (`/status`, `/sessions`, `/help`), the agent's wins in its rooms.
-- Commands only fluxchat has (`/me`, `/gif`, `/attach`…) still work as usual.
+- Commands only fluxchat has (`/me`, `/gif`, `/snippet`…) still work as usual.
 - Anything else that starts with `/` goes to the agent too, so its skills work (`/arxiv …`).
 - `//text` still sends `/text` as a plain message, and you can type `!command` yourself.
 
-## Progress
-
-Hermes reports what it's doing in one message it keeps editing, a line per tool ("📖 Reading notes.md", "🔍 Searching the web for …"). fluxchat uses that message:
-
-- The run bar and the agent chip show the latest step, the step count, the time since your request, and a moving progress bar while it works.
-- In the timeline, a progress message with several steps is folded to **N steps** plus the latest one. Click **N steps** to see them all, **Hide steps** to fold it again.
-
-Hermes doesn't say how far along it is, so the bar shows that it's working, not a percentage.
-
 ## Runs
 
-Hermes reacts 👀 to your message while it works on it, then ✅ when it's done or ❌ when it failed, and answers in a thread on that message. fluxchat shows this as the run's state:
+A run is one request and the agent's work on it. fluxchat shows its state, **working**, **needs you**, **done** or **failed**, from whatever the agent gives: the [agent protocol](agent-protocol.md) when it uses it, else its harness's signals (Hermes reacts 👀 / ✅ / ❌ to your message; OpenClaw and the Claude Code channel type while they work).
 
-- the "N replies" row under your message shows **working**, **needs you**, **done** or **failed**;
-- the thread's entry in the room list gets a coloured dot while it's working, waiting for you, or failed;
-- a room with a run waiting for you gets a yellow dot in the room list.
+- The "N replies" row under your request shows the state.
+- The thread's entry in the room list gets a coloured dot while it's working, waiting for you, or failed; a room with a run waiting for you gets a yellow dot.
+- The status bar shows **2 running · 1 waiting** across all rooms; click it for the Runs dialog.
 
 ### Follow new threads
 
@@ -45,18 +41,95 @@ When the agent starts a thread on a message you just sent in the room you're in,
 
 ### The run bar
 
-While the agent works on the thread (or room) you're looking at, a bar above the message box shows it (time so far, current step, progress bar), with:
+While the agent works on the thread (or room) you're looking at, a bar above the message box shows it: the time so far, the current step, and a progress bar (filled when the agent says how far along it is, moving otherwise). It has:
 
-- **Stop**: interrupts the run (sends `!stop`).
-- **Next message**: what a message you send while it's working does.
+- **Stop**: interrupts the run, when the harness has a command for it.
+- **🔔**: tell me when it's done (a desktop notification when it finishes, even if it's quick).
+- **Next message** (harnesses with steer / queue, like Hermes): what a message you send while it's working does.
   - **Send**: a plain message; the agent's own setting decides (Hermes redirects the run by default).
-  - **Steer**: sent as `!steer`; the agent reads it after its next step, without stopping.
-  - **Queue**: sent as `!queue`; it runs as the next turn, after this one.
+  - **Steer**: read after its next step, without stopping.
+  - **Queue**: runs as the next turn, after this one.
 
   The choice is remembered. Panes that aren't focused show the state and Stop.
 
+### Notifications
+
+- When an agent asks for approval or a choice, you're notified even with *mentions only* on, unless you're looking at the room.
+- When a run of 30 seconds or more finishes (or fails), you're notified unless you're looking at it. Turn this off in **Settings → Preferences → AI agents → Notify when a run finishes**; the 🔔 still works for runs you pick.
+
+## The task board
+
+In a room with an agent, the **Threads** panel (header button) becomes **Runs**: every thread is a run, with its state, how long it ran, and its current step. Runs waiting on you and running ones come first. **Active** shows only what's still going; **All** shows everything.
+
+## All your runs
+
+**Agent runs** (the status bar's run count, the agent chip menu, or the palette) lists every run across your rooms: waiting on you, working, then the last few hours' finished ones, with the room and current step. Click one to open it.
+
+**Watch in a window** opens a new window tiling the active runs, one pane each. It follows: runs that start later get a pane in it too (up to six). Use it as a dashboard on a second screen, or switch to it with **Ctrl+B n**.
+
+## Progress, answers and runtime
+
+- Progress posted as a message of steps, a line per tool ("📖 Reading notes.md", "🔍 Searching the web for …"), is folded to **N steps** plus the latest one. Click to see them all.
+- Long answers (over 30 lines) are folded to their first screenful, with **Show full answer**.
+- Code blocks have a **copy** button; diffs (`git diff` output, tagged or not) are highlighted.
+- PDFs show their first page.
+- Model, context use, cost and working directory show in the agent chip and the status bar, from the [agent protocol](agent-protocol.md) or Hermes's runtime footer (`/footer on`), which is taken off the answers.
+
 ## Approvals and choices
 
-When Hermes asks for approval (a command it considers dangerous), or offers a choice (`/model`, `/reasoning`…), it posts a message and reacts to it with the options. fluxchat turns those into buttons on the message: **Approve once**, **For this session**, **Always**, **Deny**, or the picker's options by name. Click one; it stays lit until the agent acts on it and the prompt goes away.
+When an agent asks for approval (a command it considers dangerous) or offers a choice (`/model`, `/reasoning`…), fluxchat shows the options as buttons on the message: **Approve once**, **For this session**, **Always**, **Deny**, or the options by name. Clicking one sends the reaction the agent waits for; it stays lit until the agent acts on it. This works for agents that offer choices as reactions on their own message (Hermes, the Claude Code channel) and for the [agent protocol](agent-protocol.md)'s `choices`. Prompts older than an hour show as ordinary reactions.
 
-You get a desktop notification when an agent asks, even with *mentions only* on, unless you're looking at the room. Prompts older than an hour (left behind by a restarted agent) show as ordinary reactions.
+## Your prompts
+
+- **Ctrl+R** searches what you've sent (the palette in `<` mode): pick one to put it back in the message box.
+- `/snippet <name> <text>` saves a prompt you use often; it shows first in Ctrl+R. `/snippet` lists them, `/unsnippet <name>` removes one.
+
+## Voice
+
+Hold the 🎤 to talk: the voice message is sent when you let go, into the thread you're in. A quick tap records until you tap again, then lets you listen before sending. Agents that take voice notes (Hermes does) get it as a prompt.
+
+## Harness profiles
+
+A harness profile tells fluxchat how one agent framework behaves on Matrix. Profiles are TOML files in fluxchat's data folder, under `agents/` (`~/.local/share/fluxchat/agents/` on Linux, `~/Library/Application Support/fluxchat/agents/` on macOS, `%APPDATA%\fluxchat\agents\` on Windows). The built-in ones are written there on first start; edit them, or copy one to describe another harness. Files are read at start, and a file with a built-in's `id` replaces it.
+
+| Built in | Commands | Working | Done / failed | Approvals |
+|---|---|---|---|---|
+| Hermes Agent | `!name` | 👀 on your message | ✅ / ❌ on it | reactions on its prompt: ✅ 🌀 ♾️ ❌ |
+| OpenClaw | `/name`, with its mention in rooms | typing (and its ack reaction) | — | ✅ / ❌ |
+| Claude Code (Matrix channel) | — | typing | — | ✅ / ❌ on the permission prompt |
+| Generic agent | `/name` | typing | — | the agent protocol |
+
+Every field is optional; leave out what doesn't apply:
+
+```toml
+id = "my-harness"            # how agents refer to it
+name = "My harness"          # shown in the picker
+about = "One line about it"
+url = "https://…"
+
+command_prefix = "/"         # "!" → !stop, "/" → /stop as text
+mention_commands = false     # outside DMs, start commands with the agent's ID
+stop = "stop"                # command names, without prefix; "" = none
+steer = ""
+queue = ""
+
+working_reaction = ""        # reactions on your request; "" = not used
+done_reaction = ""
+failed_reaction = ""
+typing_means_working = true  # the agent typing = working
+
+progress_steps = true        # progress as "emoji step" lines
+runtime_footer = false       # "model · 42% · ~/dir" under answers
+
+approvals = [ { emoji = "✅", label = "Approve" }, { emoji = "❌", label = "Deny" } ]
+menu = [ { label = "Status", command = "status" } ]
+commands = [ { name = "stop", description = "Stop the run" } ]
+```
+
+For an agent or harness you write yourself, the cleanest route is the [agent protocol](agent-protocol.md): a few fields in its messages, and fluxchat needs no guessing at all.
+
+**pi** and other harnesses without a Matrix front end yet: give them one (a small bridge or bot, or ask your agent to write it), then describe it with a profile or have it speak the agent protocol.
+
+## Matrix first
+
+fluxchat speaks Matrix and only Matrix: one open, encrypted, self-hostable protocol, with bridges to most other chat networks. If you want fluxchat on another platform, have your agent build it and send us a pull request.
