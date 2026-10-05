@@ -4,7 +4,7 @@
 
 fluxchat is a fast, native [Matrix](https://matrix.org) client written entirely in Rust. It has a keyboard-first, IRC-inspired interface, tmux-style panes, and first-class controls for AI agents. You can see what your agents are doing, steer or stop them mid-run, and approve what they ask for, all in end-to-end encrypted rooms on a server you choose.
 
-![fluxchat: spaces, rooms with their latest threads, a thread beside its room, members](assets/screenshots/layout.png)
+![fluxchat with four panes: an image-generation thread with the agent chip in its header, a betting room whose agent threads show "done", and two more rooms, all beside the room list with each room's latest threads](assets/screenshots/agents.png)
 
 **[Read the user manual →](docs/README.md)**
 

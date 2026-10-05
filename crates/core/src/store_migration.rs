@@ -162,7 +162,10 @@ mod tests {
 
     #[tokio::test]
     async fn copies_identity_and_room_keys_into_an_encrypted_store() {
-        let dir = std::env::temp_dir().join(format!("fluxchat-migrate-test-{}", std::process::id()));
+        // Unique per run: a pid alone can be reused, and a leftover store
+        // from an earlier run would be opened instead of a fresh one.
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("fluxchat-migrate-test-{}-{nanos}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store_dir = dir.join("matrix_store");
         let key = [7u8; 32];
@@ -192,7 +195,9 @@ mod tests {
         // Encrypted: the wrong key can't open it.
         assert!(SqliteCryptoStore::open_with_key(&store_dir, Some(&[8u8; 32])).await.is_err());
 
-        std::fs::remove_dir_all(&dir).unwrap();
+        // Best effort: SQLite may still be closing its files (WAL / shm) in
+        // the background, and leftovers in the temp dir aren't what's tested.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Run against a *copy* of a real store (it's migrated in place):
