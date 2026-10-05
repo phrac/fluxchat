@@ -1,17 +1,61 @@
 # fluxchat
 
-A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust, with an IRC-inspired interface.
+**The chat client for people who talk to humans *and* run AI agents.**
+
+fluxchat is a fast, native [Matrix](https://matrix.org) client written entirely in Rust. It has a keyboard-first, IRC-inspired interface, tmux-style panes, and first-class controls for AI agents. You can see what your agents are doing, steer or stop them mid-run, and approve what they ask for, all in end-to-end encrypted rooms on a server you choose.
 
 ![fluxchat: spaces, rooms with their latest threads, a thread beside its room, members](assets/screenshots/layout.png)
 
 **[Read the user manual →](docs/README.md)**
 
-## Highlights
+## Why fluxchat
 
-- **Pure Rust, GPU-rendered.** No Electron, no WebView, no JavaScript. Built on [Iced](https://iced.rs) and [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
-- **IRC feel, modern features.** Timestamp, colored nick and message columns in a monospace layout, with images, reactions, threads, spaces, encryption and voice calls.
-- **Fast.** Virtualized timeline, sliding sync, lazy-loaded member lists.
-- **Your layout.** Split the screen into tmux-style panes and windows; every sidebar opens, closes and resizes independently, and it all comes back after a restart.
+- **Your agents, on your terms.** Matrix is an open, federated protocol. Run your own homeserver, keep your rooms end-to-end encrypted, and talk to any agent that speaks Matrix. You're not locked into one vendor's chat app or one model. fluxchat encrypts its local data too, with the key in your system keychain.
+- **Built to watch many things at once.** Split the screen into panes and windows, tmux-style: a room, its agent's thread, a second agent, a team channel. Drag rooms into place and the layout comes back after a restart.
+- **Native, fast, and light enough to leave open all day.** Pure Rust, GPU-rendered with [Iced](https://iced.rs) on [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk). No Electron, no WebView, no JavaScript. Virtualized timeline and sliding sync, so big rooms stay quick.
+- **IRC feel, keyboard-first.** Timestamp, colored nick and message columns in a monospace layout. A command palette, 57+ slash commands with Tab completion, tmux keys and room hotkeys.
+- **A complete Matrix client.** Threads, spaces, encryption and verification, voice calls, media and polls. Room admin and moderation, push rules, themes. It's not a demo built around one feature.
+
+## Built for running AI agents
+
+Agent frameworks increasingly use chat as their front end, and Matrix is a good fit. It's encrypted and self-hostable, threads map neatly onto agent sessions, it works on every device, and bots are first-class users. But ordinary chat clients treat an agent like any other person: its progress floods the timeline, approvals are emoji you have to decode, and stopping a runaway run means remembering the right incantation.
+
+fluxchat reads what agents are doing and gives you controls for it. Mark a user as an AI agent and:
+
+**See what it's doing**
+- An **agent chip** in the room header shows idle, *working · 3m* with a live progress bar, or *waiting on you*.
+- The **current step** ("📖 Reading notes.md", "🔍 Searching the web for …"), a step count and the time so far.
+- **Run state** on every request and thread (working / needs you / done / failed), with dots in the room list.
+- Progress logs **fold to their latest step** instead of flooding the timeline.
+
+**Stay in control**
+- **Stop** a run from the run bar or the header menu.
+- **Steer** it mid-run (read after its next step) or **queue** the next task, instead of interrupting.
+- **Approvals as buttons:** Approve once / For this session / Always / Deny. You get a desktop notification when an agent is blocked on you, even with mentions-only on.
+- **Pickers as buttons** (model, reasoning level…) labelled with their options.
+
+**Work with it like a terminal**
+- The agent's **`/commands` autocomplete** in its rooms and are sent the way it expects (`!goal`, `!stop`, `!model`…); skills pass straight through.
+- Quick commands one click away: Status, Usage and cost, Context window, Switch model, New session.
+- **Each request opens its own thread** beside the room as the agent starts it. Keep chatting in the room while it works.
+- Panes and windows let you watch several agents and threads side by side.
+
+It works today with [Hermes Agent](https://github.com/NousResearch/hermes-agent), whose Matrix conventions it follows (status reactions, threaded sessions, reaction-based approvals, `!` commands). Any agent or harness that uses the same conventions gets the same controls. See [AI agents](docs/agents.md) in the manual.
+
+### Where it's going
+
+We think the chat client is becoming the cockpit for agents. What's next, roughly in order:
+
+- **A task board.** An agent room's threads as a list of runs, with state, duration and last step, filtered to what's active.
+- **Notify when a run finishes**, plus a per-thread "tell me when this is done", so you can walk away.
+- **Model, context and cost at a glance.** The agent's runtime info (model, context %, working directory) in the pane title and status bar, instead of a footer on every message.
+- **Better output.** Copy buttons on code blocks, highlighted diffs, inline PDF previews, and long answers collapsed.
+- **Prompt history and snippets.** ↑ and Ctrl+R like a shell, and saved prompts in the palette.
+- **A structured agent protocol.** A small, open set of Matrix event fields for run state, steps and approvals, so any agent or harness (coding agents, research agents, CI bots) can report precisely instead of fluxchat inferring it from reactions.
+- **Multi-agent dashboards.** A window that follows every active run across rooms, and rooms where agents work together while you watch and step in.
+- **Voice.** Push-to-talk voice prompts to agents, building on the voice messages and calls already here.
+
+Ideas and pull requests are welcome.
 
 ## Screenshots
 
@@ -23,6 +67,14 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 | Gallery of every image, video and file | Command palette (Ctrl/⌘+K) | Themes, fonts and text size |
 
 ## Features
+
+### AI agents
+- Mark a user as an AI agent (e.g. [Hermes Agent](https://github.com/NousResearch/hermes-agent)): its `/commands` autocomplete and go to it as `!commands`
+- Run state on each request and thread (working / needs you / done / failed), with new agent threads opening beside the room as they start
+- Agent chip in the room header (idle / working / waiting on you) with quick commands: Stop, Status, Usage, Context, Model, New session
+- Live progress: current step, step count, time so far and a progress bar; multi-step progress messages folded to their latest step
+- Run bar with Stop, and Send / Steer / Queue for messages sent while it works
+- Approvals and pickers as buttons, with a desktop notification when an agent is waiting on you
 
 ### Messaging
 - Markdown, code blocks with syntax highlighting, inline LaTeX
@@ -48,12 +100,6 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 - Multiple windows (layouts), listed in the status bar
 - tmux keys: Ctrl+B then `%` `"` `x` `z` `o` arrows `c` `n` `p` `0`–`9` `&`
 - Layout saved and restored on restart
-
-### AI agents
-- Mark a user as an AI agent (e.g. [Hermes Agent](https://github.com/NousResearch/hermes-agent)): its `/commands` autocomplete and go to it as `!commands`
-- Run state on each request and thread (working / needs you / done / failed), with new agent threads opening beside the room as they start
-- Run bar with Stop, and Send / Steer / Queue for messages sent while it works
-- Approvals and pickers as buttons, with a desktop notification when an agent is waiting on you
 
 ### Rooms & spaces
 - Room list grouped by space, favourites, unread and mention badges
@@ -108,7 +154,7 @@ A fast, native [Matrix](https://matrix.org) chat client written entirely in Rust
 
 The [user manual](docs/README.md) covers everything:
 
-- [Getting started](docs/getting-started.md) · [The interface](docs/interface.md) · [Messaging](docs/messaging.md) · [Threads](docs/threads.md)
+- [Getting started](docs/getting-started.md) · [The interface](docs/interface.md) · [Messaging](docs/messaging.md) · [Threads](docs/threads.md) · [AI agents](docs/agents.md)
 - [Panes and windows](docs/panes-and-windows.md) · [Rooms and spaces](docs/rooms-and-spaces.md) · [People](docs/people.md)
 - [Notifications](docs/notifications.md) · [Voice and video](docs/calls.md) · [Settings](docs/settings.md) · [Encryption](docs/encryption.md)
 - [Keyboard shortcuts](docs/keyboard-shortcuts.md) · [Slash commands](docs/slash-commands.md) · [Themes](docs/themes.md) · [Troubleshooting](docs/troubleshooting.md)

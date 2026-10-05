@@ -8,6 +8,10 @@ Click the agent's name or avatar to open its profile and turn on **AI agent**. I
 
 A room with an agent in it (a DM with your agent, or a room it's in) gets everything below.
 
+## The agent chip
+
+The room header shows the agent next to the room name: a robot icon, its name, and what it's doing: **idle**, **working · 3m** with a moving progress bar, or **waiting on you**. Hover it for the current step. Click it for quick commands for this room or thread: **Stop the run** (while it works), **Status**, **Usage and cost**, **Context window**, **Switch model**, **New session**, and the agent's profile.
+
 ## Commands
 
 Hermes's commands work with `/`, the way you'd type them anywhere else: `/goal`, `/stop`, `/status`, `/model`, `/usage`, `/new`… fluxchat sends them as `!goal`, `!stop` and so on, which is how Hermes takes commands on Matrix.
@@ -17,6 +21,15 @@ Hermes's commands work with `/`, the way you'd type them anywhere else: `/goal`,
 - Commands only fluxchat has (`/me`, `/gif`, `/attach`…) still work as usual.
 - Anything else that starts with `/` goes to the agent too, so its skills work (`/arxiv …`).
 - `//text` still sends `/text` as a plain message, and you can type `!command` yourself.
+
+## Progress
+
+Hermes reports what it's doing in one message it keeps editing, a line per tool ("📖 Reading notes.md", "🔍 Searching the web for …"). fluxchat uses that message:
+
+- The run bar and the agent chip show the latest step, the step count, the time since your request, and a moving progress bar while it works.
+- In the timeline, a progress message with several steps is folded to **N steps** plus the latest one. Click **N steps** to see them all, **Hide steps** to fold it again.
+
+Hermes doesn't say how far along it is, so the bar shows that it's working, not a percentage.
 
 ## Runs
 
@@ -32,7 +45,7 @@ When the agent starts a thread on a message you just sent in the room you're in,
 
 ### The run bar
 
-While the agent works on the thread (or room) you're looking at, a bar above the message box shows it, with:
+While the agent works on the thread (or room) you're looking at, a bar above the message box shows it (time so far, current step, progress bar), with:
 
 - **Stop**: interrupts the run (sends `!stop`).
 - **Next message**: what a message you send while it's working does.

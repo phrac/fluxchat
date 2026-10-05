@@ -116,6 +116,8 @@ pub enum Message {
     AgentSend(String, String),
     /// What a message sent while an agent is working does.
     SetBusyMode(crate::agents::BusyMode),
+    /// Show / hide all the steps of an agent's progress message.
+    ToggleProgress(String),
     /// A click on a room / thread row: `OpenAt(key, Right)` with Cmd/Ctrl
     /// held, else the row's plain message.
     ListClick(String, Box<Message>),

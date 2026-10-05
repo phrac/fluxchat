@@ -15,6 +15,7 @@ mod isolated;
 mod measured;
 mod panes;
 mod prefs;
+mod progress;
 mod message;
 mod primary_clipboard;
 mod selectable_text;

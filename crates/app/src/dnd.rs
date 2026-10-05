@@ -1,9 +1,9 @@
 //! Drag a room or thread from the lists onto a pane.
 //!
-//! `DragSource` wraps a list row and remembers a left press on it;
-//! once the cursor has moved `DRAG_THRESHOLD` with the button down (the global
-//! listener calls `cursor_moved`), a drag is active; `SidebarDragEnd` (the
-//! global left-release) ends it. `DropTarget` wraps a
+//! `DragSource` wraps a list row and remembers a left press on it; once
+//! the cursor has moved `DRAG_THRESHOLD` from there with the button down
+//! (checked by the pressed row itself, in its own coordinates), a drag is
+//! active; `SidebarDragEnd` (the global left-release) ends it. `DropTarget` wraps a
 //! pane: while a drag is over it, it shades the zone the drop would fill
 //! (an edge → split that side, the middle → show it in this pane) and on
 //! release sends `Message::DropOnPane`. Both are transparent wrappers (same
@@ -64,14 +64,15 @@ fn drag() -> std::sync::MutexGuard<'static, Drag> {
     DRAG.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The cursor moved (global listener): start the drag once past the threshold.
-pub fn cursor_moved(position: Point) {
-    let mut d = drag();
-    if let Some((_, start)) = &d.source {
-        if !d.active && start.distance(position) > DRAG_THRESHOLD {
-            d.active = true;
-        }
-    }
+/// Whether the cursor, seen by the pressed row, has gone far enough from
+/// the press for a drag. Both points are in the row's own coordinates (in
+/// the scrolled room list they're offset by the scroll — comparing with the
+/// window position made every press a drag once the list was scrolled, and
+/// clicks did nothing). Out of the list the row's cursor is "levitating"
+/// but still in its coordinates (`land()`); an unavailable one (left the
+/// window) has gone far enough.
+fn moved_enough(start: Point, now: Option<Point>) -> bool {
+    now.is_none_or(|p| start.distance(p) > DRAG_THRESHOLD)
 }
 
 /// The left button was released (`SidebarDragEnd`; drop targets have
@@ -198,14 +199,27 @@ impl Widget<Message, iced::Theme, iced::Renderer> for DragSource<'_> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        // Before the row's button sees (and captures) the press.
-        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
-            if let Some(p) = cursor.position_over(layout.bounds()) {
-                let mut d = drag();
-                d.source = Some((self.key.clone(), p));
-                d.active = false;
-                d.over = None;
+        match event {
+            // Before the row's button sees (and captures) the press.
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if let Some(p) = cursor.position_over(layout.bounds()) {
+                    let mut d = drag();
+                    d.source = Some((self.key.clone(), p));
+                    d.active = false;
+                    d.over = None;
+                }
             }
+            // The pressed row decides when its press becomes a drag.
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let mut d = drag();
+                let start = d.source.as_ref().filter(|(k, _)| *k == self.key).map(|(_, s)| *s);
+                if let Some(start) = start.filter(|_| !d.active) {
+                    if moved_enough(start, cursor.land().position()) {
+                        d.active = true;
+                    }
+                }
+            }
+            _ => {}
         }
         self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport)
     }
@@ -331,6 +345,14 @@ impl Widget<Message, iced::Theme, iced::Renderer> for DropTarget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_real_movement_makes_a_press_a_drag() {
+        let start = Point::new(100.0, 900.0); // row coordinates in a scrolled list
+        assert!(!moved_enough(start, Some(Point::new(103.0, 902.0))), "a click with a little jitter");
+        assert!(moved_enough(start, Some(Point::new(100.0, 920.0))));
+        assert!(moved_enough(start, None), "left the window");
+    }
 
     #[test]
     fn zones_split_at_the_edges_and_fill_in_the_middle() {

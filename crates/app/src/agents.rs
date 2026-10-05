@@ -40,6 +40,8 @@ pub const FAILED: &str = "\u{274c}";
 const PROMPT_MAX_AGE_MS: u64 = 60 * 60 * 1000;
 /// Only a request sent this recently has its new thread opened for you.
 const FOLLOW_WINDOW_MS: u64 = 15 * 60 * 1000;
+/// A progress line longer than this is prose, not a step.
+const STEP_MAX_CHARS: usize = 300;
 
 /// Where a run (a request and the agent's work on it) stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,12 +254,55 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// One step line of an agent's progress message: a tool emoji, a space,
+/// what it's doing ("📖 Reading notes.md", "🔍 Searching the web for …").
+fn is_step(line: &str) -> bool {
+    let Some((head, tail)) = line.split_once(' ') else { return false };
+    !tail.trim().is_empty()
+        && line.chars().count() <= STEP_MAX_CHARS
+        && (emojis::get(head).is_some() || emojis::get(head.trim_end_matches('\u{fe0f}')).is_some())
+}
+
+/// The steps of an agent progress message: every line a step. Hermes edits
+/// one such message, adding a line per tool it starts.
+pub fn progress_steps(body: &str) -> Option<Vec<&str>> {
+    let lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    (!lines.is_empty() && lines.iter().all(|l| is_step(l))).then_some(lines)
+}
+
+/// A run: where it stands, when the request was sent, and the agent's
+/// latest step (from its progress message, when the view is loaded).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunInfo {
+    pub state: RunState,
+    /// The request's timestamp (ms).
+    pub since: u64,
+    pub step: Option<String>,
+    pub steps: usize,
+}
+
+impl RunInfo {
+    fn new(state: RunState, since: u64) -> Self {
+        RunInfo { state, since, step: None, steps: 0 }
+    }
+
+    /// "45s", "3m", "1h 20m" since the request.
+    pub fn elapsed(&self) -> String {
+        let secs = now_ms().saturating_sub(self.since) / 1000;
+        match secs {
+            0..=59 => format!("{secs}s"),
+            60..=3599 => format!("{}m", secs / 60),
+            _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
+        }
+    }
+}
+
 /// Run states worked out from the loaded timelines (`refresh_agent_state`).
 #[derive(Debug, Default)]
 pub struct AgentRuns {
     /// By thread key (a request answered in a thread) or room key (one that
     /// wasn't threaded).
-    states: HashMap<String, RunState>,
+    states: HashMap<String, RunInfo>,
     /// Prompts already seen, by event ID (each is announced once).
     announced: std::collections::HashSet<String>,
     /// Messages a desktop notification was shown for (so a prompt that
@@ -269,16 +314,16 @@ pub struct AgentRuns {
 }
 
 impl AgentRuns {
-    fn set(&mut self, key: String, state: Option<RunState>) {
-        match state {
-            Some(s) => { self.states.insert(key, s); }
+    fn set(&mut self, key: String, run: Option<RunInfo>) {
+        match run {
+            Some(r) => { self.states.insert(key, r); }
             None => { self.states.remove(&key); }
         }
     }
 
     fn recount_needs_you(&mut self) {
         self.needs_you = self.states.iter()
-            .filter(|(_, s)| **s == RunState::NeedsYou)
+            .filter(|(_, r)| r.state == RunState::NeedsYou)
             .map(|(k, _)| real_room_id(k).to_string())
             .collect();
     }
@@ -309,7 +354,25 @@ impl FluxChat {
     /// Where the run behind a view stands: a thread key for a threaded
     /// request, a room key for the room's latest unthreaded one.
     pub(crate) fn run_state(&self, key: &str) -> Option<RunState> {
-        self.agent_runs.states.get(key).copied()
+        self.agent_runs.states.get(key).map(|r| r.state)
+    }
+
+    pub(crate) fn run_info(&self, key: &str) -> Option<&RunInfo> {
+        self.agent_runs.states.get(key)
+    }
+
+    /// The run a room's header speaks for: the view's own (a thread), else
+    /// the room's liveliest — one waiting on you, else the newest working.
+    pub(crate) fn header_run(&self, key: &str) -> Option<&RunInfo> {
+        if key.starts_with("thread::") {
+            return self.run_info(key).filter(|r| matches!(r.state, RunState::Working | RunState::NeedsYou));
+        }
+        let prefix = format!("thread::{key}::");
+        self.agent_runs.states.iter()
+            .filter(|(k, _)| *k == key || k.starts_with(&prefix))
+            .map(|(_, r)| r)
+            .filter(|r| matches!(r.state, RunState::Working | RunState::NeedsYou))
+            .max_by_key(|r| (r.state == RunState::NeedsYou, r.since))
     }
 
     /// Any run in the room (or its threads) waiting on you.
@@ -365,27 +428,53 @@ impl FluxChat {
             .map(|m| m.event_id.clone())
             .collect();
         let needs_you = !prompts.is_empty();
-        let mut updates: Vec<(String, Option<RunState>)> = Vec::new();
+        // The agent's latest step after `since`, from its progress messages.
+        let step_after = |since: u64, run: &mut RunInfo| {
+            if let Some(steps) = msgs.iter().rev()
+                .filter(|m| m.sender == agent && m.timestamp >= since)
+                .find_map(|m| progress_steps(&m.body))
+            {
+                run.step = steps.last().map(|s| s.to_string());
+                run.steps = steps.len();
+            }
+        };
+        let mut updates: Vec<(String, Option<RunInfo>)> = Vec::new();
         if parse_thread_key(key).is_some() {
             // A thread: its latest request (the root or a reply of yours).
-            let latest = msgs.iter().rev().filter(|m| m.sender == me).find_map(|m| request_state(m, &agent));
-            updates.push((key.to_string(), if needs_you { Some(RunState::NeedsYou) } else { latest }));
+            let latest = msgs.iter().rev().filter(|m| m.sender == me)
+                .find_map(|m| request_state(m, &agent).map(|s| RunInfo::new(s, m.timestamp)));
+            let run = match (latest, needs_you) {
+                (Some(mut r), true) => { r.state = RunState::NeedsYou; Some(r) }
+                (None, true) => Some(RunInfo::new(RunState::NeedsYou, now)),
+                (r, false) => r,
+            };
+            updates.push((key.to_string(), run.map(|mut r| { step_after(r.since, &mut r); r })));
         } else {
             // Threaded requests, unless their thread is open (its own view
             // knows better, approvals included).
-            let mut latest_unthreaded = None;
+            // Threaded = what the "N replies" row goes by: the SDK's summary,
+            // a latest reply, or loaded replies.
+            let loaded_replies = self.thread_counts.get(key);
+            let mut latest_unthreaded: Option<RunInfo> = None;
             for m in msgs.iter().filter(|m| m.sender == me && m.thread_root.is_none()) {
                 let Some(state) = request_state(m, &agent) else { continue };
-                if m.thread_count.unwrap_or(0) > 0 {
-                    let tk = thread_key(key, &m.event_id);
-                    if !self.messages_by_room.contains_key(&tk) {
-                        updates.push((tk, Some(state)));
-                    }
-                } else {
-                    latest_unthreaded = Some(state);
+                let threaded = m.thread_count.unwrap_or(0) > 0
+                    || m.thread_latest.is_some()
+                    || loaded_replies.and_then(|c| c.get(&m.event_id)).is_some_and(|n| *n > 0);
+                let tk = thread_key(key, &m.event_id);
+                if !self.messages_by_room.contains_key(&tk) {
+                    updates.push((tk, Some(RunInfo::new(state, m.timestamp))));
+                }
+                if !threaded {
+                    latest_unthreaded = Some(RunInfo::new(state, m.timestamp));
                 }
             }
-            updates.push((key.to_string(), if needs_you { Some(RunState::NeedsYou) } else { latest_unthreaded }));
+            let run = match (latest_unthreaded, needs_you) {
+                (Some(mut r), true) => { r.state = RunState::NeedsYou; Some(r) }
+                (None, true) => Some(RunInfo::new(RunState::NeedsYou, now)),
+                (r, false) => r,
+            };
+            updates.push((key.to_string(), run.map(|mut r| { step_after(r.since, &mut r); r })));
         }
         for (k, state) in updates {
             self.agent_runs.set(k, state);
@@ -487,10 +576,11 @@ impl FluxChat {
     /// panes) leaves out the switch.
     pub(crate) fn view_run_bar(&self, key: &str, compact: bool) -> Option<Element<'_, Message>> {
         let agent = self.agent_in(key)?;
-        let state = self.run_state(key).filter(|s| matches!(s, RunState::Working | RunState::NeedsYou))?;
+        let run = self.run_info(key).filter(|r| matches!(r.state, RunState::Working | RunState::NeedsYou))?;
+        let state = run.state;
         let name = self.agent_name(key, agent);
         let label = if state == RunState::Working {
-            format!("{name} is working")
+            format!("{name} is working \u{00b7} {}", run.elapsed())
         } else {
             format!("{name} is waiting for your answer")
         };
@@ -498,10 +588,11 @@ impl FluxChat {
             state_dot(state, 8.0),
             text(label).font(self.sidebar_font()).size(12).color(crate::theme::colors().text_normal)
                 .wrapping(iced::widget::text::Wrapping::None),
-            Space::new().width(Fill),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
+        // What it's on now ("📖 Reading notes.md"), from its progress message.
+        bar = bar.push(container(self.view_step(run)).width(Fill).clip(true));
         if state == RunState::Working && !compact {
             let mode = self.prefs.agent_busy_mode;
             bar = bar.push(text("Next message").font(self.sidebar_font()).size(11).color(crate::theme::colors().text_dim));
@@ -516,6 +607,9 @@ impl FluxChat {
             "Interrupt the run (!stop)",
         ));
         let tint = state.color();
+        let bar = iced::widget::column![bar]
+            .push((state == RunState::Working).then(|| crate::progress::working(2.0, tint)))
+            .spacing(4);
         Some(container(bar)
             .padding([4, 12])
             .width(Fill)
@@ -525,6 +619,124 @@ impl FluxChat {
                 ..Default::default()
             })
             .into())
+    }
+
+    /// The run's current step and how many there have been, dimmed.
+    fn view_step(&self, run: &RunInfo) -> Element<'_, Message> {
+        match &run.step {
+            Some(step) => row![
+                text(step.clone()).font(self.sidebar_font()).size(12).color(crate::theme::colors().text_muted)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            ]
+            .push((run.steps > 1).then(|| text(format!("step {}", run.steps)).font(self.sidebar_font()).size(11)
+                .color(crate::theme::colors().text_dim).wrapping(iced::widget::text::Wrapping::None)))
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+            None => Space::new().into(),
+        }
+    }
+
+    /// The agent chip in a room's header: who, and what it's up to (idle /
+    /// working with a progress bar / waiting on you). Opens the agent menu.
+    pub(crate) fn view_agent_marker(&self, key: &str) -> Option<Element<'_, Message>> {
+        let agent = self.agent_in(key)?;
+        let name = self.agent_name(key, agent);
+        let run = self.header_run(key);
+        let colors = crate::theme::colors();
+        let (status, color) = match run {
+            Some(r) if r.state == RunState::NeedsYou => ("waiting on you".to_string(), r.state.color()),
+            Some(r) => (format!("working \u{00b7} {}", r.elapsed()), r.state.color()),
+            None => ("idle".to_string(), colors.text_dim),
+        };
+        let top = row![
+            ui::icon(crate::icons::SVG_BOT, 14.0, if run.is_some() { color } else { colors.text_dim }),
+            text(name).font(self.sidebar_font()).size(12).color(colors.text_normal)
+                .wrapping(iced::widget::text::Wrapping::None),
+            text(status).font(self.sidebar_font()).size(11).color(color)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        let working = run.is_some_and(|r| r.state == RunState::Working);
+        let chip = iced::widget::column![top]
+            .push(working.then(|| crate::progress::working(2.0, color)))
+            .spacing(3)
+            .width(iced::Length::Shrink);
+        let tip = run.and_then(|r| r.step.clone()).unwrap_or_else(|| "Agent commands".into());
+        Some(crate::ui::styled_tooltip(
+            button(chip)
+                .on_press(Message::OpenContextMenu(crate::state::ContextMenu::Agent { key: key.to_string() }))
+                .padding([3, 8])
+                .style(move |_, status| button::Style {
+                    background: Some(if matches!(status, button::Status::Hovered) {
+                        crate::theme::with_alpha(color, 0.16)
+                    } else {
+                        crate::theme::with_alpha(color, 0.08)
+                    }.into()),
+                    border: iced::Border { color: crate::theme::with_alpha(color, 0.3), width: 1.0, radius: 10.0.into() },
+                    ..Default::default()
+                }),
+            text(tip).font(self.sidebar_font()).size(11),
+            iced::widget::tooltip::Position::Bottom,
+        ))
+    }
+
+    /// An agent's step log: collapsed to "N steps · latest", or every step.
+    pub(crate) fn view_progress_log<'a>(&self, msg: &MessageInfo, steps: &[&str], expanded: bool) -> Element<'a, Message> {
+        let colors = crate::theme::colors();
+        let fs = self.msg_font_size;
+        let line = |s: &str, color: iced::Color| -> Element<'a, Message> {
+            text(s.replace('`', "")).font(self.msg_font()).size(fs - 1.0).color(color)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                .into()
+        };
+        let toggle = button(
+            text(if expanded { "Hide steps".to_string() } else { format!("{} steps", steps.len()) })
+                .font(self.sidebar_font()).size(11).color(colors.accent),
+        )
+        .on_press(Message::ToggleProgress(msg.event_id.clone()))
+        .padding([1, 6])
+        .style(move |_, status| button::Style {
+            background: Some(crate::theme::with_alpha(colors.accent, if matches!(status, button::Status::Hovered) { 0.16 } else { 0.08 }).into()),
+            border: iced::Border { radius: 8.0.into(), ..Default::default() },
+            ..Default::default()
+        });
+        if expanded {
+            let mut col = iced::widget::column![].spacing(2);
+            let last = steps.len().saturating_sub(1);
+            for (i, s) in steps.iter().enumerate() {
+                col = col.push(line(s, if i == last { colors.text_normal } else { colors.text_muted }));
+            }
+            iced::widget::column![col, toggle].spacing(4).width(Fill).into()
+        } else {
+            row![toggle, container(line(steps.last().copied().unwrap_or(""), colors.text_normal)).width(Fill).clip(true)]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .width(Fill)
+                .into()
+        }
+    }
+
+    /// The agent menu (header chip): quick commands for this view's session.
+    pub(crate) fn agent_menu_items(&self, key: &str) -> Vec<(&'static str, &'static [u8], Message)> {
+        let send = |cmd: &str| Message::AgentSend(key.to_string(), cmd.to_string());
+        let mut items = Vec::new();
+        if self.header_run(key).is_some_and(|r| r.state == RunState::Working) {
+            items.push(("Stop the run", crate::icons::SVG_STOP, send("!stop")));
+        }
+        items.extend([
+            ("Status", crate::icons::SVG_INFO, send("!status")),
+            ("Usage and cost", crate::icons::SVG_SLIDERS, send("!usage")),
+            ("Context window", crate::icons::SVG_LAYERS, send("!context")),
+            ("Switch model", crate::icons::SVG_BOT, send("!model")),
+            ("New session", crate::icons::SVG_PLUS, send("!new")),
+        ]);
+        if let Some(agent) = self.agent_in(key) {
+            items.push(("Agent profile", crate::icons::SVG_PERSON,
+                Message::OpenModal(crate::state::Modal::Profile { user_id: agent.to_string() })));
+        }
+        items
     }
 
     /// An agent's approval / picker prompt as buttons (each sends its
@@ -655,11 +867,14 @@ mod tests {
         let now = now_ms();
         let mut ask = msg("$ask", "@me:x", now - 5000);
         ask.reactions = vec![react(WORKING, &["@bot:x"])];
-        ask.thread_count = Some(1);
+        // Replies loaded but no SDK summary count yet: still the thread's run.
+        app.thread_counts.insert("!r:x".into(), [("$ask".to_string(), 1)].into_iter().collect());
         app.messages_by_room.insert("!r:x".into(), vec![msg("$hi", "@bot:x", now - 9000), ask.clone()]);
         app.refresh_agent_state("!r:x");
         let tk = thread_key("!r:x", "$ask");
         assert_eq!(app.run_state(&tk), Some(RunState::Working));
+        assert_eq!(app.run_state("!r:x"), None, "a threaded run isn't the room's");
+        ask.thread_count = Some(1);
         assert!(!app.room_needs_you("!r:x"));
         // The thread opens; the agent asks for approval in it.
         let mut prompt = msg("$approve", "@bot:x", now - 1000);
@@ -731,6 +946,42 @@ mod tests {
         app.prefs.agent_busy_mode = BusyMode::Queue;
         assert_eq!(app.agent_outgoing("!r:x", "then C").as_deref(), Some("!queue then C"));
         assert_eq!(app.agent_outgoing("!r:x", "!stop"), None, "explicit commands as typed");
+    }
+
+    #[test]
+    fn step_logs_are_told_apart_from_answers() {
+        let log = "📖 Reading 03-where-edge-lives.md\n🔍 Searching the web for `nfl week 4 lines`\n⚙️ execute_code (×3)";
+        assert_eq!(progress_steps(log).map(|s| s.len()), Some(3));
+        // An answer with bullets or prose isn't a step log.
+        assert_eq!(progress_steps("• JAX@CIN: Under 52: HIT\n• NE@BUF: Bills -7: MISS"), None);
+        assert_eq!(progress_steps("✅ Done.\nHere's the summary of what I found today"), None, "a prose line breaks it");
+        assert_eq!(progress_steps("Here's what I found"), None);
+        assert_eq!(progress_steps(""), None);
+    }
+
+    #[tokio::test]
+    async fn a_run_knows_its_latest_step_and_the_header_picks_the_liveliest() {
+        let mut app = agent_app();
+        let now = now_ms();
+        let mut ask = msg("$ask", "@me:x", now - 60_000);
+        ask.reactions = vec![react(WORKING, &["@bot:x"])];
+        let mut log = msg("$log", "@bot:x", now - 30_000);
+        log.thread_root = Some("$ask".into());
+        log.body = "📖 Reading a.md\n🔍 Searching the web for odds".into();
+        let tk = thread_key("!r:x", "$ask");
+        app.messages_by_room.insert(tk.clone(), vec![ask.clone(), log]);
+        app.refresh_agent_state(&tk);
+        let run = app.run_info(&tk).unwrap();
+        assert_eq!(run.state, RunState::Working);
+        assert_eq!(run.step.as_deref(), Some("🔍 Searching the web for odds"));
+        assert_eq!(run.steps, 2);
+        assert_eq!(run.since, ask.timestamp);
+        // The room's header shows that run; a finished one isn't shown.
+        assert_eq!(app.header_run("!r:x").map(|r| r.steps), Some(2));
+        ask.reactions = vec![react(DONE, &["@bot:x"])];
+        app.messages_by_room.insert(tk.clone(), vec![ask]);
+        app.refresh_agent_state(&tk);
+        assert!(app.header_run("!r:x").is_none());
     }
 
     #[test]

@@ -1352,6 +1352,11 @@ impl FluxChat {
                     col = col.push(self.context_menu_entry("Open in new window", SVG_LAYERS, at(Placement::NewWindow)));
                 }
             }
+            crate::state::ContextMenu::Agent { key } => {
+                for (label, icon, msg) in self.agent_menu_items(key) {
+                    col = col.push(self.context_menu_entry(label, icon, Message::Batch(vec![Message::CloseContextMenu, msg])));
+                }
+            }
             crate::state::ContextMenu::Space { space_id } => {
                 let sid = space_id.clone();
                 col = col.push(self.context_menu_item(
@@ -2687,9 +2692,11 @@ impl FluxChat {
                 header_avatar,
                 text(room_name).font(self.sidebar_font()).size(14).color(theme::colors().text_bright)
                     .wrapping(iced::widget::text::Wrapping::None),
-                Space::new().width(Fill),
-                actions,
             ]
+            // An agent here: who, and what it's up to.
+            .push(self.view_agent_marker(room_id))
+            .push(Space::new().width(Fill))
+            .push(actions)
             .spacing(8)
             .align_y(iced::Alignment::Center)
             .padding([6, 12]);
@@ -3288,7 +3295,6 @@ impl FluxChat {
                     // Record without emitting a Message: every Message triggers
                     // a full view rebuild, and the cursor moves constantly.
                     set_cursor_position(position.x, position.y);
-                    crate::dnd::cursor_moved(position);
                     None
                 }
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {

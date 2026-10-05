@@ -1158,6 +1158,14 @@ impl FluxChat {
             body_element = column![body_element, caption_el].spacing(6).width(Fill).into();
         }
 
+        // An agent's step log (its progress message, edited a line per tool):
+        // the latest step and a count, all of them on demand.
+        if self.prefs.agents.contains(&msg.sender) {
+            if let Some(steps) = crate::agents::progress_steps(&msg.body).filter(|s| s.len() > 1) {
+                body_element = self.view_progress_log(msg, &steps, self.expanded_progress.contains(&msg.event_id));
+            }
+        }
+
         // Edited marker and local-echo delivery state
         let mut status_bits: Vec<Element<'a, Message>> = Vec::new();
         if msg.is_edited {

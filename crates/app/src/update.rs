@@ -1598,6 +1598,11 @@ impl FluxChat {
                 }
                 return set;
             }
+            Message::ToggleProgress(event_id) => {
+                if !self.expanded_progress.remove(&event_id) {
+                    self.expanded_progress.insert(event_id);
+                }
+            }
             Message::SetBusyMode(mode) => {
                 let mut p = self.prefs.clone();
                 p.agent_busy_mode = mode;

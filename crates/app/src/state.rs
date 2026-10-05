@@ -62,6 +62,8 @@ pub enum ContextMenu {
     Message { event_id: String },
     /// A thread (summary row, sidebar entry, threads panel): where to open it.
     Thread { room_id: String, root_id: String },
+    /// The agent chip in a room header: quick commands (view key).
+    Agent { key: String },
 }
 
 /// Which modal is currently open.
@@ -302,6 +304,8 @@ pub struct FluxChat {
 
     /// Agent run states worked out from the loaded timelines (agents.rs).
     pub agent_runs: crate::agents::AgentRuns,
+    /// Agent step logs shown in full (event IDs; collapsed by default).
+    pub expanded_progress: HashSet<String>,
     /// tmux-style windows, each a grid of panes (see `panes.rs`).
     pub windows: Vec<crate::panes::Window>,
     pub active_window: usize,
@@ -739,6 +743,7 @@ impl FluxChat {
             gif_searched: false,
             help_text: None,
             modal: None,
+            expanded_progress: HashSet::new(),
             agent_runs: Default::default(),
             windows: vec![crate::panes::Window::new(None)],
             active_window: 0,
