@@ -21,7 +21,7 @@ Unsent text is kept per room, so switching rooms doesn't lose a half-written mes
 
 Code blocks longer than five lines are shown collapsed, each with its own **Show more** / **Show less** (Preferences → *Expand code blocks* flips the default). Every code block has a **copy** button at its top right, which copies the whole block, collapsed or not. Diffs are highlighted, tagged ```` ```diff ```` or not.
 
-The toolbar under the message box inserts these for you. To send text exactly as typed, turn off *Markdown* in Preferences, or use `/plain`. `/html` sends raw HTML.
+While there's text in the message box, buttons for bold, italic, strikethrough, code, code block and link appear in it (in place of the microphone and location buttons) and insert these for you. To send text exactly as typed, turn off *Markdown* in Preferences, or use `/plain`. `/html` sends raw HTML.
 
 To send a message that starts with `/` (not a command), start it with `//`. For example, `//shrug` sends `/shrug`.
 
@@ -98,4 +98,4 @@ Click the search button (or **Ctrl/⌘+F**), type and press **Enter**. Choose a 
 
 ## Read receipts and typing
 
-Small avatars under a message show who has read up to there; hover for names. "X is typing…" appears above the message box. Both can be hidden, and you can stop sending your own, in [Preferences](settings.md#preferences).
+Small avatars under a message show who has read up to there; hover for names. "ann is typing…" appears above the message box, by display name, in a line that's always there so the timeline doesn't move when someone starts or stops. Both can be hidden, and you can stop sending your own, in [Preferences](settings.md#preferences).

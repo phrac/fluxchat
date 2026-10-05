@@ -24,11 +24,11 @@ The narrow column on the far left.
 
 ## Room header
 
-Across the top of the timeline: room avatar and name, then buttons:
+Across the top of the timeline: room avatar and name (agent rooms add the [agent chip](agents.md#the-agent-chip)), then buttons in groups: call · find · split · panels · the room. Panels that are open show as pressed. In a split, the focused pane's title bar is the header (see [Panes](panes-and-windows.md)).
 
 | Button | Does |
 |--------|------|
-| Phone | Start or join a voice call |
+| Phone | Start or join a voice call (only where calls work) |
 | Search | Search the room's messages |
 | Pin | Pinned messages sidebar (red when the room has pins) |
 | Grid | [Gallery](messaging.md#gallery): every image, video and file in the room or thread |
@@ -42,6 +42,8 @@ Across the top of the timeline: room avatar and name, then buttons:
 Below the header, a slim bar shows the room topic.
 
 ## Timeline
+
+While a room's messages load, faint placeholder rows stand in for them. Images that haven't loaded yet take their real size straight away, so the timeline doesn't jump when they arrive.
 
 Messages appear in IRC-style columns: **time | name | message**.
 
@@ -71,7 +73,7 @@ Four optional panels on the right. Open any combination; each one is resizable a
 Along the bottom:
 
 - **⚙**: opens Settings.
-- **Your account and the room**, with your role badge (`@` admin, `+` moderator).
+- **Your account and the room** (in a thread, `#room › thread title`), with your role as a badge: **@ op** (admin) or **+ mod** (moderator).
 - The member count, and whether the room is encrypted.
 - **Windows**: shown when you have more than one, as `0:general* 1:dev`. Click one to switch. `[prefix]` appears after Ctrl+B. See [Panes](panes-and-windows.md).
 - Connection: `synced`, the server lag in ms, or `reconnecting…` in red.

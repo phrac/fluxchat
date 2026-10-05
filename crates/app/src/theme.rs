@@ -210,11 +210,53 @@ pub fn discover_themes() -> Vec<ThemeColors> {
 
 // --- Active theme (global, set once at startup / on theme change) ---
 
-static ACTIVE: LazyLock<RwLock<ThemeColors>> = LazyLock::new(|| RwLock::new(fluxchat_theme()));
+static ACTIVE: LazyLock<RwLock<ThemeColors>> = LazyLock::new(|| RwLock::new(readable(fluxchat_theme())));
 
 /// Set the active theme.
 pub fn set_active_theme(colors: ThemeColors) {
-    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = colors;
+    *ACTIVE.write().unwrap_or_else(|e| e.into_inner()) = readable(colors);
+}
+
+/// Least contrast (WCAG ratio) against the message background for dimmed
+/// text (timestamps, hints, previews) and muted text (secondary labels).
+const MIN_DIM_CONTRAST: f32 = 3.0;
+const MIN_MUTED_CONTRAST: f32 = 4.5;
+
+/// `colors` with dimmed and muted text moved toward the normal text colour
+/// until they're readable on the backgrounds they're drawn on. Applied to
+/// every theme as it becomes active, so themes on disk (users' copies
+/// included) don't need editing.
+pub fn readable(mut colors: ThemeColors) -> ThemeColors {
+    let lift = |c: Color, min: f32| {
+        let backgrounds = [colors.bg_mid, colors.bg_dark];
+        let worst = |c: Color| backgrounds.iter().map(|b| contrast(c, *b)).fold(f32::MAX, f32::min);
+        let mut t = 0.0;
+        let mut out = c;
+        while worst(out) < min && t < 1.0 {
+            t += 0.05;
+            out = mix(c, colors.text_normal, t);
+        }
+        out
+    };
+    colors.text_dim = lift(colors.text_dim, MIN_DIM_CONTRAST);
+    colors.text_muted = lift(colors.text_muted, MIN_MUTED_CONTRAST);
+    colors
+}
+
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color::from_rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a)
+}
+
+/// WCAG relative luminance.
+fn luminance(c: Color) -> f32 {
+    let ch = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
+}
+
+/// WCAG contrast ratio (1–21).
+fn contrast(a: Color, b: Color) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 /// Read a color from the active theme.
@@ -293,3 +335,30 @@ pub fn container_panel(_: &Theme) -> container::Style {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_bundled_theme_has_readable_dim_and_muted_text() {
+        let bundled = [
+            include_str!("../../../assets/themes/nord.toml"),
+            include_str!("../../../assets/themes/nord-light.toml"),
+            include_str!("../../../assets/themes/dracula.toml"),
+            include_str!("../../../assets/themes/night-owl.toml"),
+            include_str!("../../../assets/themes/tokyo-night.toml"),
+            include_str!("../../../assets/themes/atom-one-dark.toml"),
+            include_str!("../../../assets/themes/catppuccin-mocha.toml"),
+            include_str!("../../../assets/themes/catppuccin-latte.toml"),
+        ];
+        let themes = bundled.iter().map(|src| load_theme_str(src).expect("parses")).chain([fluxchat_theme()]);
+        for t in themes {
+            let t = readable(t);
+            for bg in [t.bg_mid, t.bg_dark] {
+                assert!(contrast(t.text_dim, bg) >= MIN_DIM_CONTRAST - 0.01, "{}: dim {}", t.name, contrast(t.text_dim, bg));
+                assert!(contrast(t.text_muted, bg) >= MIN_MUTED_CONTRAST - 0.01, "{}: muted {}", t.name, contrast(t.text_muted, bg));
+            }
+        }
+    }
+}

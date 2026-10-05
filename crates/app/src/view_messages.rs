@@ -206,6 +206,38 @@ impl FluxChat {
         }
     }
 
+    /// Faint placeholder rows while a view's messages load: nick and text
+    /// bars in the message columns, so the list doesn't change shape when
+    /// the real rows arrive.
+    pub(crate) fn view_placeholder_rows<'a>(&self, count: usize) -> Element<'a, Message> {
+        let c = self.msg_columns();
+        let h = (self.msg_font_size * 0.7).round();
+        let bar = |width: Length, alpha: f32| -> Element<'a, Message> {
+            container(Space::new().width(Fill).height(h))
+                .width(width)
+                .style(move |_: &Theme| container::Style {
+                    background: Some(theme::tint(alpha).into()),
+                    border: iced::Border { radius: (h / 2.0).into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into()
+        };
+        // Text lengths vary like a conversation's do (percent of the line).
+        const WIDTHS: [u16; 6] = [62, 38, 80, 50, 70, 30];
+        let mut col = column![].spacing(16).padding([12, 0]).width(Fill);
+        for i in 0..count {
+            let w = WIDTHS[i % WIDTHS.len()];
+            col = col.push(row![
+                Space::new().width(c.time_w + MSG_COL_GAP + (c.nick_w * 0.45).round()),
+                bar(Length::Fixed((c.nick_w * 0.55).round()), 0.07),
+                Space::new().width(c.avatar + 2.0 * MSG_COL_GAP + 1.0),
+                bar(Length::FillPortion(w), 0.045),
+                Space::new().width(Length::FillPortion(100 - w)),
+            ]);
+        }
+        col.into()
+    }
+
     /// Distance from the row's left edge to the message text.
     pub(crate) fn msg_content_indent(&self) -> f32 {
         let c = self.msg_columns();
@@ -600,10 +632,33 @@ impl FluxChat {
                     .interaction(iced::mouse::Interaction::ZoomIn)
                     .into()
                 } else {
-                    let label = if msg.body.trim().is_empty() { "Loading image..." } else { &msg.body };
-                    text(format!("[image: {label}]"))
-                        .font(self.msg_font()).size(fs).color(theme::colors().text_dim)
-                        .into()
+                    // Not loaded yet: its box at the size the event declares,
+                    // so the timeline doesn't jump when it arrives.
+                    let img_w = msg.image_width.unwrap_or(320).min(400) as f32;
+                    let img_h = if let (Some(w), Some(h)) = (msg.image_width, msg.image_height) {
+                        (img_w * h as f32 / w as f32).min(300.0)
+                    } else {
+                        240.0
+                    };
+                    let label = if msg.body.trim().is_empty() { "Image" } else { msg.body.as_str() };
+                    container(
+                        column![
+                            crate::ui::icon(crate::icons::SVG_IMAGE, 20.0, theme::colors().text_dim),
+                            text(label.to_string()).font(self.sidebar_font()).size(12).color(theme::colors().text_dim)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                        ].spacing(6).align_x(iced::Alignment::Center),
+                    )
+                    .width(img_w)
+                    .height(img_h)
+                    .align_x(iced::Alignment::Center)
+                    .align_y(iced::Alignment::Center)
+                    .clip(true)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::tint(0.04).into()),
+                        border: iced::Border { color: theme::tint(0.08), width: 1.0, radius: 4.0.into() },
+                        ..Default::default()
+                    })
+                    .into()
                 }
             } else {
                 // Video messages
@@ -1535,7 +1590,11 @@ impl FluxChat {
         // choices — which need no reactions) as buttons, and hand-offs
         // between agents: before the reactions, whether there are any.
         let prompt = self.agent_prompt(msg);
-        let seeded: Vec<String> = prompt.iter().map(|(e, _)| e.clone()).collect();
+        // Left out of the pills: a prompt's seeded choices (they're buttons)
+        // and status reactions its thread row's chip already shows.
+        let seeded: Vec<String> = prompt.iter().map(|(e, _)| e.clone())
+            .chain(self.status_reactions_hidden(view_key, msg))
+            .collect();
         if let Some(h) = self.view_handoff(view_key, msg) {
             preview_elements.push(h);
         }
@@ -1547,10 +1606,11 @@ impl FluxChat {
         }
 
         // Reactions
-        if msg.reactions.is_empty() && preview_elements.is_empty() {
+        let no_pills = msg.reactions.iter().all(|r| seeded.contains(&r.emoji));
+        if no_pills && preview_elements.is_empty() {
             return msg_row;
         }
-        if msg.reactions.is_empty() {
+        if no_pills {
             let mut col = column![msg_row].spacing(2).width(Fill);
             for el in preview_elements {
                 col = col.push(el);
@@ -1589,12 +1649,12 @@ impl FluxChat {
 
             let reaction_btn = button(
                 row![
-                    text(&reaction.emoji).size(16),
-                    text(reaction.count.to_string()).font(self.msg_font()).size(12).color(theme::colors().text_muted),
+                    text(&reaction.emoji).size(14),
+                    text(reaction.count.to_string()).font(self.msg_font()).size(11).color(theme::colors().text_muted),
                 ].spacing(4).align_y(iced::Alignment::Center)
             )
                 .on_press(Message::ToggleReaction(event_id, emoji))
-                .padding([2, 8])
+                .padding([1, 7])
                 .style(move |_, status| button::Style {
                     background: Some(if matches!(status, button::Status::Hovered) {
                         theme::tint(0.12)

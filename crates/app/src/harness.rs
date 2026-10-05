@@ -65,6 +65,9 @@ pub struct Harness {
     pub failed_reaction: String,
     /// The agent typing in the room means it's working.
     pub typing_means_working: bool,
+    /// It answers a request in a thread on it (outside DMs) — until a
+    /// finished request in the room shows otherwise.
+    pub reply_in_thread: bool,
     /// Progress posted as a message of `{emoji} {step}` lines.
     pub progress_steps: bool,
     /// A `model · 42% · ~/dir` footer under final answers.
@@ -94,6 +97,7 @@ impl Default for Harness {
             done_reaction: String::new(),
             failed_reaction: String::new(),
             typing_means_working: true,
+            reply_in_thread: false,
             progress_steps: true,
             runtime_footer: false,
             approvals: Vec::new(),

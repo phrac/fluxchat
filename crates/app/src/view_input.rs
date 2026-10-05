@@ -7,6 +7,9 @@ use crate::state::FluxChat;
 use crate::theme;
 use crate::view::{gif_search_id, input_id, thin_scrollbar};
 
+/// Height of the typing row (kept while nobody types: no layout jump).
+const TYPING_ROW_HEIGHT: f32 = 18.0;
+
 impl FluxChat {
     /// Renders everything below the messages scrollable: typing indicator,
     /// reply/edit preview, GIF panel, emoji picker, upload preview, help text,
@@ -14,31 +17,34 @@ impl FluxChat {
     pub(crate) fn view_input_area(&self, room_id: &str) -> Vec<Element<Message>> {
         let mut elements: Vec<Element<Message>> = Vec::new();
 
-        // Typing indicator
-        if let Some((typers, _)) = self.typing_by_room.get(room_id).filter(|_| self.prefs.show_typing) {
-            if !typers.is_empty() {
-                let typing_text = if typers.len() == 1 {
-                    format!("{} is typing...", typers[0])
-                } else if typers.len() == 2 {
-                    format!("{} and {} are typing...", typers[0], typers[1])
-                } else {
-                    format!("{} people are typing...", typers.len())
-                };
-                elements.push(
-                    container(
-                        text(typing_text)
-                            .font(self.msg_font())
-                            .size(13)
-                            .color(theme::colors().text_dim),
-                    )
-                    .padding([2, 12])
-                    .into(),
-                );
-            }
+        // Typing indicator: names, not IDs, in a row that's always there
+        // (empty when nobody types) so the timeline doesn't jump.
+        if self.prefs.show_typing {
+            let real_room = fluxchat_core::timeline::real_room_id(room_id);
+            let names: Vec<String> = self.typing_by_room.get(real_room).or_else(|| self.typing_by_room.get(room_id))
+                .map(|(ids, _)| ids.iter().map(|id| self.display_name_in(room_id, id)).collect())
+                .unwrap_or_default();
+            let typing_text = match names.as_slice() {
+                [] => String::new(),
+                [one] => format!("{one} is typing\u{2026}"),
+                [a, b] => format!("{a} and {b} are typing\u{2026}"),
+                more => format!("{} people are typing\u{2026}", more.len()),
+            };
+            elements.push(
+                container(
+                    text(typing_text)
+                        .font(self.sidebar_font())
+                        .size(12)
+                        .color(theme::colors().text_dim),
+                )
+                .height(Length::Fixed(TYPING_ROW_HEIGHT))
+                .padding([1, 14])
+                .into(),
+            );
         }
 
         // An agent working on this view's run: status, busy mode, Stop.
-        if let Some(bar) = self.view_run_bar(room_id, false) {
+        if let Some(bar) = self.run_bar_key(room_id).and_then(|k| self.view_run_card(&k)) {
             elements.push(bar);
         }
         // Someone here acts like an agent you haven't marked.
@@ -663,6 +669,56 @@ impl FluxChat {
             )
         };
 
+        // Formatting buttons: in the input row while there's text (in place
+        // of mic / location), so the box keeps one row and its height.
+        let make_fmt_btn = |svg_bytes: &'static [u8], prefix: &'static str, suffix: &'static str, title: &'static str| -> Element<Message> {
+            let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+            iced::widget::tooltip(
+                button(
+                    iced::widget::svg(handle)
+                        .width(14)
+                        .height(14)
+                        .style(|_, _| iced::widget::svg::Style {
+                            color: Some(theme::colors().text_dim),
+                        }),
+                )
+                .on_press(Message::InsertFormat(prefix, suffix))
+                .padding([3, 6])
+                .style(|_, status| button::Style {
+                    background: if matches!(status, button::Status::Hovered) {
+                        Some(theme::tint(0.08).into())
+                    } else {
+                        None
+                    },
+                    text_color: theme::colors().text_dim,
+                    border: iced::Border { radius: 3.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+                text(title).font(self.msg_font()).size(12),
+                iced::widget::tooltip::Position::Top,
+            )
+                .delay(crate::ui::TOOLTIP_DELAY)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().bg_mid.into()),
+                border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+            .padding(6)
+            .into()
+        };
+
+        let fmt_bar = row![
+            make_fmt_btn(SVG_BOLD, "**", "**", "Bold"),
+            make_fmt_btn(SVG_ITALIC, "*", "*", "Italic"),
+            make_fmt_btn(SVG_STRIKE, "~~", "~~", "Strikethrough"),
+            make_fmt_btn(SVG_CODE, "`", "`", "Code"),
+            make_fmt_btn(SVG_CODEBLOCK, "```\n", "\n```", "Code block"),
+            make_fmt_btn(SVG_LINK, "[", "](url)", "Link"),
+        ]
+        .spacing(2)
+        .align_y(iced::Alignment::Center);
+
+        let typing = !self.input_content.text().trim().is_empty();
         let input_row: Element<Message> = if let Some((_, duration_ms)) = &self.voice_ready {
             // Review bar: play preview + duration + discard/send
             let secs = duration_ms / 1000;
@@ -762,12 +818,16 @@ impl FluxChat {
             .align_y(iced::Alignment::Center)
             .into()
         } else {
+            let tools: Element<Message> = if typing {
+                fmt_bar.into()
+            } else {
+                row![mic_btn, loc_btn].spacing(6).align_y(iced::Alignment::Center).into()
+            };
             row![
                 attach_btn,
                 prompt,
                 input,
-                mic_btn,
-                loc_btn,
+                tools,
                 emoji_btn,
             ]
             .spacing(6)
@@ -775,65 +835,13 @@ impl FluxChat {
             .into()
         };
 
-        // Formatting toolbar with SVG icons
-        let make_fmt_btn = |svg_bytes: &'static [u8], prefix: &'static str, suffix: &'static str, title: &'static str| -> Element<Message> {
-            let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
-            iced::widget::tooltip(
-                button(
-                    iced::widget::svg(handle)
-                        .width(14)
-                        .height(14)
-                        .style(|_, _| iced::widget::svg::Style {
-                            color: Some(theme::colors().text_dim),
-                        }),
-                )
-                .on_press(Message::InsertFormat(prefix, suffix))
-                .padding([3, 6])
-                .style(|_, status| button::Style {
-                    background: if matches!(status, button::Status::Hovered) {
-                        Some(theme::tint(0.08).into())
-                    } else {
-                        None
-                    },
-                    text_color: theme::colors().text_dim,
-                    border: iced::Border { radius: 3.0.into(), ..Default::default() },
-                    ..Default::default()
-                }),
-                text(title).font(self.msg_font()).size(12),
-                iced::widget::tooltip::Position::Top,
-            )
-                .delay(crate::ui::TOOLTIP_DELAY)
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::colors().bg_mid.into()),
-                border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
-                ..Default::default()
-            })
-            .padding(6)
-            .into()
-        };
-
-        let fmt_bar = row![
-            make_fmt_btn(SVG_BOLD, "**", "**", "Bold"),
-            make_fmt_btn(SVG_ITALIC, "*", "*", "Italic"),
-            make_fmt_btn(SVG_STRIKE, "~~", "~~", "Strikethrough"),
-            make_fmt_btn(SVG_CODE, "`", "`", "Code"),
-            make_fmt_btn(SVG_CODEBLOCK, "```\n", "\n```", "Code block"),
-            make_fmt_btn(SVG_LINK, "[", "](url)", "Link"),
-        ]
-        .spacing(2)
-        .align_y(iced::Alignment::Center);
-
         elements.push(
             container(
                 container(
-                    column![
-                        input_row,
-                        crate::ui::divider(),
-                        fmt_bar,
-                    ].spacing(6)
+                    input_row
                 )
                 .width(Fill)
-                .padding([10, 16])
+                .padding([8, 14])
                 .style(|_: &Theme| container::Style {
                     background: Some(theme::colors().bg_dark.into()),
                     border: iced::Border {

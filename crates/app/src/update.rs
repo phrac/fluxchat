@@ -4752,6 +4752,7 @@ impl FluxChat {
             }
             Message::Tick => {
                 self.flush_layout();
+                self.sweep_stalled_runs();
                 if self.sync_running {
                     let mut tasks = Vec::new();
                     self.tick_count = self.tick_count.wrapping_add(1);

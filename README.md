@@ -81,7 +81,7 @@ Ideas and pull requests are welcome.
 - Run bar: time so far, current step, progress bar, Stop, Send / Steer / Queue, and 🔔 tell me when it's done
 - Task board in agent rooms; Runs dialog across rooms; a watch window that tiles active runs and follows new ones
 - Approvals and pickers as buttons; notifications when an agent waits on you or a long run finishes
-- New agent threads open beside the room as they start
+- New agent threads open beside the room as they start; for agents that answer in threads (Hermes), as soon as they pick up your message, with the run bar and Stop in that thread
 - Step logs and long answers folded; runtime footers moved to the chip and status bar
 - Prompt history (Ctrl+R) and snippets (`/snippet`), kept encrypted
 - Rooms with several agents: a chip each, who you're talking to, hand-offs you can follow

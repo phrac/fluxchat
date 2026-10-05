@@ -20,6 +20,29 @@ const PANE_SPACING: f32 = 4.0;
 /// Width taken by a title bar's controls, padding and borders: what's left
 /// is the most the title may use.
 const TITLE_BAR_RESERVED: f32 = 124.0;
+/// Worth showing as a thread's name: some real words, not just a command
+/// (`!new`), a "?" or a placeholder like "(message)".
+pub(crate) fn meaningful_title(t: &str) -> bool {
+    let t = t.trim();
+    let alnum = t.chars().filter(|c| c.is_alphanumeric()).count();
+    let lone_command = (t.starts_with('!') || t.starts_with('/')) && !t.contains(char::is_whitespace);
+    alnum >= 3 && !lone_command && !(t.starts_with('(') && t.ends_with(')'))
+}
+
+fn first_line(body: &str) -> String {
+    body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string()
+}
+
+/// A thread's name from the thread list alone: its root's first line, else
+/// (a command, "?", a placeholder) the latest reply's, else the root's anyway.
+pub(crate) fn preview_title(t: &fluxchat_core::ThreadPreview) -> String {
+    let root = first_line(&t.body);
+    if meaningful_title(&root) {
+        return root;
+    }
+    t.latest_body.as_deref().map(first_line).filter(|l| meaningful_title(l)).unwrap_or(root)
+}
+
 /// Rooms offered in an empty pane's picker (the rest via search).
 const EMPTY_PANE_ROOMS: usize = 8;
 /// Width of the empty-pane room picker.
@@ -57,14 +80,17 @@ impl FluxChat {
             // Rows dragged from the lists drop here (edge: split, middle: show).
             let mut content = pane_grid::Content::new(crate::dnd::target(pane, framed));
             if multiple || maximized {
+                // iced hides a title that doesn't fit beside the controls
+                // (instead of shortening it): cap and clip it.
+                let cap = (widths.get(&pane).copied().unwrap_or(0.0) - TITLE_BAR_RESERVED).max(40.0);
+                // The focused pane's title bar is its room header (one bar,
+                // not two); the others get a slim title.
+                let title: Element<Message> = match slot.key.as_deref() {
+                    Some(key) if focused => container(self.view_room_header(key, Some(cap))).width(cap).clip(true).into(),
+                    key => container(self.view_pane_title(key, focused)).max_width(cap).clip(true).into(),
+                };
                 content = content.title_bar(
-                    pane_grid::TitleBar::new(
-                        // iced hides a title that doesn't fit beside the
-                        // controls (instead of shortening it): cap and clip it.
-                        container(self.view_pane_title(slot.key.as_deref(), focused))
-                            .max_width((widths.get(&pane).copied().unwrap_or(0.0) - TITLE_BAR_RESERVED).max(40.0))
-                            .clip(true),
-                    )
+                    pane_grid::TitleBar::new(title)
                         .controls(pane_grid::Controls::new(self.view_pane_controls(pane, maximized)))
                         .always_show_controls()
                         .padding([4, 8])
@@ -158,14 +184,17 @@ impl FluxChat {
     /// own view, the room's, or the room's thread list; "Thread" until known.
     pub(crate) fn thread_title(&self, key: &str) -> String {
         let Some((room, root)) = fluxchat_core::timeline::parse_thread_key(key) else { return "Thread".into() };
-        let first_line = |body: &str| body.lines().next().unwrap_or("").trim().to_string();
         [key, room].iter()
             .filter_map(|k| self.messages_by_room.get(*k)?.iter().find(|m| m.event_id == root))
             .map(|m| first_line(&m.body))
             .chain(self.room_threads.get(room).into_iter().flatten()
                 .filter(|t| t.root_id == root)
                 .map(|t| first_line(&t.body)))
-            .find(|t| !t.is_empty())
+            .find(|t| meaningful_title(t))
+            // A command, "?" or a placeholder as the root: the latest reply says more.
+            .or_else(|| self.room_threads.get(room).into_iter().flatten()
+                .filter(|t| t.root_id == root)
+                .find_map(|t| t.latest_body.as_deref().map(first_line).filter(|l| meaningful_title(l))))
             .unwrap_or_else(|| "Thread".into())
     }
 
@@ -255,7 +284,7 @@ impl FluxChat {
             .unwrap_or_default();
 
         let body: Element<'a, Message> = match self.messages_by_room.get(key) {
-            None => ui::empty_state(crate::icons::SVG_CLOCK, "Loading\u{2026}", None),
+            None => self.view_placeholder_rows(crate::view::PLACEHOLDER_ROWS),
             Some(msgs) => {
                 let mut rows = self.visible_rows(key, msgs);
                 if rows.len() > SIDE_PANE_ROWS {

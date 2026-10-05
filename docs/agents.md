@@ -31,13 +31,14 @@ The agent's commands work with `/`, the way you'd type them anywhere else, and g
 
 A run is one request and the agent's work on it. fluxchat shows its state, **working**, **needs you**, **done** or **failed**, from whatever the agent gives: the [agent protocol](agent-protocol.md) when it uses it, else its harness's signals (Hermes reacts 👀 / ✅ / ❌ to your message; OpenClaw and the Claude Code channel type while they work).
 
-- The "N replies" row under your request shows the state.
+- The "N replies" row under your request shows the state. The agent's own 👀 / ✅ / ❌ on your message are left out of its reactions there, since the row already says it (anyone else's reactions still show).
+- Agents that answer in a thread on your request (Hermes, by default) have the run in that thread from the moment they pick it up: its bar, Stop and Steer / Queue go to the thread, which is where the agent's session for it is. fluxchat learns this per room from how the agent answered your last finished request, and falls back to the harness's habit (`reply_in_thread`).
 - The thread's entry in the room list gets a coloured dot while it's working, waiting for you, or failed; a room with a run waiting for you gets a yellow dot.
 - The status bar shows **2 running · 1 waiting** across all rooms; click it for the Runs dialog.
 
 ### Follow new threads
 
-When the agent starts a thread on a message you just sent in the room you're in, the thread opens beside the room by itself (reusing the room's thread pane if one is open). You stay in the room. Turn this off in **Settings → Preferences → AI agents → Open agent threads as they start**.
+When the agent starts a thread on a message you just sent in the room you're in, the thread opens beside the room by itself (reusing the room's thread pane if one is open). You stay in the room. For an agent that answers in threads, the thread opens as soon as it picks up your message, so its progress shows there from the start. Turn this off in **Settings → Preferences → AI agents → Open agent threads as they start**.
 
 ### The run bar
 
@@ -51,6 +52,8 @@ While the agent works on the thread (or room) you're looking at, a bar above the
   - **Queue**: runs as the next turn, after this one.
 
   The choice is remembered. Panes that aren't focused show the state and Stop.
+
+In a room whose run is in a thread that isn't on screen, the room's message box shows that run instead: **fbhermes is working in "now the same scene at dusk"**. Click the name of the thread to open it; Stop goes to the thread.
 
 ### Notifications
 
@@ -80,6 +83,8 @@ In a room with an agent, the **Threads** panel (header button) becomes **Runs**:
 **Agent runs** (the status bar's run count, the agent chip menu, or the palette) lists every run across your rooms: waiting on you, working, then the last few hours' finished ones, with the room and current step. Click one to open it.
 
 Type in the search box to find runs by title, room or agent. Under **History** are the runs fluxchat saw happen, newest first, with how long they took, and the model and cost at the end when the agent reports them. The ⬇ button on any run exports its thread as a Markdown transcript (with the run's details at the top). The history is kept encrypted on this computer.
+
+A run that shows no sign of life for two hours while "working" (no new message or thread reply from the agent, and it isn't typing) is no longer counted as running: the agent most likely restarted without taking back its 👀. It moves to History as **stalled**. Lone commands like `!usage` or `!status` aren't runs and don't go into the history; a command with a task (`!goal ship the release`) does.
 
 **Watch in a window** opens a new window tiling the active runs, one pane each. It follows: runs that start later get a pane in it too (up to six). Use it as a dashboard on a second screen, or switch to it with **Ctrl+B n**.
 
@@ -139,6 +144,7 @@ working_reaction = ""        # reactions on your request; "" = not used
 done_reaction = ""
 failed_reaction = ""
 typing_means_working = true  # the agent typing = working
+reply_in_thread = false      # answers in a thread on your request (outside DMs)
 
 progress_steps = true        # progress as "emoji step" lines
 runtime_footer = false       # "model · 42% · ~/dir" under answers

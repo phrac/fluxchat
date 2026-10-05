@@ -156,7 +156,7 @@ impl FluxChat {
                     row![
                         text(format!("+{}", f.added)).font(crate::view::MONO).size(11).color(colors.green),
                         text(format!("\u{2212}{}", f.removed)).font(crate::view::MONO).size(11).color(colors.red),
-                        text(f.path.clone()).font(crate::view::MONO).size(10).color(colors.text_dim)
+                        text(f.path.clone()).font(crate::view::MONO).size(11).color(colors.text_dim)
                             .wrapping(iced::widget::text::Wrapping::None),
                     ].spacing(6),
                 ].spacing(2))

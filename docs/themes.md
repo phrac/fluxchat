@@ -33,7 +33,8 @@ bg_mid = [59, 66, 82]      # timeline, cards
 bg_light = [67, 76, 94]    # selected rows, buttons
 bg_hover = [76, 86, 106]   # hovered buttons
 
-# Text, brightest to dimmest
+# Text, brightest to dimmest (muted and dim are lightened if needed, so
+# they stay readable: at least 4.5:1 and 3:1 against bg_mid and bg_dark)
 text_bright = [236, 239, 244]
 text_normal = [216, 222, 233]
 text_muted = [123, 136, 157]

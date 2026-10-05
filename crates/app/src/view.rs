@@ -50,6 +50,10 @@ const CONTEXT_MENU_WIDTH: f32 = 300.0;
 pub(crate) const RESIZE_HANDLE_WIDTH: f32 = 3.0;
 /// Width of the rail shown in place of a hidden member list.
 pub(crate) const MEMBER_RAIL_WIDTH: f32 = 40.0;
+/// Placeholder rows shown while a view's messages load.
+pub(crate) const PLACEHOLDER_ROWS: usize = 8;
+/// Pane title bars narrower than this get the core header actions only.
+const HEADER_FULL_ACTIONS_WIDTH: f32 = 560.0;
 /// Read-receipt avatars shown under a message before "+N".
 const READ_RECEIPT_AVATARS: usize = 5;
 /// Left offset of a thread entry's icon so it lines up with its parent
@@ -263,7 +267,7 @@ impl FluxChat {
         if user_ids.len() > shown {
             avatars_row = avatars_row.push(
                 text(format!("+{}", user_ids.len() - shown))
-                    .font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
+                    .font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
             );
         }
         // Hover: who has read up to here.
@@ -1201,7 +1205,7 @@ impl FluxChat {
                         if !shown_actions_label {
                             shown_actions_label = true;
                             results_col = results_col.push(container(
-                                text("ACTIONS").font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
+                                text("ACTIONS").font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
                             ).padding(iced::Padding { top: 8.0, right: 10.0, bottom: 2.0, left: 10.0 }));
                         }
                         results_col = results_col.push(
@@ -1287,7 +1291,7 @@ impl FluxChat {
                             }
                             Some(list) if !list.is_empty() => {
                                 col = col.push(container(
-                                    text("RECENT THREADS").font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
+                                    text("RECENT THREADS").font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
                                 ).padding(iced::Padding { top: 4.0, right: 10.0, bottom: 2.0, left: 10.0 }));
                                 // Fit text to the menu: ~0.62em per character, minus
                                 // padding and the icon column.
@@ -1297,7 +1301,7 @@ impl FluxChat {
                                             column![
                                                 row![
                                                     crate::ui::icon(SVG_THREAD, 12.0, theme::colors().accent),
-                                                    text(ellipsize(&t.body, fit(13.0, 46.0))).font(self.sidebar_font()).size(13)
+                                                    text(ellipsize(&crate::view_thread_pane::preview_title(t), fit(13.0, 46.0))).font(self.sidebar_font()).size(13)
                                                         .color(theme::colors().text_normal)
                                                         .wrapping(iced::widget::text::Wrapping::None),
                                                 ].spacing(8).align_y(iced::Alignment::Center),
@@ -1980,7 +1984,7 @@ impl FluxChat {
                         text(label).font(self.sidebar_font()).size(12).color(theme::colors().red),
                         Space::new().width(Fill),
                         container(
-                            text(count.to_string()).font(self.sidebar_font()).size(10).color(theme::colors().text_bright),
+                            text(count.to_string()).font(self.sidebar_font()).size(11).color(theme::colors().text_bright),
                         )
                         .padding([1, 5])
                         .style(|_: &Theme| container::Style {
@@ -2214,7 +2218,7 @@ impl FluxChat {
         );
         header_row = header_row.push(Space::new().width(Fill));
         header_row = header_row.push(
-            text(count.to_string()).font(self.sidebar_font()).size(10).color(theme::colors().text_dim)
+            text(count.to_string()).font(self.sidebar_font()).size(11).color(theme::colors().text_dim)
         );
 
         column![
@@ -2262,7 +2266,7 @@ impl FluxChat {
         open.sort_unstable();
         open.dedup();
         let mut out: Vec<Element<'_, Message>> = recent.iter()
-            .map(|t| self.view_sidebar_thread(room_id, &t.root_id, ellipsize(&t.body, max_chars), Some(t), indent))
+            .map(|t| self.view_sidebar_thread(room_id, &t.root_id, ellipsize(&crate::view_thread_pane::preview_title(t), max_chars), Some(t), indent))
             .collect();
         out.extend(open.into_iter().filter_map(|k| {
             let (_, root) = fluxchat_core::timeline::parse_thread_key(k)?;
@@ -2349,19 +2353,14 @@ impl FluxChat {
         };
 
         // Room icon: avatar > DM person > encrypted lock > hash
+        // People round, rooms rounded squares.
         let room_icon: Element<Message> = if let Some(handle) = room.avatar_url.as_ref().and_then(|mxc| self.avatar_cache.get(mxc)) {
-            container(
-                iced::widget::image(handle.clone())
-                    .width(18)
-                    .height(18)
-                    .content_fit(iced::ContentFit::Cover),
-            )
-            .width(18).height(18).clip(true)
-            .style(|_: &Theme| container::Style {
-                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            })
-            .into()
+            iced::widget::image(handle.clone())
+                .width(18)
+                .height(18)
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(if is_dm { 9.0 } else { 4.5 })
+                .into()
         } else if is_dm {
             let handle = iced::widget::svg::Handle::from_memory(SVG_PERSON);
             iced::widget::svg(handle)
@@ -2413,7 +2412,7 @@ impl FluxChat {
             Some(container(
                 text(room.highlight_count.to_string())
                     .font(self.sidebar_font())
-                    .size(10)
+                    .size(11)
                     .color(theme::colors().text_bright),
             )
             .padding([1, 4])
@@ -2427,7 +2426,7 @@ impl FluxChat {
             Some(container(
                 text(room.unread_count.to_string())
                     .font(self.sidebar_font())
-                    .size(10)
+                    .size(11)
                     .color(theme::colors().text_bright),
             )
             .padding([1, 4])
@@ -2507,7 +2506,7 @@ impl FluxChat {
                 button(
                     row![
                         crate::ui::icon(if collapsed { SVG_CHEVRON_RIGHT } else { SVG_CHEVRON_DOWN }, 11.0, theme::colors().text_dim),
-                        text(thread_count.to_string()).font(self.sidebar_font()).size(10).color(theme::colors().text_dim),
+                        text(thread_count.to_string()).font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
                     ].spacing(2).align_y(iced::Alignment::Center),
                 )
                 .on_press(Message::ToggleRoomThreads(room_id))
@@ -2525,243 +2524,265 @@ impl FluxChat {
     }
 
     /// Main content area (tabs + messages + input).
+    /// The room header: avatar, name, agent chips, actions. `title_width`:
+    /// it's the focused pane's title bar in a split, that wide (slimmer, the
+    /// split action is the title bar's own, and a narrow one keeps only the
+    /// core actions so the name still shows).
+    pub(crate) fn view_room_header<'a>(&'a self, room_id: &'a str, title_width: Option<f32>) -> Element<'a, Message> {
+        let in_title = title_width.is_some();
+        let narrow = title_width.is_some_and(|w| w < HEADER_FULL_ACTIONS_WIDTH);
+        // Thread tabs: derive name from parent room
+        let (current_room, room_name) = if room_id.starts_with("thread::") {
+            let parts: Vec<&str> = room_id.splitn(3, "::").collect();
+            let parent_room_id = parts.get(1).unwrap_or(&"");
+            let parent = self.rooms.iter().find(|r| r.room_id == *parent_room_id);
+            let parent_name = parent.map(|r| r.name.as_str()).unwrap_or("room");
+            (parent, format!("Thread in {parent_name}"))
+        } else {
+            let room = self.rooms.iter().find(|r| r.room_id == *room_id);
+            let name = room.map(|r| {
+                match r.space_name {
+                    Some(ref space) => format!("{space}/{}", r.name),
+                    None => r.name.clone(),
+                }
+            }).unwrap_or_else(|| room_id.to_string());
+            (room, name)
+        };
+
+        // Open panels read as pressed: accent icon on an accent fill.
+        let make_action_btn = |svg_bytes: &'static [u8], msg: Message, active: bool, label: &'static str| -> Element<Message> {
+            let icon_color = if active { theme::colors().accent } else { theme::colors().text_dim };
+            let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
+            let btn = button(
+                iced::widget::svg(handle)
+                    .width(16).height(16)
+                    .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
+            )
+            .on_press(msg)
+            .padding([4, 6])
+            .style(move |_, status| button::Style {
+                background: if active {
+                    Some(theme::with_alpha(theme::colors().accent, 0.16).into())
+                } else if matches!(status, button::Status::Hovered) {
+                    Some(theme::tint(0.06).into())
+                } else {
+                    None
+                },
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+            iced::widget::tooltip(
+                btn,
+                text(label).font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
+                iced::widget::tooltip::Position::Bottom,
+            )
+            .delay(crate::ui::TOOLTIP_DELAY)
+            .gap(4)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().bg_dark.into()),
+                border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+            .padding(4)
+            .into()
+        };
+
+        // Call button — start/join or hang up (hidden if calls not supported)
+        let selected_rid = self.selected_room_id.clone().unwrap_or_default();
+        let in_call = self.call_room_id.as_deref() == Some(selected_rid.as_str())
+            && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
+        // Call: start / join or hang up; only where calls work.
+        let call_btn: Option<Element<Message>> = (self.calls_supported || in_call).then(|| {
+            let call_msg = if in_call {
+                Message::CallLeave
+            } else {
+                Message::CallJoin(selected_rid)
+            };
+            let handle = iced::widget::svg::Handle::from_memory(SVG_PHONE);
+            let icon_color = if in_call { theme::colors().green } else { theme::tint(0.4) };
+            button(
+                iced::widget::svg(handle)
+                    .width(14).height(14)
+                    .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) })
+            )
+            .on_press(call_msg)
+            .padding([4, 6])
+            .style(move |_, _| button::Style {
+                background: if in_call { Some(Color::from_rgba(0.0, 0.5, 0.0, 0.2).into()) } else { None },
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+        });
+
+        // Pin button: red when room has pins, accent when panel open, dim otherwise
+        let pin_color = if !self.pinned_messages.is_empty() {
+            theme::colors().red
+        } else if self.pins_open {
+            theme::colors().accent
+        } else {
+            theme::colors().text_dim
+        };
+        let pin_active = self.pins_open || !self.pinned_messages.is_empty();
+        let pin_btn: Element<Message> = {
+            let handle = iced::widget::svg::Handle::from_memory(SVG_PIN);
+            let btn = button(
+                iced::widget::svg(handle)
+                    .width(16).height(16)
+                    .style(move |_, _| iced::widget::svg::Style { color: Some(pin_color) }),
+            )
+            .on_press(Message::TogglePins)
+            .padding([4, 6])
+            .style(move |_, status| button::Style {
+                background: if pin_active || matches!(status, button::Status::Hovered) {
+                    Some(theme::tint(0.06).into())
+                } else {
+                    None
+                },
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+            iced::widget::tooltip(
+                btn,
+                text("Pins").font(self.sidebar_font()).size(11),
+                iced::widget::tooltip::Position::Bottom,
+            )
+            .delay(crate::ui::TOOLTIP_DELAY)
+            .gap(4)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::colors().bg_dark.into()),
+                border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+            .padding(4)
+            .into()
+        };
+
+        // Grouped: call · find (search, pins, gallery) · split · panels
+        // (threads, mentions, members) · the room (settings, favourite).
+        // Narrow pane title bars: search, threads, members.
+        let divider = || -> Element<Message> {
+            container(container(Space::new().width(1).height(16)).style(|_: &Theme| container::Style {
+                background: Some(theme::colors().border.into()),
+                ..Default::default()
+            }))
+            .padding([0, 5])
+            .into()
+        };
+        let actions = row![]
+            .push(call_btn.filter(|_| !narrow).map(|c| row![c, divider()].align_y(iced::Alignment::Center)))
+            .push(make_action_btn(SVG_SEARCH, Message::ToggleSearch, self.search_open, "Search"))
+            .push((!narrow).then_some(pin_btn))
+            .push((!narrow).then(|| make_action_btn(crate::icons::SVG_GALLERY, Message::OpenGallery(crate::state::GalleryTab::Media),
+                matches!(self.modal, Some(crate::state::Modal::Gallery)), "Gallery (\u{2318}/Ctrl+Shift+G)")))
+            .push((!in_title).then(|| row![
+                divider(),
+                make_action_btn(SVG_SPLIT_V, Message::PaneSplit(iced::widget::pane_grid::Axis::Vertical), false, "Split side by side (Ctrl+B %)"),
+            ].align_y(iced::Alignment::Center)))
+            .push((!narrow).then(divider))
+            .push(make_action_btn(SVG_THREAD, Message::ToggleThreads, self.threads_open, "Threads"))
+            .push((!narrow).then(|| make_action_btn(SVG_AT_SIGN, Message::ToggleMentions, self.mentions_open, "Mentions (\u{2318}/Ctrl+I)")))
+            .push(make_action_btn(SVG_USERS, Message::ToggleMemberList, self.show_member_list, "Members"))
+            .push((!narrow).then(divider))
+            .push((!narrow).then(|| make_action_btn(SVG_INFO, Message::OpenModal(crate::state::Modal::RoomSettings), false, "Settings")))
+            .push((!narrow).then(|| {
+                let is_fav = current_room.map(|r| r.is_favourite).unwrap_or(false);
+                let star_color = if is_fav { Color::from_rgb(1.0, 0.8, 0.0) } else { theme::colors().text_dim };
+                let handle = iced::widget::svg::Handle::from_memory(SVG_STAR);
+                let fav_btn: Element<Message> = button(
+                    iced::widget::svg(handle)
+                        .width(16).height(16)
+                        .style(move |_, _| iced::widget::svg::Style { color: Some(star_color) }),
+                )
+                .on_press(Message::ToggleFavourite)
+                .padding([4, 6])
+                .style(move |_, status| button::Style {
+                    background: if is_fav {
+                        Some(Color::from_rgba(1.0, 0.8, 0.0, 0.1).into())
+                    } else if matches!(status, button::Status::Hovered) {
+                        Some(theme::tint(0.06).into())
+                    } else {
+                        None
+                    },
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into();
+                let tt: Element<Message> = iced::widget::tooltip(
+                    fav_btn,
+                    text("Favourite").font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
+                    iced::widget::tooltip::Position::Bottom,
+                )
+            .delay(crate::ui::TOOLTIP_DELAY)
+                .gap(4)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::colors().bg_dark.into()),
+                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                    ..Default::default()
+                })
+                .padding(4)
+                .into();
+                tt
+            }))
+        .spacing(2)
+        .align_y(iced::Alignment::Center);
+
+        // Room avatar for header
+        let header_avatar: Element<Message> = if let Some(handle) = current_room
+            .and_then(|r| r.avatar_url.as_ref())
+            .and_then(|mxc| self.avatar_cache.get(mxc))
+        {
+            // People round, rooms rounded squares.
+            let dm = current_room.is_some_and(|r| r.is_direct);
+            iced::widget::image(handle.clone())
+                .width(22).height(22)
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(if dm { 11.0 } else { 5.5 })
+                .into()
+        } else {
+            let icon = if current_room.is_some_and(|r| r.is_direct) {
+                SVG_PERSON
+            } else if current_room.is_some_and(|r| r.is_encrypted) {
+                SVG_LOCK
+            } else {
+                SVG_HASH
+            };
+            iced::widget::svg(iced::widget::svg::Handle::from_memory(icon))
+                .width(16).height(16)
+                .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) })
+                .into()
+        };
+
+        // Name and agent chips take what the actions leave (clipped in
+        // narrow panes): the actions are laid out first.
+        let identity = row![
+            header_avatar,
+            text(room_name).font(self.sidebar_font()).size(14).color(theme::colors().text_bright)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        // An agent here: who, and what it's up to.
+        .push(self.view_agent_marker(room_id, narrow))
+        .spacing(8)
+        .width(Fill)
+        .align_y(iced::Alignment::Center);
+        let header_row = row![container(identity).width(Fill).clip(true)]
+        .push(actions)
+        .width(Fill)
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .padding(if in_title { [0, 2] } else { [6, 12] });
+
+        header_row.into()
+    }
+
     pub(crate) fn view_content(&self) -> Element<'_, Message> {
         let mut content = column![].width(Fill).height(Fill);
 
-        // Room header bar (room name + action buttons)
-        if let Some(ref room_id) = self.selected_room_id {
-            // Thread tabs: derive name from parent room
-            let (current_room, room_name) = if room_id.starts_with("thread::") {
-                let parts: Vec<&str> = room_id.splitn(3, "::").collect();
-                let parent_room_id = parts.get(1).unwrap_or(&"");
-                let parent = self.rooms.iter().find(|r| r.room_id == *parent_room_id);
-                let parent_name = parent.map(|r| r.name.as_str()).unwrap_or("room");
-                (parent, format!("Thread in {parent_name}"))
-            } else {
-                let room = self.rooms.iter().find(|r| r.room_id == *room_id);
-                let name = room.map(|r| {
-                    match r.space_name {
-                        Some(ref space) => format!("{space}/{}", r.name),
-                        None => r.name.clone(),
-                    }
-                }).unwrap_or_else(|| room_id.clone());
-                (room, name)
-            };
-
-            let make_action_btn = |svg_bytes: &'static [u8], msg: Message, active: bool, label: &'static str| -> Element<Message> {
-                let icon_color = if active { theme::colors().accent } else { theme::colors().text_dim };
-                let handle = iced::widget::svg::Handle::from_memory(svg_bytes);
-                let btn = button(
-                    iced::widget::svg(handle)
-                        .width(16).height(16)
-                        .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) }),
-                )
-                .on_press(msg)
-                .padding([4, 6])
-                .style(move |_, status| button::Style {
-                    background: if active || matches!(status, button::Status::Hovered) {
-                        Some(theme::tint(0.06).into())
-                    } else {
-                        None
-                    },
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                });
-                iced::widget::tooltip(
-                    btn,
-                    text(label).font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
-                    iced::widget::tooltip::Position::Bottom,
-                )
-                .delay(crate::ui::TOOLTIP_DELAY)
-                .gap(4)
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().bg_dark.into()),
-                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
-                    ..Default::default()
-                })
-                .padding(4)
-                .into()
-            };
-
-            // Call button — start/join or hang up (hidden if calls not supported)
-            let selected_rid = self.selected_room_id.clone().unwrap_or_default();
-            let in_call = self.call_room_id.as_deref() == Some(selected_rid.as_str())
-                && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
-            let call_btn: Element<Message> = if self.calls_supported || in_call {
-                let call_msg = if in_call {
-                    Message::CallLeave
-                } else {
-                    Message::CallJoin(selected_rid)
-                };
-                let handle = iced::widget::svg::Handle::from_memory(SVG_PHONE);
-                let icon_color = if in_call { theme::colors().green } else { theme::tint(0.4) };
-                button(
-                    iced::widget::svg(handle)
-                        .width(14).height(14)
-                        .style(move |_, _| iced::widget::svg::Style { color: Some(icon_color) })
-                )
-                .on_press(call_msg)
-                .padding([4, 6])
-                .style(move |_, _| button::Style {
-                    background: if in_call { Some(Color::from_rgba(0.0, 0.5, 0.0, 0.2).into()) } else { None },
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                })
-                .into()
-            } else {
-                // Dimmed/disabled phone icon when calls not supported
-                let handle = iced::widget::svg::Handle::from_memory(SVG_PHONE);
-                container(
-                    iced::widget::svg(handle)
-                        .width(14).height(14)
-                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::tint(0.15)) })
-                )
-                .padding([4, 6])
-                .into()
-            };
-
-            // Pin button: red when room has pins, accent when panel open, dim otherwise
-            let pin_color = if !self.pinned_messages.is_empty() {
-                theme::colors().red
-            } else if self.pins_open {
-                theme::colors().accent
-            } else {
-                theme::colors().text_dim
-            };
-            let pin_active = self.pins_open || !self.pinned_messages.is_empty();
-            let pin_btn: Element<Message> = {
-                let handle = iced::widget::svg::Handle::from_memory(SVG_PIN);
-                let btn = button(
-                    iced::widget::svg(handle)
-                        .width(16).height(16)
-                        .style(move |_, _| iced::widget::svg::Style { color: Some(pin_color) }),
-                )
-                .on_press(Message::TogglePins)
-                .padding([4, 6])
-                .style(move |_, status| button::Style {
-                    background: if pin_active || matches!(status, button::Status::Hovered) {
-                        Some(theme::tint(0.06).into())
-                    } else {
-                        None
-                    },
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                });
-                iced::widget::tooltip(
-                    btn,
-                    text("Pins").font(self.sidebar_font()).size(11),
-                    iced::widget::tooltip::Position::Bottom,
-                )
-                .delay(crate::ui::TOOLTIP_DELAY)
-                .gap(4)
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().bg_dark.into()),
-                    border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
-                    ..Default::default()
-                })
-                .padding(4)
-                .into()
-            };
-
-            let actions = row![
-                call_btn,
-                make_action_btn(SVG_SEARCH, Message::ToggleSearch, self.search_open, "Search"),
-                pin_btn,
-                make_action_btn(crate::icons::SVG_GALLERY, Message::OpenGallery(crate::state::GalleryTab::Media),
-                    matches!(self.modal, Some(crate::state::Modal::Gallery)), "Gallery (\u{2318}/Ctrl+Shift+G)"),
-                make_action_btn(SVG_SPLIT_V, Message::PaneSplit(iced::widget::pane_grid::Axis::Vertical), false, "Split side by side (Ctrl+B %)"),
-                make_action_btn(SVG_THREAD, Message::ToggleThreads, self.threads_open, "Threads"),
-                make_action_btn(SVG_AT_SIGN, Message::ToggleMentions, self.mentions_open, "Mentions (\u{2318}/Ctrl+I)"),
-                make_action_btn(SVG_USERS, Message::ToggleMemberList, self.show_member_list, "Members"),
-                make_action_btn(SVG_INFO, Message::OpenModal(crate::state::Modal::RoomSettings), false, "Settings"),
-                {
-                    let is_fav = current_room.map(|r| r.is_favourite).unwrap_or(false);
-                    let star_color = if is_fav { Color::from_rgb(1.0, 0.8, 0.0) } else { theme::colors().text_dim };
-                    let handle = iced::widget::svg::Handle::from_memory(SVG_STAR);
-                    let fav_btn: Element<Message> = button(
-                        iced::widget::svg(handle)
-                            .width(16).height(16)
-                            .style(move |_, _| iced::widget::svg::Style { color: Some(star_color) }),
-                    )
-                    .on_press(Message::ToggleFavourite)
-                    .padding([4, 6])
-                    .style(move |_, status| button::Style {
-                        background: if is_fav {
-                            Some(Color::from_rgba(1.0, 0.8, 0.0, 0.1).into())
-                        } else if matches!(status, button::Status::Hovered) {
-                            Some(theme::tint(0.06).into())
-                        } else {
-                            None
-                        },
-                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                        ..Default::default()
-                    })
-                    .into();
-                    let tt: Element<Message> = iced::widget::tooltip(
-                        fav_btn,
-                        text("Favourite").font(self.sidebar_font()).size(11).color(theme::colors().text_normal),
-                        iced::widget::tooltip::Position::Bottom,
-                    )
-                .delay(crate::ui::TOOLTIP_DELAY)
-                    .gap(4)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(theme::colors().bg_dark.into()),
-                        border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
-                        ..Default::default()
-                    })
-                    .padding(4)
-                    .into();
-                    tt
-                },
-            ]
-            .spacing(2)
-            .align_y(iced::Alignment::Center);
-
-            // Room avatar for header
-            let header_avatar: Element<Message> = if let Some(handle) = current_room
-                .and_then(|r| r.avatar_url.as_ref())
-                .and_then(|mxc| self.avatar_cache.get(mxc))
-            {
-                container(
-                    iced::widget::image(handle.clone())
-                        .width(22).height(22)
-                        .content_fit(iced::ContentFit::Cover),
-                )
-                .width(22).height(22).clip(true)
-                .style(|_: &Theme| container::Style {
-                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                    ..Default::default()
-                })
-                .into()
-            } else {
-                let icon = if current_room.is_some_and(|r| r.is_direct) {
-                    SVG_PERSON
-                } else if current_room.is_some_and(|r| r.is_encrypted) {
-                    SVG_LOCK
-                } else {
-                    SVG_HASH
-                };
-                iced::widget::svg(iced::widget::svg::Handle::from_memory(icon))
-                    .width(16).height(16)
-                    .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().text_dim) })
-                    .into()
-            };
-
-            let header_row = row![
-                header_avatar,
-                text(room_name).font(self.sidebar_font()).size(14).color(theme::colors().text_bright)
-                    .wrapping(iced::widget::text::Wrapping::None),
-            ]
-            // An agent here: who, and what it's up to.
-            .push(self.view_agent_marker(room_id))
-            .push(Space::new().width(Fill))
-            .push(actions)
-            .spacing(8)
-            .align_y(iced::Alignment::Center)
-            .padding([6, 12]);
-
+        // Room header: in a split the focused pane's title bar carries it.
+        let in_title = self.window().grid.len() > 1;
+        if let Some(room_id) = self.selected_room_id.as_deref().filter(|_| !in_title) {
             content = content.push(
-                container(header_row)
+                container(self.view_room_header(room_id, None))
                     .width(Fill)
                     .style(|_: &Theme| container::Style {
                         background: Some(theme::colors().bg_dark.into()),
@@ -2918,12 +2939,7 @@ impl FluxChat {
                     msg_col = msg_col.push(Space::new().width(Fill).height(bottom_spacer));
                 }
             } else {
-                msg_col = msg_col.push(
-                    text("Loading messages...")
-                        .font(self.sidebar_font())
-                        .size(15)
-                        .color(theme::colors().text_dim),
-                );
+                msg_col = msg_col.push(self.view_placeholder_rows(PLACEHOLDER_ROWS));
             }
 
             let msg_scrollable = mouse_area(
@@ -3080,19 +3096,36 @@ impl FluxChat {
                 Some(r) if r.is_direct => room_name.to_string(),
                 _ => format!("#{room_name}"),
             };
-            let label = if room_id.starts_with("thread::") { format!("{label} \u{203a} thread") } else { label };
+            let label = if room_id.starts_with("thread::") {
+                format!("{label} \u{203a} {}", ellipsize(&self.thread_title(room_id), 32))
+            } else {
+                label
+            };
 
             bar = bar.push(sep());
-            bar = bar.push(text(label).font(self.sidebar_font()).size(13).color(theme::colors().text_normal));
+            bar = bar.push(text(label).font(self.sidebar_font()).size(13).color(theme::colors().text_normal)
+                .wrapping(iced::widget::text::Wrapping::None));
 
-            // Power level badge
-            if let Some(members) = self.members_by_room.get(room_id) {
-                if let Some(me) = members.iter().find(|m| m.user_id == self.user_id) {
-                    if me.power_level >= 100 {
-                        bar = bar.push(text(" @").font(self.sidebar_font()).size(12).color(theme::colors().yellow));
-                    } else if me.power_level >= 50 {
-                        bar = bar.push(text(" +").font(self.sidebar_font()).size(12).color(theme::colors().accent));
-                    }
+            // Your rank here, IRC-style (@ op, + voice), as a labelled pill.
+            if let Some(me) = self.members_by_room.get(room_id).and_then(|m| m.iter().find(|m| m.user_id == self.user_id)) {
+                let rank = if me.power_level >= 100 {
+                    Some(("@ op", theme::colors().yellow, "You're an admin in this room"))
+                } else if me.power_level >= 50 {
+                    Some(("+ mod", theme::colors().accent, "You're a moderator in this room"))
+                } else {
+                    None
+                };
+                if let Some((label, color, tip)) = rank {
+                    // Slimmer than ui::badge: it mustn't make the bar taller.
+                    let pill = container(text(label).font(self.sidebar_font()).size(11).color(color))
+                        .padding([0, 6])
+                        .style(move |_: &Theme| container::Style {
+                            background: Some(theme::with_alpha(color, 0.14).into()),
+                            border: iced::Border { color: theme::with_alpha(color, 0.3), width: 1.0, radius: 8.0.into() },
+                            ..Default::default()
+                        });
+                    bar = bar.push(Space::new().width(6));
+                    bar = bar.push(crate::ui::tooltip_at(pill, tip, iced::widget::tooltip::Position::Top));
                 }
             }
 
@@ -3215,13 +3248,6 @@ impl FluxChat {
                 bar = bar.push(sep());
                 bar = bar.push(link("key backup not connected".into(), theme::colors().yellow, open_security));
             }
-        }
-
-        // Device ID
-        if let Some(ref did) = self.device_id {
-            bar = bar.push(sep());
-            let short = if did.len() > 10 { &did[..10] } else { did };
-            bar = bar.push(text(short).font(self.sidebar_font()).size(13).color(theme::colors().text_dim));
         }
 
         container(bar)

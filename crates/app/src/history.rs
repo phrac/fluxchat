@@ -16,6 +16,8 @@ use crate::state::FluxChat;
 const HISTORY_KEY: &str = "agent_run_history";
 /// Runs kept (oldest dropped).
 const HISTORY_LIMIT: usize = 500;
+/// History state of a run that went quiet while working (`stalled`).
+pub(crate) const STALLED: &str = "stalled";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunRecord {
@@ -24,7 +26,7 @@ pub struct RunRecord {
     pub room: String,
     pub agent: String,
     pub title: String,
-    /// "working" / "needs you" / "done" / "failed".
+    /// "working" / "needs you" / "done" / "failed" / "stalled".
     pub state: String,
     /// ms since the epoch.
     pub started: u64,
@@ -56,6 +58,12 @@ impl FluxChat {
         if let Some(bytes) = self.core.db.get_private(HISTORY_KEY) {
             self.run_history = serde_json::from_slice(&bytes).unwrap_or_default();
         }
+        // Older builds recorded lone commands (`!usage`) as runs.
+        let before = self.run_history.len();
+        self.run_history.retain(|r| !is_lone_command(&r.title));
+        if self.run_history.len() != before {
+            self.save_run_history();
+        }
     }
 
     fn save_run_history(&self) {
@@ -72,6 +80,9 @@ impl FluxChat {
         let label = run.state.label().to_string();
         let pos = self.run_history.iter().position(|r| r.key == key && r.started == run.since);
         let changed = match pos {
+            // A lone command (`!usage`, `!status`) gets the same reactions,
+            // but it isn't a task.
+            None if live && self.request_is_lone_command(key, run) => false,
             None if live => {
                 let title = if key.starts_with("thread::") { self.thread_title(key) } else { "Request in the room".into() };
                 self.run_history.push(RunRecord {
@@ -129,6 +140,35 @@ impl FluxChat {
                 words.iter().all(|w| hay.contains(w.as_str()))
             })
             .collect()
+    }
+
+    /// Whether the request behind run `key` is just a command, no task
+    /// (`!usage`; not `!goal ship it`).
+    fn request_is_lone_command(&self, key: &str, run: &RunInfo) -> bool {
+        let room = real_room_id(key);
+        let body = match fluxchat_core::timeline::parse_thread_key(key) {
+            Some((_, root)) => [key, room].iter()
+                .filter_map(|k| self.messages_by_room.get(*k)?.iter().find(|m| m.event_id == root))
+                .map(|m| m.body.clone())
+                .next(),
+            None => self.messages_by_room.get(key)
+                .and_then(|msgs| msgs.iter().find(|m| m.sender == self.user_id && crate::agents::sent_ms(m) == run.since))
+                .map(|m| m.body.clone()),
+        };
+        body.is_some_and(|b| is_lone_command(&b))
+    }
+
+    /// Close the history entry of a run that went quiet while "working"
+    /// (`stalled`): ended at its last sign of life.
+    pub(crate) fn end_stalled_run(&mut self, key: &str, run: &RunInfo) {
+        let Some(i) = self.run_history.iter().position(|r| r.key == key && r.started == run.since && r.ended.is_none()) else {
+            return;
+        };
+        let last = self.last_sign_of_life(key, run);
+        let rec = &mut self.run_history[i];
+        rec.state = STALLED.to_string();
+        rec.ended = Some(last);
+        self.save_run_history();
     }
 
     /// The run's thread as Markdown: a header with the run, then each message.
@@ -204,6 +244,12 @@ impl FluxChat {
     }
 }
 
+/// `!usage`, `/status`: a command with nothing after it.
+fn is_lone_command(text: &str) -> bool {
+    let t = text.trim();
+    (t.starts_with('!') || t.starts_with('/')) && t.len() > 1 && !t.contains(char::is_whitespace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +271,21 @@ mod tests {
         assert!(rec.ended.is_some() && rec.duration(now_ms()).ends_with('m'));
         assert_eq!(app.matching_history("bot").len(), 1);
         assert!(app.matching_history("nothing like it").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lone_command_isnt_a_run_but_a_command_with_a_task_is() {
+        let mut app = crate::panes::flow_tests::app();
+        app.user_id = "@me:x".into();
+        let started = (now_ms() / 1000 - 5) * 1000;
+        let ask = |id: &str, body: &str| fluxchat_core::MessageInfo {
+            event_id: id.into(), sender: "@me:x".into(), body: body.into(), timestamp: started / 1000, ..Default::default()
+        };
+        app.messages_by_room.insert("!r:x".into(), vec![ask("$u", "!usage"), ask("$g", "!goal ship the release")]);
+        let working = RunInfo { agent: "@bot:x".into(), ..RunInfo::new(RunState::Working, started) };
+        app.record_run("thread::!r:x::$u", &working);
+        assert!(app.run_history.is_empty());
+        app.record_run("thread::!r:x::$g", &working);
+        assert_eq!(app.run_history.len(), 1);
     }
 }

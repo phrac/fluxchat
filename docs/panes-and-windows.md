@@ -25,7 +25,7 @@ Each pane shows a room or a thread. One pane at a time is **focused** (outlined 
 - **Zoom** a pane to fill the window and back: **Ctrl+B z**, or the title bar's zoom button. Zoom ends by itself when you move to another pane or open something beside it, so nothing opens out of sight. A zoomed pane stays zoomed after a restart.
 - **Close** a pane: **Ctrl+B x**, or its ×. Closing a window's last pane closes the window.
 
-When a window has more than one pane, each pane gets a title bar: drag handle, name, and split / zoom / close buttons. In the room list, the focused room is highlighted and rooms in the other panes get a lighter highlight. You aren't sent notifications for any room on screen.
+When a window has more than one pane, each pane gets a title bar: drag handle, name, and split / zoom / close buttons. The focused pane's title bar is its room header (name, agent chips, search, threads, members…), so there's one bar, not two; in a narrow pane it keeps search, threads and members, and the agent chip shrinks to its icon and state (hover for the rest). In the room list, the focused room is highlighted and rooms in the other panes get a lighter highlight. You aren't sent notifications for any room on screen.
 
 **Esc** in a thread pane, with nothing else to close, goes back to the thread's room if it's in another pane. The thread pane stays open.
 

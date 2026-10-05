@@ -16,6 +16,9 @@ working_reaction = "👀"
 done_reaction = "✅"
 failed_reaction = "❌"
 typing_means_working = false
+# Replies go in a thread on your request (its `auto_thread`, on by default;
+# not in DMs). The run is that thread's from the first 👀.
+reply_in_thread = true
 
 # One message edited a line per tool ("📖 Reading notes.md").
 progress_steps = true
