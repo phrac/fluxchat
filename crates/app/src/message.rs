@@ -450,6 +450,8 @@ pub enum Message {
 
     // --- Overflow menu actions ---
     ToggleFavourite,
+    /// The server's answer to a favourite toggle (room, wanted, result).
+    FavouriteSet(String, bool, Result<(), String>),
 
     // --- Invites ---
     AcceptInvite(String), // room_id

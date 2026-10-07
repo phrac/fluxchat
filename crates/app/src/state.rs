@@ -229,6 +229,10 @@ pub struct FluxChat {
     /// Rooms we just put in a space (room -> space) that the server's room
     /// list may not reflect yet: applied to each rebuild until it does.
     pub pending_space_links: HashMap<String, String>,
+    /// Favourite toggles (room -> favourite) the synced room list may not
+    /// show yet: applied to each rebuild until it does, so the star doesn't
+    /// flip back in the meantime.
+    pub pending_favourites: HashMap<String, bool>,
     /// Join requests of the room in view (room id, requests), live while
     /// `join_requests_watch` (same room) is kept; the list is expanded or not.
     pub join_requests: Option<(String, fluxchat_core::room_admin::JoinRequests)>,
@@ -701,6 +705,7 @@ impl FluxChat {
             invited_rooms: Vec::new(),
             decline_all_armed: false,
             pending_space_links: HashMap::new(),
+            pending_favourites: HashMap::new(),
             join_requests: None,
             join_requests_watch: None,
             join_requests_open: false,

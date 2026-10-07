@@ -427,6 +427,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unfavouriting_sticks_until_sync_catches_up() {
+        use crate::message::SyncEvent;
+        let list = |fav: bool| {
+            let mut r = room("!a:x");
+            r.is_favourite = fav;
+            Message::SyncEvent(SyncEvent::RoomListUpdate(vec![r], vec![], vec![], vec![], vec![], Default::default()))
+        };
+        let mut app = app();
+        let _ = app.update(list(true));
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::ToggleFavourite);
+        assert!(!app.rooms[0].is_favourite);
+        // A rebuild from before the server saw it doesn't star it again...
+        let _ = app.update(list(true));
+        assert!(!app.rooms[0].is_favourite);
+        // ...and once sync shows it, ours stops overriding.
+        let _ = app.update(list(false));
+        assert!(app.pending_favourites.is_empty());
+        // A failed request puts the star back.
+        let _ = app.update(Message::ToggleFavourite);
+        assert!(app.rooms[0].is_favourite);
+        let _ = app.update(Message::FavouriteSet("!a:x".into(), true, Err("offline".into())));
+        assert!(!app.rooms[0].is_favourite && app.pending_favourites.is_empty());
+    }
+
+    #[tokio::test]
     async fn new_room_stays_in_its_space_until_sync_catches_up() {
         use crate::message::SyncEvent;
         let list = |rooms: Vec<fluxchat_core::RoomInfo>| Message::SyncEvent(SyncEvent::RoomListUpdate(

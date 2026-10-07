@@ -46,6 +46,8 @@ const SPACE_ICON_SIZE: f32 = 40.0;
 const THREAD_PREVIEW_WIDTH: f32 = 360.0;
 /// Width of right-click menus.
 const CONTEXT_MENU_WIDTH: f32 = 300.0;
+/// Least gap between a context menu and the window's edges.
+const CONTEXT_MENU_MARGIN: f32 = 8.0;
 /// Grab width of panel dividers.
 pub(crate) const RESIZE_HANDLE_WIDTH: f32 = 3.0;
 /// Width of the rail shown in place of a hidden member list.
@@ -1252,15 +1254,33 @@ impl FluxChat {
         // Context menu overlay
         if let Some(ref ctx) = self.context_menu {
             let menu_items = self.view_context_menu(ctx);
+            // Kept inside the window: in the lower half it opens upwards from
+            // the cursor, near the right edge leftwards, and a menu taller than
+            // the room it has scrolls (a room's menu starts with its threads,
+            // and its last items used to run off the bottom).
+            let (x, y) = self.context_menu_position;
+            let (win_w, win_h) = self.window_size;
+            let up = y > win_h / 2.0;
+            let leftwards = x + CONTEXT_MENU_WIDTH + 2.0 * CONTEXT_MENU_MARGIN > win_w;
+            let pad = iced::Padding {
+                top: if up { CONTEXT_MENU_MARGIN } else { y },
+                bottom: if up { (win_h - y).max(CONTEXT_MENU_MARGIN) } else { CONTEXT_MENU_MARGIN },
+                left: if leftwards { CONTEXT_MENU_MARGIN } else { x },
+                right: if leftwards { (win_w - x).max(CONTEXT_MENU_MARGIN) } else { 0.0 },
+            };
             layers.push(
                 opaque(
                     mouse_area(
                         container(
-                            container(menu_items)
+                            container(scrollable(menu_items).direction(iced::widget::scrollable::Direction::Vertical(
+                                iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                            )).style(thin_scrollbar))
                                 .padding(4)
                                 .style(crate::ui::dialog_style),
                         )
-                        .padding(iced::Padding { top: self.context_menu_position.1, left: self.context_menu_position.0, ..Default::default() })
+                        .padding(pad)
+                        .align_x(if leftwards { iced::Alignment::End } else { iced::Alignment::Start })
+                        .align_y(if up { iced::Alignment::End } else { iced::Alignment::Start })
                         .width(Fill)
                         .height(Fill),
                     )

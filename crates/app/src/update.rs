@@ -480,6 +480,7 @@ impl FluxChat {
                 self.join_requests_watch = None;
                 self.decline_all_armed = false;
                 self.pending_space_links.clear();
+                self.pending_favourites.clear();
                 self.deactivate_password.clear();
                 self.deactivate_armed = false;
                 self.deactivating = false;
@@ -589,6 +590,7 @@ impl FluxChat {
                         })
                         .collect();
                     self.apply_pending_space_links();
+                    self.apply_pending_favourites();
                     // Drop the selection and thread tabs of rooms that were in
                     // the list and are gone now (left elsewhere / pruned). Views
                     // are compared by their real room — a thread key is never in
@@ -2072,16 +2074,7 @@ impl FluxChat {
                         self.modal = Some(crate::state::Modal::Invite);
                     }
                     "favourite" => {
-                        let core = self.core.clone();
-                        let rid = target_id;
-                        return Task::perform(
-                            async move {
-                                let client = core.get_client().await.ok()?;
-                                let is_fav = fluxchat_core::rooms::is_room_favourite(&client, &rid).await.ok()?;
-                                fluxchat_core::rooms::set_room_favourite(&client, &rid, !is_fav).await.ok()
-                            },
-                            |_| Message::Noop,
-                        );
+                        return self.toggle_favourite(target_id);
                     }
                     "leave" => {
                         return self.update(Message::AskLeaveRoom(target_id));
@@ -3185,20 +3178,19 @@ impl FluxChat {
             // --- Overflow menu actions ---
             Message::ToggleFavourite => {
                 if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    // Toggle local state immediately for snappy UI
-                    if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
-                        room.is_favourite = !room.is_favourite;
+                    return self.toggle_favourite(room_id);
+                }
+            }
+            Message::FavouriteSet(room_id, fav, result) => {
+                if let Err(e) = result {
+                    // Only undo if nothing newer was asked for since.
+                    if self.pending_favourites.get(&room_id) == Some(&fav) {
+                        self.pending_favourites.remove(&room_id);
+                        if let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+                            room.is_favourite = !fav;
+                        }
                     }
-                    let core = self.core.clone();
-                    let new_fav = self.rooms.iter().find(|r| r.room_id == room_id)
-                        .map(|r| r.is_favourite).unwrap_or(false);
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_room_favourite(&client, &room_id, new_fav).await.ok()
-                        },
-                        |_| Message::Noop,
-                    );
+                    return Task::done(Message::ShowError(format!("Couldn't change favourite: {e}")));
                 }
             }
 
@@ -5671,6 +5663,43 @@ impl FluxChat {
             }
             room.space_name = spaces.iter().find(|s| s.room_id == *space_id).map(|s| s.name.clone());
             room.space_id = Some(space_id.clone());
+            true
+        });
+    }
+
+    /// Flip a room's favourite tag: at once in the list (kept over rebuilds
+    /// by `pending_favourites` until sync shows it), then on the server.
+    fn toggle_favourite(&mut self, room_id: String) -> Task<Message> {
+        let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == room_id) else {
+            return Task::none();
+        };
+        room.is_favourite = !room.is_favourite;
+        let new_fav = room.is_favourite;
+        self.pending_favourites.insert(room_id.clone(), new_fav);
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let result = match core.get_client().await {
+                    Ok(client) => fluxchat_core::rooms::set_room_favourite(&client, &room_id, new_fav).await.map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                };
+                (room_id, new_fav, result)
+            },
+            |(room_id, fav, r)| Message::FavouriteSet(room_id, fav, r),
+        )
+    }
+
+    /// Keep favourite toggles over room-list rebuilds until the synced list
+    /// shows the new tag itself.
+    pub(crate) fn apply_pending_favourites(&mut self) {
+        self.pending_favourites.retain(|room_id, want| {
+            let Some(room) = self.rooms.iter_mut().find(|r| r.room_id == *room_id) else {
+                return true; // not listed (yet)
+            };
+            if room.is_favourite == *want {
+                return false; // sync has caught up
+            }
+            room.is_favourite = *want;
             true
         });
     }

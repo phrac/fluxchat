@@ -825,13 +825,6 @@ pub async fn set_notification_mode(client: &matrix_sdk::Client, room_id: &str, m
     Ok(())
 }
 
-/// Check if a room is favourited.
-pub async fn is_room_favourite(client: &matrix_sdk::Client, room_id: &str) -> Result<bool, AppError> {
-    let room_id = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    Ok(room.is_favourite())
-}
-
 /// Toggle favourite status on a room.
 pub async fn set_room_favourite(client: &matrix_sdk::Client, room_id: &str, favourite: bool) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
