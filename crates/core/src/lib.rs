@@ -21,6 +21,7 @@ pub mod voice;
 pub mod timeline;
 pub mod transcripts;
 pub mod rtc;
+pub mod send_queue;
 pub mod rtc_audio;
 pub mod vault;
 pub mod verification;

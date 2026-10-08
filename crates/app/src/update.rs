@@ -1515,9 +1515,15 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            let real_room = fluxchat_core::timeline::real_room_id(&room_id);
-                            match fluxchat_core::messages::delete_message(&client, real_room, &event_id).await {
+                            // Not sent yet (or failed): abort it in the send queue.
+                            let done = if let Some(txn) = event_id.strip_prefix("~local-") {
+                                fluxchat_core::send_queue::cancel_send(&core.timelines, &room_id, txn).await
+                            } else {
+                                let client = core.get_client().await.ok()?;
+                                let real_room = fluxchat_core::timeline::real_room_id(&room_id);
+                                fluxchat_core::messages::delete_message(&client, real_room, &event_id).await
+                            };
+                            match done {
                                 Ok(()) => None,
                                 Err(e) => {
                                     tracing::warn!("Failed to delete {event_id}: {e}");
@@ -6371,6 +6377,9 @@ impl FluxChat {
                         }
                     });
                 }
+
+                // Resume unsent messages and keep the send queue going after errors.
+                fluxchat_core::send_queue::spawn_send_queue_keeper(&client);
 
                 // Start sync service (sliding sync)
                 match fluxchat_core::sync_service::create_sync_service(&client).await {

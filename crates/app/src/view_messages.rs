@@ -1215,23 +1215,25 @@ impl FluxChat {
         if msg.is_edited {
             status_bits.push(text("(edited)").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().text_dim).into());
         }
+        let status_action = |label: &'static str, msg: Message| -> Element<'a, Message> {
+            button(text(label).font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().accent))
+                .on_press(msg)
+                .padding([0, 4])
+                .style(|_, _| button::Style { background: None, ..Default::default() })
+                .into()
+        };
         match msg.send_state {
             Some(fluxchat_core::SendState::Sending) => {
                 status_bits.push(text("sending…").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().text_dim).into());
+                status_bits.push(status_action("cancel", Message::DeleteMessage(msg.event_id.clone())));
             }
             Some(fluxchat_core::SendState::Failed { recoverable }) => {
                 status_bits.push(text("failed to send").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().red).into());
                 if recoverable {
-                    if let Some(room) = self.active_real_room() {
-                        status_bits.push(
-                            button(text("retry").font(self.msg_font()).size((fs - 3.0).max(9.0)).color(theme::colors().accent))
-                                .on_press(Message::RetrySend(room.to_string()))
-                                .padding([0, 4])
-                                .style(|_, _| button::Style { background: None, ..Default::default() })
-                                .into(),
-                        );
-                    }
+                    let room = fluxchat_core::timeline::real_room_id(view_key).to_string();
+                    status_bits.push(status_action("retry", Message::RetrySend(room)));
                 }
+                status_bits.push(status_action("delete", Message::DeleteMessage(msg.event_id.clone())));
             }
             None => {}
         }

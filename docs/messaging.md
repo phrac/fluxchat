@@ -41,7 +41,10 @@ Type `@` and part of a name to get suggestions; **Tab** or click to insert. Ment
 - **Reply**: hover a message and click the reply arrow. The quote is shown above your message; click a quote to jump to the original.
 - **Edit**: hover your message and click the pencil, or press **↑** in an empty message box to edit your last message. Edited messages say *(edited)*.
 - **Delete**: hover your message and click the trash can. With *Deleted messages* on in Preferences, a "Message deleted" placeholder remains.
-- **Retry**: a message that failed to send shows *failed to send [retry]*.
+- **Sending and retry**: a message on its way shows *sending… [cancel]*, and one that failed shows *failed to send [retry] [delete]*. **cancel** and **delete** take it back before it reaches anyone.
+  - After a network error, fluxchat retries by itself, less often the longer it keeps failing.
+  - After any other error, the failed message is set aside, so the messages after it still go out.
+  - Messages still unsent when you quit go out the next time you start fluxchat.
 
 ## Reactions
 
