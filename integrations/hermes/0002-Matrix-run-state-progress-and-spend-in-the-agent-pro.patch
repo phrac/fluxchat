@@ -1,0 +1,584 @@
+From cb99ed712a9f8ee998b06123c90cf81d3b179373 Mon Sep 17 00:00:00 2001
+From: Derek Musselmann <derek@disflux.com>
+Date: Thu, 8 Oct 2026 10:49:27 -0500
+Subject: [PATCH 2/2] Matrix: run state, progress and spend in the agent
+ protocol
+
+The tool-progress bubble carries org.fluxchat.agent state "working" with
+the latest step and the step count; the final reply carries "done" or
+"failed" with the model, context use and the session's estimated spend;
+when the run ends the adapter edits the bubble to the same final state.
+Approval prompts name the run they hold up. Only adapters that declare
+AGENT_STATUS (Matrix) get the metadata; others see no change.
+---
+ gateway/agent_status.py             |  66 +++++++++
+ gateway/platforms/base.py           |   4 +
+ gateway/run_turn.py                 |   4 +
+ gateway/run_turn_runner.py          |  29 +++-
+ plugins/platforms/matrix/adapter.py |  51 ++++++-
+ tests/gateway/test_agent_status.py  | 222 ++++++++++++++++++++++++++++
+ 6 files changed, 368 insertions(+), 8 deletions(-)
+ create mode 100644 gateway/agent_status.py
+ create mode 100644 tests/gateway/test_agent_status.py
+
+diff --git a/gateway/agent_status.py b/gateway/agent_status.py
+new file mode 100644
+index 00000000..9f4ef18e
+--- /dev/null
++++ b/gateway/agent_status.py
+@@ -0,0 +1,66 @@
++"""Agent protocol run state (https://github.com/phrac/fluxchat/blob/main/docs/agent-protocol.md).
++
++Adapters that declare ``AGENT_STATUS = True`` (Matrix) receive a ``fluxchat_agent`` dict in the
++``metadata`` of the turn's tool-progress bubble (``state: "working"`` with the latest step and the
++step count) and of its final reply (``done`` / ``failed`` with model, context use and the session's
++spend), and put it in the message content so clients can show the run without decoding reactions.
++Everything here is best effort: a missing field is left out, never guessed.
++"""
++
++from __future__ import annotations
++
++import re
++from typing import Any, Optional
++
++# Progress lines are ``{emoji} {text}``; the step is the text.
++_LEADING_EMOJI = re.compile(r"^\W+\s+")
++_DEDUP_SUFFIX = re.compile(r"\s*\(×\d+\)$")
++_STEP_MAX_CHARS = 120
++
++
++def supported(adapter: Any) -> bool:
++    return bool(getattr(adapter, "AGENT_STATUS", False))
++
++
++def step_text(line: Any) -> str:
++    """The step a progress line describes: its text without the tool emoji or the repeat count."""
++    first = str(line or "").strip().splitlines()[0] if str(line or "").strip() else ""
++    text = _DEDUP_SUFFIX.sub("", _LEADING_EMOJI.sub("", first, count=1)).strip()
++    return text[:_STEP_MAX_CHARS]
++
++
++def working(run: Optional[str], step: Any, steps: int) -> dict:
++    status: dict = {"v": 1, "state": "working"}
++    if run:
++        status["run"] = str(run)
++    if text := step_text(step):
++        status["step"] = text
++    if steps > 0:
++        status["steps"] = steps
++    return status
++
++
++def finished(run: Optional[str], agent_result: Any, failed: bool) -> dict:
++    """``done`` / ``failed`` plus what the turn's result knows: model, context use, session spend."""
++    status: dict = {"v": 1, "state": "failed" if failed else "done"}
++    if run:
++        status["run"] = str(run)
++    result = agent_result if isinstance(agent_result, dict) else {}
++    if model := str(result.get("model") or "").strip():
++        status["model"] = model
++    tokens, length = result.get("last_prompt_tokens") or 0, result.get("context_length") or 0
++    if isinstance(tokens, (int, float)) and isinstance(length, (int, float)) and tokens > 0 and length > 0:
++        status["context"] = round(min(1.0, tokens / length), 3)
++    cost = result.get("estimated_cost_usd")
++    if isinstance(cost, (int, float)) and cost >= 0 and result.get("cost_status") != "unknown":
++        status["cost_usd"] = round(float(cost), 6)
++    return status
++
++
++def with_status(metadata: Optional[dict], status: Optional[dict]) -> Optional[dict]:
++    """A copy of ``metadata`` carrying ``status``; ``metadata`` itself is left alone (it's shared)."""
++    if not status:
++        return metadata
++    merged = dict(metadata or {})
++    merged["fluxchat_agent"] = status
++    return merged
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+index 17d87568..e4794abb 100644
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -423,6 +423,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+ 
++from gateway import agent_status as _agent_status
+ from gateway.config import Platform, PlatformConfig
+ from gateway.platforms.helpers import fence_state_after
+ from gateway.platforms.base_exec_approval import (
+@@ -4412,6 +4413,9 @@ class BasePlatformAdapter(ABC):
+         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
+         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
+         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
++        if _agent_status.supported(self):
++            # Agent protocol: the reply says how the run ended (set by the gateway's turn).
++            metadata = _agent_status.with_status(metadata, getattr(event, "_agent_status", None))
+         result, delivery_adapter = await self.send_final_ledgered(
+             event, session_key, text_content, metadata,
+             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+diff --git a/gateway/run_turn.py b/gateway/run_turn.py
+index 799679ae..60aac169 100644
+--- a/gateway/run_turn.py
++++ b/gateway/run_turn.py
+@@ -21,6 +21,7 @@ from agent.session_activity import format_iteration_progress
+ from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+ from contextlib import nullcontext, suppress
+ from contextvars import copy_context
++from gateway import agent_status as _agent_status
+ from gateway.config import Platform
+ from gateway.media_repair import repair_explicit_computer_use_media_paths
+ from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
+@@ -2250,6 +2251,9 @@ class GatewayTurnMixin:
+             )
+             if agent_failed_early and not is_context_overflow_failure:
+                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
++            # Agent protocol: adapters that report run state (AGENT_STATUS) put how the run ended
++            # (model, context use, session spend) on the final reply and the progress bubble.
++            event._agent_status = _agent_status.finished(event.message_id, agent_result, agent_failed_early)
+             response, session_entry = await self._hmwa_compression_exhaustion_reset(
+                 agent_result, response, session_entry, session_key, source,
+             )
+diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
+index 9b8c663f..9dd9423b 100644
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
+ from agent.i18n import t
+ from agent.interrupt_compat import _accepts_keyword
+ from agent.replay_cleanup import canonicalize_replay_history
++from gateway import agent_status as _agent_status
+ from gateway.config import Platform
+ from gateway.media_repair import repair_explicit_computer_use_media_paths
+ from gateway.platforms.base import BasePlatformAdapter
+@@ -545,6 +546,9 @@ class TurnRunner:
+         _progress_len_fn: Any
+         _PROGRESS_TEXT_LIMIT: int
+         _edit_accepts_metadata: bool
++        # Agent protocol (gateway/agent_status.py): the bubble carries the run's state and steps.
++        agent_status: bool = False
++        agent_steps: int = 0
+ 
+     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
+         ctx = self._ctx
+@@ -568,14 +572,27 @@ class TurnRunner:
+             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
+             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
+             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
++            agent_status=_agent_status.supported(adapter),
+         )
+ 
++    def _progress_send_metadata(self, st) -> Optional[dict]:
++        """Progress metadata, plus the run's ``working`` state for adapters that report it."""
++        ctx = self._ctx
++        # Slack task cards share _send_progress_text with a state that has no agent fields.
++        if not getattr(st, "agent_status", False):
++            return ctx._progress_metadata
++        run = ctx.inbound_message_id or ctx.event_message_id
++        step = st.progress_lines[-1] if st.progress_lines else None
++        return _agent_status.with_status(ctx._progress_metadata, _agent_status.working(run, step, st.agent_steps))
++
+     async def _edit_progress_message(self, st, message_id: str, content: str):
+         ctx = self._ctx
+         kwargs = {"chat_id": ctx.source.chat_id, "message_id": message_id, "content": content}
+         if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
+             kwargs["finalize"] = True
+-        if st._edit_accepts_metadata:
++        if st.agent_status:
++            kwargs["metadata"] = self._progress_send_metadata(st)
++        elif st._edit_accepts_metadata:
+             kwargs["metadata"] = ctx._progress_metadata
+         return await st.adapter.edit_message(**kwargs)
+ 
+@@ -598,7 +615,8 @@ class TurnRunner:
+     async def _send_progress_text(self, st, text: str):
+         ctx = self._ctx
+         result = await st.adapter.send(
+-            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
++            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to,
++            metadata=self._progress_send_metadata(st),
+         )
+         self._track_progress_result(result)
+         return result
+@@ -652,6 +670,7 @@ class TurnRunner:
+             st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+             return st.progress_lines[-1]
+         st.progress_lines.append(raw)
++        st.agent_steps += 1
+         return raw
+ 
+     async def _flush_progress_edit(self, st) -> None:
+@@ -1471,11 +1490,15 @@ class TurnRunner:
+         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
+         if _renders_exec_approval_buttons(type(adapter)):
++            metadata = ctx._status_thread_metadata
++            if _agent_status.supported(adapter) and (run := ctx.inbound_message_id or ctx.event_message_id):
++                # Agent protocol: the prompt names the run it holds up.
++                metadata = _agent_status.with_status(metadata, {"run": str(run)})
+             try:
+                 fut = self._schedule(
+                     adapter.send_exec_approval(
+                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
+-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
++                        description=desc, metadata=metadata, **flags,
+                     ),
+                     "send_exec_approval scheduling error",
+                 )
+diff --git a/plugins/platforms/matrix/adapter.py b/plugins/platforms/matrix/adapter.py
+index 9fd32932..a6aac5fc 100644
+--- a/plugins/platforms/matrix/adapter.py
++++ b/plugins/platforms/matrix/adapter.py
+@@ -360,6 +360,7 @@ class _MatrixApprovalPrompt:
+     # Prompt text and its agent-protocol choices, to edit it out of "waiting" once settled.
+     text: str = ""
+     agent_choices: list = field(default_factory=list)
++    agent_run: str | None = None
+     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
+ 
+ 
+@@ -847,6 +848,7 @@ class MatrixAdapter(BasePlatformAdapter):
+     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
+     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
+     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
++    AGENT_STATUS = True  # agent protocol: the gateway passes run state in metadata["fluxchat_agent"]
+     # Class-level defaults keep object.__new__-built test instances working.
+     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
+     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
+@@ -920,6 +922,9 @@ class MatrixAdapter(BasePlatformAdapter):
+         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
+         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
+         self._pending_reactions: dict[tuple[str, str], str] = {}
++        # Agent protocol: (room, request event) -> (progress bubble event, its text), settled to
++        # done / failed when the run ends so clients don't keep showing it as working.
++        self._agent_status_bubbles: dict[tuple[str, str], tuple[str, str]] = {}
+         # Let the final message land before redacting reactions ("missing event" in some
+         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
+         self._reaction_redaction_delay_seconds = 5.0
+@@ -1455,8 +1460,31 @@ class MatrixAdapter(BasePlatformAdapter):
+                 except Exception as retry_exc:
+                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
+                     return SendResult(success=False, error=str(retry_exc))
++        self._remember_status_bubble(chat_id, last_event_id, content, (metadata or {}).get("fluxchat_agent"))
+         return SendResult(success=True, message_id=last_event_id)
+ 
++    def _remember_status_bubble(self, chat_id: str, event_id: Optional[str], text: str, status: Any) -> None:
++        """Agent protocol: track the run's working message, to settle it when the run ends."""
++        if (not event_id or not isinstance(status, dict) or status.get("state") != "working"
++                or not status.get("run") or status.get("choices")):  # a settled prompt isn't the bubble
++            return
++        bubbles = self.__dict__.setdefault("_agent_status_bubbles", {})
++        bubbles[(chat_id, str(status["run"]))] = (str(event_id), text)
++
++    async def _settle_status_bubble(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
++        """Agent protocol: edit the run's working message to how the run ended."""
++        msg_id, room_id = event.message_id, event.source.chat_id
++        bubble = self.__dict__.get("_agent_status_bubbles", {}).pop((room_id, msg_id), None)
++        if not bubble:
++            return
++        status = dict(getattr(event, "_agent_status", None) or {"v": 1, "run": msg_id, "state": "done"})
++        if outcome != ProcessingOutcome.SUCCESS:
++            status["state"] = "failed"
++        try:
++            await self.edit_message(room_id, bubble[0], bubble[1], agent_status=status)
++        except Exception as exc:
++            logger.debug("Matrix: couldn't settle the status of run %s: %s", msg_id, exc)
++
+     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
+         """Send one m.room.message event (45s cap) and return its event ID as str."""
+         event_id = await asyncio.wait_for(
+@@ -1522,7 +1550,10 @@ class MatrixAdapter(BasePlatformAdapter):
+         await self._set_typing(chat_id, 0)
+ 
+     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+-                           agent_status: Optional[Dict[str, Any]] = None) -> SendResult:
++                           agent_status: Optional[Dict[str, Any]] = None,
++                           metadata: Optional[Dict[str, Any]] = None) -> SendResult:
++        if agent_status is None and isinstance((metadata or {}).get("fluxchat_agent"), dict):
++            agent_status = metadata["fluxchat_agent"]
+         formatted = self.format_message(content)
+         new_content = self._build_text_message_content(formatted)
+         if agent_status:
+@@ -1550,7 +1581,10 @@ class MatrixAdapter(BasePlatformAdapter):
+             # JSON escaping grows a character at most sixfold (\u00XX).
+             fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
+             msg_content["body"] = f"* {fallback}…"
+-        return await self._send_content_event(chat_id, msg_content)
++        result = await self._send_content_event(chat_id, msg_content)
++        if result.success:
++            self._remember_status_bubble(chat_id, message_id, content, agent_status)
++        return result
+ 
+     async def send_image(
+         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+@@ -1748,7 +1782,11 @@ class MatrixAdapter(BasePlatformAdapter):
+         labels = {choice: label for label, choice, _style in prompt.actions}
+         agent_choices = [{"key": self._EA_REACTIONS[c], "label": labels.get(c) or c} for c in choices]
+         metadata = dict(prompt.metadata or {})
+-        metadata["fluxchat_agent"] = {"v": 1, "state": "waiting", "choices": agent_choices}
++        # The gateway may have named the run (``run``); the prompt keeps it when it settles.
++        given = metadata.get("fluxchat_agent")
++        run = given.get("run") if isinstance(given, dict) else None
++        metadata["fluxchat_agent"] = {"v": 1, "state": "waiting", "choices": agent_choices,
++                                      **({"run": run} if run else {})}
+ 
+         def _make(message_id, requester, expires_at):
+             old_event = self._approval_prompt_by_session.get(session_key)
+@@ -1757,7 +1795,7 @@ class MatrixAdapter(BasePlatformAdapter):
+             self._approval_prompt_by_session[session_key] = message_id
+             return _MatrixApprovalPrompt(
+                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
+-                expires_at=expires_at, text=text, agent_choices=agent_choices)
++                expires_at=expires_at, text=text, agent_choices=agent_choices, agent_run=run)
+         return await self._send_reaction_prompt(
+             chat_id, text, metadata, _make, self._approval_prompts_by_event, reactions, "approval")
+ 
+@@ -2510,6 +2548,7 @@ class MatrixAdapter(BasePlatformAdapter):
+ 
+     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+         msg_id, room_id = event.message_id, event.source.chat_id
++        await self._settle_status_bubble(event, outcome)
+         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
+             return
+         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
+@@ -2668,8 +2707,10 @@ class MatrixAdapter(BasePlatformAdapter):
+         if not getattr(prompt, "agent_choices", None) or not getattr(prompt, "text", ""):
+             return
+         try:
++            run = getattr(prompt, "agent_run", None)
+             await self.edit_message(room_id, prompt.message_id, prompt.text,
+-                                    agent_status={"v": 1, "state": "working", "choices": prompt.agent_choices})
++                                    agent_status={"v": 1, "state": "working", "choices": prompt.agent_choices,
++                                                  **({"run": run} if run else {})})
+         except Exception as exc:
+             logger.debug("Matrix: couldn't settle agent prompt %s: %s", prompt.message_id, exc)
+ 
+diff --git a/tests/gateway/test_agent_status.py b/tests/gateway/test_agent_status.py
+new file mode 100644
+index 00000000..6d98dd69
+--- /dev/null
++++ b/tests/gateway/test_agent_status.py
+@@ -0,0 +1,222 @@
++"""Agent protocol run state (gateway/agent_status.py): the progress bubble reports ``working`` with
++the step, the final reply ``done`` / ``failed`` with model, context and spend, and the Matrix adapter
++settles the bubble when the run ends."""
++import asyncio
++import queue as queue_mod
++import types
++from contextlib import suppress
++from unittest.mock import AsyncMock
++
++import pytest
++
++from gateway import agent_status
++from gateway.config import Platform, PlatformConfig
++from gateway.platforms.base import ProcessingOutcome, SendResult
++from gateway.session import SessionSource
++from gateway.turn_context import TurnContext
++
++KEY = "org.fluxchat.agent"
++ROOM = "!r:example.org"
++
++
++def test_step_text_drops_the_tool_emoji_and_repeat_count():
++    assert agent_status.step_text("💻 terminal: pytest -q") == "terminal: pytest -q"
++    assert agent_status.step_text("🔍 search_files (×3)") == "search_files"
++    assert agent_status.step_text("plain words") == "plain words"
++    assert agent_status.step_text("") == ""
++    assert agent_status.step_text(None) == ""
++
++
++def test_working_and_finished():
++    assert agent_status.working("$req", "📖 read_file: a.py", 2) == {
++        "v": 1, "state": "working", "run": "$req", "step": "read_file: a.py", "steps": 2}
++    result = {"model": "claude-opus-5", "last_prompt_tokens": 42_000, "context_length": 200_000,
++              "estimated_cost_usd": 0.1834, "cost_status": "estimated"}
++    assert agent_status.finished("$req", result, failed=False) == {
++        "v": 1, "state": "done", "run": "$req", "model": "claude-opus-5", "context": 0.21, "cost_usd": 0.1834}
++    # Unknown pricing isn't reported as free; a non-dict result still gives the state.
++    unknown = agent_status.finished("$req", {"estimated_cost_usd": 0.0, "cost_status": "unknown"}, failed=True)
++    assert unknown == {"v": 1, "state": "failed", "run": "$req"}
++    assert agent_status.finished(None, None, failed=False) == {"v": 1, "state": "done"}
++
++
++def test_with_status_copies():
++    shared = {"thread_id": "$root"}
++    merged = agent_status.with_status(shared, {"state": "working"})
++    assert merged == {"thread_id": "$root", "fluxchat_agent": {"state": "working"}}
++    assert shared == {"thread_id": "$root"}
++    assert agent_status.with_status(shared, None) is shared
++
++
++class _ProgressAdapter:
++    """Records the progress bubble's sends and edits."""
++    AGENT_STATUS = True
++    name = "fake"
++
++    def __init__(self):
++        self.calls = []
++
++    async def send(self, chat_id, content, reply_to=None, metadata=None):
++        self.calls.append(("send", content, metadata))
++        return SendResult(success=True, message_id="$bubble")
++
++    async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
++        self.calls.append(("edit", content, metadata))
++        return SendResult(success=True, message_id=message_id)
++
++    async def send_typing(self, chat_id, metadata=None):
++        pass
++
++
++def _run_progress(adapter, lines):
++    from gateway.run_turn_runner import TurnRunner
++
++    class _Runner:
++        def _delivery_adapter_for(self, source):
++            return adapter
++
++    q = queue_mod.Queue()
++    for line in lines:
++        q.put(line)
++    source = SessionSource(platform=Platform.MATRIX, chat_id=ROOM, chat_type="group", user_id="@me:example.org")
++    ctx = TurnContext(source=source, progress_queue=q, _run_still_current=lambda: True,
++                      inbound_message_id="$req", _progress_metadata={"thread_id": "$req"})
++
++    async def go():
++        task = asyncio.create_task(TurnRunner(_Runner(), ctx).send_progress_messages())
++        await asyncio.sleep(0.6)
++        task.cancel()  # turn over: the bubble gets a last edit with what's still queued
++        with suppress(asyncio.CancelledError):
++            await task
++
++    asyncio.run(go())
++    return ctx
++
++
++def test_progress_bubble_reports_the_step_and_count():
++    adapter = _ProgressAdapter()
++    ctx = _run_progress(adapter, ["💻 terminal: pytest -q", "📖 read_file: a.py"])
++    kind, text, metadata = adapter.calls[0]
++    assert kind == "send" and text == "💻 terminal: pytest -q"
++    assert metadata["fluxchat_agent"] == {"v": 1, "state": "working", "run": "$req",
++                                          "step": "terminal: pytest -q", "steps": 1}
++    assert metadata["thread_id"] == "$req", "thread routing still applies"
++    kind, text, metadata = adapter.calls[-1]
++    assert kind == "edit"
++    assert metadata["fluxchat_agent"]["step"] == "read_file: a.py"
++    assert metadata["fluxchat_agent"]["steps"] == 2
++    assert ctx._progress_metadata == {"thread_id": "$req"}, "the shared metadata is left alone"
++
++
++def test_adapters_without_agent_status_get_plain_metadata():
++    adapter = _ProgressAdapter()
++    adapter.AGENT_STATUS = False
++    _run_progress(adapter, ["💻 terminal: ls"])
++    assert adapter.calls[0][2] == {"thread_id": "$req"}
++
++
++def _matrix(monkeypatch):
++    monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@me:example.org")
++    from plugins.platforms.matrix.adapter import MatrixAdapter
++    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
++    adapter._user_id = "@bot:example.org"
++    adapter._client = object()
++    adapter._reaction_redaction_delay_seconds = 0
++    return adapter
++
++
++def _event(status=None):
++    event = types.SimpleNamespace(message_id="$req", source=types.SimpleNamespace(chat_id=ROOM))
++    if status is not None:
++        event._agent_status = status
++    return event
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("outcome, state", [(ProcessingOutcome.SUCCESS, "done"),
++                                            (ProcessingOutcome.FAILURE, "failed"),
++                                            (ProcessingOutcome.CANCELLED, "failed")])
++async def test_matrix_settles_the_progress_bubble(monkeypatch, outcome, state):
++    adapter = _matrix(monkeypatch)
++    adapter._send_room_message = AsyncMock(return_value="$bubble")
++    adapter._send_reaction = AsyncMock(return_value="$r")
++    adapter.redact_message = AsyncMock(return_value=True)
++    edits = []
++    adapter._send_content_event = AsyncMock(
++        side_effect=lambda chat, content: edits.append(content) or SendResult(success=True, message_id="$edit"))
++    await adapter.send(ROOM, "💻 terminal: ls", metadata={"fluxchat_agent": agent_status.working("$req", "💻 ls", 1)})
++    # Progress edits keep it tracked.
++    await adapter.edit_message(ROOM, "$bubble", "💻 terminal: ls\n📖 read_file: a",
++                               metadata={"fluxchat_agent": agent_status.working("$req", "📖 read_file: a", 2)})
++    assert edits[-1]["m.new_content"][KEY]["steps"] == 2
++
++    done = {"v": 1, "state": "done", "run": "$req", "model": "m", "cost_usd": 0.5}
++    await adapter.on_processing_complete(_event(done), outcome)
++    settle = edits[-1]
++    assert settle["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$bubble"}
++    assert settle["m.new_content"][KEY] == {**done, "state": state}
++    assert "read_file" in settle["m.new_content"]["body"], "the bubble keeps its text"
++    # Settled once: a second completion doesn't edit again.
++    count = len(edits)
++    await adapter.on_processing_complete(_event(done), outcome)
++    assert len(edits) == count
++
++
++@pytest.mark.asyncio
++async def test_matrix_runs_without_a_bubble_edit_nothing(monkeypatch):
++    adapter = _matrix(monkeypatch)
++    adapter._send_reaction = AsyncMock(return_value="$r")
++    adapter._send_content_event = AsyncMock(return_value=SendResult(success=True))
++    await adapter.on_processing_complete(_event(), ProcessingOutcome.SUCCESS)
++    adapter._send_content_event.assert_not_called()
++    adapter._send_reaction.assert_awaited_with(ROOM, "$req", "✅")
++
++
++@pytest.mark.asyncio
++async def test_final_reply_carries_how_the_run_ended(monkeypatch):
++    adapter = _matrix(monkeypatch)
++    captured = {}
++
++    async def ledgered(event, session_key, text, metadata, **kwargs):
++        captured["metadata"] = metadata
++        return SendResult(success=True, message_id="$answer"), adapter
++
++    adapter.send_final_ledgered = ledgered
++    done = {"v": 1, "state": "done", "run": "$req"}
++    await adapter._send_final_text(_event(done), "sk", "All green.", {"thread_id": "$req"}, False, 0, lambda r: None)
++    assert captured["metadata"] == {"thread_id": "$req", "fluxchat_agent": done}
++    # A turn the gateway didn't stamp sends as before.
++    await adapter._send_final_text(_event(), "sk", "Hi.", {"thread_id": "$req"}, False, 0, lambda r: None)
++    assert captured["metadata"] == {"thread_id": "$req"}
++
++
++@pytest.mark.asyncio
++async def test_approval_names_its_run_and_settling_it_leaves_the_bubble(monkeypatch):
++    from unittest.mock import patch
++
++    from gateway.platforms.base import ExecApprovalPrompt
++    adapter = _matrix(monkeypatch)
++    sent, edits = [], []
++    adapter._send_room_message = AsyncMock(side_effect=lambda chat, content: sent.append(content) or f"$e{len(sent)}")
++    adapter._send_reaction = AsyncMock(return_value="$r")
++    adapter._redact_bot_approval_reactions = AsyncMock()
++    adapter._send_content_event = AsyncMock(
++        side_effect=lambda chat, content: edits.append(content) or SendResult(success=True))
++    await adapter.send(ROOM, "💻 terminal: ls", metadata={"fluxchat_agent": agent_status.working("$req", "💻 ls", 1)})
++    prompt = ExecApprovalPrompt(
++        chat_id=ROOM, session_key="sess-1", text="Run `rm -rf build`?",
++        actions=[("Allow once", "once", "primary"), ("Deny", "deny", "danger")], command="rm -rf build",
++        description="", smart_denied=False, metadata={"thread_id": "$req", "fluxchat_agent": {"run": "$req"}})
++    await adapter._send_exec_approval_prompt(prompt)
++    assert sent[-1][KEY]["state"] == "waiting" and sent[-1][KEY]["run"] == "$req"
++
++    event = types.SimpleNamespace(sender="@me:example.org", event_id="$react", room_id=ROOM,
++                                  content={"m.relates_to": {"event_id": "$e2", "key": "✅"}})
++    with patch("tools.approval.resolve_gateway_approval", return_value=1):
++        await adapter._on_reaction(event)
++    assert edits[-1]["m.new_content"][KEY]["state"] == "working"
++    assert edits[-1]["m.new_content"][KEY]["run"] == "$req"
++
++    await adapter.on_processing_complete(_event({"v": 1, "state": "done", "run": "$req"}), ProcessingOutcome.SUCCESS)
++    assert edits[-1]["m.relates_to"]["event_id"] == "$e1", "the progress bubble is settled, not the prompt"
++    assert edits[-1]["m.new_content"][KEY]["state"] == "done"
+-- 
+2.53.0
+

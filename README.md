@@ -55,9 +55,9 @@ See [AI agents](docs/agents.md) in the manual.
 
 We think the chat client is becoming the cockpit for agents. Where things stand:
 
-- **The protocol, upstream.** Emitters for [Python and TypeScript](sdk) are here; a [Hermes Agent patch](integrations/hermes) is ready to propose, and a [Matrix spec proposal](docs/msc/agent-status.md) is drafted. Next: send them, publish the emitters to PyPI / npm, report progress from Hermes's gateway too, and an OpenClaw plugin, so run state stops being inferred anywhere.
+- **The protocol, upstream.** Emitters for [Python and TypeScript](sdk) are here. [Hermes Agent patches](integrations/hermes) that report run state, steps, approvals and spend are ready to propose, and a [Matrix spec proposal](docs/msc/agent-status.md) is drafted. Next: send them, publish the emitters to PyPI / npm, and an OpenClaw plugin, so run state stops being inferred anywhere.
 - **Teams of agents.** Rooms with several agents work today: per-agent state, hand-offs, and one task sent to all of them with their answers compared side by side. Next: picking the winning answer to carry on with, and agents reviewing each other's work.
-- **Budgets.** Spend limits per agent work for agents that report cost through the protocol; next is getting Hermes to report it (the gateway patch above).
+- **Budgets.** Spend limits per agent work for agents that report cost through the protocol. Hermes reports it once the patches above are applied; next is getting them into Hermes itself.
 
 Ideas and pull requests are welcome.
 

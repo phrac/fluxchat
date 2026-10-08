@@ -65,4 +65,4 @@ Until accepted, use `org.fluxchat.agent` as the content key. Clients may read bo
 
 - Client: [fluxchat](https://github.com/phrac/fluxchat) (run state, run bar, task board, approvals as buttons).
 - Emitters: `sdk/python` and `sdk/typescript` in the fluxchat repository.
-- Agent framework: a patch for Hermes Agent's Matrix adapter (`integrations/hermes/`), sending approval prompts with `choices`.
+- Agent framework: patches for Hermes Agent (`integrations/hermes/`) that send run state, steps, model, context use and spend on its progress messages and replies, and approval prompts with `choices`.

@@ -1,39 +1,49 @@
 # Hermes Agent: agent protocol support
 
-A patch for [Hermes Agent](https://github.com/NousResearch/hermes-agent)'s Matrix adapter that sends the [fluxchat agent protocol](../../docs/agent-protocol.md) with its exec-approval prompts. It's ready to propose upstream; it hasn't been sent.
+Two patches for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that make it send the [fluxchat agent protocol](../../docs/agent-protocol.md) on Matrix. They're ready to propose upstream; they haven't been sent.
 
-## What it does
+## What they do
 
-- Approval prompts carry `org.fluxchat.agent` with `state: "waiting"` and their choices, labelled with the prompt's own (localized) action labels: `{"key": "✅", "label": "Allow once"}`.
-- When the prompt is resolved by a reaction, or expires, the adapter edits it to `state: "working"`, so clients drop the buttons. Today clients have to notice the bot taking its reactions back.
-- `send()` puts `metadata["fluxchat_agent"]` into the content, and `edit_message()` takes `agent_status=`, so other gateway code can report run state and progress the same way (see Next).
+**0001: approvals.** Exec-approval prompts carry `org.fluxchat.agent` with `state: "waiting"` and their choices, labelled with the prompt's own (localized) action labels: `{"key": "✅", "label": "Allow once"}`. When the prompt is resolved by a reaction, or expires, the adapter edits it to `state: "working"`, so clients drop the buttons. Without this, clients have to notice the bot taking its reactions back.
 
-Clients that don't know the key see exactly what they see today.
+**0002: run state, progress and spend.**
+- Hermes's tool-progress message (the one it edits a line per tool) carries `state: "working"`, the request it belongs to (`run`), the latest step (the line without its emoji) and the step count.
+- The final reply carries `state: "done"` or `"failed"`, plus the model, the share of the context window in use, and the session's estimated spend (`cost_usd`; left out when Hermes can't price the model).
+- When the run ends, the adapter edits the progress message to the same final state, so it never stays "working". That includes runs whose answer was streamed, and runs that were stopped.
+- Approval prompts name the run they hold up.
+
+Only adapters that declare `AGENT_STATUS = True` get the metadata, and only Matrix does. Other platforms see no change, and Matrix clients that don't know the key see what they see today. The 👀 / ✅ / ❌ reactions are unchanged.
+
+With 0002 applied, fluxchat shows the run's steps from the protocol rather than parsing them out, and [budgets](../../docs/agents.md#budgets) see what Hermes spends.
 
 ## Apply and test
 
-Made against `NousResearch/hermes-agent` at `76534243`.
+Made against `NousResearch/hermes-agent` at `76534243`. Both patches also apply cleanly to `9aaf2fda3c4` and to `main` as of 2026-10-08 (`38880bd2f1`), where the tests below pass too.
 
 ```bash
 cd hermes-agent
-git am path/to/fluxchat/integrations/hermes/0001-Matrix-agent-protocol-status-on-exec-approvals-org.f.patch
-pytest -q tests/gateway/test_matrix_agent_protocol.py tests/gateway/test_matrix_exec_approval.py
+git am path/to/fluxchat/integrations/hermes/000*.patch
+pytest -q tests/gateway/test_agent_status.py tests/gateway/test_matrix_agent_protocol.py
 ```
 
-Results here: the 3 new tests pass. The 20 Matrix test files give the same results with and without the patch (193 passed). The 17 that fail did so before the patch too: they need the `matrix` extra's dependencies, which weren't installed.
+Results here, with the `matrix`, `messaging`, `slack` and `telegram` extras and the `dev` and `test` groups installed (`uv sync --frozen`):
+- The 14 new tests pass.
+- Hermes's gateway tests for Matrix, approvals, progress, final delivery, streaming and turns (111 files): 999 pass.
+- One fails, `test_update_streaming.py::…::test_gateway_flag_enables_gateway_prompt_for_stash`. It fails without the patches too.
 
 ## Pull request text
 
-> **Matrix: agent protocol status on exec approvals**
+> **Matrix: agent protocol run state, progress and approvals**
 >
-> Matrix clients only see an approval prompt as text plus the bot's own reactions, so they can't tell a prompt from a message and can't show it as buttons. This adds an optional, namespaced `org.fluxchat.agent` object to approval prompts: `state: "waiting"` and the choices (reaction key + the prompt's own label), and edits the prompt to `state: "working"` once it's resolved or expires.
+> Matrix clients only see a Hermes run as reactions, a progress message and text, so they guess at its state, can't tell an approval prompt from a message, and never learn its spend. This adds an optional, namespaced `org.fluxchat.agent` object to the messages Hermes already sends:
 >
-> - Opt-in plumbing: `send()` reads `metadata["fluxchat_agent"]`; `edit_message()` takes `agent_status=`.
-> - No behaviour change for clients that ignore the key; the reactions flow is untouched.
-> - Tests: `tests/gateway/test_matrix_agent_protocol.py`.
+> - the tool-progress message: `state: "working"`, `run` (the request's event ID), `step`, `steps`;
+> - the final reply: `state: "done"` / `"failed"`, `model`, `context`, `cost_usd` (session total, only when priced);
+> - when the run ends, the progress message is edited to the final state;
+> - approval prompts: `state: "waiting"`, the choices (reaction key + the prompt's own label) and the run, edited to `working` once resolved or expired.
+>
+> - Opt-in plumbing: adapters declare `AGENT_STATUS = True` (Matrix only) and read `metadata["fluxchat_agent"]` in `send()` / `edit_message()`. `gateway/agent_status.py` builds the fields.
+> - No behaviour change for other platforms or for clients that ignore the key; reactions are untouched.
+> - Tests: `tests/gateway/test_agent_status.py`, `tests/gateway/test_matrix_agent_protocol.py`.
 >
 > Spec: https://github.com/phrac/fluxchat/blob/main/docs/agent-protocol.md (draft, aiming for an MSC).
-
-## Next
-
-Run state and progress come from the gateway, not the adapter: the 👀 / ✅ / ❌ processing reactions and the tool-progress bubble (`gateway/run_turn_runner.py`). A follow-up would pass `fluxchat_agent` metadata from there: `working` + `step` + `steps` on each progress edit, and `done` / `failed` with the runtime footer's model and context. Until then, fluxchat's Hermes harness profile reads those from the reactions and progress lines.

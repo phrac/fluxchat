@@ -1049,8 +1049,17 @@ impl FluxChat {
             };
             updates.push((key.to_string(), run.map(|mut r| { step_after(r.since, &mut r); r })));
         }
-        // Agent protocol: what the agent says about its runs wins.
+        // Agent protocol: what the agent says about its runs wins. Several
+        // runs in one view (requests in one thread): the newest, unless an
+        // older one is waiting on you.
+        let mut by_key: HashMap<String, RunInfo> = HashMap::new();
         for (k, run) in self.protocol_runs(key, msgs, &agent) {
+            let ord = |r: &RunInfo| (r.state == RunState::NeedsYou, r.since);
+            if by_key.get(&k).is_none_or(|old| ord(&run) > ord(old)) {
+                by_key.insert(k, run);
+            }
+        }
+        for (k, run) in by_key {
             updates.retain(|(u, _)| *u != k);
             updates.push((k, Some(run)));
         }
@@ -2511,9 +2520,20 @@ mod tests {
         // Answered, then the status message is edited to done: the run is
         // done, though the prompt (sent later) still says "working".
         status.agent = Some(serde_json::json!({"run": "$ask", "state": "done", "steps": 3}));
-        app.messages_by_room.insert(tk.clone(), vec![ask.clone(), status, prompt]);
+        app.messages_by_room.insert(tk.clone(), vec![ask.clone(), status.clone(), prompt.clone()]);
         app.refresh_agent_state(&tk);
         assert_eq!(app.run_state(&tk), Some(RunState::Done));
+        // A second request in the same thread: its run is the thread's, every time.
+        let mut ask2 = msg("$ask2", "@me:x", now + 1000);
+        ask2.thread_root = Some("$ask".into());
+        let mut status2 = msg("$status2", "@bot:x", now + 2000);
+        status2.thread_root = Some("$ask".into());
+        status2.agent = Some(serde_json::json!({"v": 1, "run": "$ask2", "state": "working", "steps": 1}));
+        for _ in 0..8 {
+            app.messages_by_room.insert(tk.clone(), vec![ask.clone(), status.clone(), prompt.clone(), ask2.clone(), status2.clone()]);
+            app.refresh_agent_state(&tk);
+            assert_eq!(app.run_state(&tk), Some(RunState::Working));
+        }
     }
 
     #[tokio::test]

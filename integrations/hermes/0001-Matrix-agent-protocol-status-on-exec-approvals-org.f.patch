@@ -1,7 +1,7 @@
 From 5a867baa2c7c5965887b21a2961947c2620a2e06 Mon Sep 17 00:00:00 2001
 From: Derek Musselmann <derek@disflux.com>
 Date: Sun, 4 Oct 2026 20:50:59 -0500
-Subject: [PATCH] Matrix: agent protocol status on exec approvals
+Subject: [PATCH 1/2] Matrix: agent protocol status on exec approvals
  (org.fluxchat.agent)
 
 Approval prompts carry their choices (labelled like the prompt's own

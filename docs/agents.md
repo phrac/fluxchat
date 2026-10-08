@@ -104,7 +104,7 @@ Give an agent a spend limit in **Settings → Preferences → AI agents**: dolla
 - Past the limit the bar turns red, and a new task to that agent waits for you to click **Send anyway** (once per period). Commands (`!stop`, `/usage`…) always go through, and **Ask all** leaves the agent out.
 - The agent chip menu shows how much is used.
 
-Spend is added up from the cost the agent reports through the [agent protocol](agent-protocol.md) (`cost_usd`). That's the running total of the agent's session, so each run counts what it added. Agents that don't report cost show no spend. Hermes doesn't report it yet.
+Spend is added up from the cost the agent reports through the [agent protocol](agent-protocol.md) (`cost_usd`). That's the running total of the agent's session, so each run counts what it added. Agents that don't report cost show no spend. Released Hermes doesn't report it yet; with the [Hermes patches](../integrations/hermes) applied, it does.
 
 ## Progress, answers and runtime
 

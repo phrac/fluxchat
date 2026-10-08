@@ -102,7 +102,10 @@ Without the fields, fluxchat falls back to the agent's [harness profile](agents.
 
 ## In agent frameworks
 
-- **Hermes Agent:** [`integrations/hermes/`](../integrations/hermes) has a patch for its Matrix adapter that sends approval prompts with `choices` and settles them when answered, passing Hermes's own tests. It's ready to propose upstream.
+- **Hermes Agent:** [`integrations/hermes/`](../integrations/hermes) has two patches that pass Hermes's own tests and are ready to propose upstream. With them, its Matrix messages carry the protocol:
+  - the tool-progress message says `working` with the step and step count;
+  - the final reply says `done` / `failed` with the model, context use and spend, and the progress message is edited to match when the run ends;
+  - approval prompts carry `choices` and are settled when answered.
 
 ## Toward a Matrix spec
 
