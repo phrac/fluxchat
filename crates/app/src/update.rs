@@ -563,7 +563,8 @@ impl FluxChat {
                 // Encrypted, so readable now that we're signed in.
                 self.load_prompts();
                 self.load_run_history();
-                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media, agents]);
+                let run_texts = self.load_run_texts();
+                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media, agents, run_texts]);
             }
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
@@ -796,6 +797,8 @@ impl FluxChat {
                     let follow = self.thread_to_follow(&room_id, &merged);
                     self.messages_by_room.insert(room_id.clone(), merged);
                     let new_prompts = self.refresh_agent_state(&room_id);
+                    self.capture_run_texts(&room_id);
+                    let compare_threads = self.load_compare_threads();
                     let anchor_scroll = if capture_anchor {
                         self.read_anchor_pending = None;
                         self.capture_read_anchor(&room_id)
@@ -814,7 +817,7 @@ impl FluxChat {
                     // the count too, and clearing early let pages overlap.
                     let _ = new_count;
                     let utd_task = if is_active { self.check_utd_reasons(&room_id) } else { Task::none() };
-                    let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task, members_task, utd_task];
+                    let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task, members_task, utd_task, compare_threads];
                     let jump_now = self.pending_jump.as_ref()
                         .filter(|(r, e)| is_active && *r == room_id
                             && self.messages_by_room.get(&room_id).is_some_and(|m| m.iter().any(|m| m.event_id == *e)))
@@ -1206,6 +1209,24 @@ impl FluxChat {
                 }
                 if self.input_text.trim().is_empty() {
                     return Task::none();
+                }
+                // "Ask all" armed: a copy to every agent here, then compare.
+                let task_text = !self.input_text.starts_with('/') && !self.input_text.starts_with('!');
+                if self.edit_event.is_none() && task_text {
+                    if let Some(key) = self.selected_room_id.clone().filter(|k| self.compare_armed(k)) {
+                        let typed = std::mem::take(&mut self.input_text);
+                        self.input_content = iced::widget::text_editor::Content::new();
+                        self.remember_prompt(&typed);
+                        let send = self.send_comparison(key, typed.trim().to_string());
+                        return Task::batch([send, self.load_compare_threads()]);
+                    }
+                }
+                // A task for an agent over its budget waits for Send anyway.
+                if self.edit_event.is_none() {
+                    if let Some(key) = self.selected_room_id.clone().filter(|k| self.budget_blocks(k, &self.input_text)) {
+                        self.budgets.hold = Some(key);
+                        return Task::none();
+                    }
                 }
                 // For Ctrl+R (not edits: those change what was sent).
                 if self.edit_event.is_none() {
@@ -1744,7 +1765,18 @@ impl FluxChat {
                 );
             }
             Message::RunsQuery(q) => {
+                let searching = !q.trim().is_empty();
                 self.runs_query = q;
+                // The first search fetches older runs' transcripts.
+                if searching {
+                    return self.backfill_run_texts();
+                }
+            }
+            Message::RunTextsLoaded(texts) => {
+                self.run_texts_loaded(texts);
+            }
+            Message::RunTextFetched(key, msgs) => {
+                self.run_text_fetched(key, msgs);
             }
             Message::ExportRun(key) => {
                 return self.export_run(key);
@@ -4746,6 +4778,8 @@ impl FluxChat {
             Message::Tick => {
                 self.flush_layout();
                 self.sweep_stalled_runs();
+                self.flush_run_texts();
+                let fetch_texts = self.fetch_run_texts();
                 if self.sync_running {
                     let mut tasks = Vec::new();
                     self.tick_count = self.tick_count.wrapping_add(1);
@@ -4840,7 +4874,22 @@ impl FluxChat {
                         }
                     }
 
+                    tasks.push(fetch_texts);
                     return Task::batch(tasks);
+                }
+                return fetch_texts;
+            }
+            // --- Ask several agents, compare (compare.rs) ---
+            msg @ (Message::ToggleCompare(_) | Message::OpenCompare(_) | Message::CompareOpenThreads) => {
+                if let Some(task) = self.handle_compare_message(msg) {
+                    return task;
+                }
+            }
+            // --- Agent budgets (budgets.rs) ---
+            msg @ (Message::BudgetSendAnyway(_) | Message::BudgetCancel
+                | Message::BudgetInput(..) | Message::BudgetPeriod(..)) => {
+                if let Some(task) = self.handle_budget_message(msg) {
+                    return task;
                 }
             }
             // --- Media gallery (update_gallery.rs) ---

@@ -477,11 +477,14 @@ pub struct RunInfo {
     pub progress: Option<f32>,
     /// The agent handling it (rooms can have several).
     pub agent: String,
+    /// The session's spend so far, as the agent reports it (protocol
+    /// `cost_usd`: a running total for the session, not this run alone).
+    pub cost_usd: Option<f64>,
 }
 
 impl RunInfo {
     pub(crate) fn new(state: RunState, since: u64) -> Self {
-        RunInfo { state, since, step: None, steps: 0, progress: None, agent: String::new() }
+        RunInfo { state, since, step: None, steps: 0, progress: None, agent: String::new(), cost_usd: None }
     }
 
     /// For picking between two agents' reports on one key: the livelier.
@@ -854,9 +857,15 @@ impl FluxChat {
         // whether a prompt of it is still open.
         let mut latest: HashMap<String, (&MessageInfo, Protocol)> = HashMap::new();
         let mut open_prompt: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // The highest spend reported per run (a session total only grows).
+        let mut cost: HashMap<String, f64> = HashMap::new();
         for m in msgs.iter().filter(|m| m.sender == agent) {
             let Some(p) = Protocol::of(m).filter(|p| p.run_state().is_some()) else { continue };
             let run_id = p.run.clone().unwrap_or_default();
+            if let Some(c) = p.cost_usd.filter(|c| c.is_finite() && *c >= 0.0) {
+                let seen = cost.entry(run_id.clone()).or_insert(c);
+                *seen = seen.max(c);
+            }
             if !p.choices.is_empty() {
                 if p.run_state() == Some(RunState::NeedsYou) {
                     open_prompt.insert(run_id.clone());
@@ -889,6 +898,7 @@ impl FluxChat {
                 steps: p.steps.map(|n| n as usize).unwrap_or(0),
                 progress: p.progress.map(|f| f.clamp(0.0, 1.0)),
                 agent: agent.to_string(),
+                cost_usd: cost.get(&run_id).copied(),
             }))
         }).collect()
     }
@@ -1305,6 +1315,8 @@ impl FluxChat {
         new.iter().rev()
             .filter(|m| m.sender == self.user_id && m.thread_root.is_none())
             .filter(|m| now.saturating_sub(sent_ms(m)) < FOLLOW_WINDOW_MS)
+            // Ask-all requests: the Compare dialog shows those threads.
+            .filter(|m| !self.is_comparison_request(key, m))
             .filter(|m| expected(m) || (threaded(m) && agents.iter().any(|a| request_state(&self.harness_of(a), m, a).is_some()
                 || m.thread_latest.as_ref().is_some_and(|l| l.sender == *a))))
             .find(|m| !old.iter().any(|o| o.event_id == m.event_id && (threaded(o) || expected(o))))
@@ -1330,7 +1342,7 @@ pub(crate) fn state_dot<'a>(state: RunState, size: f32) -> Element<'a, Message> 
 
 impl FluxChat {
     /// How the agent is called in the view's room.
-    fn agent_name(&self, key: &str, agent: &str) -> String {
+    pub(crate) fn agent_name(&self, key: &str, agent: &str) -> String {
         self.display_name_in(key, agent)
     }
 
@@ -1605,11 +1617,15 @@ impl FluxChat {
         let switch = ui::segmented(agents.iter()
             .map(|a| (self.agent_name(key, a), Some(Message::SetAgentTarget(room.clone(), a.to_string())), *a == current))
             .collect());
-        Some(container(row![
+        let mut bar = row![
             ui::icon(crate::icons::SVG_BOT, 13.0, crate::theme::colors().text_dim),
             text("To").font(self.sidebar_font()).size(11).color(crate::theme::colors().text_dim),
             container(switch).width(iced::Length::Fixed(140.0 * agents.len().min(4) as f32)),
-        ].spacing(8).align_y(Alignment::Center)).padding([2, 12]).into())
+        ].spacing(8).align_y(Alignment::Center);
+        if let Some(toggle) = self.view_compare_toggle(key) {
+            bar = bar.push(toggle);
+        }
+        Some(container(bar).padding([2, 12]).into())
     }
 
     /// An agent message that addresses another agent in the room: a hand-off
@@ -1703,7 +1719,10 @@ impl FluxChat {
             .filter(|(_, r)| matches!(r.state, RunState::Working | RunState::NeedsYou))
             .filter(|(k, r)| {
                 let hay = format!("{} {} {}", if k.starts_with("thread::") { self.thread_title(k) } else { String::new() }, room_label(k), r.agent).to_lowercase();
-                words.iter().all(|w| hay.contains(w))
+                match self.run_history.iter().find(|h| h.key == *k && h.started == r.since) {
+                    Some(rec) => self.run_text_has(rec, &words, &hay),
+                    None => words.iter().all(|w| hay.contains(w)),
+                }
             })
             .collect();
         let working = live.iter().filter(|(_, r)| r.state == RunState::Working).count();
@@ -1765,18 +1784,24 @@ impl FluxChat {
             let when = format!("{} {}", crate::view_messages::local_day_label(h.started / 1000),
                 crate::view_messages::format_clock(crate::view::local_time_of_day(h.started / 1000), false, self.prefs.twelve_hour));
             let extras = [Some(h.duration(now)), h.model.clone(), h.cost.clone()].into_iter().flatten().collect::<Vec<_>>().join(" \u{00b7} ");
-            list = list.push(row![
-                button(iced::widget::column![
-                    text(crate::view::ellipsize(&h.title, 80)).font(self.sidebar_font()).size(13).color(colors.text_normal)
+            let mut body = iced::widget::column![
+                text(crate::view::ellipsize(&h.title, 80)).font(self.sidebar_font()).size(13).color(colors.text_normal)
+                    .wrapping(iced::widget::text::Wrapping::None),
+                container(row![
+                    state_dot(state, 7.0),
+                    text(format!("{label} \u{00b7} {extras}")).font(self.sidebar_font()).size(11).color(state.color())
                         .wrapping(iced::widget::text::Wrapping::None),
-                    container(row![
-                        state_dot(state, 7.0),
-                        text(format!("{label} \u{00b7} {extras}")).font(self.sidebar_font()).size(11).color(state.color())
-                            .wrapping(iced::widget::text::Wrapping::None),
-                        text(format!("{} \u{00b7} {when}", room_label(&h.key))).font(self.sidebar_font()).size(11).color(colors.text_dim)
-                            .wrapping(iced::widget::text::Wrapping::None),
-                    ].spacing(6).align_y(Alignment::Center)).clip(true),
-                ].spacing(3))
+                    text(format!("{} \u{00b7} {when}", room_label(&h.key))).font(self.sidebar_font()).size(11).color(colors.text_dim)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                ].spacing(6).align_y(Alignment::Center)).clip(true),
+            ].spacing(3);
+            // Found in what was said: where.
+            if let Some(snippet) = (!words.is_empty()).then(|| self.run_snippet(h, &words)).flatten() {
+                body = body.push(container(text(snippet).font(self.sidebar_font()).size(11).color(colors.text_muted)
+                    .wrapping(iced::widget::text::Wrapping::None)).clip(true));
+            }
+            list = list.push(row![
+                button(body)
                 .on_press(Message::Batch(vec![Message::CloseModal, Message::OpenAt(h.key.clone(), crate::panes::Placement::Auto)]))
                 .padding([7, 10])
                 .width(Fill)
@@ -1791,7 +1816,7 @@ impl FluxChat {
         }
         iced::widget::column![
             ui::header("Agent runs", Some(subtitle)),
-            ui::input("Search runs: title, room, agent", &self.runs_query, Message::RunsQuery),
+            ui::input("Search runs: title, room, agent, or anything said in them", &self.runs_query, Message::RunsQuery),
             container(iced::widget::scrollable(list).height(iced::Length::Shrink))
                 .max_height(460.0),
             ui::footer(vec![
@@ -1941,6 +1966,12 @@ impl FluxChat {
             if let Some(msg) = send(&item.command) {
                 items.push((item.label.clone(), icon, msg));
             }
+        }
+        if let Some(i) = self.last_comparison_in(key) {
+            items.push(("Compare answers".to_string(), crate::icons::SVG_COLUMNS, Message::OpenCompare(i)));
+        }
+        if let Some(budget) = self.budget_menu_label(key) {
+            items.push((budget, crate::icons::SVG_SLIDERS, Message::OpenModal(crate::state::Modal::Settings { tab: "preferences".into() })));
         }
         items.push(("All agent runs".to_string(), crate::icons::SVG_LAYERS, Message::OpenModal(crate::state::Modal::Runs)));
         items.push((format!("Agent profile ({})", h.name), crate::icons::SVG_PERSON,
@@ -2308,7 +2339,7 @@ mod tests {
         app.messages_by_room.insert("!r:x".into(), vec![plain.clone(), ask.clone()]);
         app.run_history.push(crate::history::RunRecord {
             key: "!r:x".into(), room: "!r:x".into(), agent: "@bot:x".into(), title: "Request in the room".into(),
-            state: "working".into(), started: sent_ms(&ask), ended: None, steps: 0, model: None, cost: None,
+            state: "working".into(), started: sent_ms(&ask), ended: None, steps: 0, model: None, cost: None, cost_usd: None,
         });
         app.refresh_agent_state("!r:x");
         assert_eq!(app.run_state("!r:x"), None, "not running");
@@ -2464,6 +2495,9 @@ mod tests {
         assert_eq!((run.state, run.step.as_deref(), run.steps, run.progress), (RunState::Working, Some("Running tests"), 3, Some(0.5)));
         assert_eq!(run.since, ask.timestamp * 1000);
         assert_eq!(app.agent_runtime(&tk).map(|r| r.summary()).as_deref(), Some("opus-5 \u{00b7} ctx 42% \u{00b7} $0.18"));
+        // The spend goes on the run and its history record (budgets).
+        assert_eq!(run.cost_usd, Some(0.18));
+        assert_eq!(app.run_history.iter().find(|r| r.key == tk).and_then(|r| r.cost_usd), Some(0.18));
         // A protocol prompt: live while "waiting", gone once the agent moves on.
         let mut prompt = msg("$p", "@bot:x", now);
         prompt.agent = Some(serde_json::json!({"run": "$ask", "state": "waiting",

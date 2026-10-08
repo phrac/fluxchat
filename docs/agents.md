@@ -67,6 +67,14 @@ A room can have more than one agent: a researcher, a coder and a reviewer, say. 
 - **Who you're talking to** is outlined in the header and picked in the **To** switch above the message box: commands (`/stop`…) and the run controls go to that agent, the way its harness expects. By default it's the agent on the run you're looking at, else the one that spoke last. Click an agent's chip to talk to it (and open its menu).
 - **Hand-offs:** when one agent's message addresses another ("@coder can you take the tests?"), the message shows **researcher handed off to coder**. Click it to talk to the one it went to.
 
+### Ask them all and compare
+
+Click **Ask all** next to the **To** switch, then send your task. Every agent in the room gets its own copy that mentions only that agent (`@Hermes which index should orders use?`). Each one answers in its own thread and session, and doesn't see the others' answers. Commands (`/stop`, `!status`) still go only to the agent you're talking to. **Ask all** turns itself off after one task.
+
+**Compare answers** opens with one column per agent: its state, how long it took, what it cost, and its answer (step logs left out). The columns fill in as the agents work. **Open** takes you to an agent's thread, or to its reply if it answered in the room. **Open threads side by side** puts every thread in a new window, a pane each, so you can follow up with each agent. You can get back to the room's latest comparison from the agent chip menu (**Compare answers**). Comparisons last until you quit.
+
+Agents over their [budget](#budgets) are left out, and the dialog says so. This needs agents that answer only when mentioned. That's Hermes's default outside DMs; in rooms where an agent answers everything (Hermes's `MATRIX_FREE_RESPONSE_ROOMS`), each agent would get every copy.
+
 ## Review what agents change
 
 When an agent posts a diff (a `git diff` in a code block, or a `.diff` / `.patch` file), the message gets a **Review changes · 3 files +40 −12** button. It opens a review: the changed files on the left, each file's diff with old and new line numbers on the right, additions and deletions coloured.
@@ -82,11 +90,21 @@ In a room with an agent, the **Threads** panel (header button) becomes **Runs**:
 
 **Agent runs** (the status bar's run count, the agent chip menu, or the palette) lists every run across your rooms: waiting on you, working, then the last few hours' finished ones, with the room and current step. Click one to open it.
 
-Type in the search box to find runs by title, room or agent. Under **History** are the runs fluxchat saw happen, newest first, with how long they took, and the model and cost at the end when the agent reports them. The ⬇ button on any run exports its thread as a Markdown transcript (with the run's details at the top). The history is kept encrypted on this computer.
+Type in the search box to find runs by title, room, agent, or **anything said in them**: the request, the agent's answers, your follow-ups. A run found by its text shows the matching line under it. Each run's text is kept encrypted on this computer, up to the first 16 KB and last 48 KB. When a run ends in a thread you never opened, fluxchat fetches that thread from the server. Runs from before this feature are fetched the first time you search. Under **History** are the runs fluxchat saw happen, newest first, with how long they took, and the model and cost at the end when the agent reports them. The ⬇ button on any run exports its thread as a Markdown transcript (with the run's details at the top). The history is kept encrypted on this computer.
 
 A run that shows no sign of life for two hours while "working" (no new message or thread reply from the agent, and it isn't typing) is no longer counted as running: the agent most likely restarted without taking back its 👀. It moves to History as **stalled**. Lone commands like `!usage` or `!status` aren't runs and don't go into the history; a command with a task (`!goal ship the release`) does.
 
 **Watch in a window** opens a new window tiling the active runs, one pane each. It follows: runs that start later get a pane in it too (up to six). Use it as a dashboard on a second screen, or switch to it with **Ctrl+B n**.
+
+## Budgets
+
+Give an agent a spend limit in **Settings → Preferences → AI agents**: dollars per day, week or month. Leave it empty for no limit.
+
+- At 80% you get a desktop notification, and a yellow bar above the message box in its rooms says how much is used.
+- Past the limit the bar turns red, and a new task to that agent waits for you to click **Send anyway** (once per period). Commands (`!stop`, `/usage`…) always go through, and **Ask all** leaves the agent out.
+- The agent chip menu shows how much is used.
+
+Spend is added up from the cost the agent reports through the [agent protocol](agent-protocol.md) (`cost_usd`). That's the running total of the agent's session, so each run counts what it added. Agents that don't report cost show no spend. Hermes doesn't report it yet.
 
 ## Progress, answers and runtime
 

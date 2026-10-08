@@ -56,9 +56,8 @@ See [AI agents](docs/agents.md) in the manual.
 We think the chat client is becoming the cockpit for agents. Where things stand:
 
 - **The protocol, upstream.** Emitters for [Python and TypeScript](sdk) are here; a [Hermes Agent patch](integrations/hermes) is ready to propose, and a [Matrix spec proposal](docs/msc/agent-status.md) is drafted. Next: send them, publish the emitters to PyPI / npm, report progress from Hermes's gateway too, and an OpenClaw plugin, so run state stops being inferred anywhere.
-- **Teams of agents.** Rooms with several agents work today (per-agent state, who you're talking to, hand-offs). Next: sending one task to several agents and comparing their answers side by side.
-- **Budgets.** Cost per run is recorded; next is a spend limit per agent with a warning before it's reached.
-- **Search inside runs.** History searches titles, rooms and agents; next is full-text search across transcripts.
+- **Teams of agents.** Rooms with several agents work today: per-agent state, hand-offs, and one task sent to all of them with their answers compared side by side. Next: picking the winning answer to carry on with, and agents reviewing each other's work.
+- **Budgets.** Spend limits per agent work for agents that report cost through the protocol; next is getting Hermes to report it (the gateway patch above).
 
 Ideas and pull requests are welcome.
 
@@ -85,8 +84,10 @@ Ideas and pull requests are welcome.
 - Step logs and long answers folded; runtime footers moved to the chip and status bar
 - Prompt history (Ctrl+R) and snippets (`/snippet`), kept encrypted
 - Rooms with several agents: a chip each, who you're talking to, hand-offs you can follow
+- Ask every agent in a room the same thing and compare their answers side by side, or open their threads in panes
+- Spend limit per agent (day / week / month): warns at 80%, asks before sending past it
 - Review an agent's diff (code block or `.patch`): files, numbered coloured lines, approve or request changes
-- Run history with duration, model and cost; search; export a run as a Markdown transcript
+- Run history with duration, model and cost; full-text search across what was said in runs; export a run as a Markdown transcript
 - Answer approvals or stop a run from the desktop notification (Linux, macOS)
 - Spots agents you haven't marked and suggests the right harness
 

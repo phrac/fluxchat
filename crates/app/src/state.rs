@@ -82,6 +82,8 @@ pub enum Modal {
     Gallery,
     /// Every agent run across rooms (agents.rs).
     Runs,
+    /// Several agents' answers to one task (compare.rs; `FluxChat::compare`).
+    Compare,
     /// Reviewing an agent's changes (review.rs; state in `FluxChat::review`).
     Review,
     Forward { body: String, formatted_body: String, sender_name: Option<String> },
@@ -278,6 +280,12 @@ pub struct FluxChat {
     /// While there's a selection: each selectable widget's text as rendered
     /// (filled by the view), so copying takes what's on screen rather than
     /// the raw body, whose markdown and line breaks don't match the offsets.
+    /// Agent budgets: warnings given, sends waved through, a held send.
+    pub budgets: crate::budgets::BudgetState,
+    /// Run transcripts for full-text search (run_search.rs).
+    pub run_texts: crate::run_search::RunTexts,
+    /// Ask-all comparisons (compare.rs).
+    pub compare: crate::compare::CompareState,
     pub selection_texts: std::cell::RefCell<HashMap<crate::selectable_text::SelectionWidgetId, String>>,
     pub video_thumb_sizes: HashMap<String, (u32, u32)>,  // thumb_key -> (width, height)
     pub video_player: Option<iced_video_player::Video>, // inline video player
@@ -760,6 +768,9 @@ impl FluxChat {
             audio_duration_ms: 0,
             selection: Default::default(),
             selection_texts: Default::default(),
+            budgets: Default::default(),
+            run_texts: Default::default(),
+            compare: Default::default(),
             video_thumb_sizes: HashMap::new(),
             video_player: None,
             video_playing_event: None,

@@ -166,6 +166,17 @@ impl AppDb {
         cipher.decrypt_value_base64_data(value).ok()
     }
 
+    /// Delete a private value.
+    pub fn remove_private(&self, key: &str) {
+        let row_key: String = {
+            let cipher = self.media_cipher.read().unwrap_or_else(|e| e.into_inner());
+            let Some(cipher) = cipher.as_ref() else { return };
+            cipher.hash_key("private_data", key.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+        };
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = conn.execute("DELETE FROM private_data WHERE key = ?1", params![row_key]);
+    }
+
     /// Delete a plaintext setting (after moving it into private data).
     pub fn remove_setting(&self, key: &str) {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());

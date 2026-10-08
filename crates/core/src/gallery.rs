@@ -65,7 +65,7 @@ pub async fn room_media_page(
         .map_err(|e| AppError::Other(format!("Couldn't load media: {e}")))?;
 
     let scanned = response.chunk.len();
-    let items = to_items(&room, &response.chunk).await;
+    let items = to_items(&room, &response.chunk, media_info).await;
     // An empty page means the start of the room, whatever the token says.
     let next = if scanned == 0 { None } else { response.end };
     Ok(MediaPage { items, next, scanned })
@@ -103,17 +103,22 @@ pub async fn thread_media_page(
             events.push(ev);
         }
     }
-    let items = to_items(&room, &events).await;
+    let items = to_items(&room, &events, media_info).await;
     Ok(MediaPage { items, next, scanned })
 }
 
-/// The media and file messages among `events`, with sender names.
-async fn to_items(room: &matrix_sdk::Room, events: &[TimelineEvent]) -> Vec<MessageInfo> {
+/// The messages among `events` that `pick` makes an item of, with sender
+/// names.
+pub(crate) async fn to_items(
+    room: &matrix_sdk::Room,
+    events: &[TimelineEvent],
+    pick: fn(&AnySyncTimelineEvent) -> Option<MessageInfo>,
+) -> Vec<MessageInfo> {
     let mut names: HashMap<String, String> = HashMap::new();
     let mut items = Vec::new();
     for event in events {
         let Ok(parsed) = event.raw().deserialize() else { continue };
-        let Some(mut info) = media_info(&parsed) else { continue };
+        let Some(mut info) = pick(&parsed) else { continue };
         info.sender_name = match names.get(&info.sender) {
             Some(name) => name.clone(),
             None => {

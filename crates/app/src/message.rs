@@ -131,6 +131,21 @@ pub enum Message {
     ReviewFinish(bool),
     /// In a room with several agents: talk to this one (room ID, agent).
     SetAgentTarget(String, String),
+    /// Agent budgets (budgets.rs): send the held message to an agent over
+    /// its limit / don't; a limit typed in Settings; its period.
+    BudgetSendAnyway(String),
+    /// Compare (compare.rs): arm / disarm "Ask all" in a room; show a
+    /// comparison; open its threads side by side in a new window.
+    ToggleCompare(String),
+    OpenCompare(usize),
+    CompareOpenThreads,
+    /// Run transcripts (run_search.rs): stored ones read after sign-in (run
+    /// id, text); a thread fetched from the server (thread key, messages).
+    RunTextsLoaded(Vec<(String, String)>),
+    RunTextFetched(String, Vec<fluxchat_core::MessageInfo>),
+    BudgetCancel,
+    BudgetInput(String, String),
+    BudgetPeriod(String, crate::budgets::Period),
     /// Which harness profile runs this agent (user ID, profile id).
     SetAgentHarness(String, String),
     /// Send this text to a view as is (agent controls: `!stop`).

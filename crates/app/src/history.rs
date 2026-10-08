@@ -34,6 +34,10 @@ pub struct RunRecord {
     pub steps: usize,
     pub model: Option<String>,
     pub cost: Option<String>,
+    /// The session's spend when last seen (agent protocol `cost_usd`, a
+    /// running total) — what budgets add up (`budgets::spent`).
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 impl RunRecord {
@@ -95,11 +99,13 @@ impl FluxChat {
                     ended: None,
                     steps: run.steps,
                     model: None,
-                    cost: None,
+                    cost: run.cost_usd.map(crate::budgets::format_usd),
+                    cost_usd: run.cost_usd,
                 });
                 if self.run_history.len() > HISTORY_LIMIT {
                     let extra = self.run_history.len() - HISTORY_LIMIT;
-                    self.run_history.drain(..extra);
+                    let gone: Vec<RunRecord> = self.run_history.drain(..extra).collect();
+                    self.forget_run_texts(&gone);
                 }
                 true
             }
@@ -108,36 +114,51 @@ impl FluxChat {
                 let runtime = self.agent_runtime(key).cloned();
                 let fresh_title = key.starts_with("thread::").then(|| self.thread_title(key));
                 let rec = &mut self.run_history[i];
-                let was = (rec.state.clone(), rec.steps, rec.ended);
+                let was = (rec.state.clone(), rec.steps, rec.ended, rec.cost_usd);
                 rec.state = label;
                 rec.steps = rec.steps.max(run.steps);
+                if let Some(c) = run.cost_usd {
+                    let c = rec.cost_usd.map_or(c, |old| old.max(c));
+                    rec.cost_usd = Some(c);
+                    rec.cost = Some(crate::budgets::format_usd(c));
+                }
                 if !live && rec.ended.is_none() {
                     rec.ended = Some(now_ms());
                     if let Some(rt) = runtime {
                         rec.model = rt.model;
-                        rec.cost = rt.cost;
+                        if rec.cost_usd.is_none() {
+                            rec.cost_usd = rt.cost.as_deref().and_then(crate::budgets::parse_usd);
+                            rec.cost = rt.cost;
+                        }
                     }
                 }
                 if let Some(t) = fresh_title.filter(|t| rec.title == "Thread" && t != "Thread") {
                     rec.title = t;
                 }
                 let rec = &self.run_history[i];
-                was != (rec.state.clone(), rec.steps, rec.ended)
+                was != (rec.state.clone(), rec.steps, rec.ended, rec.cost_usd)
             }
         };
         if changed {
             self.save_run_history();
+            self.check_budget(&run.agent);
+            // Ended: keep its transcript searchable, loaded or not.
+            if self.run_history.iter().any(|r| r.key == key && r.started == run.since && r.ended.is_some()) {
+                self.want_run_text(key);
+            }
         }
     }
 
-    /// History matching `query` (title, room, agent), newest first.
+    /// History matching `query` (title, room, agent, state, and what was
+    /// said in the run), newest first.
     pub(crate) fn matching_history(&self, query: &str) -> Vec<&RunRecord> {
-        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let query = query.to_lowercase();
+        let words: Vec<&str> = query.split_whitespace().collect();
         self.run_history.iter().rev()
             .filter(|r| {
                 let room = self.rooms.iter().find(|x| x.room_id == r.room).map(|x| x.name.as_str()).unwrap_or("");
                 let hay = format!("{} {} {} {}", r.title, room, r.agent, r.state).to_lowercase();
-                words.iter().all(|w| hay.contains(w.as_str()))
+                self.run_text_has(r, &words, &hay)
             })
             .collect()
     }

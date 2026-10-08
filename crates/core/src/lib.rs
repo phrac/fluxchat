@@ -19,6 +19,7 @@ pub mod store_migration;
 pub mod sync_service;
 pub mod voice;
 pub mod timeline;
+pub mod transcripts;
 pub mod rtc;
 pub mod rtc_audio;
 pub mod vault;

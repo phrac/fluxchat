@@ -663,11 +663,17 @@ impl FluxChat {
             }
             Message::DropOnPane(key, pane, zone) => self.drop_on_pane(key, pane, zone),
             Message::PaneSend(key) => {
-                let Some(content) = self.pane_inputs.get_mut(&key) else { return Some(Task::none()) };
+                let Some(content) = self.pane_inputs.get(&key) else { return Some(Task::none()) };
                 let mut body = content.text().trim_end_matches('\n').to_string();
                 if body.trim().is_empty() {
                     return Some(Task::none());
                 }
+                // A task for an agent over its budget waits for Send anyway.
+                if self.budget_blocks(&key, &body) {
+                    self.budgets.hold = Some(key);
+                    return Some(Task::none());
+                }
+                let Some(content) = self.pane_inputs.get_mut(&key) else { return Some(Task::none()) };
                 *content = iced::widget::text_editor::Content::new();
                 self.remember_prompt(&body);
                 if let Some(text) = self.agent_outgoing(&key, &body) {

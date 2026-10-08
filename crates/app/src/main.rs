@@ -6,7 +6,9 @@
 
 mod agents;
 mod anim;
+mod budgets;
 mod commands;
+mod compare;
 mod diff;
 mod dnd;
 mod harness;
@@ -20,6 +22,7 @@ mod panes;
 mod prefs;
 mod prompts;
 mod review;
+mod run_search;
 mod progress;
 mod message;
 mod primary_clipboard;

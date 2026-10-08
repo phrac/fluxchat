@@ -47,6 +47,10 @@ impl FluxChat {
         if let Some(bar) = self.run_bar_key(room_id).and_then(|k| self.view_run_card(&k)) {
             elements.push(bar);
         }
+        // The agent here is near / over its budget (or a send waits on it).
+        if let Some(b) = self.view_budget_bar(room_id) {
+            elements.push(b);
+        }
         // Someone here acts like an agent you haven't marked.
         if let Some(s) = self.view_agent_suggestion(room_id) {
             elements.push(s);

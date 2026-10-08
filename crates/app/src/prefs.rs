@@ -64,6 +64,8 @@ pub struct Prefs {
     pub notify_agent_done: bool,
     /// Users you said aren't agents (no "looks like an AI agent" suggestion).
     pub not_agents: Vec<String>,
+    /// Spend limit per agent (budgets.rs).
+    pub agent_budgets: std::collections::HashMap<String, crate::budgets::Budget>,
 }
 
 impl Prefs {
@@ -111,6 +113,7 @@ impl Default for Prefs {
             agent_busy_mode: crate::agents::BusyMode::Send,
             notify_agent_done: true,
             not_agents: Vec::new(),
+            agent_budgets: std::collections::HashMap::new(),
         }
     }
 }

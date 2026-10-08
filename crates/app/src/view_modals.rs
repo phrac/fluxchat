@@ -26,6 +26,7 @@ impl FluxChat {
             crate::state::Modal::Lightbox { url, from_gallery } => self.view_lightbox_modal(url, *from_gallery),
             crate::state::Modal::Gallery => self.view_gallery_modal(),
             crate::state::Modal::Runs => self.view_runs_dialog(),
+            crate::state::Modal::Compare => self.view_compare_modal(),
             crate::state::Modal::Review => self.view_review_modal(),
             crate::state::Modal::Forward { body, sender_name, .. } => self.view_forward_modal(body, sender_name.as_deref()),
             crate::state::Modal::RoomSettings => self.view_room_settings_modal(),
@@ -715,6 +716,7 @@ impl FluxChat {
                     ui::btn("Remove", ui::Tone::Ghost, Some(Message::SetAgent(agent.clone(), false))),
                 ].spacing(8).align_y(iced::Alignment::Center));
                 col = col.push(self.view_harness_picker(agent));
+                col = col.push(self.view_budget_setting(agent));
             }
             col = col.push(ui::hint("Harness profiles are TOML files in the fluxchat data folder (agents/). Copy one to describe another harness; it's picked up on the next start."));
             col = col.push(ui::hint("In a room with an agent, its /commands go to it (as !command), a bar shows its run with Stop, and its approvals become buttons."));
