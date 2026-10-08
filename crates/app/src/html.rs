@@ -446,7 +446,24 @@ impl<'a> WalkCtx<'a> {
                     return;
                 }
                 let text = convert_inline_latex(text);
-                self.segments.push(Segment::Text(text, style.clone()));
+                if style.code || style.mention {
+                    self.segments.push(Segment::Text(text, style.clone()));
+                    return;
+                }
+                // Bare URLs in HTML bodies (agents send formatted bodies
+                // without <a> tags) become links, like in plain bodies
+                let mut rest = text.as_str();
+                for (range, url) in find_urls(&text) {
+                    let before = &text[text.len() - rest.len()..range.start];
+                    if !before.is_empty() {
+                        self.segments.push(Segment::Text(before.to_string(), style.clone()));
+                    }
+                    self.segments.push(Segment::Link { text: text[range.clone()].to_string(), url, style: style.clone() });
+                    rest = &text[range.end..];
+                }
+                if !rest.is_empty() {
+                    self.segments.push(Segment::Text(rest.to_string(), style.clone()));
+                }
             }
             NodeData::Comment => {}
             NodeData::Element { name, attrs } => {
@@ -1344,6 +1361,51 @@ pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
     html_to_spans(&html)
 }
 
+/// Bare URLs in text: `http(s)://…`, `www.…`, and `host.tld/path` (a path
+/// is required without a scheme, so file names like `main.rs` stay text).
+/// Returns each match's byte range and the URL to open (scheme added).
+fn find_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let mut found = Vec::new();
+    let mut start = 0;
+    for token in text.split_inclusive(char::is_whitespace) {
+        let word = token.trim_end_matches(char::is_whitespace);
+        let at = start;
+        start += token.len();
+        // Leading punctuation: "(https://…" or "\"www.…"
+        let lead = word.len() - word.trim_start_matches(['(', '[', '"', '\'', '<']).len();
+        let candidate = word[lead..].trim_end_matches(['.', ',', ')', ']', ';', ':', '!', '?', '"', '\'', '>']);
+        if candidate.is_empty() {
+            continue;
+        }
+        let lower = candidate.to_ascii_lowercase();
+        let url = if lower.starts_with("https://") || lower.starts_with("http://") {
+            if candidate.len() <= lower.find("//").unwrap_or(0) + 2 {
+                continue;
+            }
+            candidate.to_string()
+        } else if (lower.starts_with("www.") && candidate.len() > 4) || looks_like_host_path(candidate) {
+            format!("https://{candidate}")
+        } else {
+            continue;
+        };
+        let from = at + lead;
+        found.push((from..from + candidate.len(), url));
+    }
+    found
+}
+
+/// `ebay.com/itm/123`: dot-separated host labels, alphabetic TLD, then a path.
+fn looks_like_host_path(s: &str) -> bool {
+    let Some((host, path)) = s.split_once('/') else { return false };
+    if path.is_empty() {
+        return false;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels.last().is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
+}
+
 /// Escape special HTML characters in user content.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -1449,6 +1511,21 @@ mod tests {
     fn links_carry_their_url() {
         let spans = html_to_spans("see <a href=\"https://example.org\">here</a>");
         assert_eq!(spans[1].link.as_deref(), Some("https://example.org"));
+    }
+
+    #[test]
+    fn bare_urls_in_html_become_links() {
+        let spans = html_to_spans("<b>deal:</b> see https://www.ebay.com/itm/377552588783. Also ebay.com/itm/206592999843; or www.example.org");
+        let links: Vec<_> = spans.iter().filter_map(|s| s.link.as_deref()).collect();
+        assert_eq!(links, ["https://www.ebay.com/itm/377552588783", "https://ebay.com/itm/206592999843", "https://www.example.org"]);
+        assert_eq!(texts(&spans).concat(), "deal: see https://www.ebay.com/itm/377552588783. Also ebay.com/itm/206592999843; or www.example.org");
+    }
+
+    #[test]
+    fn bare_url_detection_skips_non_urls() {
+        assert!(find_urls("main.rs and 1.5/2 and https:// and src/main.rs").is_empty());
+        let spans = html_to_spans("<code>https://example.org/x</code>");
+        assert!(spans.iter().all(|s| s.link.is_none()));
     }
 
     #[test]

@@ -85,7 +85,11 @@ The grid button in the room header (or **Ctrl/⌘+Shift+G**, `/gallery`, or *Gal
 
 ## Links
 
-Web and email links open in your browser or mail app. Links to rooms, messages and people (matrix.to) open inside fluxchat. Other kinds of links (local files, app links) aren't opened, for safety.
+Addresses in messages are clickable even when the sender didn't link them (`https://…`, `www.…`, or `example.com/path`), formatted messages from bots and agents included. Web and email links open in your browser or mail app. Links to rooms, messages and people (matrix.to) open inside fluxchat. Other kinds of links (local files, app links) aren't opened, for safety.
+
+## Copying text
+
+Drag across a message, or across several, and press Ctrl/⌘+C. You get the text as shown, without markdown markers. On Linux the selection is also put in the primary selection (middle-click paste).
 
 ## Forwarding and pins
 

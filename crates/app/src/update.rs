@@ -1422,6 +1422,7 @@ impl FluxChat {
             Message::SelectionStarted(widget_id, line, index) => {
                 use crate::selectable_text::{GlobalSelectionAnchor, CrossMessageSelection};
                 let anchor = GlobalSelectionAnchor { widget_id, line, index };
+                self.selection_texts.get_mut().clear();
                 self.selection = CrossMessageSelection {
                     cursor: Some(anchor.clone()),
                     anchor: Some(anchor),
@@ -5876,42 +5877,54 @@ impl FluxChat {
 
         let anchor_idx = messages.iter().position(|m| m.event_id == anchor.widget_id.event_id)?;
         let cursor_idx = messages.iter().position(|m| m.event_id == cursor.widget_id.event_id)?;
-
-        let (start, end, start_idx, end_idx) = if anchor_idx < cursor_idx
-            || (anchor_idx == cursor_idx && (anchor.line < cursor.line || (anchor.line == cursor.line && anchor.index <= cursor.index)))
-        {
-            (anchor, cursor, anchor_idx, cursor_idx)
+        let key = |idx: usize, a: &crate::selectable_text::GlobalSelectionAnchor| {
+            (idx, a.widget_id.part_index, a.line, a.index)
+        };
+        let (start, end) = if key(anchor_idx, anchor) <= key(cursor_idx, cursor) {
+            ((anchor_idx, anchor), (cursor_idx, cursor))
         } else {
-            (cursor, anchor, cursor_idx, anchor_idx)
+            ((cursor_idx, cursor), (anchor_idx, anchor))
         };
 
+        // Each message's parts as rendered (recorded by the view while the
+        // selection exists); the body for rows that weren't on screen.
+        let texts = self.selection_texts.borrow();
         let mut result = String::new();
-        for (i, msg) in messages.iter().enumerate().take(end_idx + 1).skip(start_idx) {
-            let text = &msg.body;
-
-            if i == start_idx && i == end_idx {
-                // Single message
-                let s = line_index_to_offset(text, start.line, start.index);
-                let e = line_index_to_offset(text, end.line, end.index);
-                if s < e && e <= text.len() {
-                    result.push_str(&text[s..e]);
+        for (i, msg) in messages.iter().enumerate().take(end.0 + 1).skip(start.0) {
+            let mut parts: Vec<(usize, &str)> = texts.iter()
+                .filter(|(id, _)| id.event_id == msg.event_id)
+                .map(|(id, text)| (id.part_index, text.as_str()))
+                .collect();
+            parts.sort_by_key(|&(part, _)| part);
+            if parts.is_empty() {
+                parts.push((0, msg.body.as_str()));
+            }
+            for (part, text) in parts {
+                let at = (i, part);
+                if at < (start.0, start.1.widget_id.part_index) || at > (end.0, end.1.widget_id.part_index) {
+                    continue;
                 }
-            } else if i == start_idx {
-                let off = line_index_to_offset(text, start.line, start.index);
-                if off < text.len() {
-                    result.push_str(&text[off..]);
+                let from = if at == (start.0, start.1.widget_id.part_index) {
+                    line_index_to_offset(text, start.1.line, start.1.index)
+                } else {
+                    0
+                };
+                let to = if at == (end.0, end.1.widget_id.part_index) {
+                    line_index_to_offset(text, end.1.line, end.1.index)
+                } else {
+                    text.len()
+                };
+                if !result.is_empty() && !result.ends_with('\n') {
+                    result.push('\n');
                 }
-                result.push('\n');
-            } else if i == end_idx {
-                let off = line_index_to_offset(text, end.line, end.index);
-                result.push_str(&text[..off.min(text.len())]);
-            } else {
-                result.push_str(text);
-                result.push('\n');
+                if from < to {
+                    result.push_str(&text[from..to]);
+                }
             }
         }
 
-        if result.is_empty() { None } else { Some(result) }
+        let result = result.trim_end_matches('\n');
+        if result.is_empty() { None } else { Some(result.to_string()) }
     }
 
     /// Load inline images for `view_key`'s messages (cache first, then the
@@ -6529,7 +6542,8 @@ fn line_index_to_offset(text: &str, line: usize, index: usize) -> usize {
     let mut offset = 0;
     for (i, text_line) in text.split('\n').enumerate() {
         if i == line {
-            return (offset + index).min(text.len());
+            // Within the line, and never inside a character
+            return text.floor_char_boundary(offset + index.min(text_line.len()));
         }
         offset += text_line.len() + 1; // +1 for the \n
     }
@@ -6896,5 +6910,42 @@ mod paste_tests {
         assert_eq!(strip_pasted_paths("hello\n/home/me/My Pics/cat.png", &f), "hello");
         // Nothing pasted as text: left exactly as typed.
         assert_eq!(strip_pasted_paths("hello  ", &f), "hello  ");
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use crate::message::Message;
+    use crate::selectable_text::SelectionWidgetId;
+
+    fn wid(event_id: &str, part_index: usize) -> SelectionWidgetId {
+        SelectionWidgetId { event_id: event_id.into(), part_index }
+    }
+
+    #[tokio::test]
+    async fn copies_the_rendered_text_not_the_markdown_body() {
+        let mut app = crate::panes::flow_tests::app();
+        app.selected_room_id = Some("!a:x".into());
+        app.messages_by_room.insert("!a:x".into(), vec![
+            fluxchat_core::MessageInfo { event_id: "$1".into(), body: "🔥 **DEAL** at https://x.org/1".into(), ..Default::default() },
+            fluxchat_core::MessageInfo { event_id: "$2".into(), body: "off screen".into(), ..Default::default() },
+            fluxchat_core::MessageInfo { event_id: "$3".into(), body: "intro\n```\ncode\n```".into(), ..Default::default() },
+        ]);
+        // Dragging from "DEAL" in $1 to the middle of $3's code block.
+        let _ = app.update(Message::SelectionStarted(wid("$1", 0), 0, "🔥 ".len()));
+        let _ = app.update(Message::SelectionMoved(wid("$3", 1), 0, 2));
+        // What the view recorded for the rows on screen ($2 wasn't).
+        let mut texts = app.selection_texts.borrow_mut();
+        texts.insert(wid("$1", 0), "🔥 DEAL at https://x.org/1".into());
+        texts.insert(wid("$3", 0), "intro".into());
+        texts.insert(wid("$3", 1), "code".into());
+        drop(texts);
+        assert_eq!(app.extract_selection_text().as_deref(), Some("DEAL at https://x.org/1\noff screen\nintro\nco"));
+
+        // Offsets past the line or inside a character are clamped.
+        let _ = app.update(Message::SelectionStarted(wid("$1", 0), 0, 1));
+        app.selection_texts.borrow_mut().insert(wid("$1", 0), "🔥 DEAL".into());
+        let _ = app.update(Message::SelectionMoved(wid("$1", 0), 0, 99));
+        assert_eq!(app.extract_selection_text().as_deref(), Some("🔥 DEAL"));
     }
 }
