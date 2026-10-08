@@ -235,10 +235,12 @@ impl FluxChat {
         }
     }
 
-    /// Render stacked read receipt avatars for a message, right-aligned.
-    /// Sources per-event receipts directly from the SDK timeline item.
+    /// Render stacked read receipt avatars for a message in view `view_key`,
+    /// right-aligned. Sources per-event receipts directly from the SDK
+    /// timeline item.
     fn view_read_receipts<'a>(
         &'a self,
+        view_key: &str,
         msg: &'a fluxchat_core::MessageInfo,
     ) -> Option<Element<'a, Message>> {
         if !self.prefs.show_read_receipts {
@@ -251,8 +253,7 @@ impl FluxChat {
         if user_ids.is_empty() {
             return None;
         }
-        let members = self.selected_room_id.as_ref()
-            .and_then(|rid| self.members_by_room.get(rid));
+        let members = self.members_by_room.get(view_key);
         let name_of = |uid: &str| -> String {
             members.and_then(|m| m.iter().find(|m| m.user_id == uid))
                 .map(|m| m.display_name.clone())
@@ -2925,7 +2926,7 @@ impl FluxChat {
                         row_col = row_col.push(summary);
                     }
                     // Read receipts for this message
-                    if let Some(receipt_row) = self.view_read_receipts(msg) {
+                    if let Some(receipt_row) = self.view_read_receipts(room_id, msg) {
                         row_col = row_col.push(receipt_row);
                     }
                     // Unread divider: show after the last-read message
