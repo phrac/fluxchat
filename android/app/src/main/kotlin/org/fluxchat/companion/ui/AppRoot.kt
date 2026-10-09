@@ -1,0 +1,96 @@
+package org.fluxchat.companion.ui
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.ui.Modifier
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.fluxchat.companion.matrix.Auth
+import org.fluxchat.companion.matrix.Matrix
+
+/** The app's screens, as a back stack. */
+sealed interface Screen {
+    data object Rooms : Screen
+    data class Room(val roomId: String) : Screen
+    data class Thread(val roomId: String, val root: String) : Screen
+    data object Agents : Screen
+    data object Settings : Screen
+    data object Diagnostics : Screen
+}
+
+@Composable
+fun AppRoot(opened: MutableStateFlow<Screen?>) {
+    val auth by Matrix.auth.collectAsState()
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+        AnimatedContent(auth, transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(200)) }, label = "auth") { a ->
+            when (a) {
+                Auth.Starting -> Box(Modifier.fillMaxSize())
+                Auth.SignedOut -> LoginScreen()
+                Auth.NeedsRecovery -> RecoveryScreen()
+                Auth.Ready -> Navigator(opened)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Navigator(opened: MutableStateFlow<Screen?>) {
+    val stack = remember { mutableStateListOf<Screen>(Screen.Rooms) }
+    // +1 forward, -1 back: which way screens slide.
+    val direction = remember { mutableIntStateOf(1) }
+    val open by opened.collectAsState()
+    LaunchedEffect(open) {
+        open?.let { s ->
+            stack.removeAll { it != Screen.Rooms }
+            if (s is Screen.Thread) stack.add(Screen.Room(s.roomId))
+            direction.intValue = 1
+            stack.add(s)
+            opened.value = null
+        }
+    }
+    val go: (Screen) -> Unit = { direction.intValue = 1; stack.add(it) }
+    val back: () -> Unit = { if (stack.size > 1) { direction.intValue = -1; stack.removeAt(stack.size - 1) } }
+    BackHandler(enabled = stack.size > 1) { back() }
+    val holder = rememberSaveableStateHolder()
+    AnimatedContent(
+        targetState = stack.last(),
+        transitionSpec = {
+            val d = direction.intValue
+            (slideInHorizontally(tween(300)) { w -> d * w / 4 } + fadeIn(tween(300))) togetherWith
+                (slideOutHorizontally(tween(300)) { w -> -d * w / 4 } + fadeOut(tween(200)))
+        },
+        label = "screens",
+    ) { s ->
+        // Screens keep their scroll position etc. when you come back to them.
+        holder.SaveableStateProvider(s.toString()) { Screen(s, go, back) }
+    }
+}
+
+@Composable
+private fun Screen(s: Screen, go: (Screen) -> Unit, back: () -> Unit) {
+        when (s) {
+            Screen.Rooms -> RoomsScreen(go)
+            is Screen.Room -> ChatScreen(s.roomId, null, go, back)
+            is Screen.Thread -> ChatScreen(s.roomId, s.root, go, back)
+            Screen.Agents -> AgentsScreen(back)
+            Screen.Settings -> SettingsScreen(go, back)
+            Screen.Diagnostics -> DiagnosticsScreen(back)
+        }
+}

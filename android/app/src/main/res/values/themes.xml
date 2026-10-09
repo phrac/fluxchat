@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.Fluxchat" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_light</item>
+    </style>
+
+    <style name="Theme.Fluxchat.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/window_light</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.Fluxchat</item>
+    </style>
+</resources>

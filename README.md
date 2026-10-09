@@ -2,7 +2,7 @@
 
 **The chat client for people who talk to humans *and* run AI agents.**
 
-fluxchat is a fast, native [Matrix](https://matrix.org) client written entirely in Rust. It has a keyboard-first, IRC-inspired interface, tmux-style panes, and first-class controls for AI agents. You can see what your agents are doing, steer or stop them mid-run, and approve what they ask for, all in end-to-end encrypted rooms on a server you choose.
+fluxchat is a fast, native [Matrix](https://matrix.org) client written in Rust, with an Android companion for your agents. It has a keyboard-first, IRC-inspired interface, tmux-style panes, and first-class controls for AI agents. You can see what your agents are doing, steer or stop them mid-run, and approve what they ask for, all in end-to-end encrypted rooms on a server you choose.
 
 ![fluxchat with four panes: an image-generation thread with the agent chip in its header, a betting room whose agent threads show "done", and two more rooms, all beside the room list with each room's latest threads](assets/screenshots/agents.png)
 
@@ -44,6 +44,8 @@ fluxchat reads what agents are doing and gives you controls for it. Mark a user 
 - **Each request opens its own thread** beside the room as the agent starts it.
 - Long answers and step logs fold; code blocks copy in one click; diffs are highlighted; PDFs preview.
 - **Hold the mic to talk**: a voice prompt, sent on release, into the thread you're in.
+
+**On your phone.** An [Android companion app](docs/android.md) (early) shows your agents' rooms and runs, answers approvals and questions straight from notifications, and stops or steers runs. Push goes through UnifiedPush (ntfy), without Google. Desktop and phone share your agent list through your Matrix account.
 
 **Pluggable harnesses.** Agent frameworks differ in the details: command prefixes, status reactions, how they ask for approval. Each is a small TOML [harness profile](docs/agents.md#harness-profiles). [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw) and Claude Code (through a [Matrix channel](https://github.com/zekker6/claude-code-channel-matrix)) are built in, and adding another (pi, a CI bot, your own) is a new file, no rebuild. Agents you write yourself can skip the guessing entirely: the open [agent protocol](docs/agent-protocol.md) is a few fields in their messages that say exactly what they're doing.
 
@@ -200,12 +202,23 @@ macOS ties Keychain access (your saved session) and the microphone permission to
 cargo build -p fluxchat --release   # binary: target/release/fluxchat
 ```
 
+**Android** (the agent companion, Kotlin + Compose on Element's matrix-rust-sdk bindings; needs Android Studio or a JDK 21 and the Android SDK)
+
+```bash
+cd android
+./gradlew :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-arm64-v8a-release.apk
+```
+
+See [android/README.md](android/README.md).
+
 ## Architecture
 
 ```
 crates/
   core/   Matrix logic: timelines, spaces, room admin, push rules, media, audio
   app/    Iced desktop UI (Elm architecture: Message -> update() -> view())
+android/  Android agent companion (Kotlin, Jetpack Compose)
 ```
 
 | Component | Library |

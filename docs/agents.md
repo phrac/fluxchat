@@ -6,6 +6,8 @@ fluxchat is a Matrix client, and it treats the AI agents you talk to over Matrix
 
 Click the agent's name or avatar to open its profile and turn on **AI agent**, then pick its **Harness** (Hermes Agent, OpenClaw, Claude Code (Matrix channel), Generic agent, or one you added). It gets an *AI agent* badge, and it's listed in **Settings → Preferences → AI agents**, where you can change its harness or remove it.
 
+The list of agents and their harnesses is saved to your Matrix account (account data, `org.fluxchat.agents`), so it follows you to fluxchat on other computers and to the [Android app](android.md). A change on one device shows up on the others.
+
 A room with an agent in it (a DM with your agent, or a room it's in) gets everything below. fluxchat also keeps those rooms' timelines loaded in the background, so it knows about runs in rooms you aren't looking at.
 
 ## The agent chip

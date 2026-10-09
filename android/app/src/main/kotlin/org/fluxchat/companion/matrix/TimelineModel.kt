@@ -1,0 +1,131 @@
+package org.fluxchat.companion.matrix
+
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.StateFlow
+import org.fluxchat.companion.agents.Msg
+import org.matrix.rustcomponents.sdk.EventOrTransactionId
+import org.matrix.rustcomponents.sdk.ReceiptType
+import org.matrix.rustcomponents.sdk.TaskHandle
+import org.matrix.rustcomponents.sdk.Timeline
+import org.matrix.rustcomponents.sdk.TimelineDiff
+import org.matrix.rustcomponents.sdk.TimelineItem
+import org.matrix.rustcomponents.sdk.TimelineListener
+import org.matrix.rustcomponents.sdk.messageEventContentFromMarkdown
+
+/**
+ * One SDK timeline (a room's, thread replies included, or a thread's),
+ * mirrored as a list of [Msg] by applying its diffs — like the desktop's
+ * timeline watcher.
+ */
+class TimelineModel(
+    val roomId: String,
+    val threadRoot: String?,
+    private val timeline: Timeline,
+    private val scope: kotlinx.coroutines.CoroutineScope,
+) : AutoCloseable {
+    private val items = ArrayList<Msg?>()
+    private val _messages = MutableStateFlow<List<Msg>>(emptyList())
+    val messages: StateFlow<List<Msg>> = _messages
+    private val _atStart = MutableStateFlow(false)
+    val atStart: StateFlow<Boolean> = _atStart
+    private var handle: TaskHandle? = null
+    private var convertErrors = 0
+
+    suspend fun start() {
+        handle = timeline.addListener(object : TimelineListener {
+            override fun onUpdate(diff: List<TimelineDiff>) = apply(diff)
+        })
+    }
+
+    private fun take(item: TimelineItem): Msg? = try {
+        convert(item)
+    } catch (e: Throwable) {
+        // Never silently: a conversion bug empties the timeline.
+        if (convertErrors++ < 5) org.fluxchat.companion.Diag.error("Converting a timeline item in $roomId", e)
+        null
+    } finally {
+        item.destroy()
+    }
+
+    private fun apply(diffs: List<TimelineDiff>) = synchronized(items) {
+        val before = items.size
+        val kinds = diffs.joinToString(",") { it.javaClass.simpleName }
+        for (d in diffs) {
+            when (d) {
+                is TimelineDiff.Append -> items.addAll(d.values.map(::take))
+                is TimelineDiff.Clear -> items.clear()
+                is TimelineDiff.PushFront -> items.add(0, take(d.value))
+                is TimelineDiff.PushBack -> items.add(take(d.value))
+                is TimelineDiff.PopFront -> if (items.isNotEmpty()) items.removeAt(0)
+                is TimelineDiff.PopBack -> if (items.isNotEmpty()) items.removeAt(items.size - 1)
+                is TimelineDiff.Insert -> items.add(d.index.toInt().coerceAtMost(items.size), take(d.value))
+                is TimelineDiff.Set -> if (d.index.toInt() < items.size) items[d.index.toInt()] = take(d.value) else take(d.value)
+                is TimelineDiff.Remove -> if (d.index.toInt() < items.size) items.removeAt(d.index.toInt())
+                is TimelineDiff.Truncate -> while (items.size > d.length.toInt()) items.removeAt(items.size - 1)
+                is TimelineDiff.Reset -> {
+                    items.clear()
+                    items.addAll(d.values.map(::take))
+                }
+            }
+        }
+        val shown = items.filterNotNull()
+        _messages.value = shown
+        // The SDK clears a live timeline when sync reports a gap; it fills
+        // again only from new events, so fetch the history back.
+        if (diffs.any { it is TimelineDiff.Clear || it is TimelineDiff.Reset } && shown.size < REFILL_BELOW) {
+            org.fluxchat.companion.Diag.note("timeline $roomId reset ($before → ${items.size} items, [$kinds]): loading history again")
+            refill()
+        }
+    }
+
+    @Volatile private var refilling = false
+
+    /** Back-paginate until there's a screenful again (or the start). */
+    fun refill() {
+        if (refilling) return
+        refilling = true
+        _atStart.value = false
+        scope.launch {
+            try {
+                repeat(REFILL_PAGES) {
+                    if (_messages.value.size >= REFILL_BELOW || !paginateBack()) return@launch
+                }
+            } finally {
+                refilling = false
+            }
+        }
+    }
+
+    companion object {
+        /** Messages a timeline should hold after a reset / at start. */
+        const val REFILL_BELOW = 30
+        private const val REFILL_PAGES = 4
+    }
+
+    /** Load older messages. False once the start of the timeline is reached. */
+    suspend fun paginateBack(events: Int = 40): Boolean {
+        val hitStart = runCatching { timeline.paginateBackwards(events.toUShort()) }.getOrDefault(false)
+        if (hitStart) _atStart.value = true
+        return !hitStart
+    }
+
+    /** Markdown, like the desktop composer (a thread timeline adds the thread relation). */
+    suspend fun send(text: String) {
+        timeline.send(messageEventContentFromMarkdown(text))
+    }
+
+    suspend fun react(eventId: String, key: String) {
+        timeline.toggleReaction(EventOrTransactionId.EventId(eventId), key)
+    }
+
+    suspend fun markRead() {
+        runCatching { timeline.markAsRead(ReceiptType.READ) }
+    }
+
+    override fun close() {
+        handle?.cancel()
+        handle = null
+        timeline.destroy()
+    }
+}
