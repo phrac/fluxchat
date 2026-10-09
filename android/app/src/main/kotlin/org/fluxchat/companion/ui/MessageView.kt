@@ -191,7 +191,7 @@ private fun bubbleShape(own: Boolean, continued: Boolean, last: Boolean): Rounde
 }
 
 @Composable
-private fun Meta(m: Msg, own: Boolean) {
+internal fun Meta(m: Msg, own: Boolean) {
     val c = MaterialTheme.colorScheme.onSurfaceVariant
     Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         if (m.edited) Text("edited · ", style = MaterialTheme.typography.labelSmall, color = c)
@@ -250,11 +250,16 @@ private fun ProgressLog(steps: List<String>) {
 }
 
 @Composable
-private fun Answer(body: String, foldable: Boolean, color: androidx.compose.ui.graphics.Color) {
+internal fun Answer(
+    body: String,
+    foldable: Boolean,
+    color: androidx.compose.ui.graphics.Color,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
+) {
     val long = foldable && body.lines().size > LONG_ANSWER_LINES
     var open by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.animateContentSize()) {
-        MarkdownText(body, color = color, maxLines = if (long && !open) LONG_ANSWER_LINES else Int.MAX_VALUE)
+        MarkdownText(body, color = color, maxLines = if (long && !open) LONG_ANSWER_LINES else Int.MAX_VALUE, style = style)
         if (long) {
             Text(
                 if (open) "Show less" else "Show all",
@@ -267,7 +272,7 @@ private fun Answer(body: String, foldable: Boolean, color: androidx.compose.ui.g
 }
 
 @Composable
-private fun PromptCard(title: String, content: @Composable () -> Unit) {
+internal fun PromptCard(title: String, content: @Composable () -> Unit) {
     val s = LocalStatus.current
     Surface(color = s.needsYouContainer, shape = RoundedCornerShape(20.dp), modifier = Modifier.padding(top = 6.dp).fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

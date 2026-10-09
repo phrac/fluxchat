@@ -139,6 +139,47 @@ class ScreenshotTest {
         }
     }
 
+    @Composable
+    private fun Sessions() {
+        val cards = listOf(
+            SessionCardInfo("a", "Deploy the new build to production", null, null, 0, now - 20_000, null, own = true),
+            SessionCardInfo(
+                "b", "Clean up the build dir and redeploy", null, null, 3, now - 2 * 60_000,
+                RunInfo(RunState.Working, now - 3 * 60_000, step = "💻 Running make clean", steps = 4, agent = hermes), own = true,
+            ),
+            SessionCardInfo(
+                "c", "Which of the three papers covers sparse attention?", "Only the second one: it compares block-sparse and sliding-window attention on long documents.",
+                "Hermes", 5, now - 50 * 60_000, RunInfo(RunState.Done, now - 55 * 60_000, agent = hermes, costUsd = 0.12), own = true,
+            ),
+        )
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            for (c in cards.asReversed()) SessionCard(c, now) {}
+            Composer(harness, working = false, onSend = { _, _ -> }, placeholder = "Start a new session", canAttach = true)
+        }
+    }
+
+    @Composable
+    private fun Transcript() {
+        val request = msg("r", me, 6, "Can you clean up the build dir and redeploy?", "👀" to listOf(hermes))
+        val steps = msg("s", hermes, 5, "📖 Reading `Makefile`\n💻 Running `make clean`\n🔍 Searching for stale artifacts\n💻 Running `rm -rf build`")
+        val answer = msg("a", hermes, 4, "Cleaned up. **build/** was 2.1 GB of stale artifacts from the old toolchain.\n\nBefore redeploying, one thing needs your approval:")
+        val prompt = msg("p", hermes, 1, "⚠️ Dangerous command: `./deploy.sh production`\nAllow it?", "✅" to listOf(hermes), "❌" to listOf(hermes))
+        val hidden: (Reaction) -> Boolean = { it.users == listOf(hermes) && it.emoji in setOf("👀", "✅", "❌") }
+        Column {
+            Column(Modifier.weight(1f)) {
+                TranscriptRow(request, null, false, hidden, emptyList(), null, false, {}, {})
+                TranscriptRow(steps, request, true, hidden, emptyList(), null, true, {}, {})
+                TranscriptRow(answer, steps, true, hidden, emptyList(), null, false, {}, {})
+                TranscriptRow(prompt, answer, true, hidden, listOf("✅" to "Approve once", "❌" to "Deny"), null, false, {}, {})
+            }
+            Composer(harness, working = true, canAttach = true) { _, _ -> }
+        }
+    }
+
+    @Test fun transcriptLight() = shoot("transcript", false) { Transcript() }
+    @Test fun transcriptDark() = shoot("transcript", true) { Transcript() }
+    @Test fun sessionsLight() = shoot("sessions", false) { Sessions() }
+    @Test fun sessionsDark() = shoot("sessions", true) { Sessions() }
     @Test fun roomsLight() = shoot("rooms", false) { Rooms() }
     @Test fun roomsDark() = shoot("rooms", true) { Rooms() }
     @Test fun chatLight() = shoot("chat", false) { Chat() }

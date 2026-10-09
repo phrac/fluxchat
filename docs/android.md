@@ -28,21 +28,34 @@ Each card shows:
 
 The chips at the top filter to **Needs you** or **Running**. Pull down to refresh.
 
+## A room as its sessions
+
+In a room where the agent answers each request in its own thread (Hermes outside DMs), every message you send starts a new session. So the room shows its **sessions as cards** instead of a chat, newest at the bottom by the message box:
+- **Each card:** the session's title (your request), when it was last active, the run's state (*Working · 3m · 🔧 Running tests*, with a progress bar), and a summary: the first lines of the agent's latest answer. Finished sessions show Done / Failed, the reply count and the cost.
+- **A request you just sent** shows straight away as *Waiting for the agent* until the agent picks it up.
+- **Every session in the room** is there, from your server, not only the loaded history; older ones load as you scroll up. Messages in the room that aren't requests get a card too, so nothing is hidden.
+- **Tap a card** to open the session. The message box starts a new one.
+- **The chat icon** in the top bar switches to the room's plain timeline; the cards icon switches back.
+
+DMs, and rooms where the agent answers in the conversation itself, stay a chat.
+
 ## A room or thread
 
-- **Messages** appear as bubbles. Agents' step logs fold into one line ("6 steps · 🔧 Running tests"); tap to see every step. Long answers fold too. Images show inline; tap one for full screen, and pinch to zoom.
+- **Sessions read as a transcript**, like Hermes's desktop app: in a thread, or a DM with an agent, your prompts are blocks on the right and the agent's answers run the full width as plain text, under its name once per turn. Its tool work is an activity block (*4 tool calls* and the latest step); tap it for every step. The one the agent is working on now spins and starts open. The agent's own 👀 / ✅ / ❌ reactions are left out, since the run card says the same.
+- **Messages** elsewhere appear as bubbles. Agents' step logs fold into one line ("6 steps · 🔧 Running tests"); tap to see every step. Long answers fold too. Images show inline; tap one for full screen, and pinch to zoom.
 - **Approvals and questions** appear as buttons under the message: Approve once / For this session / Always / Deny, or a question's numbered choices. A question can also be answered in your own words.
 - **The run card** above the message box shows the state, time so far, the latest step, and a progress bar.
   - **Stop** sends the harness's stop command.
   - In a room whose run is happening in a thread, the card names the thread; tap it to open the thread.
 - **While the agent works**, you choose what a new message does, as on the desktop: **Send**, **Steer** (read after its next step) or **Queue** (the next task).
+- **Attachments:** the paperclip beside the message box sends a **photo or video** (Android's photo picker, no storage permission) or **any file**. The file waits above the box with a preview; what you type goes with it as its caption, in one message. In a thread it goes to the thread; from a room's sessions it starts a new session.
 - **`/` commands**: type `/` for the agent's commands as you type. They go out the way its harness takes them (`!stop` for Hermes).
 - **The ⋮ menu** has the agent's quick commands: Status, Usage, Context, Model, New session.
 - **Threads follow you.** Send a request from a room. When the agent starts on it in a thread, the thread opens.
 
 ## Sessions
 
-Hermes keeps one session per thread. Instead of scrolling back through a room for an older session, tap the **clock icon** in a room's top bar for its **Sessions**: every thread in the room, from your server (not just the loaded history), grouped by last activity (Today, Yesterday, Previous 7 days, Previous 30 days, Older).
+Hermes keeps one session per thread. In a thread (and in a room shown as its timeline, or a DM), tap the **clock icon** in the top bar for the room's **Sessions**: every thread in the room, from your server (not just the loaded history), grouped by last activity (Today, Yesterday, Previous 7 days, Previous 30 days, Older).
 - **Each row:** the session's title (your request), its latest reply, when it was last active, and the run's state. A live run shows its step instead of the latest reply.
 - **Search** filters by the request or the latest reply.
 - **Tap a session** to open it. From one session to another, Back still goes to the room.

@@ -53,7 +53,7 @@ import org.fluxchat.companion.matrix.SessionList
 import java.util.Calendar
 
 /** When a session was last active, as the list groups them. */
-private fun bucket(ts: Long, now: Long): String {
+internal fun bucket(ts: Long, now: Long): String {
     val day = { t: Long -> Calendar.getInstance().apply { timeInMillis = t }.let { it.get(Calendar.YEAR) * 400 + it.get(Calendar.DAY_OF_YEAR) } }
     val days = day(now) - day(ts)
     return when {

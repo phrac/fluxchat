@@ -8,6 +8,24 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.ViewAgenda
+import androidx.compose.material.icons.automirrored.outlined.Chat
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import org.fluxchat.companion.matrix.Attachment
+import org.fluxchat.companion.matrix.SessionList
+import org.fluxchat.companion.matrix.Uploads
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.PermanentDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -141,6 +159,12 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     }
     val agent = run?.agent?.takeIf { it.isNotEmpty() } ?: agents.firstOrNull()
     val harness = list.harnessOf(agent ?: "")
+    // A room where every request gets its own thread reads as its sessions,
+    // a card each; the plain timeline is a tap away.
+    val threaded = root == null && agent != null && !Matrix.isDm(roomId) && Runs.repliesInThreads(msgs, agent, harness, false)
+    var timelineView by rememberSaveable(roomId) { mutableStateOf(false) }
+    val cards = threaded && !timelineView
+    val sessionList by produceState<SessionList?>(null, roomId, threaded) { if (threaded) value = Matrix.sessions(roomId) }
     // In a room: a run of yours going on in a thread (its card opens it).
     val threadRun: Pair<ViewKey, RunInfo>? = if (root == null && (run == null || !run.state.live)) {
         agentRoom?.runs?.mapNotNull { (k, r) -> if (k.threadRoot != null && r != null && r.state.live) k to r else null }
@@ -166,6 +190,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     val title = if (root == null) Matrix.roomName(roomId) else threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.id != root })
     var menu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val sendRaw: (String) -> Unit = { text -> scope.launch { send(model, roomId, root, text) } }
     val command: (String) -> Unit = { name ->
         val c = harness.command(name)
@@ -175,7 +200,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
 
     // Sessions (the room's threads): a drawer on phones, a sidebar on wide screens.
     val drawer = rememberDrawerState(DrawerValue.Closed)
-    val hasSessions = agents.isNotEmpty()
+    val hasSessions = agents.isNotEmpty() && !cards
     val openSession: (String) -> Unit = { r ->
         scope.launch { drawer.close() }
         if (r != root) if (root == null) go(Screen.Thread(roomId, r)) else swap(Screen.Thread(roomId, r))
@@ -219,6 +244,12 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                     }
                 },
                 actions = {
+                    if (threaded) {
+                        IconButton(onClick = { timelineView = !timelineView }) {
+                            if (cards) Icon(Icons.AutoMirrored.Outlined.Chat, "Show the timeline")
+                            else Icon(Icons.Outlined.ViewAgenda, "Show sessions")
+                        }
+                    }
                     if (sessionsButton) {
                         IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.History, "Sessions") }
                     }
@@ -239,15 +270,19 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(top = pad.calculateTopPadding()).imePadding().navigationBarsPadding()) {
             Box(Modifier.weight(1f)) {
-                if (model == null) {
+                if (cards) {
+                    SessionFeed(roomId, all, agents, agentRoom?.runs.orEmpty(), sessionList, now) { r -> go(Screen.Thread(roomId, r)) }
+                } else if (model == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 } else {
-                    MessageList(model, msgs, root, agents, list, now, go, roomId)
+                    // A session (a thread, or a DM with the agent) reads as a transcript.
+                    val transcript = agents.isNotEmpty() && (root != null || Matrix.isDm(roomId))
+                    MessageList(model, msgs, root, agents, list, now, go, roomId, transcript, run)
                 }
             }
             if (run != null && (run.state.live || now - run.since < 60_000)) {
                 RunCard(run, now, harness.stop.isNotEmpty() && run.state.live, onStop = { command(harness.stop) }, onOpen = null)
-            } else if (threadRun != null) {
+            } else if (threadRun != null && !cards) {
                 val rootMsg = all.firstOrNull { it.id == threadRun.first.threadRoot }
                 RunCard(threadRun.second, now, false, onStop = {}, onOpen = {
                     go(Screen.Thread(roomId, threadRun.first.threadRoot!!))
@@ -256,6 +291,12 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
             Composer(
                 harness = harness,
                 working = run?.state == RunState.Working,
+                placeholder = if (cards) "Start a new session" else null,
+                canAttach = model != null,
+                onAttach = { a, caption ->
+                    if (root == null) sentAt = System.currentTimeMillis()
+                    model?.let { m -> scope.launch { sendAttachment(context, m, a, caption) } }
+                },
                 onSend = { text, mode ->
                     val out = Runs.outgoing(harness, text, run?.state == RunState.Working, mode, agent?.takeIf { !Matrix.isDm(roomId) })
                     if (root == null) sentAt = System.currentTimeMillis()
@@ -297,6 +338,8 @@ private fun MessageList(
     now: Long,
     go: (Screen) -> Unit,
     roomId: String,
+    transcript: Boolean = false,
+    run: RunInfo? = null,
 ) {
     val state = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -312,6 +355,17 @@ private fun MessageList(
         }
     }
     val reversed = remember(msgs) { msgs.asReversed() }
+    // The step log the working run is on: its activity block spins.
+    val liveSteps = remember(msgs, run?.state) {
+        if (run?.state != RunState.Working) null
+        else msgs.lastOrNull { it.sender in agents && Runs.progressSteps(it.body) != null }?.id
+    }
+    // Agents' own status reactions (👀 ✅ ❌): the run card and title say it.
+    val statusReaction: (org.fluxchat.companion.agents.Reaction) -> Boolean = { r ->
+        r.users.isNotEmpty() && r.users.all { u ->
+            u in agents && list.harnessOf(u).let { h -> r.emoji in setOf(h.workingReaction, h.doneReaction, h.failedReaction) - "" }
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(state = state, reverseLayout = true, contentPadding = PaddingValues(vertical = 8.dp), modifier = Modifier.fillMaxSize()) {
             itemsIndexed(reversed, key = { _, m -> m.id }) { ri, m ->
@@ -327,7 +381,17 @@ private fun MessageList(
                 val question = if (isAgent) Runs.pendingQuestion(msgs, i, m.sender, h, now) else null
                 Column {
                     if (newDay) DaySeparator(m.ts)
-                    MessageRow(
+                    if (transcript) TranscriptRow(
+                        m = m,
+                        prev = if (newDay) null else prev,
+                        isAgent = isAgent,
+                        hiddenReactions = statusReaction,
+                        prompt = prompt,
+                        question = question,
+                        live = m.id == liveSteps,
+                        onReact = { key -> scope.launch { react(model, roomId, m.id, key) } },
+                        onAnswer = { text -> scope.launch { send(model, roomId, root, text) } },
+                    ) else MessageRow(
                         m = m,
                         continued = continued,
                         lastInGroup = lastInGroup,
@@ -365,6 +429,16 @@ private fun MessageList(
 private suspend fun send(model: TimelineModel?, roomId: String, root: String?, text: String) {
     val viaTimeline = model?.let { m -> runCatching { m.send(text) }.onFailure { org.fluxchat.companion.Diag.error("Sending through the timeline in $roomId", it) }.isSuccess } ?: false
     if (!viaTimeline && !Matrix.sendText(roomId, root, text, inReplyTo = null)) org.fluxchat.companion.Diag.error("Couldn't send to $roomId")
+}
+
+/** Upload a picked file to the view (failures: a toast, and Diagnostics). */
+private suspend fun sendAttachment(context: android.content.Context, model: TimelineModel, a: Attachment, caption: String) {
+    runCatching { model.sendAttachment(context, a, caption) }.onFailure {
+        org.fluxchat.companion.Diag.error("Sending ${a.name} (${a.mime}) to ${model.roomId}", it)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            android.widget.Toast.makeText(context, "Couldn't send ${a.name}: ${it.message ?: it.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
 }
 
 /**
@@ -428,11 +502,25 @@ internal fun RunCard(run: RunInfo, now: Long, canStop: Boolean, onStop: () -> Un
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun Composer(harness: Harness, working: Boolean, onSend: (String, BusyMode) -> Unit) {
+internal fun Composer(
+    harness: Harness,
+    working: Boolean,
+    placeholder: String? = null,
+    canAttach: Boolean = false,
+    onAttach: (Attachment, String) -> Unit = { _, _ -> },
+    onSend: (String, BusyMode) -> Unit,
+) {
     var text by rememberSaveable { mutableStateOf("") }
     var mode by rememberSaveable { mutableStateOf(BusyMode.Send) }
+    var attachment by remember { mutableStateOf<Attachment?>(null) }
+    var attachMenu by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val picked: (android.net.Uri?) -> Unit = { uri -> if (uri != null) attachment = Uploads.describe(context, uri) }
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia(), picked)
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument(), picked)
     val modes = BusyMode.available(harness)
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        attachment?.let { a -> AttachmentCard(a) { attachment = null } }
         // Agent commands while typing "/name".
         if (text.startsWith("/") && !text.startsWith("//") && ' ' !in text) {
             val prefix = text.removePrefix("/")
@@ -457,11 +545,39 @@ internal fun Composer(harness: Harness, working: Boolean, onSend: (String, BusyM
             }
         }
         Row(verticalAlignment = Alignment.Bottom) {
+            if (canAttach) {
+                Box {
+                    IconButton(onClick = { attachMenu = true }, modifier = Modifier.size(56.dp)) { Icon(Icons.Outlined.AttachFile, "Attach") }
+                    DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }, shape = MaterialTheme.shapes.medium) {
+                        DropdownMenuItem(
+                            text = { Text("Photo or video") },
+                            leadingIcon = { Icon(Icons.Outlined.Image, null) },
+                            onClick = {
+                                attachMenu = false
+                                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("File") },
+                            leadingIcon = { Icon(Icons.Outlined.Description, null) },
+                            onClick = { attachMenu = false; pickFile.launch(arrayOf("*/*")) },
+                        )
+                    }
+                }
+            }
             TextField(
                 value = text,
                 onValueChange = { text = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text(if (working) "Message the working agent" else "Message") },
+                placeholder = {
+                    Text(
+                        when {
+                            attachment != null -> "Add a caption"
+                            working -> "Message the working agent"
+                            else -> placeholder ?: "Message"
+                        },
+                    )
+                },
                 maxLines = 6,
                 shape = RoundedCornerShape(28.dp),
                 colors = TextFieldDefaults.colors(
@@ -476,15 +592,71 @@ internal fun Composer(harness: Harness, working: Boolean, onSend: (String, BusyM
             FilledIconButton(
                 onClick = {
                     val t = text.trim()
-                    if (t.isNotEmpty()) {
+                    val a = attachment
+                    if (a != null) {
+                        onAttach(a, t)
+                        attachment = null
+                        text = ""
+                    } else if (t.isNotEmpty()) {
                         onSend(t, if (working) mode else BusyMode.Send)
                         text = ""
                     }
                 },
-                enabled = text.isNotBlank(),
+                enabled = text.isNotBlank() || attachment != null,
                 modifier = Modifier.size(56.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(),
             ) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
         }
     }
 }
+
+/** The file waiting to go with the next send: a preview, its name and size, and remove. */
+@Composable
+private fun AttachmentCard(a: Attachment, onRemove: () -> Unit) {
+    val context = LocalContext.current
+    val preview by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, a.uri) {
+        if (a.isImage || a.isVideo) value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    context.contentResolver.loadThumbnail(a.uri, android.util.Size(PREVIEW_PX, PREVIEW_PX), null).asImageBitmap()
+                } else if (a.isImage) {
+                    // Android 9: decode a downsampled copy.
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    context.contentResolver.openInputStream(a.uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+                    var sample = 1
+                    while (bounds.outWidth / (sample * 2) >= PREVIEW_PX && bounds.outHeight / (sample * 2) >= PREVIEW_PX) sample *= 2
+                    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                    context.contentResolver.openInputStream(a.uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }?.asImageBitmap()
+                } else null
+            }.getOrNull()
+        }
+    }
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(48.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                contentAlignment = Alignment.Center,
+            ) {
+                val p = preview
+                if (p != null) {
+                    Image(p, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                } else {
+                    Icon(if (a.isImage) Icons.Outlined.Image else Icons.Outlined.Description, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(a.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    listOfNotNull(a.size?.let { android.text.format.Formatter.formatShortFileSize(context, it) }, a.mime).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onRemove) { Icon(Icons.Outlined.Close, "Remove attachment") }
+        }
+    }
+}
+
+/** Size of the attachment preview's thumbnail, in pixels. */
+private const val PREVIEW_PX = 192

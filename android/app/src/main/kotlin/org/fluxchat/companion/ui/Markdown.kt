@@ -31,7 +31,12 @@ import androidx.compose.ui.unit.sp
 
 /** A message body: Markdown as agents write it (fenced code, inline styles, links, headings). */
 @Composable
-fun MarkdownText(body: String, color: Color = MaterialTheme.colorScheme.onSurface, maxLines: Int = Int.MAX_VALUE) {
+fun MarkdownText(
+    body: String,
+    color: Color = MaterialTheme.colorScheme.onSurface,
+    maxLines: Int = Int.MAX_VALUE,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
+) {
     val blocks = remember(body) { splitBlocks(body) }
     val codeBg = MaterialTheme.colorScheme.surfaceContainerHighest
     val link = MaterialTheme.colorScheme.primary
@@ -59,7 +64,7 @@ fun MarkdownText(body: String, color: Color = MaterialTheme.colorScheme.onSurfac
                     }
                     is Block.Prose -> {
                         val text = remember(b.text, colors) { inline(b.text, colors) }
-                        Text(text, color = color, style = MaterialTheme.typography.bodyMedium, maxLines = linesLeft)
+                        Text(text, color = color, style = style, maxLines = linesLeft)
                         linesLeft -= b.text.lines().size
                     }
                 }

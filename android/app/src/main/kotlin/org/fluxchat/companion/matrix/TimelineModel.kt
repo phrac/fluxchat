@@ -5,6 +5,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import org.fluxchat.companion.agents.Msg
 import org.matrix.rustcomponents.sdk.EventOrTransactionId
+import org.matrix.rustcomponents.sdk.FileInfo
+import org.matrix.rustcomponents.sdk.ImageInfo
+import org.matrix.rustcomponents.sdk.UploadParameters
+import org.matrix.rustcomponents.sdk.UploadSource
+import org.matrix.rustcomponents.sdk.VideoInfo
 import org.matrix.rustcomponents.sdk.ReceiptType
 import org.matrix.rustcomponents.sdk.TaskHandle
 import org.matrix.rustcomponents.sdk.Timeline
@@ -117,6 +122,46 @@ class TimelineModel(
     /** Markdown, like the desktop composer (a thread timeline adds the thread relation). */
     suspend fun send(text: String) = io {
         timeline.send(messageEventContentFromMarkdown(text))
+    }
+
+    /**
+     * A file, with [caption] as its caption (one event, Matrix v1.10), through
+     * the send queue (local echo; a thread timeline sends it in the thread).
+     */
+    suspend fun sendAttachment(context: android.content.Context, a: Attachment, caption: String?) = io {
+        val file = Uploads.copy(context, a)
+        try {
+            val params = UploadParameters(
+                source = UploadSource.File(file.path),
+                caption = caption?.takeIf { it.isNotBlank() },
+                formattedCaption = null,
+                mentions = null,
+                inReplyTo = null,
+                extraContentJson = null,
+            )
+            val size = file.length().toULong()
+            val handle = when {
+                a.isImage -> {
+                    val (w, h) = Uploads.imageSize(file) ?: (null to null)
+                    timeline.sendImage(params, null, ImageInfo(
+                        height = h?.toULong(), width = w?.toULong(), mimetype = a.mime, size = size,
+                        thumbnailInfo = null, thumbnailSource = null, blurhash = null, isAnimated = a.mime == "image/gif",
+                    ))
+                }
+                a.isVideo -> {
+                    val v = Uploads.videoMeta(file)
+                    timeline.sendVideo(params, null, VideoInfo(
+                        duration = v.durationMs?.let { java.time.Duration.ofMillis(it) }, height = v.height?.toULong(), width = v.width?.toULong(),
+                        mimetype = a.mime, size = size, thumbnailInfo = null, thumbnailSource = null, blurhash = null,
+                    ))
+                }
+                else -> timeline.sendFile(params, FileInfo(mimetype = a.mime, size = size, thumbnailInfo = null, thumbnailSource = null))
+            }
+            // Done once the send queue has taken the file (it keeps its own copy).
+            handle.join()
+        } finally {
+            file.parentFile?.deleteRecursively()
+        }
     }
 
     suspend fun react(eventId: String, key: String) = io {
