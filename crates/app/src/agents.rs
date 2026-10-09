@@ -1196,6 +1196,71 @@ impl FluxChat {
         )
     }
 
+    /// Read the account's agent list (shared with your other devices: the
+    /// Android companion) and keep following it.
+    pub(crate) fn load_agent_list(&self) -> iced::Task<Message> {
+        let core = self.core.clone();
+        let tx = self.timeline_tx.clone();
+        iced::Task::perform(
+            async move {
+                let client = core.get_client().await.ok()?;
+                fluxchat_core::agent_list::watch(&client, move |list| {
+                    let _ = tx.send(Message::AgentListSynced(Some(list)));
+                });
+                match fluxchat_core::agent_list::get(&client).await {
+                    Ok(list) => Some(list),
+                    Err(e) => {
+                        tracing::warn!("Couldn't read the agent list: {e}");
+                        None
+                    }
+                }
+            },
+            |list| list.map(Message::AgentListSynced).unwrap_or(Message::Noop),
+        )
+    }
+
+    /// The account's list arrived: it wins over the local one (never saved:
+    /// save ours, so other devices get it).
+    pub(crate) fn agent_list_synced(&mut self, list: Option<fluxchat_core::agent_list::AgentList>) -> iced::Task<Message> {
+        self.agent_list_loaded = true;
+        let Some(list) = list else {
+            return if self.prefs.agents.is_empty() && self.prefs.not_agents.is_empty() {
+                iced::Task::none()
+            } else {
+                self.save_agent_list()
+            };
+        };
+        let mut p = self.prefs.clone();
+        if !apply_agent_list(&mut p, &list) {
+            return iced::Task::none();
+        }
+        let set = self.update(Message::SetPrefs(Box::new(p)));
+        let keys: Vec<String> = self.messages_by_room.keys().cloned().collect();
+        for k in keys {
+            self.refresh_agent_state(&k);
+        }
+        iced::Task::batch([set, self.watch_agent_rooms()])
+    }
+
+    /// Save the local list to the account (after a change here).
+    pub(crate) fn save_agent_list(&self) -> iced::Task<Message> {
+        if !self.agent_list_loaded {
+            return iced::Task::none();
+        }
+        let core = self.core.clone();
+        let list = agent_list_of(&self.prefs);
+        iced::Task::perform(
+            async move {
+                let client = core.get_client().await.map_err(|e| e.to_string())?;
+                fluxchat_core::agent_list::set(&client, list).await.map_err(|e| e.to_string())
+            },
+            |r| match r {
+                Ok(()) => Message::Noop,
+                Err(e) => Message::ShowError(format!("Couldn't save the agent list to your account: {e}")),
+            },
+        )
+    }
+
     /// Load the timelines of agent rooms not loaded yet (in the background:
     /// no media, no read receipts — that's only for views on screen).
     pub(crate) fn load_agent_rooms(&mut self, rooms: Vec<String>) -> iced::Task<Message> {
@@ -2090,10 +2155,62 @@ impl FluxChat {
     }
 }
 
+/// The account-data form of the local agent list.
+pub(crate) fn agent_list_of(p: &crate::prefs::Prefs) -> fluxchat_core::agent_list::AgentList {
+    fluxchat_core::agent_list::AgentList {
+        agents: p.agents.iter()
+            .map(|a| fluxchat_core::agent_list::AgentEntry { user_id: a.clone(), harness: p.agent_harness.get(a).cloned() })
+            .collect(),
+        not_agents: p.not_agents.clone(),
+    }
+}
+
+/// Make the local list the account's. False when nothing changed.
+pub(crate) fn apply_agent_list(p: &mut crate::prefs::Prefs, list: &fluxchat_core::agent_list::AgentList) -> bool {
+    if agent_list_of(p) == *list {
+        return false;
+    }
+    p.agents = list.agents.iter().map(|e| e.user_id.clone()).collect();
+    for e in &list.agents {
+        match &e.harness {
+            Some(h) => {
+                p.agent_harness.insert(e.user_id.clone(), h.clone());
+            }
+            None => {
+                p.agent_harness.remove(&e.user_id);
+            }
+        }
+    }
+    p.not_agents = list.not_agents.clone();
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use fluxchat_core::ReactionInfo;
+
+    #[test]
+    fn agent_list_round_trips_through_prefs() {
+        use fluxchat_core::agent_list::{AgentEntry, AgentList};
+        let mut p = crate::prefs::Prefs { agents: vec!["@h:x".into(), "@o:x".into()], ..Default::default() };
+        p.agent_harness.insert("@o:x".into(), "openclaw".into());
+        let list = agent_list_of(&p);
+        assert_eq!(list.agents[0], AgentEntry { user_id: "@h:x".into(), harness: None });
+        assert_eq!(list.agents[1].harness.as_deref(), Some("openclaw"));
+        assert!(!apply_agent_list(&mut p, &list), "same list: no change");
+
+        // Another device removed one agent and set the other's harness.
+        let remote = AgentList {
+            agents: vec![AgentEntry { user_id: "@o:x".into(), harness: None }],
+            not_agents: vec!["@friend:x".into()],
+        };
+        assert!(apply_agent_list(&mut p, &remote));
+        assert_eq!(p.agents, vec!["@o:x".to_string()]);
+        assert!(!p.agent_harness.contains_key("@o:x"));
+        assert_eq!(p.not_agents, vec!["@friend:x".to_string()]);
+        assert_eq!(agent_list_of(&p), remote);
+    }
 
     /// Hermes's reactions on a request: working on it / done / failed.
     const WORKING: &str = "\u{1f440}";

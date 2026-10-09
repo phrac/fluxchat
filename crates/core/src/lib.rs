@@ -1,3 +1,4 @@
+pub mod agent_list;
 pub mod audio_devices;
 pub mod auth;
 pub mod db;

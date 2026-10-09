@@ -114,6 +114,9 @@ pub enum Message {
     SetAgent(String, bool),
     /// Don't suggest this user as an agent again.
     NotAnAgent(String),
+    /// The account's agent list, read at sign-in (`None`: never saved) or
+    /// changed by a device (agent_list.rs).
+    AgentListSynced(Option<fluxchat_core::agent_list::AgentList>),
     /// React in a given view (an answer from a notification: no view to
     /// select). (view key, event ID, emoji)
     AgentReact(String, String, String),

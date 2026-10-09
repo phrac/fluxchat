@@ -343,6 +343,9 @@ pub struct FluxChat {
     /// Joined rooms an AI agent is in: their timelines stay loaded so runs
     /// everywhere are tracked (agents.rs).
     pub agent_rooms: Vec<String>,
+    /// The account's agent list (`org.fluxchat.agents`) has been read: local
+    /// changes are saved to it from then on (agent_list.rs).
+    pub agent_list_loaded: bool,
     /// Threads panel in an agent room: only runs still going (task board filter).
     pub threads_active_only: bool,
     /// Agent step logs and long answers shown in full (event IDs; folded by default).
@@ -797,6 +800,7 @@ impl FluxChat {
             snippets: Vec::new(),
             ptt_held: None,
             agent_rooms: Vec::new(),
+            agent_list_loaded: false,
             threads_active_only: false,
             expanded_agent: HashSet::new(),
             agent_runs: Default::default(),

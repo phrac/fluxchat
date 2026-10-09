@@ -560,11 +560,12 @@ impl FluxChat {
                 let ignored = self.load_ignored_users();
                 let media = self.load_media_previews();
                 let agents = self.watch_agent_rooms();
+                let agent_list = self.load_agent_list();
                 // Encrypted, so readable now that we're signed in.
                 self.load_prompts();
                 self.load_run_history();
                 let run_texts = self.load_run_texts();
-                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media, agents, run_texts]);
+                return Task::batch([sec_task, avatar_task, lk_check, presence, rules, restore, mentions, room_threads, ignored, media, agents, agent_list, run_texts]);
             }
             // --- Sync events ---
             Message::SyncEvent(event) => match event {
@@ -1729,7 +1730,10 @@ impl FluxChat {
                 for k in keys {
                     self.refresh_agent_state(&k);
                 }
-                return Task::batch([set, self.watch_agent_rooms()]);
+                return Task::batch([set, self.watch_agent_rooms(), self.save_agent_list()]);
+            }
+            Message::AgentListSynced(list) => {
+                return self.agent_list_synced(list);
             }
             Message::AgentRoomsFound(rooms) => {
                 return self.load_agent_rooms(rooms);
@@ -1756,7 +1760,8 @@ impl FluxChat {
                 if !p.not_agents.contains(&user) {
                     p.not_agents.push(user);
                 }
-                return self.update(Message::SetPrefs(Box::new(p)));
+                let set = self.update(Message::SetPrefs(Box::new(p)));
+                return Task::batch([set, self.save_agent_list()]);
             }
             Message::AgentReact(key, event_id, emoji) => {
                 let core = self.core.clone();
@@ -1818,7 +1823,7 @@ impl FluxChat {
                 for k in keys {
                     self.refresh_agent_state(&k);
                 }
-                return set;
+                return Task::batch([set, self.save_agent_list()]);
             }
             Message::SetBusyMode(mode) => {
                 let mut p = self.prefs.clone();
