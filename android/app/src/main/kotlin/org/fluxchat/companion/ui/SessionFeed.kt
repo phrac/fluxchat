@@ -164,6 +164,7 @@ fun SessionFeed(
     }
     // Newest at the bottom, by the composer, like a chat: what you just sent is where you look.
     val ordered = cards
+    FollowNewest(state, cards)
     LazyColumn(
         state = state,
         reverseLayout = true,

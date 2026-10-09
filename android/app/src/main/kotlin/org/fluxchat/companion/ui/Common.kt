@@ -7,6 +7,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.padding
@@ -92,3 +94,24 @@ fun threadTitle(root: Msg?, replies: List<Msg>): String {
 /** A sender's short name: display name, else the localpart. */
 fun shortName(userId: String, name: String?): String =
     name?.takeIf { it.isNotBlank() && it != userId } ?: userId.removePrefix("@").substringBefore(':')
+
+/**
+ * Keep a bottom-anchored (`reverseLayout`) list at the newest item while you
+ * are there. Compose holds the list on the item you were looking at, so new
+ * items otherwise land below the view. Scrolled up to read, it stays put.
+ */
+@Composable
+fun FollowNewest(state: androidx.compose.foundation.lazy.LazyListState, content: Any?) {
+    var follow by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
+    // Decided only when a scroll ends: a new item arriving shifts the index
+    // too, and that mustn't count as you scrolling away.
+    LaunchedEffect(state) {
+        androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) follow = state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset < FOLLOW_SLACK_PX
+        }
+    }
+    LaunchedEffect(content) { if (follow) state.scrollToItem(0) }
+}
+
+/** How far from the bottom still counts as "at the bottom", in pixels. */
+private const val FOLLOW_SLACK_PX = 64

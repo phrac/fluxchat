@@ -46,12 +46,27 @@ data class Msg(
     val senderAvatar: String? = null,
     /** An image: what to load (the SDK's media source JSON) and its size. */
     val media: Media? = null,
+    /** A file, video or audio clip: a card to open or save. */
+    val file: FileRef? = null,
 ) {
     val isLocal: Boolean get() = id.startsWith("~")
     val hasThread: Boolean get() = threadCount > 0 || threadLatest != null
 }
 
 data class Media(val source: String, val thumbnail: String?, val width: Int?, val height: Int?)
+
+enum class FileKind { File, Video, Audio }
+
+/** An attached file: the SDK's media source JSON, its name, type and size, and a video's thumbnail. */
+data class FileRef(
+    val source: String,
+    val name: String,
+    val mime: String?,
+    val size: Long?,
+    val kind: FileKind,
+    val thumbnail: Media? = null,
+    val durationMs: Long? = null,
+)
 
 /** A run: where it stands, when it was asked for and the agent's latest step. */
 data class RunInfo(

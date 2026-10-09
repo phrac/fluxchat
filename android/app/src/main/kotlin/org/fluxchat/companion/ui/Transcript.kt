@@ -69,6 +69,8 @@ fun TranscriptRow(
     live: Boolean,
     onReact: (String) -> Unit,
     onAnswer: (String) -> Unit,
+    /** An approval you answered ("✅ Approve once"): folded to one line. */
+    answered: String? = null,
 ) {
     if (!m.isMessage) {
         if (m.body.isNotEmpty()) {
@@ -93,12 +95,20 @@ fun TranscriptRow(
                 }
             }
             val steps = Runs.progressSteps(m.body)
-            if (steps != null) {
+            if (answered != null) {
+                Answered(m.body, answered)
+            } else if (Runs.isHeartbeat(m.body)) {
+                Text(
+                    clean(m.body.trim()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                )
+            } else if (steps != null) {
                 Activity(steps, live)
             } else {
                 m.media?.let { Box(Modifier.padding(bottom = 6.dp)) { MessageImage(it) } }
+                m.file?.let { FileCard(it, Modifier.padding(bottom = 6.dp)) }
                 if (m.body.isNotBlank()) {
-                    Answer(m.body, foldable = true, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge)
+                    Answer(m.body, foldable = false, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge)
                 }
                 if (m.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -108,7 +118,7 @@ fun TranscriptRow(
                     if (question.isNotEmpty()) ChoiceButtons(question, onAnswer)
                 }
             }
-            Reactions(reactions, onReact)
+            if (answered == null) Reactions(reactions, onReact)
         }
     } else {
         val own = m.isOwn
@@ -128,6 +138,7 @@ fun TranscriptRow(
                 ) {
                     Column(Modifier.padding(if (m.media != null) 4.dp else 0.dp)) {
                         m.media?.let { MessageImage(it) }
+                        m.file?.let { FileCard(it, Modifier.padding(4.dp).widthIn(min = 240.dp)) }
                         if (m.body.isNotBlank()) {
                             Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                                 MarkdownText(m.body, style = MaterialTheme.typography.bodyLarge)
@@ -178,6 +189,31 @@ private fun Activity(steps: List<String>, live: Boolean) {
                 Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
                     steps.forEachIndexed { i, s -> Step(s, last = i == steps.lastIndex, live = live && i == steps.lastIndex) }
                 }
+            }
+        }
+    }
+}
+
+/** An approval that's been answered: what it asked and your answer; the whole request on tap. */
+@Composable
+private fun Answered(body: String, answer: String) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    val scheme = MaterialTheme.colorScheme
+    val asked = body.lineSequence().map { it.trim().trim('*') }.firstOrNull { it.isNotEmpty() && !it.startsWith("```") }.orEmpty().replace("`", "").replace("**", "").replace("__", "")
+    Surface(
+        color = scheme.surfaceContainerLow, shape = RoundedCornerShape(14.dp), border = BorderStroke(1.dp, scheme.outlineVariant),
+        onClick = { open = !open }, modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.animateContentSize()) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(answer, style = MaterialTheme.typography.labelLarge, color = scheme.onSurface)
+                    Text(asked, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (open) "Hide request" else "Show request", Modifier.size(20.dp), tint = scheme.onSurfaceVariant)
+            }
+            AnimatedVisibility(open) {
+                Box(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) { MarkdownText(body, style = MaterialTheme.typography.bodyMedium) }
             }
         }
     }

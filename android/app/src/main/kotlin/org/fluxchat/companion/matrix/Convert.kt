@@ -1,5 +1,7 @@
 package org.fluxchat.companion.matrix
 
+import org.fluxchat.companion.agents.FileKind
+import org.fluxchat.companion.agents.FileRef
 import org.fluxchat.companion.agents.Media
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.Protocol
@@ -38,6 +40,7 @@ fun convert(ev: EventTimelineItem): Msg {
     var threadLatest: String? = null
     var protocol: Protocol? = null
     var media: Media? = null
+    var file: FileRef? = null
     when (val c = ev.content) {
         is TimelineItemContent.MsgLike -> {
             val ml = c.content
@@ -56,6 +59,8 @@ fun convert(ev: EventTimelineItem): Msg {
                         }.getOrNull()
                         if (media != null) body = img.caption.orEmpty()
                     }
+                    file = runCatching { fileRef(k.content.msgType) }.getOrNull()
+                    if (file != null) body = caption(k.content.msgType).orEmpty()
                     formatted = formattedBody(k.content.msgType)
                     edited = k.content.isEdited
                     protocol = Protocol.fromEventJson(ev.lazyProvider.latestJson() ?: ev.lazyProvider.debugInfo().originalJson)
@@ -92,6 +97,7 @@ fun convert(ev: EventTimelineItem): Msg {
         formatted = formatted,
         senderAvatar = profile?.avatarUrl,
         media = media,
+        file = file,
     )
 }
 
@@ -103,6 +109,29 @@ private fun messageBody(c: MessageContent): String = when (val t = c.msgType) {
     is MessageType.Location -> "[location] ${c.body}"
     is MessageType.Emote -> "* ${t.content.body}"
     else -> c.body
+}
+
+/** A file, video or audio message's attachment. */
+private fun fileRef(t: MessageType): FileRef? = when (t) {
+    is MessageType.File -> t.content.let { c ->
+        FileRef(c.source.toJson(), c.filename, c.info?.mimetype, c.info?.size?.toLong(), FileKind.File)
+    }
+    is MessageType.Video -> t.content.let { c ->
+        val thumb = c.info?.thumbnailSource?.toJson()?.let { Media(it, it, c.info?.width?.toInt(), c.info?.height?.toInt()) }
+        FileRef(c.source.toJson(), c.filename, c.info?.mimetype, c.info?.size?.toLong(), FileKind.Video, thumb, c.info?.duration?.toMillis())
+    }
+    is MessageType.Audio -> t.content.let { c ->
+        FileRef(c.source.toJson(), c.filename, c.info?.mimetype, c.info?.size?.toLong(), FileKind.Audio, durationMs = c.info?.duration?.toMillis())
+    }
+    else -> null
+}
+
+/** A file message's caption (its body is then the file name). */
+private fun caption(t: MessageType): String? = when (t) {
+    is MessageType.File -> t.content.caption
+    is MessageType.Video -> t.content.caption
+    is MessageType.Audio -> t.content.caption
+    else -> null
 }
 
 private fun formattedBody(t: MessageType): String? = when (t) {

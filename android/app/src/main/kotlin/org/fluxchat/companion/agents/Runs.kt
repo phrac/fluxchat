@@ -88,6 +88,21 @@ object Runs {
         } ?: emoji
     }
 
+    /**
+     * An approval you've answered: "✅ Approve once" from a person's reaction
+     * with one of the harness's approval emoji on an agent message asking for
+     * approval (null while it's open, or for other messages — a ✅ on an
+     * ordinary answer is just a reaction).
+     */
+    fun answeredApproval(msg: Msg, h: Harness, agents: Collection<String>): String? {
+        if (h.approvals.isEmpty() || !msg.body.contains("approv", ignoreCase = true)) return null
+        val r = msg.reactions.firstOrNull { r -> h.approvals.any { sameEmoji(it.emoji, r.emoji) } && r.users.any { it !in agents } } ?: return null
+        return "${r.emoji} ${choiceLabel(r.emoji, msg.body, h.approvals)}"
+    }
+
+    /** Hermes's timer heartbeat ("⏳ Working — 3 min — iteration 15/150, terminal"): a status line, not tool work. */
+    fun isHeartbeat(body: String): Boolean = body.trim().let { b -> b.startsWith("⏳") && '\n' !in b }
+
     /** One line of a progress message: a tool emoji, a space, what it's doing. */
     fun isStep(line: String): Boolean {
         val sp = line.indexOf(' ')
@@ -96,10 +111,41 @@ object Runs {
         return line.substring(sp + 1).isNotBlank() && line.codePointCount(0, line.length) <= STEP_MAX_CHARS && isEmoji(head)
     }
 
-    /** The steps of a progress message: every line a step. */
+    /**
+     * The steps of a progress message: every line a step. A terminal command
+     * is a fenced block instead (`💻 terminal` then the command in a fence, or
+     * just the fence for back-to-back commands): one step, `💻 {command}`,
+     * replacing the header before it. Same as the desktop's `progress_steps`.
+     */
     fun progressSteps(body: String): List<String>? {
         val lines = body.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        return if (lines.isNotEmpty() && lines.all { isStep(it) }) lines else null
+        val steps = ArrayList<String>()
+        var emoji = "💻"
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            if (line.startsWith("```")) {
+                // A command belongs to a step log only after a step (its header or an earlier tool).
+                if (steps.isEmpty()) return null
+                val end = (i + 1 until lines.size).firstOrNull { lines[it].startsWith("```") } ?: return null
+                val cmd = lines.subList(i + 1, end).joinToString(" ")
+                if (cmd.isEmpty()) return null
+                // `💻 terminal` right before the block: the block says what it ran.
+                val last = steps.last()
+                if (last == lines[i - 1] && ' ' !in last.substringAfter(' ').trim()) {
+                    steps.removeAt(steps.size - 1)
+                    emoji = last.substringBefore(' ')
+                }
+                steps += "$emoji $cmd"
+                i = end + 1
+            } else if (isStep(line)) {
+                steps += line
+                i++
+            } else {
+                return null
+            }
+        }
+        return steps.ifEmpty { null }
     }
 
     /** Whether `s` is one emoji (incl. ZWJ sequences, skin tones, keycaps, flags). */

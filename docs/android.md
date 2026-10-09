@@ -41,7 +41,7 @@ DMs, and rooms where the agent answers in the conversation itself, stay a chat.
 
 ## A room or thread
 
-- **Sessions read as a transcript**, like Hermes's desktop app: in a thread, or a DM with an agent, your prompts are blocks on the right and the agent's answers run the full width as plain text, under its name once per turn. Its tool work is an activity block (*4 tool calls* and the latest step); tap it for every step. The one the agent is working on now spins and starts open. The agent's own 👀 / ✅ / ❌ reactions are left out, since the run card says the same.
+- **Sessions read as a transcript**, like Hermes's desktop app: in a thread, or a DM with an agent, your prompts are blocks on the right and the agent's answers run the full width as plain text, under its name once per turn. Its tool work is an activity block (*4 tool calls* and the latest step); tap it for every step. The one the agent is working on now spins and starts open; each terminal command is its own step. Hermes's timer heartbeat (*⏳ Working — 3 min*) is a single muted line. Answers are set as a document: headings, lists, quotes, tables, and code blocks with their language and a copy button. An approval you've answered folds to one line (*✅ Approve once* and what it asked); tap it for the whole request. The agent's own 👀 / ✅ / ❌ reactions are left out, since the run card says the same.
 - **Messages** elsewhere appear as bubbles. Agents' step logs fold into one line ("6 steps · 🔧 Running tests"); tap to see every step. Long answers fold too. Images show inline; tap one for full screen, and pinch to zoom.
 - **Approvals and questions** appear as buttons under the message: Approve once / For this session / Always / Deny, or a question's numbered choices. A question can also be answered in your own words.
 - **The run card** above the message box shows the state, time so far, the latest step, and a progress bar.
@@ -49,6 +49,8 @@ DMs, and rooms where the agent answers in the conversation itself, stay a chat.
   - In a room whose run is happening in a thread, the card names the thread; tap it to open the thread.
 - **While the agent works**, you choose what a new message does, as on the desktop: **Send**, **Steer** (read after its next step) or **Queue** (the next task).
 - **Attachments:** the paperclip beside the message box sends a **photo or video** (Android's photo picker, no storage permission) or **any file**. The file waits above the box with a preview; what you type goes with it as its caption, in one message. In a thread it goes to the thread; from a room's sessions it starts a new session.
+- **Files the agent (or anyone) sends** show as a card: name, size, type (and a video's thumbnail). Tap it to open it in an app that handles that type; the download button saves it where you choose. Files are downloaded (and decrypted) the first time you open or save them.
+- **Share from other apps:** pick fluxchat in Android's share sheet (a screenshot, a PDF, a link, some text), then the agent room to send it to. The room opens with the file attached and the text in the message box, for you to add to and send. In a room shown as sessions, that starts a new session.
 - **`/` commands**: type `/` for the agent's commands as you type. They go out the way its harness takes them (`!stop` for Hermes).
 - **The ⋮ menu** has the agent's quick commands: Status, Usage, Context, Model, New session.
 - **Threads follow you.** Send a request from a room. When the agent starts on it in a thread, the thread opens.

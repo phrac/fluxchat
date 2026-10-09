@@ -164,18 +164,35 @@ class ScreenshotTest {
         val steps = msg("s", hermes, 5, "📖 Reading `Makefile`\n💻 Running `make clean`\n🔍 Searching for stale artifacts\n💻 Running `rm -rf build`")
         val answer = msg("a", hermes, 4, "Cleaned up. **build/** was 2.1 GB of stale artifacts from the old toolchain.\n\nBefore redeploying, one thing needs your approval:")
         val prompt = msg("p", hermes, 1, "⚠️ Dangerous command: `./deploy.sh production`\nAllow it?", "✅" to listOf(hermes), "❌" to listOf(hermes))
+        val report = msg("f", hermes, 3, "The cleanup log:").copy(
+            file = org.fluxchat.companion.agents.FileRef("{}", "cleanup-report.pdf", "application/pdf", 182_000, org.fluxchat.companion.agents.FileKind.File),
+        )
         val hidden: (Reaction) -> Boolean = { it.users == listOf(hermes) && it.emoji in setOf("👀", "✅", "❌") }
         Column {
             Column(Modifier.weight(1f)) {
                 TranscriptRow(request, null, false, hidden, emptyList(), null, false, {}, {})
                 TranscriptRow(steps, request, true, hidden, emptyList(), null, true, {}, {})
                 TranscriptRow(answer, steps, true, hidden, emptyList(), null, false, {}, {})
-                TranscriptRow(prompt, answer, true, hidden, listOf("✅" to "Approve once", "❌" to "Deny"), null, false, {}, {})
+                TranscriptRow(report, answer, true, hidden, emptyList(), null, false, {}, {})
+                TranscriptRow(prompt, report, true, hidden, listOf("✅" to "Approve once", "❌" to "Deny"), null, false, {}, {})
             }
             Composer(harness, working = true, canAttach = true) { _, _ -> }
         }
     }
 
+    @Composable
+    private fun FinalAnswer() {
+        val approval = msg("ap", hermes, 9, "⚠️ **Approval needed:** `execute_code`\n```python\nr = terminal(\"curl -s https://photos.example/api\")\nprint(r[\"output\"][:500])\n```\nReply `!approve session` to approve this pattern for the session.", "✅" to listOf(me))
+        val answer = msg("fa", hermes, 2, "Done, both verified against the API:\n\n- **Uploaded** to Immich as `tuxedo_trophy_bass.jpg` — asset `46cb21da…`, visibility read back as `timeline` (not silently archived), dated today.\n- **Created album \"AI Generated\"** (`2a63b5b9…`) with the photo in it — read back `assetCount: 1`.\n\n## Next\n1. Any future AI edits can go in that album too.\n2. Say the word and I'll share it.\n\n```bash\ncurl -s https://photos.example/api/albums | jq '.[] | .albumName'\n```")
+        val hidden: (Reaction) -> Boolean = { false }
+        Column {
+            TranscriptRow(approval, null, true, hidden, answered = "✅ Approve once", prompt = emptyList(), question = null, live = false, onReact = {}, onAnswer = {})
+            TranscriptRow(answer, approval, true, hidden, prompt = emptyList(), question = null, live = false, onReact = {}, onAnswer = {})
+        }
+    }
+
+    @Test fun answerLight() = shoot("answer", false) { FinalAnswer() }
+    @Test fun answerDark() = shoot("answer", true) { FinalAnswer() }
     @Test fun transcriptLight() = shoot("transcript", false) { Transcript() }
     @Test fun transcriptDark() = shoot("transcript", true) { Transcript() }
     @Test fun sessionsLight() = shoot("sessions", false) { Sessions() }

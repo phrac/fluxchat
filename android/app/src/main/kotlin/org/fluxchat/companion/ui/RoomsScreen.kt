@@ -214,7 +214,7 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
                         val preview = when {
                             typing != null -> typing
                             m != null -> "${shortName(m.sender, m.senderName)}: " +
-                                (Runs.progressSteps(m.body)?.last() ?: m.body.lineSequence().firstOrNull { it.isNotBlank() } ?: if (m.media != null) "Image" else "")
+                                (Runs.progressSteps(m.body)?.last() ?: m.body.lineSequence().firstOrNull { it.isNotBlank() } ?: m.file?.name ?: if (m.media != null) "Image" else "")
                             else -> ""
                         }
                         Text(

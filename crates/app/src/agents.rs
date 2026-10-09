@@ -315,10 +315,43 @@ fn add_run_pane(w: &mut crate::panes::Window, key: String) {
 }
 
 /// The steps of an agent progress message: every line a step. Hermes edits
-/// one such message, adding a line per tool it starts.
-pub fn progress_steps(body: &str) -> Option<Vec<&str>> {
+/// one such message, adding a line per tool it starts. A terminal command is
+/// a fenced block instead (on Matrix, which renders code): `💻 terminal` then
+/// the command in a fence, or just the fence for back-to-back commands. A
+/// block is one step, `💻 {command}`, replacing the header before it.
+pub fn progress_steps(body: &str) -> Option<Vec<String>> {
     let lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    (!lines.is_empty() && lines.iter().all(|l| is_step(l))).then_some(lines)
+    let mut steps: Vec<String> = Vec::new();
+    let mut emoji = "\u{1f4bb}".to_string();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.starts_with("```") {
+            // A command belongs to a step log only after a step (its header or an earlier tool).
+            if steps.is_empty() {
+                return None;
+            }
+            let end = (i + 1..lines.len()).find(|&j| lines[j].starts_with("```"))?;
+            let cmd = lines[i + 1..end].join(" ");
+            if cmd.is_empty() {
+                return None;
+            }
+            // `💻 terminal` right before the block: the block says what it ran.
+            let header = i > 0 && steps.last().is_some_and(|s| s == lines[i - 1] && !s.trim_start_matches(|c: char| c != ' ').trim().contains(' '));
+            if header {
+                let head = steps.pop().unwrap_or_default();
+                emoji = head.split_once(' ').map(|(e, _)| e.to_string()).unwrap_or(emoji);
+            }
+            steps.push(format!("{emoji} {cmd}"));
+            i = end + 1;
+        } else if is_step(line) {
+            steps.push(line.to_string());
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    (!steps.is_empty()).then_some(steps)
 }
 
 /// The agent's runtime info from Hermes's footer (`/footer on`): the last
@@ -1007,7 +1040,7 @@ impl FluxChat {
                 .filter(|m| m.sender == agent && sent_ms(m) >= since)
                 .find_map(|m| progress_steps(&m.body))
             {
-                run.step = steps.last().map(|s| s.to_string());
+                run.step = steps.last().cloned();
                 run.steps = steps.len();
             }
         };
@@ -1731,7 +1764,7 @@ impl FluxChat {
     }
 
     /// An agent's step log: collapsed to "N steps · latest", or every step.
-    pub(crate) fn view_progress_log<'a>(&self, msg: &MessageInfo, steps: &[&str], expanded: bool) -> Element<'a, Message> {
+    pub(crate) fn view_progress_log<'a>(&self, msg: &MessageInfo, steps: &[String], expanded: bool) -> Element<'a, Message> {
         let colors = crate::theme::colors();
         let fs = self.msg_font_size;
         let line = |s: &str, color: iced::Color| -> Element<'a, Message> {
@@ -1758,7 +1791,7 @@ impl FluxChat {
             }
             iced::widget::column![col, toggle].spacing(4).width(Fill).into()
         } else {
-            row![toggle, container(line(steps.last().copied().unwrap_or(""), colors.text_normal)).width(Fill).clip(true)]
+            row![toggle, container(line(steps.last().map(String::as_str).unwrap_or(""), colors.text_normal)).width(Fill).clip(true)]
                 .spacing(8)
                 .align_y(Alignment::Center)
                 .width(Fill)
@@ -2542,6 +2575,14 @@ mod tests {
         assert_eq!(progress_steps("✅ Done.\nHere's the summary of what I found today"), None, "a prose line breaks it");
         assert_eq!(progress_steps("Here's what I found"), None);
         assert_eq!(progress_steps(""), None);
+        // Hermes's terminal commands: a fenced block after `💻 terminal`, or alone after one.
+        let terminal = "📖 Reading Makefile\n💻 terminal\n```\nmake clean\n```\n```\nrm -rf build ...\n```\n🔍 Searching for x";
+        assert_eq!(
+            progress_steps(terminal),
+            Some(vec!["📖 Reading Makefile".to_string(), "💻 make clean".into(), "💻 rm -rf build ...".into(), "🔍 Searching for x".into()]),
+        );
+        assert_eq!(progress_steps("```\nfn main() {}\n```"), None, "code alone is an answer");
+        assert_eq!(progress_steps("💻 terminal\n```\nls"), None, "an unclosed fence");
     }
 
     #[tokio::test]

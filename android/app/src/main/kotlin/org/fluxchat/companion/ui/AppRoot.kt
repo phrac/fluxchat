@@ -33,6 +33,8 @@ sealed interface Screen {
     data object Agents : Screen
     data object Settings : Screen
     data object Diagnostics : Screen
+    /** Pick a room for something shared from another app. */
+    data object Share : Screen
 }
 
 @Composable
@@ -94,5 +96,6 @@ private fun Screen(s: Screen, go: (Screen) -> Unit, back: () -> Unit, swap: (Scr
             Screen.Agents -> AgentsScreen(back)
             Screen.Settings -> SettingsScreen(go, back)
             Screen.Diagnostics -> DiagnosticsScreen(back)
+            Screen.Share -> ShareScreen(back, swap)
         }
 }

@@ -293,6 +293,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 working = run?.state == RunState.Working,
                 placeholder = if (cards) "Start a new session" else null,
                 canAttach = model != null,
+                shareFor = roomId,
                 onAttach = { a, caption ->
                     if (root == null) sentAt = System.currentTimeMillis()
                     model?.let { m -> scope.launch { sendAttachment(context, m, a, caption) } }
@@ -355,6 +356,7 @@ private fun MessageList(
         }
     }
     val reversed = remember(msgs) { msgs.asReversed() }
+    FollowNewest(state, msgs)
     // The step log the working run is on: its activity block spins.
     val liveSteps = remember(msgs, run?.state) {
         if (run?.state != RunState.Working) null
@@ -386,6 +388,7 @@ private fun MessageList(
                         prev = if (newDay) null else prev,
                         isAgent = isAgent,
                         hiddenReactions = statusReaction,
+                        answered = if (isAgent && prompt.isEmpty()) Runs.answeredApproval(m, h, agents) else null,
                         prompt = prompt,
                         question = question,
                         live = m.id == liveSteps,
@@ -508,6 +511,8 @@ internal fun Composer(
     placeholder: String? = null,
     canAttach: Boolean = false,
     onAttach: (Attachment, String) -> Unit = { _, _ -> },
+    /** The room whose composer this is: it takes what was shared to it. */
+    shareFor: String? = null,
     onSend: (String, BusyMode) -> Unit,
 ) {
     var text by rememberSaveable { mutableStateOf("") }
@@ -519,6 +524,13 @@ internal fun Composer(
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia(), picked)
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument(), picked)
     val modes = BusyMode.available(harness)
+    val shared by ShareInbox.pending.collectAsState()
+    LaunchedEffect(shareFor, shared) {
+        if (shareFor != null && shared != null) ShareInbox.take(shareFor)?.let { s ->
+            s.text?.let { t -> text = if (text.isBlank()) t else text + "\n" + t }
+            s.attachment?.let { attachment = it }
+        }
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         attachment?.let { a -> AttachmentCard(a) { attachment = null } }
         // Agent commands while typing "/name".

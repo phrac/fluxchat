@@ -47,6 +47,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun screenOf(intent: Intent?): Screen? {
+        // ShareActivity has put what was shared in ShareInbox.
+        if (intent?.getBooleanExtra(EXTRA_SHARE, false) == true) return Screen.Share
         val room = intent?.getStringExtra(EXTRA_ROOM) ?: return null
         val thread = intent.getStringExtra(EXTRA_THREAD)
         return if (thread != null) Screen.Thread(room, thread) else Screen.Room(room)
@@ -55,5 +57,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_ROOM = "room"
         const val EXTRA_THREAD = "thread"
+        const val EXTRA_SHARE = "share"
     }
 }

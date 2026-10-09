@@ -69,6 +69,13 @@ class RunsTest {
         assertEquals(2, Runs.progressSteps("📖 Reading notes.md\n🔍 Searching the web for x")?.size)
         assertNull(Runs.progressSteps("Here is the answer.\n📖 Reading notes.md"))
         assertNull(Runs.progressSteps("1 thing"))
+        // Hermes's terminal commands: a fenced block after `💻 terminal`, or alone after one.
+        assertEquals(
+            listOf("📖 Reading Makefile", "💻 make clean", "💻 rm -rf build ...", "🔍 Searching for x"),
+            Runs.progressSteps("📖 Reading Makefile\n💻 terminal\n```\nmake clean\n```\n```\nrm -rf build ...\n```\n🔍 Searching for x"),
+        )
+        assertNull("code alone is an answer", Runs.progressSteps("```\nfn main() {}\n```"))
+        assertNull("an unclosed fence", Runs.progressSteps("💻 terminal\n```\nls"))
         assertTrue(Runs.isEmoji("⚙️"))
         assertTrue(Runs.isEmoji("👩‍💻"))
         assertFalse(Runs.isEmoji("ok"))

@@ -49,7 +49,7 @@ import org.fluxchat.companion.matrix.Matrix
 import org.matrix.rustcomponents.sdk.MediaSource
 
 /** Message images: downloaded through the SDK (decrypted in encrypted rooms), decoded at a bounded size. */
-private object Images {
+internal object Images {
     private const val THUMB_PX = 800UL
     private const val FULL_MAX_PX = 2560
     private val cache = object : LruCache<String, ImageBitmap>(48 * 1024 * 1024) {

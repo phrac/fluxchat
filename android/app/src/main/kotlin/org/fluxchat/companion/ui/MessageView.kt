@@ -145,6 +145,7 @@ fun MessageRow(
                     ) {
                         Column(Modifier.padding(if (m.media != null) 4.dp else 0.dp)) {
                             m.media?.let { MessageImage(it) }
+                            m.file?.let { FileCard(it, Modifier.padding(start = 4.dp, end = 4.dp, top = 4.dp).widthIn(min = 240.dp)) }
                             Column(Modifier.padding(horizontal = 14.dp - (if (m.media != null) 4.dp else 0.dp), vertical = if (m.media != null) 6.dp else 10.dp)) {
                                 if (m.body.isNotBlank()) Answer(m.body, foldable = isAgent, color = if (own) scheme.onPrimaryContainer else scheme.onSurface)
                                 Meta(m, own)
