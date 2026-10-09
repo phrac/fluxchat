@@ -67,6 +67,8 @@ private fun Navigator(opened: MutableStateFlow<Screen?>) {
     }
     val go: (Screen) -> Unit = { direction.intValue = 1; stack.add(it) }
     val back: () -> Unit = { if (stack.size > 1) { direction.intValue = -1; stack.removeAt(stack.size - 1) } }
+    // Replace the top screen (one session for another, from the sessions list).
+    val swap: (Screen) -> Unit = { direction.intValue = 1; stack[stack.size - 1] = it }
     BackHandler(enabled = stack.size > 1) { back() }
     val holder = rememberSaveableStateHolder()
     AnimatedContent(
@@ -79,16 +81,16 @@ private fun Navigator(opened: MutableStateFlow<Screen?>) {
         label = "screens",
     ) { s ->
         // Screens keep their scroll position etc. when you come back to them.
-        holder.SaveableStateProvider(s.toString()) { Screen(s, go, back) }
+        holder.SaveableStateProvider(s.toString()) { Screen(s, go, back, swap) }
     }
 }
 
 @Composable
-private fun Screen(s: Screen, go: (Screen) -> Unit, back: () -> Unit) {
+private fun Screen(s: Screen, go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit) {
         when (s) {
             Screen.Rooms -> RoomsScreen(go)
-            is Screen.Room -> ChatScreen(s.roomId, null, go, back)
-            is Screen.Thread -> ChatScreen(s.roomId, s.root, go, back)
+            is Screen.Room -> ChatScreen(s.roomId, null, go, back, swap)
+            is Screen.Thread -> ChatScreen(s.roomId, s.root, go, back, swap)
             Screen.Agents -> AgentsScreen(back)
             Screen.Settings -> SettingsScreen(go, back)
             Screen.Diagnostics -> DiagnosticsScreen(back)

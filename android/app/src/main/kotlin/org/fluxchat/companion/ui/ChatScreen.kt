@@ -7,6 +7,13 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.PermanentDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.DrawerValue
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -91,7 +98,7 @@ private const val FOLLOW_WINDOW_MS = 3 * 60 * 1000L
 /** A room's timeline, or a thread's (`root`): messages, the run, the composer. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> Unit) {
+fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit = go) {
     val shared = remember(roomId, root) { if (root == null) Matrix.roomTimeline(roomId) else null }
     // Threads (and rooms that aren't kept open) get their own timeline while on screen.
     val own by produceState<TimelineModel?>(null, roomId, root) {
@@ -166,7 +173,24 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     }
     val scroll = TopAppBarDefaults.pinnedScrollBehavior()
 
-    Scaffold(
+    // Sessions (the room's threads): a drawer on phones, a sidebar on wide screens.
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val hasSessions = agents.isNotEmpty()
+    val openSession: (String) -> Unit = { r ->
+        scope.launch { drawer.close() }
+        if (r != root) if (root == null) go(Screen.Thread(roomId, r)) else swap(Screen.Thread(roomId, r))
+    }
+    val newSession: () -> Unit = {
+        scope.launch { drawer.close() }
+        when {
+            // A DM has no threads: the agent's own "new session" command.
+            Matrix.isDm(roomId) && harness.hasCommand("new") -> command("new")
+            // Elsewhere a new request in the room starts one (its thread opens).
+            root != null -> swap(Screen.Room(roomId))
+        }
+    }
+
+    val content: @Composable (Boolean) -> Unit = { sessionsButton -> Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
             TopAppBar(
@@ -195,6 +219,9 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                     }
                 },
                 actions = {
+                    if (sessionsButton) {
+                        IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.History, "Sessions") }
+                    }
                     if (harness.menu.isNotEmpty()) {
                         Box {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Agent commands") }
@@ -236,8 +263,29 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 },
             )
         }
+    } }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = maxWidth >= WIDE_LAYOUT
+        when {
+            !hasSessions -> content(false)
+            wide -> Row(Modifier.fillMaxSize()) {
+                PermanentDrawerSheet(Modifier.width(SESSIONS_WIDTH)) { SessionsPane(roomId, root, openSession, newSession) }
+                Box(Modifier.weight(1f)) { content(false) }
+            }
+            else -> ModalNavigationDrawer(
+                drawerState = drawer,
+                // The left edge is Android's back gesture: the drawer opens from its button.
+                gesturesEnabled = drawer.isOpen,
+                drawerContent = { ModalDrawerSheet(drawerState = drawer) { SessionsPane(roomId, root, openSession, newSession) } },
+            ) { content(true) }
+        }
     }
 }
+
+/** Wider than this, sessions sit in a sidebar beside the chat (tablets, foldables, landscape). */
+private val WIDE_LAYOUT = 840.dp
+private val SESSIONS_WIDTH = 320.dp
 
 @Composable
 private fun MessageList(

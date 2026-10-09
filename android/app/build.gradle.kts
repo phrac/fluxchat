@@ -97,6 +97,7 @@ dependencies {
     implementation(libs.lifecycle.process)
     implementation(libs.coroutines.android)
     implementation(libs.matrix.sdk)
+    implementation(libs.rustls.platform.verifier)
     implementation(libs.unifiedpush)
     implementation(libs.tomlj)
 

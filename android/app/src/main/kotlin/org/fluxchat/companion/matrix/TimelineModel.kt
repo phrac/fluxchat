@@ -32,7 +32,7 @@ class TimelineModel(
     private var handle: TaskHandle? = null
     private var convertErrors = 0
 
-    suspend fun start() {
+    suspend fun start() = io {
         handle = timeline.addListener(object : TimelineListener {
             override fun onUpdate(diff: List<TimelineDiff>) = apply(diff)
         })
@@ -97,6 +97,10 @@ class TimelineModel(
         }
     }
 
+    /** Off the main thread: the SDK does network work (and TLS checks) on the polling thread. */
+    private suspend fun <T> io(block: suspend kotlinx.coroutines.CoroutineScope.() -> T): T =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO, block)
+
     companion object {
         /** Messages a timeline should hold after a reset / at start. */
         const val REFILL_BELOW = 30
@@ -104,22 +108,22 @@ class TimelineModel(
     }
 
     /** Load older messages. False once the start of the timeline is reached. */
-    suspend fun paginateBack(events: Int = 40): Boolean {
+    suspend fun paginateBack(events: Int = 40): Boolean = io {
         val hitStart = runCatching { timeline.paginateBackwards(events.toUShort()) }.getOrDefault(false)
         if (hitStart) _atStart.value = true
-        return !hitStart
+        !hitStart
     }
 
     /** Markdown, like the desktop composer (a thread timeline adds the thread relation). */
-    suspend fun send(text: String) {
+    suspend fun send(text: String) = io {
         timeline.send(messageEventContentFromMarkdown(text))
     }
 
-    suspend fun react(eventId: String, key: String) {
+    suspend fun react(eventId: String, key: String) = io {
         timeline.toggleReaction(EventOrTransactionId.EventId(eventId), key)
     }
 
-    suspend fun markRead() {
+    suspend fun markRead() = io {
         runCatching { timeline.markAsRead(ReceiptType.READ) }
     }
 

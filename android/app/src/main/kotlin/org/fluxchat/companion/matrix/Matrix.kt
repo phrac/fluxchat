@@ -173,7 +173,9 @@ object Matrix {
     }
 
     /** Restore the saved session, if any (the app's start, or a push arriving). */
-    suspend fun ensureStarted(): Boolean = startLock.withLock {
+    suspend fun ensureStarted(): Boolean = io { ensureStartedOnIo() }
+
+    private suspend fun ensureStartedOnIo(): Boolean = startLock.withLock {
         if (client != null) return true
         val saved = vault.load()
         if (saved == null) {
@@ -213,7 +215,9 @@ object Matrix {
             })
     }
 
-    suspend fun login(homeserver: String, user: String, password: String) = startLock.withLock {
+    suspend fun login(homeserver: String, user: String, password: String) = io { loginOnIo(homeserver, user, password) }
+
+    private suspend fun loginOnIo(homeserver: String, user: String, password: String) = startLock.withLock {
         _error.value = null
         try {
             // A new login starts a new store (the old one belongs to the old device).
@@ -223,7 +227,9 @@ object Matrix {
             // A full Matrix ID in the homeserver field means its server.
             val server = homeserver.trim().let { if (it.startsWith("@") && ':' in it) it.substringAfter(':') else it }
             val c = builder(passphrase).serverNameOrHomeserverUrl(server).build()
-            c.login(user.trim(), password, "fluxchat companion (${android.os.Build.MODEL})", null)
+            // "@name" without ":server" isn't a Matrix ID: the server wants just the name then.
+            val name = user.trim().let { if (it.startsWith("@") && ':' !in it) it.removePrefix("@") else it }
+            c.login(name, password, "fluxchat companion (${android.os.Build.MODEL})", null)
             vault.save(c.session(), passphrase)
             started(c)
         } catch (e: Exception) {
@@ -241,6 +247,7 @@ object Matrix {
             val m = e.message.orEmpty()
             when {
                 "M_FORBIDDEN" in m || "Invalid username or password" in m -> "Wrong username or password."
+                "M_INVALID_USERNAME" in m -> "That username isn't valid. Use your name, or your full Matrix ID (@you:server)."
                 "M_LIMIT_EXCEEDED" in m -> "Too many attempts. Wait a minute and try again."
                 "M_USER_DEACTIVATED" in m -> "This account has been deactivated."
                 else -> m.ifEmpty { "Sign-in failed." }
@@ -282,7 +289,9 @@ object Matrix {
             enc.recoveryState().let { it == RecoveryState.ENABLED || it == RecoveryState.INCOMPLETE }
     }.getOrDefault(false)
 
-    suspend fun recover(key: String): Boolean = try {
+    suspend fun recover(key: String): Boolean = io { recoverOnIo(key) }
+
+    private suspend fun recoverOnIo(key: String): Boolean = try {
         client?.encryption()?.recover(key.trim())
         Diag.note("recovery key accepted")
         _auth.value = Auth.Ready
@@ -298,7 +307,9 @@ object Matrix {
         _auth.value = Auth.Ready
     }
 
-    suspend fun logout() {
+    suspend fun logout() = io { logoutOnIo() }
+
+    private suspend fun logoutOnIo() {
         val c = client ?: return
         org.fluxchat.companion.push.Push.unregister(appContext)
         runCatching { syncService?.stop() }
@@ -319,6 +330,10 @@ object Matrix {
         synchronized(timelines) {
             timelines.values.forEach { it.close() }
             timelines.clear()
+        }
+        synchronized(sessionLists) {
+            sessionLists.values.forEach { it.close() }
+            sessionLists.clear()
         }
         typingHandles.values.forEach { it.cancel() }
         typingHandles.clear()
@@ -465,7 +480,9 @@ object Matrix {
     /** A thread's own timeline (its whole history; sends go in the thread). Close it when done. */
     suspend fun openThread(roomId: String, root: String): TimelineModel? = openFocused(roomId, root, TimelineFocus.Thread(root))
 
-    private suspend fun openFocused(roomId: String, root: String?, focus: TimelineFocus): TimelineModel? {
+    private suspend fun openFocused(roomId: String, root: String?, focus: TimelineFocus): TimelineModel? = io { openFocusedOnIo(roomId, root, focus) }
+
+    private suspend fun openFocusedOnIo(roomId: String, root: String?, focus: TimelineFocus): TimelineModel? {
         val room = room(roomId) ?: return null
         val timeline = room.timelineWithConfiguration(
             TimelineConfiguration(
@@ -490,6 +507,21 @@ object Matrix {
     fun isDm(roomId: String): Boolean = roomMeta[roomId]?.isDm ?: false
 
     fun agentsInRoom(roomId: String): List<String> = agentMembers[roomId].orEmpty()
+
+    /** Each room's session list, opened on first use and kept while signed in. */
+    private val sessionLists = HashMap<String, SessionList>()
+
+    /** A room's sessions (its threads, from the server), loading the first page. */
+    suspend fun sessions(roomId: String): SessionList? = io {
+        synchronized(sessionLists) { sessionLists[roomId] }?.let { return@io it }
+        val room = room(roomId) ?: return@io null
+        val list = runCatching { SessionList(roomId, room.threadListService()) }
+            .onFailure { Diag.error("Opening the session list of $roomId", it) }.getOrNull() ?: return@io null
+        synchronized(sessionLists) { sessionLists[roomId] = list }
+        list.start()
+        list.more()
+        list
+    }
 
     private fun recompute() = synchronized(recomputeLock) {
         val list = _agentList.value
@@ -526,12 +558,16 @@ object Matrix {
     }
 
     /** React to an event (an answer from a notification). */
-    suspend fun sendReaction(roomId: String, eventId: String, key: String): Boolean = runCatching {
+    suspend fun sendReaction(roomId: String, eventId: String, key: String): Boolean = io { sendReactionOnIo(roomId, eventId, key) }
+
+    private suspend fun sendReactionOnIo(roomId: String, eventId: String, key: String): Boolean = runCatching {
         room(roomId)!!.sendRaw("m.reaction", org.fluxchat.companion.push.ActionReceiver.reaction(eventId, key))
     }.isSuccess
 
     /** Send text to a room, or a thread in it. */
-    suspend fun sendText(roomId: String, thread: String?, text: String, inReplyTo: String?): Boolean = runCatching {
+    suspend fun sendText(roomId: String, thread: String?, text: String, inReplyTo: String?): Boolean = io { sendTextOnIo(roomId, thread, text, inReplyTo) }
+
+    private suspend fun sendTextOnIo(roomId: String, thread: String?, text: String, inReplyTo: String?): Boolean = runCatching {
         room(roomId)!!.sendRaw("m.room.message", org.fluxchat.companion.push.ActionReceiver.text(text, thread, inReplyTo))
     }.isSuccess
 
@@ -544,7 +580,9 @@ object Matrix {
         }
     }
 
-    suspend fun loadAgentList() {
+    suspend fun loadAgentList() = io { loadAgentListOnIo() }
+
+    private suspend fun loadAgentListOnIo() {
         val c = client ?: return
         // The SDK's store has it once sync has delivered it; ask the server
         // otherwise (a new login, or sync not having sent it).
@@ -585,7 +623,9 @@ object Matrix {
         }.onFailure { Diag.error("Fetching $type", it) }.getOrNull()
     }
 
-    suspend fun saveAgentList(list: AgentList): Boolean {
+    suspend fun saveAgentList(list: AgentList): Boolean = io { saveAgentListOnIo(list) }
+
+    private suspend fun saveAgentListOnIo(list: AgentList): Boolean {
         val c = client ?: return false
         return try {
             c.setAccountData(AgentList.TYPE, list.toJson())
@@ -598,7 +638,9 @@ object Matrix {
     }
 
     /** Settings → Diagnostics: the state of things, to paste into a bug report (no tokens or keys). */
-    suspend fun diagnostics(context: Context): String {
+    suspend fun diagnostics(context: Context): String = io { diagnosticsOnIo(context) }
+
+    private suspend fun diagnosticsOnIo(context: Context): String {
         val c = client
         val enc = c?.encryption()
         val rooms = _agentRooms.value
@@ -634,4 +676,11 @@ object Matrix {
     }
 
     fun launch(block: suspend CoroutineScope.() -> Unit) = scope.launch(block = block)
+
+    /**
+     * SDK calls never run on the main thread: the SDK does network work on
+     * the thread that polls it, and Android's TLS certificate check
+     * (rustls-platform-verifier) throws NetworkOnMainThreadException there.
+     */
+    private suspend fun <T> io(block: suspend CoroutineScope.() -> T): T = kotlinx.coroutines.withContext(Dispatchers.IO, block)
 }

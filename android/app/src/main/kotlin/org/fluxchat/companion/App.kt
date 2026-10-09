@@ -9,6 +9,9 @@ import org.fluxchat.companion.matrix.Matrix
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Before any client: the SDK needs the Context to verify TLS certificates.
+        runCatching { org.matrix.rustsdk.Android.init(this) }
+            .onFailure { Diag.error("Initializing the SDK for Android (TLS will fail)", it) }
         Matrix.init(this)
         Notifications.createChannels(this)
         Matrix.launch { Matrix.ensureStarted() }

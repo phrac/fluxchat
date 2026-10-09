@@ -112,5 +112,8 @@ private fun formattedBody(t: MessageType): String? = when (t) {
     else -> null
 }
 
-private fun summary(c: TimelineItemContent): String? =
+private fun summary(c: TimelineItemContent): String? = contentBody(c)
+
+/** A message's text (other content: null). */
+fun contentBody(c: TimelineItemContent): String? =
     ((c as? TimelineItemContent.MsgLike)?.content?.kind as? MsgLikeKind.Message)?.content?.body

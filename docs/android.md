@@ -6,7 +6,7 @@ The app is new and early. Build it from source (below); there's no store release
 
 ## Signing in
 
-Sign in with your Matrix account; the phone becomes a new session. If your account has key backup, the app asks for your **recovery key** next. That unlocks encrypted agent rooms and verifies the phone. You can skip it, but encrypted rooms then stay unreadable on the phone.
+Sign in with your Matrix account (a username, `@name`, or a full `@name:server`); the phone becomes a new session. If your account has key backup, the app asks for your **recovery key** next. That unlocks encrypted agent rooms and verifies the phone. You can skip it, but encrypted rooms then stay unreadable on the phone.
 
 ## Your agents
 
@@ -39,6 +39,16 @@ The chips at the top filter to **Needs you** or **Running**. Pull down to refres
 - **`/` commands**: type `/` for the agent's commands as you type. They go out the way its harness takes them (`!stop` for Hermes).
 - **The ⋮ menu** has the agent's quick commands: Status, Usage, Context, Model, New session.
 - **Threads follow you.** Send a request from a room. When the agent starts on it in a thread, the thread opens.
+
+## Sessions
+
+Hermes keeps one session per thread. Instead of scrolling back through a room for an older session, tap the **clock icon** in a room's top bar for its **Sessions**: every thread in the room, from your server (not just the loaded history), grouped by last activity (Today, Yesterday, Previous 7 days, Previous 30 days, Older).
+- **Each row:** the session's title (your request), its latest reply, when it was last active, and the run's state. A live run shows its step instead of the latest reply.
+- **Search** filters by the request or the latest reply.
+- **Tap a session** to open it. From one session to another, Back still goes to the room.
+- **New session:** in a room, it takes you to the room to send a fresh request, which opens a new thread. In a DM, where the agent doesn't use threads, it sends the agent's new-session command (`!new` for Hermes).
+
+On a wide screen (840 dp or more: a tablet, an unfolded foldable, a phone in landscape) the sessions stay open in a sidebar beside the chat. On a phone the drawer opens from its button, not a swipe from the left edge, since that's Android's back gesture.
 
 ## Notifications
 
