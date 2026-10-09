@@ -368,9 +368,60 @@ private fun MessageList(
             u in agents && list.harnessOf(u).let { h -> r.emoji in setOf(h.workingReaction, h.doneReaction, h.failedReaction) - "" }
         }
     }
+    // A session as turns: finished work folded under one line, the answer standing out.
+    val entries = remember(msgs, run?.state, now / 60_000, transcript) {
+        if (!transcript) emptyList()
+        else transcriptEntries(msgs, agents, live = run?.state?.live == true) { i ->
+            val m = msgs[i]
+            m.sender in agents && (Runs.openPrompt(msgs, i, list.harnessOf(m.sender), now).isNotEmpty() ||
+                Runs.pendingQuestion(msgs, i, m.sender, list.harnessOf(m.sender), now) != null)
+        }.asReversed()
+    }
+    @Composable
+    fun transcriptRow(i: Int, prev: Msg?) {
+        val m = msgs[i]
+        val isAgent = m.sender in agents
+        val h = list.harnessOf(m.sender)
+        val prompt = if (isAgent) Runs.openPrompt(msgs, i, h, now) else emptyList()
+        TranscriptRow(
+            m = m,
+            prev = prev,
+            isAgent = isAgent,
+            hiddenReactions = statusReaction,
+            answered = if (isAgent && prompt.isEmpty()) Runs.answeredApproval(m, h, agents) else null,
+            prompt = prompt,
+            question = if (isAgent) Runs.pendingQuestion(msgs, i, m.sender, h, now) else null,
+            live = m.id == liveSteps,
+            onReact = { key -> scope.launch { react(model, roomId, m.id, key) } },
+            onAnswer = { text -> scope.launch { send(model, roomId, root, text) } },
+        )
+    }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(state = state, reverseLayout = true, contentPadding = PaddingValues(vertical = 8.dp), modifier = Modifier.fillMaxSize()) {
-            itemsIndexed(reversed, key = { _, m -> m.id }) { ri, m ->
+            if (transcript) items(entries, key = { it.key }) { e ->
+                when (e) {
+                    is TranscriptEntry.Row -> Column {
+                        val before = msgs.getOrNull(e.index - 1)
+                        val newDay = before == null || !sameDay(before.ts, msgs[e.index].ts)
+                        if (newDay) DaySeparator(msgs[e.index].ts)
+                        transcriptRow(e.index, if (newDay) null else e.prev)
+                    }
+                    is TranscriptEntry.Answer -> Column {
+                        val a = msgs[e.answerIndex]
+                        val before = msgs.getOrNull((e.work?.indices?.first() ?: e.answerIndex) - 1)
+                        if (before == null || !sameDay(before.ts, a.ts)) DaySeparator(a.ts)
+                        // ✅ / ❌ from the agent on the request, else (the latest turn) the run's state.
+                        val asked = e.askedIndex?.let { msgs[it] }
+                        val outcome = asked?.let { Runs.requestState(list.harnessOf(a.sender), it, a.sender) }?.takeIf { !it.live }
+                            ?: run?.state?.takeIf { e.done.latest && !it.live }
+                            ?: RunState.Done
+                        TranscriptAnswer(e, a, run, outcome) {
+                            e.work?.indices?.forEachIndexed { n, i -> transcriptRow(i, if (n == 0) null else msgs[e.work.indices[n - 1]]) }
+                        }
+                    }
+                    is TranscriptEntry.Work, is TranscriptEntry.Done -> {}
+                }
+            } else itemsIndexed(reversed, key = { _, m -> m.id }) { ri, m ->
                 val i = msgs.size - 1 - ri
                 val prev = msgs.getOrNull(i - 1)
                 val next = msgs.getOrNull(i + 1)
@@ -383,18 +434,7 @@ private fun MessageList(
                 val question = if (isAgent) Runs.pendingQuestion(msgs, i, m.sender, h, now) else null
                 Column {
                     if (newDay) DaySeparator(m.ts)
-                    if (transcript) TranscriptRow(
-                        m = m,
-                        prev = if (newDay) null else prev,
-                        isAgent = isAgent,
-                        hiddenReactions = statusReaction,
-                        answered = if (isAgent && prompt.isEmpty()) Runs.answeredApproval(m, h, agents) else null,
-                        prompt = prompt,
-                        question = question,
-                        live = m.id == liveSteps,
-                        onReact = { key -> scope.launch { react(model, roomId, m.id, key) } },
-                        onAnswer = { text -> scope.launch { send(model, roomId, root, text) } },
-                    ) else MessageRow(
+                    MessageRow(
                         m = m,
                         continued = continued,
                         lastInGroup = lastInGroup,

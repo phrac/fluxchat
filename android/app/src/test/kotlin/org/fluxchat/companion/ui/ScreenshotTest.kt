@@ -191,6 +191,28 @@ class ScreenshotTest {
         }
     }
 
+    @Composable
+    private fun FinishedTurn() {
+        val prompt = msg("p", me, 8, "Find the watercolor one and add it to the AI album too")
+        val answer = msg("a", hermes, 1, "Found it and added — `watercolor_pack.png` (asset `66b4751e…`) is now in the **AI Generated** album, count read back at **115**.\n\nIt slipped through my earlier sweep because its filename has no generator signature, so the DB filename scan didn't flag it.")
+        Column {
+            TranscriptRow(prompt, null, false, { false }, emptyList(), null, false, {}, {})
+            TranscriptAnswer(
+                TranscriptEntry.Answer(
+                    TranscriptEntry.Work(listOf(1, 2), answer, 31, 2, 6 * 60_000L), 3, "a",
+                    TranscriptEntry.Done(3, "a", 6 * 60_000L, 31, latest = true),
+                ),
+                answer, RunInfo(RunState.Done, now - 8 * 60_000, agent = hermes, costUsd = 0.34),
+            ) {}
+            TranscriptAnswer(
+                TranscriptEntry.Answer(null, 4, "b", TranscriptEntry.Done(4, "b", 40_000L, 3, latest = false)),
+                msg("b", hermes, 0, "Couldn't reach the Immich API: connection refused on port 2283."), null, RunState.Failed,
+            ) {}
+        }
+    }
+
+    @Test fun turnLight() = shoot("turn", false) { FinishedTurn() }
+    @Test fun turnDark() = shoot("turn", true) { FinishedTurn() }
     @Test fun answerLight() = shoot("answer", false) { FinalAnswer() }
     @Test fun answerDark() = shoot("answer", true) { FinalAnswer() }
     @Test fun transcriptLight() = shoot("transcript", false) { Transcript() }
