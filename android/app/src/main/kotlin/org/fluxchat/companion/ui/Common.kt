@@ -78,7 +78,7 @@ fun runLine(run: RunInfo, now: Long): String = buildList {
     add(run.state.label)
     if (run.state.live) add(elapsed(run.since, now))
     // A finished run's last step is old news.
-    if (run.state.live) run.step?.let { add(if (run.steps > 1) "$it (${run.steps})" else it) }
+    if (run.state.live) Runs.stepLabel(run.step)?.let { add(if (run.steps > 1) "$it (${run.steps})" else it) }
     run.costUsd?.let { add("$" + String.format(java.util.Locale.US, "%.2f", it)) }
 }.joinToString(" · ")
 

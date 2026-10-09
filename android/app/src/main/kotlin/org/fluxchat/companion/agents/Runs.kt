@@ -100,6 +100,16 @@ object Runs {
         return "${r.emoji} ${choiceLabel(r.emoji, msg.body, h.approvals)}"
     }
 
+    /**
+     * A run's step as a status line shows it: a heartbeat ("⏳ Working — 3 min
+     * — iteration 17/150, execute_code") cut to what's new in it, since the
+     * line already says Working and for how long.
+     */
+    fun stepLabel(step: String?): String? {
+        val s = step?.replace("`", "") ?: return null
+        return if (isHeartbeat(s)) s.substringAfterLast(" — ").takeIf { it.isNotBlank() && it != s } ?: s else s
+    }
+
     /** Hermes's timer heartbeat ("⏳ Working — 3 min — iteration 15/150, terminal"): a status line, not tool work. */
     fun isHeartbeat(body: String): Boolean = body.trim().let { b -> b.startsWith("⏳") && '\n' !in b }
 

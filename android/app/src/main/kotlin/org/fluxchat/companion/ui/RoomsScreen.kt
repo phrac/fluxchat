@@ -63,6 +63,11 @@ import org.fluxchat.companion.agents.ViewKey
 import org.fluxchat.companion.matrix.AgentRoom
 import org.fluxchat.companion.matrix.Matrix
 
+/** Agent rooms: waiting on you, then running, then by last activity. */
+internal val AGENT_ROOM_ORDER: Comparator<AgentRoom> =
+    compareBy<AgentRoom> { r -> r.headline?.second?.takeIf { it.state.live }?.rank()?.first ?: 9 }
+        .thenByDescending { it.last?.ts ?: 0L }
+
 private enum class RoomFilter(val label: String) { All("All"), NeedsYou("Needs you"), Running("Running") }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -121,11 +126,13 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                             RoomFilter.NeedsYou -> r.runs.values.any { it?.state == RunState.NeedsYou }
                             RoomFilter.Running -> r.runs.values.any { it?.state == RunState.Working }
                         }
-                    }.sortedWith(
-                        compareBy<AgentRoom> { r -> r.headline?.second?.takeIf { it.state.live }?.rank()?.first ?: 9 }
-                            .thenByDescending { it.last?.ts ?: 0L },
-                    )
+                    }.sortedWith(AGENT_ROOM_ORDER)
+                    // Rooms re-sort as they load and as runs start: stay at the top while
+                    // you're there (Compose would follow the room that was first).
+                    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                    FollowNewest(listState, shown.map { it.roomId })
                     LazyColumn(
+                        state = listState,
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = pad.calculateBottomPadding() + 24.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize(),

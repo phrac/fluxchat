@@ -86,7 +86,12 @@ class TimelineModel(
 
     @Volatile private var refilling = false
 
-    /** Back-paginate until there's a screenful again (or the start). */
+    /**
+     * Back-paginate until there's a screenful again (or the start), with some
+     * of the room's own messages among it: in agent rooms the newest events
+     * are mostly session-thread replies, and the requests (whose 👀 says a
+     * run is going) sit further back.
+     */
     fun refill() {
         if (refilling) return
         refilling = true
@@ -94,7 +99,9 @@ class TimelineModel(
         scope.launch {
             try {
                 repeat(REFILL_PAGES) {
-                    if (_messages.value.size >= REFILL_BELOW || !paginateBack()) return@launch
+                    val msgs = _messages.value
+                    val own = msgs.count { it.threadRoot == null && it.isMessage }
+                    if (msgs.size >= REFILL_BELOW && (threadRoot != null || own >= REFILL_TOP_LEVEL) || !paginateBack()) return@launch
                 }
             } finally {
                 refilling = false
@@ -109,7 +116,9 @@ class TimelineModel(
     companion object {
         /** Messages a timeline should hold after a reset / at start. */
         const val REFILL_BELOW = 30
-        private const val REFILL_PAGES = 4
+        /** Room messages (not thread replies) a room timeline should hold after a reset / at start. */
+        private const val REFILL_TOP_LEVEL = 8
+        private const val REFILL_PAGES = 10
     }
 
     /** Load older messages. False once the start of the timeline is reached. */

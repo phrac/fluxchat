@@ -16,6 +16,7 @@ import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.ui.AppRoot
 import org.fluxchat.companion.ui.FluxTheme
 import org.fluxchat.companion.ui.Screen
+import org.fluxchat.companion.ui.ShareInbox
 
 class MainActivity : ComponentActivity() {
     /** A screen a notification asked for. */
@@ -28,7 +29,7 @@ class MainActivity : ComponentActivity() {
         installSplashScreen().setKeepOnScreenCondition { Matrix.auth.value == Auth.Starting }
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        opened.value = screenOf(intent)
+        if (savedInstanceState == null) opened.value = screenOf(intent)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -47,8 +48,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun screenOf(intent: Intent?): Screen? {
-        // ShareActivity has put what was shared in ShareInbox.
-        if (intent?.getBooleanExtra(EXTRA_SHARE, false) == true) return Screen.Share
+        // ShareActivity has put what was shared in ShareInbox. Taken once: the
+        // intent stays the task's, and a recreated app would open the picker again.
+        if (intent?.getBooleanExtra(EXTRA_SHARE, false) == true) {
+            intent.removeExtra(EXTRA_SHARE)
+            return if (ShareInbox.pending.value != null) Screen.Share else null
+        }
         val room = intent?.getStringExtra(EXTRA_ROOM) ?: return null
         val thread = intent.getStringExtra(EXTRA_THREAD)
         return if (thread != null) Screen.Thread(room, thread) else Screen.Room(room)

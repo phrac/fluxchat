@@ -476,7 +476,7 @@ internal fun RunCard(run: RunInfo, now: Long, canStop: Boolean, onStop: () -> Un
                         if (run.state.live) add(elapsed(run.since, now))
                         run.costUsd?.let { add("$" + String.format(java.util.Locale.US, "%.2f", it)) }
                     }.joinToString(" · "))
-                    run.step?.takeIf { run.state.live }?.let {
+                    Runs.stepLabel(run.step)?.takeIf { run.state.live }?.let {
                         Text(
                             if (run.steps > 1) "$it  (step ${run.steps})" else it,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,

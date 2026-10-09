@@ -33,9 +33,12 @@ data class Note(
 }
 
 object Notifier {
-    /** Answer buttons that fit beside Reply. */
-    private const val MAX_CHOICE_ACTIONS = 3
+    /** Answer buttons that fit beside Reply: Android shows three actions at most. */
+    private const val MAX_CHOICE_ACTIONS = 2
     const val REPLY_KEY = "reply"
+
+    /** A choice as its button / reply chip reads: "✅ Approve once", "1 Deploy". */
+    fun choiceTitle(key: String, label: String) = (if (label == key) key else "$key $label").take(40)
 
     /**
      * What an agent message should notify as, or null: step logs aren't news
@@ -85,16 +88,25 @@ object Notifier {
             .setGroup(note.roomId)
             .setCategory(if (prompt) NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(if (prompt) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
-        note.choices.take(MAX_CHOICE_ACTIONS).forEachIndexed { i, (key, label) ->
-            val action = if (note.kind == Note.Kind.Prompt) ActionReceiver.REACT else ActionReceiver.SEND
-            val title = if (label == key) key else "$key $label"
-            b.addAction(0, title.take(30), actionIntent(context, note, action, key, label, i))
+        val choiceAction = if (note.kind == Note.Kind.Prompt) ActionReceiver.REACT else ActionReceiver.SEND
+        buttons(note).forEachIndexed { i, (key, label) ->
+            b.addAction(0, choiceTitle(key, label).take(30), actionIntent(context, note, choiceAction, key, label, i))
         }
-        note.stopCommand?.let { b.addAction(0, "Stop", actionIntent(context, note, ActionReceiver.SEND, it, "Stop", 7)) }
-        // Reply: to the thread the message is in (or the room).
-        val input = RemoteInput.Builder(REPLY_KEY).setLabel("Reply to the agent").build()
+        if (note.choices.isEmpty()) note.stopCommand?.let { b.addAction(0, "Stop", actionIntent(context, note, ActionReceiver.SEND, it, "Stop", 7)) }
+        // Reply: to the thread the message is in (or the room). Every choice is
+        // a chip there too (the buttons only fit two); a picked chip answers
+        // as its button would.
+        val input = RemoteInput.Builder(REPLY_KEY)
+            .setLabel(if (note.choices.isEmpty()) "Reply to the agent" else "Answer, or pick one")
+            .apply { if (note.choices.size > MAX_CHOICE_ACTIONS) setChoices(note.choices.map { (k, l) -> choiceTitle(k, l) }.toTypedArray()) }
+            .build()
+        val reply = actionIntent(context, note, ActionReceiver.REPLY, "", "", 9, mutable = true) { i ->
+            i.putExtra(ActionReceiver.CHOICE_TITLES, note.choices.map { (k, l) -> choiceTitle(k, l) }.toTypedArray())
+                .putExtra(ActionReceiver.CHOICE_KEYS, note.choices.map { it.first }.toTypedArray())
+                .putExtra(ActionReceiver.CHOICE_ACTION, choiceAction)
+        }
         b.addAction(
-            NotificationCompat.Action.Builder(0, "Reply", actionIntent(context, note, ActionReceiver.REPLY, "", "", 9, mutable = true))
+            NotificationCompat.Action.Builder(0, if (note.choices.size > MAX_CHOICE_ACTIONS) "More" else "Reply", reply)
                 .addRemoteInput(input)
                 .setAllowGeneratedReplies(false)
                 .build(),
@@ -127,7 +139,20 @@ object Notifier {
         return PendingIntent.getActivity(context, ("open" + note.eventId).hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    private fun actionIntent(context: Context, note: Note, action: String, value: String, label: String, n: Int, mutable: Boolean = false): PendingIntent {
+    /**
+     * The answers that get buttons: all of them when they fit, else the first
+     * and the last (an approval's Approve once and Deny; the rest are chips).
+     */
+    fun buttons(note: Note): List<Pair<String, String>> = when {
+        note.choices.size <= MAX_CHOICE_ACTIONS -> note.choices
+        note.kind == Note.Kind.Prompt -> listOf(note.choices.first(), note.choices.last())
+        else -> note.choices.take(MAX_CHOICE_ACTIONS)
+    }
+
+    private fun actionIntent(
+        context: Context, note: Note, action: String, value: String, label: String, n: Int, mutable: Boolean = false,
+        extra: (Intent) -> Unit = {},
+    ): PendingIntent {
         val i = Intent(context, ActionReceiver::class.java)
             .setAction(action)
             .putExtra(ActionReceiver.ROOM, note.roomId)
@@ -135,6 +160,7 @@ object Notifier {
             .putExtra(ActionReceiver.THREAD, note.threadRoot)
             .putExtra(ActionReceiver.VALUE, value)
             .putExtra(ActionReceiver.LABEL, label)
+        extra(i)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
         return PendingIntent.getBroadcast(context, (note.eventId + n).hashCode(), i, flags)
     }

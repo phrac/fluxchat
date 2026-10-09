@@ -97,7 +97,7 @@ fun ShareScreen(back: () -> Unit, swap: (Screen) -> Unit) {
     val shared by ShareInbox.pending.collectAsState()
     val rooms by Matrix.agentRooms.collectAsState()
     val now by rememberNow(60_000)
-    val sorted = rooms.values.sortedByDescending { it.last?.ts ?: 0L }
+    val sorted = rooms.values.sortedWith(AGENT_ROOM_ORDER)
     Scaffold(topBar = {
         TopAppBar(
             navigationIcon = { IconButton(onClick = { ShareInbox.pending.value = null; back() }) { Icon(Icons.Filled.Close, "Cancel") } },
@@ -144,9 +144,10 @@ fun ShareScreen(back: () -> Unit, swap: (Screen) -> Unit) {
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(r.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val live = r.headline?.second?.takeIf { it.state.live }
                         Text(
-                            if (r.isDm) "Direct message" else "Room",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            listOfNotNull(if (r.isDm) "Direct message" else "Room", live?.state?.label).joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall, color = live?.state?.color() ?: MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     r.last?.let { Text(elapsed(it.ts, now), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }

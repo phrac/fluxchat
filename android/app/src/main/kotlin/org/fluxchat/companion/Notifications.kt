@@ -8,6 +8,7 @@ import android.content.Context
 object Notifications {
     const val PROMPTS = "prompts"
     const val RUNS = "runs"
+    const val LIVE = "live"
 
     fun createChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -19,6 +20,12 @@ object Notifications {
         nm.createNotificationChannel(
             NotificationChannel(RUNS, "Agent messages", NotificationManager.IMPORTANCE_DEFAULT).apply {
                 description = "Answers and finished runs"
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(LIVE, "Agents at work", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "What your agents are doing right now, with Stop"
+                setShowBadge(false)
             },
         )
     }

@@ -26,6 +26,8 @@ Each card shows:
 - the room's live thread runs, each one tap away;
 - unread counts.
 
+Rooms waiting on you come first, then rooms where an agent is working, then the rest by their latest activity (replies in session threads count).
+
 The chips at the top filter to **Needs you** or **Running**. Pull down to refresh.
 
 ## A room as its sessions
@@ -66,6 +68,10 @@ Hermes keeps one session per thread. In a thread (and in a room shown as its tim
 On a wide screen (840 dp or more: a tablet, an unfolded foldable, a phone in landscape) the sessions stay open in a sidebar beside the chat. On a phone the drawer opens from its button, not a swipe from the left edge, since that's Android's back gesture.
 
 ## Notifications
+
+**While an agent works**, a quiet ongoing notification shows who's working, on which session, the current step, a running timer and a progress bar, with **Stop**. With several runs it lists them all. It keeps fluxchat syncing in the background so it stays current, and goes away when the last run ends. (You can turn it off in Android's notification settings: *Agents at work*.)
+
+**Answering from the notification:** Android fits three buttons, so an approval gets **Approve once** and **Deny**, a question its first two choices, and **More** opens a reply box with every choice as a chip, or type your own answer.
 
 Push goes through [UnifiedPush](https://unifiedpush.org), with no Google services:
 1. Install a distributor app, such as [ntfy](https://ntfy.sh). It works with ntfy.sh or your own ntfy server.

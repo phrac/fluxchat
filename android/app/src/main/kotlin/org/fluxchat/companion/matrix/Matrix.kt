@@ -539,7 +539,8 @@ object Matrix {
                 agents = agents,
                 runs = r.runs,
                 prompts = r.prompts,
-                last = msgs.lastOrNull { it.isMessage && it.threadRoot == null },
+                // Latest activity anywhere in the room: in agent rooms most of it is in session threads.
+                last = msgs.lastOrNull { it.isMessage },
                 avatar = meta.avatar,
                 unread = meta.unread,
             )

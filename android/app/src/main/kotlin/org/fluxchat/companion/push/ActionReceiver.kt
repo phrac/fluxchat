@@ -19,10 +19,13 @@ class ActionReceiver : BroadcastReceiver() {
         val room = intent.getStringExtra(ROOM) ?: return
         val event = intent.getStringExtra(EVENT) ?: return
         val thread = intent.getStringExtra(THREAD)
-        val value = intent.getStringExtra(VALUE).orEmpty()
+        val value0 = intent.getStringExtra(VALUE).orEmpty()
         val label = intent.getStringExtra(LABEL).orEmpty()
-        val action = intent.action ?: return
         val reply = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(Notifier.REPLY_KEY)?.toString()
+        // A choice picked from the reply chips: answer as its button would.
+        val picked = reply?.let { r -> intent.getStringArrayExtra(CHOICE_TITLES)?.indexOf(r.trim())?.takeIf { it >= 0 } }
+        val action = if (picked != null) intent.getStringExtra(CHOICE_ACTION) ?: return else intent.action ?: return
+        val value = if (picked != null) intent.getStringArrayExtra(CHOICE_KEYS)?.getOrNull(picked) ?: return else value0
         val pending = goAsync()
         Matrix.init(context)
         Matrix.launch {
@@ -59,6 +62,9 @@ class ActionReceiver : BroadcastReceiver() {
         const val THREAD = "thread"
         const val VALUE = "value"
         const val LABEL = "label"
+        const val CHOICE_TITLES = "choice_titles"
+        const val CHOICE_KEYS = "choice_keys"
+        const val CHOICE_ACTION = "choice_action"
 
         /** A reaction's content. */
         fun reaction(eventId: String, key: String): String = JSONObject()
