@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">fluxchat</string>
+    <string name="new_session">New session</string>
+    <string name="new_session_hint">Ask your agent…</string>
+    <string name="widget_description">Start a session with your agent: type or speak</string>
+    <string name="dictate">Speak</string>
 </resources>

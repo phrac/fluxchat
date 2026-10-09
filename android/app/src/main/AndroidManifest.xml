@@ -8,6 +8,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Speech input for prompts (Android 11+ hides other apps' activities otherwise). -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
+
     <application
         android:name=".App"
         android:allowBackup="false"
@@ -60,6 +67,49 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- A new session from anywhere: the quick prompt sheet, its widget, tile and shortcuts. -->
+        <activity
+            android:name=".quick.QuickPromptActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:label="@string/new_session"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:windowSoftInputMode="adjustResize|stateAlwaysVisible" />
+
+        <activity
+            android:name=".quick.QuickWidgetConfig"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Fluxchat">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".quick.QuickWidget"
+            android:exported="false"
+            android:label="@string/new_session">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_quick_info" />
+        </receiver>
+
+        <service
+            android:name=".quick.QuickTile"
+            android:exported="true"
+            android:icon="@drawable/ic_new_session"
+            android:label="@string/new_session"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".push.RunService"

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The home-screen widget, drawn as a text field: tap to type a new session's request (the
+     keyboard comes up in the quick prompt), the mic to speak it. -->
+<!-- A pill of fixed height, centred in whatever cell the widget gets (like the search bar). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="56dp"
+    android:layout_gravity="center_vertical"
+    android:background="@drawable/widget_bg"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="18dp"
+    android:paddingEnd="6dp">
+
+    <ImageView
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:importantForAccessibility="no"
+        android:src="@drawable/ic_new_session"
+        android:tint="@color/widget_text_dim" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/widget_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/new_session_hint"
+            android:textColor="@color/widget_text_dim"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/widget_room"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/new_session"
+            android:textColor="@color/widget_text"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/widget_mic"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:background="@drawable/widget_mic_bg"
+        android:contentDescription="@string/dictate"
+        android:padding="11dp"
+        android:src="@drawable/ic_mic"
+        android:tint="@color/widget_on_accent" />
+</LinearLayout>
+</FrameLayout>

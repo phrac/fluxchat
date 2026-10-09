@@ -30,6 +30,17 @@ Rooms waiting on you come first, then rooms where an agent is working, then the 
 
 The chips at the top filter to **Needs you** or **Running**. Pull down to refresh.
 
+## Start a session from anywhere
+
+A small **New session** sheet opens over whatever you're doing: pick the agent room (it starts on the one you last asked something in), type or speak the request, **Send**. It closes once sent, and the live run notification takes over. The ↗ button opens the room instead. Open the sheet from:
+- **the home-screen widget** (*fluxchat → New session*): a text field (*Ask fbhermes…*, its room under it) and a mic. When you add it, pick its room: one of your agent rooms, or *the room I last used*; add one per room if you like, and long-press it to change its room. Widgets can't take typing themselves, so a tap opens the sheet with the keyboard up, and the mic opens it listening;
+- **the Quick Settings tile** (edit your Quick Settings and drag *New session* in);
+- **a long-press on the app icon**: a *New session in …* shortcut for each of your top agent rooms.
+
+## Speak instead of typing
+
+The **mic** in the message box (and in the New session sheet) uses your phone's speech input; what you say lands in the box to check and edit before you send. fluxchat doesn't record anything itself, so it needs no microphone permission.
+
 ## A room as its sessions
 
 In a room where the agent answers each request in its own thread (Hermes outside DMs), every message you send starts a new session. So the room shows its **sessions as cards** instead of a chat, newest at the bottom by the message box:

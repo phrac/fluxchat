@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Image
@@ -301,6 +302,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 onSend = { text, mode ->
                     val out = Runs.outgoing(harness, text, run?.state == RunState.Working, mode, agent?.takeIf { !Matrix.isDm(roomId) })
                     if (root == null) sentAt = System.currentTimeMillis()
+                    org.fluxchat.companion.quick.Quick.remember(context, roomId)
                     sendRaw(out)
                 },
             )
@@ -564,6 +566,7 @@ internal fun Composer(
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia(), picked)
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument(), picked)
     val modes = BusyMode.available(harness)
+    val dictate = rememberDictation { said -> text = withDictation(text, said) }
     val shared by ShareInbox.pending.collectAsState()
     LaunchedEffect(shareFor, shared) {
         if (shareFor != null && shared != null) ShareInbox.take(shareFor)?.let { s ->
@@ -631,6 +634,7 @@ internal fun Composer(
                     )
                 },
                 maxLines = 6,
+                trailingIcon = dictate?.let { d -> { IconButton(onClick = d) { Icon(Icons.Outlined.Mic, "Speak") } } },
                 shape = RoundedCornerShape(28.dp),
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,

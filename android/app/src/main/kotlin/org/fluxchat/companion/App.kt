@@ -17,6 +17,7 @@ class App : Application() {
         Matrix.launch { Matrix.ensureStarted() }
         org.fluxchat.companion.push.PromptWatcher.start(this)
         org.fluxchat.companion.push.LiveRuns.start(this)
+        org.fluxchat.companion.quick.Quick.start(this)
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground = true
