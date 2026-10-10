@@ -97,7 +97,7 @@ jobs:
         run: |
           VERSION="${TAG#v}"
           PREV=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
-            --jq "[.[] | select(.draft==false and .prerelease==false and .tag_name != env.TAG) | .tag_name] | sort_by(sub(\"^v\"; \"\") | split(\".\") | map(tonumber)) | last // \"\"")
+            --jq '[.[] | select(.draft==false and .prerelease==false and .tag_name != env.TAG) | .tag_name] | sort_by(sub("^v"; "") | split(".") | map(tonumber? // 0)) | last // empty' || true)
           {
             echo "## Desktop ${VERSION}"
             echo
