@@ -9,6 +9,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import org.fluxchat.companion.Diag
 
 /**
  * The run history on disk, encrypted with a key that never leaves the
@@ -32,6 +33,9 @@ object HistoryStore {
             val cipher = Cipher.getInstance(TRANSFORM)
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
             cipher.doFinal(bytes.copyOfRange(IV_BYTES, bytes.size))
+        }.onFailure {
+            // A history that won't decrypt is about to be overwritten: say so (Diag, not silence).
+            Diag.error("Reading the run history (it will be lost on the next save)", it)
         }.getOrNull()
     }
 
@@ -42,8 +46,11 @@ object HistoryStore {
             val out = cipher.iv + cipher.doFinal(plain)
             val tmp = File(file(context).path + ".tmp")
             tmp.writeBytes(out)
-            tmp.renameTo(file(context))
-        }
+            if (!tmp.renameTo(file(context))) {
+                tmp.copyTo(file(context), overwrite = true)
+                tmp.delete()
+            }
+        }.onFailure { Diag.error("Saving the run history", it) }
     }
 
     fun clear(context: Context) {
