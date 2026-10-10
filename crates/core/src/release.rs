@@ -128,7 +128,7 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
-    fn temp_db(name: &str) -> (AppDb, std::path::PathBuf) {
+    fn temp_db() -> (AppDb, std::path::PathBuf) {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "fluxchat-release-test-{}-{}",
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn rate_limit_gates_attempts() {
-        let (db, dir) = temp_db("rate");
+        let (db, dir) = temp_db();
         assert!(due_now(&db, false)); // never checked
         stamp_attempt(&db);
         assert!(!due_now(&db, false)); // just checked
