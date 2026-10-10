@@ -920,7 +920,7 @@ object Matrix {
             space.sendStateEventRaw(
                 org.fluxchat.companion.agents.Projects.SPACE_CHILD,
                 roomId,
-                org.fluxchat.companion.agents.Projects.spaceChildContent(roomId, via),
+                org.fluxchat.companion.agents.Projects.spaceChildContent(via),
             )
             Diag.note("project $roomId filed into space $spaceId")
         } catch (e: Exception) {
