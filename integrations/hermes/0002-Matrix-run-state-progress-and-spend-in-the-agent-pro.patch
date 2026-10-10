@@ -1,8 +1,11 @@
-From d5e93ed7fb781aba51a3fa23f11fb18e0b173691 Mon Sep 17 00:00:00 2001
+From 28f34102903c79c7241c3decdb95cc377a490e84 Mon Sep 17 00:00:00 2001
 From: Derek Musselmann <derek@disflux.com>
 Date: Thu, 8 Oct 2026 10:49:27 -0500
 Subject: [PATCH 2/2] Matrix: run state, progress and spend in the agent
  protocol
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 The tool-progress bubble carries org.fluxchat.agent state "working" with
 the latest step and the step count; the final reply carries "done" or
@@ -10,17 +13,41 @@ the latest step and the step count; the final reply carries "done" or
 when the run ends the adapter edits the bubble to the same final state.
 Approval prompts name the run they hold up. Only adapters that declare
 AGENT_STATUS (Matrix) get the metadata; others see no change.
+
+The final reply's one-line result defaults to the reply's first line, so
+the Matrix platform hint now tells the agent to open its final reply with
+a reader-facing outcome headline ("Deployed v0.2.0") — otherwise the
+result is a transcript fragment. The field stays optional and the
+emitter's fallback is unchanged: old callers behave exactly as before.
 ---
- gateway/agent_status.py             |  85 +++++++++++
- gateway/platforms/base.py           |   4 +
- gateway/run_turn.py                 |   4 +
- gateway/run_turn_runner.py          |  29 +++-
- plugins/platforms/matrix/adapter.py |  51 ++++++-
- tests/gateway/test_agent_status.py  | 227 ++++++++++++++++++++++++++++
- 6 files changed, 392 insertions(+), 8 deletions(-)
+ agent/prompt_builder.py                     |   5 +-
+ gateway/agent_status.py                     |  85 ++++++++
+ gateway/platforms/base.py                   |   4 +
+ gateway/run_turn.py                         |   4 +
+ gateway/run_turn_runner.py                  |  29 ++-
+ plugins/platforms/matrix/adapter.py         |  51 ++++-
+ tests/gateway/test_agent_status.py          | 227 ++++++++++++++++++++
+ tests/gateway/test_matrix_agent_protocol.py |   9 +
+ 8 files changed, 405 insertions(+), 9 deletions(-)
  create mode 100644 gateway/agent_status.py
  create mode 100644 tests/gateway/test_agent_status.py
 
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 3a7c48b709..e840088ad7 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -792,7 +792,10 @@ PLATFORM_HINTS = {
+         "text \u2014 use '**Label:** value' lines or bullets), and avoid ||spoilers||, ~~strikethrough~~, and "
+         "checkboxes (they appear as literal characters). Prefer [descriptive text](url) over bare URLs. "
+         f"{_MEDIA_NATIVE}Images send as inline photos, audio (.ogg, .mp3) as voice/audio "
+-        "messages, video (.mp4) inline, other files as attachments."
++        "messages, video (.mp4) inline, other files as attachments. Final replies: open with a "
++        "one-line outcome headline (\u201cDeployed v0.2.0\u201d, \u201c2 tests still failing\u201d) \u2014 "
++        "agent clients on this protocol show your reply's first line as the run's result, so write "
++        "it for readers who won't open the thread, then the answer itself."
+     ),
+     "feishu": (
+         "You are in a Feishu (Lark) workspace communicating with your user. Feishu renders Markdown in "
 diff --git a/gateway/agent_status.py b/gateway/agent_status.py
 new file mode 100644
 index 0000000000..0fd3660725
@@ -603,6 +630,23 @@ index 0000000000..5e0c664b68
 +    await adapter.on_processing_complete(_event({"v": 1, "state": "done", "run": "$req"}), ProcessingOutcome.SUCCESS)
 +    assert edits[-1]["m.relates_to"]["event_id"] == "$e1", "the progress bubble is settled, not the prompt"
 +    assert edits[-1]["m.new_content"][KEY]["state"] == "done"
+diff --git a/tests/gateway/test_matrix_agent_protocol.py b/tests/gateway/test_matrix_agent_protocol.py
+index ac5265fbc0..81ccdb49fa 100644
+--- a/tests/gateway/test_matrix_agent_protocol.py
++++ b/tests/gateway/test_matrix_agent_protocol.py
+@@ -69,3 +69,12 @@ async def test_edit_puts_status_in_new_content(monkeypatch):
+     await adapter.edit_message("!r:example.org", "$m", "Working on it", agent_status={"v": 1, "state": "done"})
+     assert captured[0]["m.new_content"][KEY] == {"v": 1, "state": "done"}
+     assert captured[0][KEY] == {"v": 1, "state": "done"}
++
++def test_matrix_hint_teaches_the_result_headline():
++    """The Matrix platform prompt tells the agent to open its final reply with a
++    one-line outcome: the adapter's default `result` is the reply's first line, so
++    the headline has to come from the agent, not from trimming the transcript."""
++    from agent.prompt_builder import PLATFORM_HINTS
++    hint = PLATFORM_HINTS["matrix"]
++    assert "first line" in hint
++    assert "result" in hint
 -- 
 2.47.3
 
