@@ -50,6 +50,8 @@ android {
 
     buildFeatures {
         compose = true
+        // Update.kt reads VERSION_NAME for the release check (off by default in AGP 8).
+        buildConfig = true
     }
 
     testOptions {
