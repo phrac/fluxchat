@@ -31,9 +31,6 @@ fn latest_api_url() -> String {
 const LAST_CHECK_KEY: &str = "update_last_check";
 const CHECK_INTERVAL_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// The version this binary was built as (`crates/app/Cargo.toml`).
-pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// Dot-separated versions compared part by part (numeric when both sides
 /// are numeric, else lexicographic); a longer version wins ties, so
 /// 0.3 > 0.2.9 and 0.2.2.1 > 0.2.2. Mirrors `Update.isNewer` on Android.
@@ -57,11 +54,14 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
     false // equal
 }
 
-/// Release tag (minus the `v`) newer than `APP_VERSION`, if `latest_tag`
-/// is one. The single place the tag prefix is stripped.
-pub fn available_update(latest_tag: &str) -> Option<String> {
+/// Release tag (minus the `v`) newer than `current`, if `latest_tag` is
+/// one. `current` is the caller's build version — the app crate passes
+/// its own `CARGO_PKG_VERSION` (a constant here would bake in *core's*
+/// version, which versions independently and would pin the chip to
+/// always-on). The single place the tag prefix is stripped.
+pub fn available_update(current: &str, latest_tag: &str) -> Option<String> {
     let name = latest_tag.trim().trim_start_matches('v');
-    is_newer(APP_VERSION, name).then(|| name.to_string())
+    is_newer(current, name).then(|| name.to_string())
 }
 
 /// Whether the rate-limit window lets us hit the API. The last-check
@@ -142,13 +142,13 @@ mod tests {
     }
 
     #[test]
-    fn available_update_compares_against_the_compiled_version() {
-        // Same version as this build: never newer than itself.
-        assert_eq!(available_update(&format!("v{APP_VERSION}")), None);
-        assert_eq!(available_update(APP_VERSION), None);
-        assert_eq!(available_update("v0.0.0"), None);
-        // A version ahead of anything a released crate has ever carried.
-        assert_eq!(available_update("v999999.0"), Some("999999.0".into()));
+    fn available_update_compares_against_the_given_build_version() {
+        // Same version as the build: never newer than itself.
+        assert_eq!(available_update("0.2.2", "v0.2.2"), None);
+        assert_eq!(available_update("0.2.2", "0.2.2"), None);
+        assert_eq!(available_update("0.2.2", "v0.0.0"), None);
+        assert_eq!(available_update("0.2.2", "v0.2.3"), Some("0.2.3".into()));
+        assert_eq!(available_update("0.2.2", "v999999.0"), Some("999999.0".into()));
     }
 
     #[test]

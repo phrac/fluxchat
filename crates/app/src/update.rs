@@ -373,7 +373,10 @@ impl FluxChat {
         Task::perform(
             async move {
                 match fluxchat_core::release::fetch_latest_tag().await {
-                    Ok(tag) => Ok(fluxchat_core::release::available_update(&tag)),
+                    Ok(tag) => Ok(fluxchat_core::release::available_update(
+                        env!("CARGO_PKG_VERSION"),
+                        &tag,
+                    )),
                     Err(e) => Err(format!("{e}")),
                 }
             },
@@ -473,7 +476,7 @@ impl FluxChat {
             Message::UpdateChecked(result) => {
                 match result {
                     Ok(Some(version)) => {
-                        tracing::info!("update: {version} available (running {})", fluxchat_core::release::APP_VERSION);
+                        tracing::info!("update: {version} available (running {})", env!("CARGO_PKG_VERSION"));
                         self.update_available = Some(version);
                     }
                     Ok(None) => self.update_available = None,
