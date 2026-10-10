@@ -48,6 +48,7 @@ In a room where the agent answers each request in its own thread (Hermes outside
 - **A request you just sent** shows straight away as *Waiting for the agent* until the agent picks it up.
 - **Every session in the room** is there, from your server, not only the loaded history; older ones load as you scroll up. Messages in the room that aren't requests get a card too, so nothing is hidden.
 - **Tap a card** to open the session. The message box starts a new one.
+- **Long-press a card** to **pin** the session (long-press again to unpin). Pinned sessions move to a **Pinned** block at the top of the room, above everything else, and the project keeps its place at the top of the Projects list no matter how much newer work arrives.
 - **The chat icon** in the top bar switches to the room's plain timeline; the cards icon switches back.
 
 DMs, and rooms where the agent answers in the conversation itself, stay a chat.
@@ -74,6 +75,8 @@ Hermes keeps one session per thread. In a thread (and in a room shown as its tim
 - **Each row:** the session's title (your request), its latest reply, when it was last active, and the run's state. A live run shows its step instead of the latest reply.
 - **Search** filters by the request or the latest reply.
 - **Tap a session** to open it. From one session to another, Back still goes to the room.
+- **Long-press a session** to **pin** it (long-press again to unpin). Pinned sessions sit at the top of the list in their own block; a pin also keeps the project at the top of the Projects list. Pins live on your account, so the desktop sees them too.
+- **A session's own screen** has the same pin as a 📌 button in its top bar.
 - **New session:** in a room, it takes you to the room to send a fresh request, which opens a new thread. In a DM, where the agent doesn't use threads, it sends the agent's new-session command (`!new` for Hermes).
 
 On a wide screen (840 dp or more: a tablet, an unfolded foldable, a phone in landscape) the sessions stay open in a sidebar beside the chat. On a phone the drawer opens from its button, not a swipe from the left edge, since that's Android's back gesture.

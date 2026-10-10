@@ -154,6 +154,9 @@ object Matrix {
     val error: StateFlow<String?> = _error
     private val _agentList = MutableStateFlow(AgentList())
     val agentList: StateFlow<AgentList> = _agentList
+    private val _pins = MutableStateFlow(PinStore.Pins())
+    /** Pinned sessions (account data, the same shape the desktop reads). */
+    val pins: StateFlow<PinStore.Pins> = _pins
 
     private val roomsLock = Any()
     private val recomputeLock = Any()
@@ -298,6 +301,7 @@ object Matrix {
                 // Sync delivers account data with the room list: the agent
                 // list may have just arrived (it isn't there at first start).
                 loadAgentList()
+                loadPins()
                 refreshAgentRooms(rooms, _agentList.value)
             }
             .launchIn(scope)
@@ -342,6 +346,7 @@ object Matrix {
         File(appContext.filesDir, "matrix").deleteRecursively()
         File(appContext.cacheDir, "matrix").deleteRecursively()
         _agentList.value = AgentList()
+        _pins.value = PinStore.Pins()
         _auth.value = Auth.SignedOut
     }
 
@@ -450,6 +455,9 @@ object Matrix {
             agentMembers.clear()
             agentMembers.putAll(found)
         }
+        // A project you left keeps no pins: prune keeps the shared list honest.
+        val pruned = _pins.value.prune(found.keys)
+        if (pruned != _pins.value) _pins.value = pruned
         if (found.keys != before) Diag.note("agent rooms: ${found.size} of ${rooms.size} rooms (${found.values.flatten().distinct().joinToString()})")
         // Timelines: open new agent rooms', close the ones that aren't any more.
         for (roomId in found.keys) {
@@ -745,6 +753,48 @@ object Matrix {
     }
 
     @Volatile private var agentListMissingNoted = false
+
+    // --- Pinned sessions (account data, shared with desktop fluxchat) ---
+
+    suspend fun loadPins() = io { loadPinsOnIo() }
+
+    private suspend fun loadPinsOnIo() {
+        val c = client ?: return
+        // Same dance as the agent list: the store once sync delivered it, the
+        // server otherwise; a failure there must never clear local pins.
+        val stored = runCatching { c.accountData(PinStore.TYPE) }
+            .onFailure { Diag.error("Reading the pinned sessions from the store", it) }.getOrNull()
+        val json = stored ?: fetchAccountData(c, PinStore.TYPE) ?: return
+        val pins = PinStore.parse(json)
+        if (pins != _pins.value) {
+            _pins.value = pins
+            Diag.note("pinned sessions${if (stored == null) " (from the server)" else ""}: ${pins.pins.size}")
+        }
+    }
+
+    /** Pin or unpin one session; true once the account accepted it. */
+    suspend fun setPinned(roomId: String, root: String, pinned: Boolean): Boolean = io { setPinnedOnIo(roomId, root, pinned) }
+
+    private suspend fun setPinnedOnIo(roomId: String, root: String, pinned: Boolean): Boolean {
+        val c = client ?: return false
+        val now = System.currentTimeMillis()
+        // Re-read the account's list first: another device may have pinned in
+        // the meantime and sync hasn't delivered it yet.
+        loadPinsOnIo()
+        val current = _pins.value.pins.filterNot { it.roomId == roomId && it.root == root }
+        val next = PinStore.Pins(
+            (if (pinned) listOf(Pin(roomId, root, now)) else emptyList()) + current
+                .sortedByDescending { it.pinnedAt },
+        )
+        return try {
+            c.setAccountData(PinStore.TYPE, next.toJson())
+            _pins.value = next
+            true
+        } catch (e: Exception) {
+            _error.value = "Couldn't save the pinned sessions: ${e.message}"
+            false
+        }
+    }
 
     /** One global account data event's content from the server (null: not set, or it failed). */
     private suspend fun fetchAccountData(c: Client, type: String): String? = kotlinx.coroutines.withContext(Dispatchers.IO) {

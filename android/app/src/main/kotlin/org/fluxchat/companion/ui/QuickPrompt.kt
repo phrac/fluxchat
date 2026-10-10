@@ -71,7 +71,8 @@ fun QuickPromptSheet(roomArg: String?, voice: Boolean, onOpen: (String) -> Unit,
     val auth by Matrix.auth.collectAsState()
     val rooms by Matrix.agentRooms.collectAsState()
     val list by Matrix.agentList.collectAsState()
-    val ordered = remember(rooms) { rooms.values.sortedWith(AGENT_ROOM_ORDER) }
+    val pins by Matrix.pins.collectAsState()
+    val ordered = remember(rooms, pins) { rooms.values.sortedWith(agentRoomOrder(pins)) }
     var roomId by rememberSaveable { mutableStateOf(roomArg ?: Quick.room(context)) }
     val room = rooms[roomId] ?: ordered.firstOrNull()
     var text by rememberSaveable { mutableStateOf("") }
