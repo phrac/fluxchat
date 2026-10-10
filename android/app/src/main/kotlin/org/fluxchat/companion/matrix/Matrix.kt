@@ -530,7 +530,7 @@ object Matrix {
             room.members().use { members ->
                 var seen = 0u
                 while (seen < members.len() && !present.containsAll(wanted)) {
-                    val chunk = members.nextChunk(256u)
+                    val chunk = members.nextChunk(256u) ?: break
                     if (chunk.isEmpty()) break
                     seen += chunk.size.toUInt()
                     for (m in chunk) if (m.userId in wanted &&
