@@ -309,6 +309,7 @@ object Runs {
                 costUsd = cost[runId],
                 model = l.p.model,
                 context = l.p.context,
+                result = l.p.result,
             )
         }
     }

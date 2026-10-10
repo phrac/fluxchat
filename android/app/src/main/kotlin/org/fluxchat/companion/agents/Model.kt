@@ -80,6 +80,8 @@ data class RunInfo(
     val costUsd: Double? = null,
     val model: String? = null,
     val context: Float? = null,
+    /** How the run ended, one line (protocol `result`), once it has. */
+    val result: String? = null,
 ) {
     /** For picking between two reports on one view: the livelier. */
     fun rank(): Pair<Int, Long> = Pair(

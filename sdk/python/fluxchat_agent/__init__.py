@@ -66,6 +66,7 @@ def fields(
     context: Optional[float] = None,
     cwd: Optional[str] = None,
     cost_usd: Optional[float] = None,
+    result: Optional[str] = None,
     choices: Optional[Iterable[Choice]] = None,
 ) -> dict:
     """The ``org.fluxchat.agent`` object (only the fields given)."""
@@ -79,6 +80,7 @@ def fields(
         ("progress", _unit("progress", progress)), ("model", model),
         ("context", _unit("context", context)), ("cwd", cwd),
         ("cost_usd", None if cost_usd is None else float(cost_usd)),
+        ("result", result),
         ("choices", _choices(choices)),
     ):
         if value is not None:
@@ -183,8 +185,12 @@ class Run:
         await self._send(edit(prompt_event_id, f"{question}\n\n{note}".strip(), **self._meta(state="working", choices=choices)))
         await self._status(self.step_text or "Working…", state="working", step=self.step_text, steps=self.steps or None)
 
-    async def done(self, summary: str = "Done") -> str:
-        return await self._status(summary, state="done", steps=self.steps or None, progress=1.0)
+    async def done(self, summary: str = "Done", *, result: Optional[str] = None) -> str:
+        """End the run. ``result``: the one-line outcome (protocol ``result``);
+        ``summary`` stays the status message's body."""
+        return await self._status(summary, state="done", steps=self.steps or None, progress=1.0,
+                                  result=result or summary)
 
-    async def failed(self, error: str = "Failed") -> str:
-        return await self._status(error, state="failed", steps=self.steps or None)
+    async def failed(self, error: str = "Failed", *, result: Optional[str] = None) -> str:
+        return await self._status(error, state="failed", steps=self.steps or None,
+                                  result=result or error)

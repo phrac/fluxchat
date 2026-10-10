@@ -27,6 +27,8 @@ data class RunRecord(
     val costUsd: Double? = null,
     /** What was asked (when the phone saw it): lone commands prune on load. */
     val request: String? = null,
+    /** How the run ended, one line (protocol `result`), once it has. */
+    val result: String? = null,
 ) {
     /** "4s" / "4m" / "1h 20m" — start to end (or to now while going), like the desktop's `duration`. */
     fun duration(now: Long): String {
@@ -88,6 +90,7 @@ object History {
             history += RunRecord(
                 key, view.roomId, run.agent, title, label, run.since,
                 steps = run.steps, costUsd = run.costUsd, request = requestBody,
+                result = run.result,
             )
             val extra = history.size - HISTORY_LIMIT
             if (extra > 0) history.subList(0, extra).clear()
@@ -102,6 +105,8 @@ object History {
                 steps = maxOf(rec.steps, run.steps),
                 costUsd = cost,
                 model = model,
+                // The final edit's `result` (nothing else overwrites it).
+                result = rec.result ?: run.result,
                 ended = if (!live && rec.ended == null) now else rec.ended,
                 // A thread's title arrives with its first replies; keep the placeholder till then.
                 title = if (rec.title == "Thread" && title != "Thread") title else rec.title,
@@ -109,7 +114,8 @@ object History {
             history[i] = updated
             // Only the fields that can actually move count as a change (the desktop's tuple compare).
             updated.state != rec.state || updated.steps != rec.steps ||
-                updated.costUsd != rec.costUsd || updated.model != rec.model || updated.ended != rec.ended
+                updated.costUsd != rec.costUsd || updated.model != rec.model ||
+                updated.result != rec.result || updated.ended != rec.ended
         }
     }
 
@@ -137,7 +143,7 @@ object History {
         val q = query.trim().lowercase(Locale.US)
         val words = q.splitWhitespace()
         return history.asReversed().filter { r ->
-            val hay = "${r.title} ${roomName(r.room)} ${r.agent} ${r.state}".lowercase(Locale.US)
+            val hay = "${r.title} ${roomName(r.room)} ${r.agent} ${r.state} ${r.result.orEmpty()}".lowercase(Locale.US)
             words.all { it in hay }
         }
     }
@@ -186,6 +192,7 @@ object History {
             if (r.model != null) o.put("model", r.model)
             if (r.costUsd != null) o.put("cost_usd", r.costUsd)
             if (r.request != null) o.put("request", r.request)
+            if (r.result != null) o.put("result", r.result)
             arr.put(o)
         }
         return arr.toString().toByteArray(Charsets.UTF_8)
@@ -211,6 +218,7 @@ object History {
                     model = o.optString("model").ifEmpty { null },
                     costUsd = if (o.has("cost_usd")) o.getDouble("cost_usd") else null,
                     request = o.optString("request").ifEmpty { null },
+                    result = o.optString("result").ifEmpty { null },
                 )
             }
         }

@@ -55,6 +55,20 @@ class HistoryTest {
     }
 
     @Test
+    fun theFinalResultLandsOnTheRecordAndSearches() {
+        val h = ArrayList<RunRecord>()
+        History.record(h, thread, run(RunState.Working, now - 5000), "x", "x", now)
+        assertTrue(History.record(h, thread, run(RunState.Done, now - 5000).copy(result = "Deployed v0.2.0"), "x", "x", now))
+        assertEquals("Deployed v0.2.0", h[0].result)
+        // The result never changes once set (the desktop's record_run).
+        History.record(h, thread, run(RunState.Done, now - 5000).copy(result = "overwritten?"), "x", "x", now)
+        assertEquals("Deployed v0.2.0", h[0].result)
+        assertEquals(1, History.matching(h, "deployed") { "" }.size)
+        val saved = History.decode(History.encode(h))
+        assertEquals("Deployed v0.2.0", saved[0].result)
+    }
+
+    @Test
     fun aThreadTitleReplacesThePlaceholderOnly() {
         val h = ArrayList<RunRecord>()
         History.record(h, thread, run(RunState.Working, now), "Thread", null, now)

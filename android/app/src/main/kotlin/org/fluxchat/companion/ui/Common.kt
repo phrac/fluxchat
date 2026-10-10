@@ -77,10 +77,15 @@ fun elapsed(since: Long, now: Long): String {
 fun runLine(run: RunInfo, now: Long): String = buildList {
     add(run.state.label)
     if (run.state.live) add(elapsed(run.since, now))
-    // A finished run's last step is old news.
+    // A finished run's last step is old news; its result isn't.
     if (run.state.live) Runs.stepLabel(run.step)?.let { add(if (run.steps > 1) "$it (${run.steps})" else it) }
     run.costUsd?.let { add("$" + String.format(java.util.Locale.US, "%.2f", it)) }
 }.joinToString(" · ")
+
+/** A finished run's one-line outcome (protocol `result`), trimmed; null when
+ * the agent didn't report one. */
+fun runResult(run: RunInfo): String? =
+    if (run.state.live) null else run.result?.trim()?.takeIf { it.isNotEmpty() }?.lineSequence()?.firstOrNull()?.take(160)
 
 /** A thread's title: its root's first line (unless that says nothing), else the latest reply. */
 fun threadTitle(root: Msg?, replies: List<Msg>): String {

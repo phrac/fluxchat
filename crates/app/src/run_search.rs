@@ -288,7 +288,7 @@ mod tests {
         RunRecord {
             key: key.into(), room: "!r:x".into(), agent: "@bot:x".into(), title: "Deploy".into(),
             state: "done".into(), started: started_secs * 1000, ended: Some(started_secs * 1000 + 5000),
-            steps: 0, model: None, cost: None, cost_usd: None,
+            steps: 0, model: None, cost: None, cost_usd: None, ..Default::default()
         }
     }
 

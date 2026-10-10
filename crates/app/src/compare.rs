@@ -481,6 +481,7 @@ mod tests {
         app.run_history.push(crate::history::RunRecord {
             key: "!r:x".into(), room: "!r:x".into(), agent: "@claw:x".into(), title: "t".into(), state: "done".into(),
             started: now_ms() - 1000, ended: Some(now_ms()), steps: 0, model: None, cost: None, cost_usd: Some(2.0),
+            ..Default::default()
         });
         let _ = app.send_comparison("!r:x".into(), "go".into());
         let c = &app.compare.list[0];

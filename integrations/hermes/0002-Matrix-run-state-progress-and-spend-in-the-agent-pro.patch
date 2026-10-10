@@ -1,4 +1,4 @@
-From cb99ed712a9f8ee998b06123c90cf81d3b179373 Mon Sep 17 00:00:00 2001
+From d5e93ed7fb781aba51a3fa23f11fb18e0b173691 Mon Sep 17 00:00:00 2001
 From: Derek Musselmann <derek@disflux.com>
 Date: Thu, 8 Oct 2026 10:49:27 -0500
 Subject: [PATCH 2/2] Matrix: run state, progress and spend in the agent
@@ -11,22 +11,22 @@ when the run ends the adapter edits the bubble to the same final state.
 Approval prompts name the run they hold up. Only adapters that declare
 AGENT_STATUS (Matrix) get the metadata; others see no change.
 ---
- gateway/agent_status.py             |  66 +++++++++
+ gateway/agent_status.py             |  85 +++++++++++
  gateway/platforms/base.py           |   4 +
  gateway/run_turn.py                 |   4 +
  gateway/run_turn_runner.py          |  29 +++-
  plugins/platforms/matrix/adapter.py |  51 ++++++-
- tests/gateway/test_agent_status.py  | 222 ++++++++++++++++++++++++++++
- 6 files changed, 368 insertions(+), 8 deletions(-)
+ tests/gateway/test_agent_status.py  | 227 ++++++++++++++++++++++++++++
+ 6 files changed, 392 insertions(+), 8 deletions(-)
  create mode 100644 gateway/agent_status.py
  create mode 100644 tests/gateway/test_agent_status.py
 
 diff --git a/gateway/agent_status.py b/gateway/agent_status.py
 new file mode 100644
-index 00000000..9f4ef18e
+index 0000000000..0fd3660725
 --- /dev/null
 +++ b/gateway/agent_status.py
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,85 @@
 +"""Agent protocol run state (https://github.com/phrac/fluxchat/blob/main/docs/agent-protocol.md).
 +
 +Adapters that declare ``AGENT_STATUS = True`` (Matrix) receive a ``fluxchat_agent`` dict in the
@@ -69,11 +69,30 @@ index 00000000..9f4ef18e
 +    return status
 +
 +
-+def finished(run: Optional[str], agent_result: Any, failed: bool) -> dict:
-+    """``done`` / ``failed`` plus what the turn's result knows: model, context use, session spend."""
++def _result_line(response: Any) -> str:
++    """The reply's first non-empty line, trimmed to one result line (protocol ``result``)."""
++    text = str(response or "").strip()
++    for line in text.splitlines():
++        if line := line.strip():
++            # Heading/list markers lead; bold markers wrap the lead-in ("**Done.**").
++            line = line.lstrip("#-> ").lstrip()
++            if line.startswith("**") and line.endswith("**"):
++                line = line[2:-2].strip()
++            return line[:240]
++    return ""
++
++
++def finished(run: Optional[str], agent_result: Any, failed: bool, response: Any = None) -> dict:
++    """``done`` / ``failed`` plus what the turn's result knows: model, context use, session spend.
++
++    ``response`` is the reply text; its first line (no more) becomes ``result``, the run's
++    one-line outcome (protocol docs: written for readers of run lists, not the whole reply).
++    """
 +    status: dict = {"v": 1, "state": "failed" if failed else "done"}
 +    if run:
 +        status["run"] = str(run)
++    if line := _result_line(response):
++        status["result"] = line
 +    result = agent_result if isinstance(agent_result, dict) else {}
 +    if model := str(result.get("model") or "").strip():
 +        status["model"] = model
@@ -94,7 +113,7 @@ index 00000000..9f4ef18e
 +    merged["fluxchat_agent"] = status
 +    return merged
 diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
-index 17d87568..e4794abb 100644
+index eaa0febd3a..b65b966c8b 100644
 --- a/gateway/platforms/base.py
 +++ b/gateway/platforms/base.py
 @@ -423,6 +423,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
@@ -105,7 +124,7 @@ index 17d87568..e4794abb 100644
  from gateway.config import Platform, PlatformConfig
  from gateway.platforms.helpers import fence_state_after
  from gateway.platforms.base_exec_approval import (
-@@ -4412,6 +4413,9 @@ class BasePlatformAdapter(ABC):
+@@ -4411,6 +4412,9 @@ class BasePlatformAdapter(ABC):
          self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
          is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
          """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
@@ -116,7 +135,7 @@ index 17d87568..e4794abb 100644
              event, session_key, text_content, metadata,
              reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
 diff --git a/gateway/run_turn.py b/gateway/run_turn.py
-index 799679ae..60aac169 100644
+index 8c5728884d..85f15edd9e 100644
 --- a/gateway/run_turn.py
 +++ b/gateway/run_turn.py
 @@ -21,6 +21,7 @@ from agent.session_activity import format_iteration_progress
@@ -133,12 +152,12 @@ index 799679ae..60aac169 100644
                  response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
 +            # Agent protocol: adapters that report run state (AGENT_STATUS) put how the run ended
 +            # (model, context use, session spend) on the final reply and the progress bubble.
-+            event._agent_status = _agent_status.finished(event.message_id, agent_result, agent_failed_early)
++            event._agent_status = _agent_status.finished(event.message_id, agent_result, agent_failed_early, response)
              response, session_entry = await self._hmwa_compression_exhaustion_reset(
                  agent_result, response, session_entry, session_key, source,
              )
 diff --git a/gateway/run_turn_runner.py b/gateway/run_turn_runner.py
-index 9b8c663f..9dd9423b 100644
+index f8e8d09e25..226584a233 100644
 --- a/gateway/run_turn_runner.py
 +++ b/gateway/run_turn_runner.py
 @@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -206,7 +225,7 @@ index 9b8c663f..9dd9423b 100644
          return raw
  
      async def _flush_progress_edit(self, st) -> None:
-@@ -1471,11 +1490,15 @@ class TurnRunner:
+@@ -1470,11 +1489,15 @@ class TurnRunner:
          flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
          # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
          if _renders_exec_approval_buttons(type(adapter)):
@@ -224,7 +243,7 @@ index 9b8c663f..9dd9423b 100644
                      "send_exec_approval scheduling error",
                  )
 diff --git a/plugins/platforms/matrix/adapter.py b/plugins/platforms/matrix/adapter.py
-index 9fd32932..a6aac5fc 100644
+index ddd7c779dd..f90efb4266 100644
 --- a/plugins/platforms/matrix/adapter.py
 +++ b/plugins/platforms/matrix/adapter.py
 @@ -360,6 +360,7 @@ class _MatrixApprovalPrompt:
@@ -235,7 +254,7 @@ index 9fd32932..a6aac5fc 100644
      bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
  
  
-@@ -847,6 +848,7 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -805,6 +806,7 @@ class MatrixAdapter(BasePlatformAdapter):
      supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
      splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
      typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
@@ -243,7 +262,7 @@ index 9fd32932..a6aac5fc 100644
      # Class-level defaults keep object.__new__-built test instances working.
      max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
      _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
-@@ -920,6 +922,9 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -880,6 +882,9 @@ class MatrixAdapter(BasePlatformAdapter):
          self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
          self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
          self._pending_reactions: dict[tuple[str, str], str] = {}
@@ -253,7 +272,7 @@ index 9fd32932..a6aac5fc 100644
          # Let the final message land before redacting reactions ("missing event" in some
          # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
          self._reaction_redaction_delay_seconds = 5.0
-@@ -1455,8 +1460,31 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1416,8 +1421,31 @@ class MatrixAdapter(BasePlatformAdapter):
                  except Exception as retry_exc:
                      logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                      return SendResult(success=False, error=str(retry_exc))
@@ -285,7 +304,7 @@ index 9fd32932..a6aac5fc 100644
      async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
          """Send one m.room.message event (45s cap) and return its event ID as str."""
          event_id = await asyncio.wait_for(
-@@ -1522,7 +1550,10 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1483,7 +1511,10 @@ class MatrixAdapter(BasePlatformAdapter):
          await self._set_typing(chat_id, 0)
  
      async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
@@ -297,7 +316,7 @@ index 9fd32932..a6aac5fc 100644
          formatted = self.format_message(content)
          new_content = self._build_text_message_content(formatted)
          if agent_status:
-@@ -1550,7 +1581,10 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1511,7 +1542,10 @@ class MatrixAdapter(BasePlatformAdapter):
              # JSON escaping grows a character at most sixfold (\u00XX).
              fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
              msg_content["body"] = f"* {fallback}…"
@@ -309,7 +328,7 @@ index 9fd32932..a6aac5fc 100644
  
      async def send_image(
          self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-@@ -1748,7 +1782,11 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1709,7 +1743,11 @@ class MatrixAdapter(BasePlatformAdapter):
          labels = {choice: label for label, choice, _style in prompt.actions}
          agent_choices = [{"key": self._EA_REACTIONS[c], "label": labels.get(c) or c} for c in choices]
          metadata = dict(prompt.metadata or {})
@@ -322,7 +341,7 @@ index 9fd32932..a6aac5fc 100644
  
          def _make(message_id, requester, expires_at):
              old_event = self._approval_prompt_by_session.get(session_key)
-@@ -1757,7 +1795,7 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1718,7 +1756,7 @@ class MatrixAdapter(BasePlatformAdapter):
              self._approval_prompt_by_session[session_key] = message_id
              return _MatrixApprovalPrompt(
                  session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
@@ -331,7 +350,7 @@ index 9fd32932..a6aac5fc 100644
          return await self._send_reaction_prompt(
              chat_id, text, metadata, _make, self._approval_prompts_by_event, reactions, "approval")
  
-@@ -2510,6 +2548,7 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -2499,6 +2537,7 @@ class MatrixAdapter(BasePlatformAdapter):
  
      async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
          msg_id, room_id = event.message_id, event.source.chat_id
@@ -339,7 +358,7 @@ index 9fd32932..a6aac5fc 100644
          if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
              return
          eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
-@@ -2668,8 +2707,10 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -2657,8 +2696,10 @@ class MatrixAdapter(BasePlatformAdapter):
          if not getattr(prompt, "agent_choices", None) or not getattr(prompt, "text", ""):
              return
          try:
@@ -353,10 +372,10 @@ index 9fd32932..a6aac5fc 100644
  
 diff --git a/tests/gateway/test_agent_status.py b/tests/gateway/test_agent_status.py
 new file mode 100644
-index 00000000..6d98dd69
+index 0000000000..5e0c664b68
 --- /dev/null
 +++ b/tests/gateway/test_agent_status.py
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,227 @@
 +"""Agent protocol run state (gateway/agent_status.py): the progress bubble reports ``working`` with
 +the step, the final reply ``done`` / ``failed`` with model, context and spend, and the Matrix adapter
 +settles the bubble when the run ends."""
@@ -393,6 +412,11 @@ index 00000000..6d98dd69
 +              "estimated_cost_usd": 0.1834, "cost_status": "estimated"}
 +    assert agent_status.finished("$req", result, failed=False) == {
 +        "v": 1, "state": "done", "run": "$req", "model": "claude-opus-5", "context": 0.21, "cost_usd": 0.1834}
++    # The reply's first line rides along as the run's one-line outcome.
++    with_reply = agent_status.finished("$req", result, failed=False,
++                                       response="**Deployed v0.2.0.**\n\nDetails below, more lines.")
++    assert with_reply["result"] == "Deployed v0.2.0."
++    assert agent_status.finished("$req", {}, failed=True, response="").get("result") is None
 +    # Unknown pricing isn't reported as free; a non-dict result still gives the state.
 +    unknown = agent_status.finished("$req", {"estimated_cost_usd": 0.0, "cost_status": "unknown"}, failed=True)
 +    assert unknown == {"v": 1, "state": "failed", "run": "$req"}
@@ -580,5 +604,5 @@ index 00000000..6d98dd69
 +    assert edits[-1]["m.relates_to"]["event_id"] == "$e1", "the progress bubble is settled, not the prompt"
 +    assert edits[-1]["m.new_content"][KEY]["state"] == "done"
 -- 
-2.53.0
+2.47.3
 

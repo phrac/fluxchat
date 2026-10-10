@@ -29,11 +29,12 @@ test("a run edits one status message", async () => {
   await run.step("Testing", { progress: 0.5 });
   const prompt = await run.ask("Ship it?", [["✅", "Yes"], ["❌", "No"]]);
   await run.answered(prompt, "Approved");
-  await run.done("Shipped");
+  await run.done("Shipped", "Deployed v1.0");
   assert.equal(sent[0]["m.relates_to"].rel_type, "m.thread");
   assert.equal(sent[0][KEY].model, "opus-5");
   const last = sent.at(-1)["m.new_content"][KEY];
   assert.deepEqual([last.state, last.progress, last.steps], ["done", 1, 2]);
+  assert.equal(last.result, "Deployed v1.0");
   const ask = sent.find((c) => c[KEY].state === "waiting" && c[KEY].choices && !c["m.new_content"]);
   assert.deepEqual(ask[KEY].choices, [{ key: "✅", label: "Yes" }, { key: "❌", label: "No" }]);
 });

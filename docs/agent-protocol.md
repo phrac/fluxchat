@@ -20,11 +20,14 @@ Put an `org.fluxchat.agent` object in the message content. Every field is option
 | `context` | number | Share of the context window in use, 0.0–1.0. |
 | `cwd` | string | Working directory, if that means something for the agent. |
 | `cost_usd` | number | Spend on this session so far. |
+| `result` | string | How the run ended, one line: `"Deployed v0.2.0"` / `"2 tests still failing"`. Put it on the `done` / `failed` status edit; clients show it as the run's result body. |
 | `choices` | array | A prompt: `[{ "key": "✅", "label": "Approve" }, …]`. The user answers by reacting with a `key`. |
 
 ## How to use it
 
 **One status message per run, edited.** When a run starts, send a status message in the run's thread (or in the room) with `state: "working"`, and edit it (`m.replace`) as the run moves: new `step`, `steps`, `progress`. Put the fields in `m.new_content` too, as with any edit; clients read the latest edit. End with `state: "done"` or `"failed"`.
+
+**Say how it ended with `result`.** On the final edit, add a one-line summary of the outcome — what the run achieved, or why it didn't. It's the run's headline in lists (it sits under the request's title), so write it for someone who won't read the whole thread. The message's `body` stays what it was (the answer itself, or the step line settled); `result` is the structured summary, not a copy of the whole reply: one line, a couple of sentences at most.
 
 **Ask with `choices`.** Send a message whose text asks the question, with `state: "waiting"` and the `choices`. The user's client shows them as buttons, which send a reaction with the chosen `key`. When you've acted on the answer, edit the prompt to the next state (`working`, `done`, …): the buttons go away.
 

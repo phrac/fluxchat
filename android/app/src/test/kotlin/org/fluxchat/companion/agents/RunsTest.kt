@@ -125,6 +125,18 @@ class RunsTest {
     }
 
     @Test
+    fun theFinalEditCarriesTheResultOntoTheRun() {
+        val req = msg("req", me, now - 5000, "go")
+        val status = msg("s", agent, now - 1000, "All green.").copy(
+            agent = Protocol(run = "req", state = "done", steps = 3, result = "All 42 tests pass."),
+        )
+        val r = Runs.agentUpdates(room, listOf(req, status), agent, hermes, isDm = true, now = now)
+        val run = r.runs[ViewKey(room)]!!
+        assertEquals(RunState.Done, run.state)
+        assertEquals("All 42 tests pass.", run.result)
+    }
+
+    @Test
     fun commandsAndBusyModeGoOutAsTheHarnessTakesThem() {
         assertEquals("!status", Runs.outgoing(hermes, "/status", working = false, mode = BusyMode.Send, addressedTo = null))
         assertEquals("/me", Runs.outgoing(hermes, "//me", working = false, mode = BusyMode.Send, addressedTo = null))

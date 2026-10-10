@@ -19,7 +19,7 @@ const HISTORY_LIMIT: usize = 500;
 /// History state of a run that went quiet while working (`stalled`).
 pub(crate) const STALLED: &str = "stalled";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RunRecord {
     /// Thread key (or room key) of the run.
     pub key: String,
@@ -38,6 +38,10 @@ pub struct RunRecord {
     /// running total) — what budgets add up (`budgets::spent`).
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    /// How the run ended, one line (agent protocol `result`, on the final
+    /// status edit). Absent for agents that don't report it.
+    #[serde(default)]
+    pub result: Option<String>,
 }
 
 impl RunRecord {
@@ -101,6 +105,7 @@ impl FluxChat {
                     model: None,
                     cost: run.cost_usd.map(crate::budgets::format_usd),
                     cost_usd: run.cost_usd,
+                    result: run.result.clone(),
                 });
                 if self.run_history.len() > HISTORY_LIMIT {
                     let extra = self.run_history.len() - HISTORY_LIMIT;
@@ -114,9 +119,13 @@ impl FluxChat {
                 let runtime = self.agent_runtime(key).cloned();
                 let fresh_title = key.starts_with("thread::").then(|| self.thread_title(key));
                 let rec = &mut self.run_history[i];
-                let was = (rec.state.clone(), rec.steps, rec.ended, rec.cost_usd);
+                let was = (rec.state.clone(), rec.steps, rec.ended, rec.cost_usd, rec.result.clone());
                 rec.state = label;
                 rec.steps = rec.steps.max(run.steps);
+                // The final edit's `result` (and nothing else overwrites it).
+                if rec.result.is_none() {
+                    rec.result = run.result.clone();
+                }
                 if let Some(c) = run.cost_usd {
                     let c = rec.cost_usd.map_or(c, |old| old.max(c));
                     rec.cost_usd = Some(c);
@@ -136,7 +145,7 @@ impl FluxChat {
                     rec.title = t;
                 }
                 let rec = &self.run_history[i];
-                was != (rec.state.clone(), rec.steps, rec.ended, rec.cost_usd)
+                was != (rec.state.clone(), rec.steps, rec.ended, rec.cost_usd, rec.result.clone())
             }
         };
         if changed {
@@ -157,7 +166,8 @@ impl FluxChat {
         self.run_history.iter().rev()
             .filter(|r| {
                 let room = self.rooms.iter().find(|x| x.room_id == r.room).map(|x| x.name.as_str()).unwrap_or("");
-                let hay = format!("{} {} {} {}", r.title, room, r.agent, r.state).to_lowercase();
+                let hay = format!("{} {} {} {} {}", r.title, room, r.agent, r.state,
+                    r.result.clone().unwrap_or_default()).to_lowercase();
                 self.run_text_has(r, &words, &hay)
             })
             .collect()
@@ -206,6 +216,9 @@ impl FluxChat {
             meta.push(format!("Agent: {}", r.agent));
             meta.push(format!("Started: {}", stamp(r.started / 1000)));
             meta.push(format!("State: {} ({})", r.state, r.duration(now_ms())));
+            if let Some(res) = r.result.as_ref().filter(|s| !s.trim().is_empty()) {
+                meta.push(format!("Result: {res}"));
+            }
             meta.extend(r.model.as_ref().map(|m| format!("Model: {m}")));
             meta.extend(r.cost.as_ref().map(|c| format!("Cost: {c}")));
         }
@@ -292,6 +305,22 @@ mod tests {
         assert!(rec.ended.is_some() && rec.duration(now_ms()).ends_with('m'));
         assert_eq!(app.matching_history("bot").len(), 1);
         assert!(app.matching_history("nothing like it").is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_final_result_lands_on_the_record_and_searches() {
+        let mut app = crate::panes::flow_tests::app();
+        let started = now_ms() - 90_000;
+        let working = RunInfo { agent: "@bot:x".into(), ..RunInfo::new(RunState::Working, started) };
+        app.record_run("thread::!r:x::$a", &working);
+        // The result arrives with the final edit and never changes after.
+        let done = RunInfo { state: RunState::Done, result: Some("Deployed v0.2.0".into()), ..working.clone() };
+        app.record_run("thread::!r:x::$a", &done);
+        assert_eq!(app.run_history[0].result.as_deref(), Some("Deployed v0.2.0"));
+        app.record_run("thread::!r:x::$a", &RunInfo { result: Some("overwritten?".into()), ..done.clone() });
+        assert_eq!(app.run_history[0].result.as_deref(), Some("Deployed v0.2.0"));
+        // Searchable by the result's words.
+        assert_eq!(app.matching_history("deployed").len(), 1);
     }
 
     #[tokio::test]
