@@ -60,6 +60,11 @@ pub enum Message {
     UtdHintsResolved(Vec<(String, String)>),
     Logout,
 
+    /// The GitHub Releases check finished. `Ok(Some(version))` = a release
+    /// newer than this build exists (show the status-bar chip); `Ok(None)`
+    /// = up to date; `Err` = the check failed (log, stay silent).
+    UpdateChecked(Result<Option<String>, String>),
+
     // --- Post-login startup ---
     SyncStarted,
     SyncReconnected,

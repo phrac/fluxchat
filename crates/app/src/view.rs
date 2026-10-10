@@ -3271,6 +3271,19 @@ impl FluxChat {
             }
         }
 
+        // A GitHub release newer than this build (checked once a day at
+        // startup, release.rs). Opening the release page is the whole
+        // upgrade path — honest for unsigned builds, no self-installer.
+        if let Some(version) = &self.update_available {
+            let page = format!("{}/tag/v{version}", fluxchat_core::release::RELEASES_PAGE);
+            bar = bar.push(sep());
+            bar = bar.push(crate::ui::tooltip_at(
+                link(format!("Update available (v{version})"), theme::colors().yellow, Message::OpenUrl(page)),
+                "Open the release page to download it",
+                iced::widget::tooltip::Position::Top,
+            ));
+        }
+
         container(bar)
             .width(Fill)
             .padding([2, 8])

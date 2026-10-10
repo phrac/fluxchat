@@ -241,6 +241,9 @@ cargo run -p fluxchat
 - Empty messages filtered at load time, not per-render. New message detection via timestamp tracking.
 - Thread counts computed at update time, not per-render.
 
+## Update check (desktop)
+- `core::release` is the desktop's self-discovery of updates (the Android `Update.kt` port): at startup `new_with_init` fetches `api.github.com/repos/phrac/fluxchat/releases/latest`, compares `tag_name` to `CARGO_PKG_VERSION` with the same part-by-part rule as Android (`is_newer`), and `Message::UpdateChecked` arms `FluxChat::update_available` → a yellow status-bar chip "Update available (vX.Y.Z)" that opens the release page via `OpenUrl` (no self-update installer — the release page is the whole upgrade path, honest for unsigned macOS builds). Once a day: the attempt is stamped in settings `update_last_check` *before* the fetch, so failures rate-limit too; every failure path is a `tracing::warn!` and no UI. The repo is private today, so the unauthenticated endpoint 404s and the chip can't fire until it goes public (same caveat as the phone). `FLUXCHAT_RELEASES_URL` points the check at a stand-in (that's how the chip was screenshotted against the private repo; the chip target stays the real GitHub page). `crates/app` carries the real version (0.2.2) so the comparison means something; `build-macos.sh` copies it into Info.plist.
+
 ## Code Quality
 - Zero clippy warnings
 - Named constants for all magic numbers

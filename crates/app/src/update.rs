@@ -328,9 +328,10 @@ impl FluxChat {
         let state = Self::new(core.clone());
 
         // Try to restore a saved session on startup
+        let restore_core = core.clone();
         let task = Task::perform(
             async move {
-                fluxchat_core::auth::restore_session(&core).await
+                fluxchat_core::auth::restore_session(&restore_core).await
                     .map(|restored| restored.map(|(_, result)| LoginSuccess {
                         user_id: result.user_id,
                         display_name: result.display_name,
@@ -352,7 +353,32 @@ impl FluxChat {
             },
         );
 
-        (state, task)
+        // Discover our own updates at startup (once a day, silent on
+        // failure): newest GitHub Release vs. the version this binary was
+        // compiled with. It rides the initial task batch, not the login
+        // path — an update notice shouldn't wait for a session restore.
+        let update_check = Self::start_update_check(core.clone());
+
+        (state, Task::batch([task, update_check]))
+    }
+
+    /// The Releases check, gated by the once-a-day window (the attempt is
+    /// stamped first, so failures rate-limit too). No self-update
+    /// installer: the chip that this arms opens the release page.
+    fn start_update_check(core: std::sync::Arc<fluxchat_core::AppState>) -> Task<Message> {
+        if !fluxchat_core::release::due_now(&core.db, false) {
+            return Task::none();
+        }
+        fluxchat_core::release::stamp_attempt(&core.db);
+        Task::perform(
+            async move {
+                match fluxchat_core::release::fetch_latest_tag().await {
+                    Ok(tag) => Ok(fluxchat_core::release::available_update(&tag)),
+                    Err(e) => Err(format!("{e}")),
+                }
+            },
+            Message::UpdateChecked,
+        )
     }
 
     /// Elm-style update: process a message and return a task.
@@ -443,6 +469,18 @@ impl FluxChat {
             }
             Message::NoSavedSession => {
                 self.loading = false;
+            }
+            Message::UpdateChecked(result) => {
+                match result {
+                    Ok(Some(version)) => {
+                        tracing::info!("update: {version} available (running {})", fluxchat_core::release::APP_VERSION);
+                        self.update_available = Some(version);
+                    }
+                    Ok(None) => self.update_available = None,
+                    // Silent by design (the repo being private 404s today);
+                    // the log line is the whole diagnostics surface.
+                    Err(e) => tracing::warn!("update check (github releases): {e}"),
+                }
             }
             Message::SessionRestored(success) => {
                 return self.finish_login(success);

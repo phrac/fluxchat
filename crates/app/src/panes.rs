@@ -1502,6 +1502,21 @@ pub(crate) mod flow_tests {
     }
 
     #[tokio::test]
+    async fn update_check_result_arms_and_clears_the_chip() {
+        let mut app = app();
+        assert_eq!(app.update_available, None);
+        // A failure stays silent: no chip, no state.
+        let _ = app.update(Message::UpdateChecked(Err("HTTP 404".into())));
+        assert_eq!(app.update_available, None);
+        // A newer release arms the chip with its version.
+        let _ = app.update(Message::UpdateChecked(Ok(Some("9.9.9".into()))));
+        assert_eq!(app.update_available.as_deref(), Some("9.9.9"));
+        // A later check finding nothing (repo downgraded, say) clears it.
+        let _ = app.update(Message::UpdateChecked(Ok(None)));
+        assert_eq!(app.update_available, None);
+    }
+
+    #[tokio::test]
     async fn room_list_collapses_and_remembers() {
         let mut app = app();
         let _ = app.update(Message::ToggleRoomList);

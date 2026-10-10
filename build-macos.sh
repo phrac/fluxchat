@@ -6,6 +6,10 @@ BUNDLE_ID="com.fluxchat.app"
 BINARY_NAME="fluxchat"
 ICON="assets/icon.icns"
 
+# The bundle version follows the crate (the update check compares the release
+# tag against CARGO_PKG_VERSION; Info.plist shouldn't tell a different story).
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/app/Cargo.toml | head -1)
+
 echo "Building $APP_NAME for macOS..."
 cargo build -p fluxchat --release
 
@@ -42,9 +46,9 @@ cat > "$CONTENTS/Info.plist" << EOF
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$VERSION</string>
     <key>CFBundleExecutable</key>
     <string>$BINARY_NAME</string>
     <key>CFBundleIconFile</key>
