@@ -903,7 +903,7 @@ object Matrix {
      * standalone. Never rolls back a created project.
      */
     private suspend fun attachToSpace(roomId: String) {
-        val spaces = spaceRooms.entries.map { it.key to (runCatching { it.value.roomInfo().displayName }.getOrNull() ?: it.value.displayName()) }
+        val spaces = spaceRooms.entries.map { it.key to ((runCatching { it.value.roomInfo().displayName }.getOrNull() ?: it.value.displayName()) ?: it.key) }
         val spaceId = org.fluxchat.companion.agents.Projects.findSpace(spaces)
         if (spaceId == null) {
             if (spaces.isEmpty()) Diag.note("project $roomId: no space joined, left standalone")
