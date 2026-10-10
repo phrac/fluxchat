@@ -96,8 +96,8 @@ jobs:
       - name: Write release notes
         run: |
           VERSION="${TAG#v}"
-          PREV=$(gh api repos/$GITHUB_REPOSITORY/releases \
-            --jq "[.[] | select(.draft==false and .prerelease==false and .tag_name!=env.TAG) | .tag_name] | sort_by(. | ltrimstr(\"v\") | splits(\".\") | tonumber) | last // \"\"")
+          PREV=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            --jq "[.[] | select(.draft==false and .prerelease==false and .tag_name != env.TAG) | .tag_name] | sort_by(sub(\"^v\"; \"\") | split(\".\") | map(tonumber)) | last // \"\"")
           {
             echo "## Desktop ${VERSION}"
             echo
