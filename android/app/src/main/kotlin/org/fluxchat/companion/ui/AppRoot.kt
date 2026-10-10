@@ -38,7 +38,7 @@ import org.fluxchat.companion.matrix.Matrix
 sealed interface Screen {
     data object Rooms : Screen
     data class Room(val roomId: String) : Screen
-    data class Thread(val roomId: String, val root: String) : Screen
+    data class Thread(val roomId: String, val root: String, val event: String? = null) : Screen
     data object Agents : Screen
     /** Run history across rooms, with spend per agent. */
     data object History : Screen
@@ -121,7 +121,7 @@ private fun Screen(s: Screen, go: (Screen) -> Unit, back: () -> Unit, swap: (Scr
         when (s) {
             Screen.Rooms -> RoomsScreen(go)
             is Screen.Room -> ChatScreen(s.roomId, null, go, back, swap)
-            is Screen.Thread -> ChatScreen(s.roomId, s.root, go, back, swap)
+            is Screen.Thread -> ChatScreen(s.roomId, s.root, go, back, swap, jumpTo = s.event)
             Screen.Agents -> AgentsScreen(back)
             Screen.History -> HistoryScreen(go, back)
             Screen.Search -> SearchScreen(go, back, swap)

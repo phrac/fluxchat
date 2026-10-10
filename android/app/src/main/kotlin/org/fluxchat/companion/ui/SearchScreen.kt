@@ -28,7 +28,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,15 +42,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import org.fluxchat.companion.agents.SearchResult
 import org.fluxchat.companion.agents.SessionSearch
 import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.matrix.Session
 
 /**
- * Find a session by what it was about, across every project. Sessions come
- * from each project's server thread list (the same list the in-project
- * sessions screen shows), so older pages load on first search. Tapping a
- * result jumps into the session.
+ * Find a session by what it was about, across every project. Two engines
+ * merged: word-AND matching over each session's title and latest reply (the
+ * server thread list, so it works offline against loaded pages), and the
+ * store's full-text search, which reaches inside every reply — those results
+ * show the matching line and open the session scrolled to it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,11 +61,14 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
     var query by rememberSaveable { mutableStateOf("") }
     var all by rememberSaveable { mutableStateOf(false) }
     var loading by rememberSaveable { mutableStateOf(false) }
-    var batches by remember { mutableStateOf(0) }
+    var batches by remember { mutableIntStateOf(0) }
     val lists = rooms.keys.mapNotNull { roomId ->
         Matrix.sessionListNow(roomId)?.let { roomId to it }
     }
     val now by rememberNow()
+    val search = Matrix.serverSearch
+    // Server full-text hits stream in as diffs while the query stands.
+    val hits by (search?.hits ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyList<org.fluxchat.companion.matrix.ReplyHit>()) }).collectAsState()
     // Open every project's list once, then pull older pages while results
     // still want them; `batches` re-gathers the snapshot as pages arrive.
     LaunchedEffect(rooms.keys.size) {
@@ -79,13 +86,19 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
             batches++
         }
     }
+    // Query the full-text index as the box settles (not per keystroke).
+    LaunchedEffect(query, search) {
+        val s = search ?: return@LaunchedEffect
+        delay(400)
+        val trimmed = query.trim()
+        if (trimmed.isNotBlank()) s.search(trimmed)
+    }
     val snapshot: List<Pair<String, Session>> = lists.flatMap { (roomId, l) ->
         l.itemsNow.map { roomId to it }
     }
     val trimmed = query.trim()
-    val matches = when {
-        trimmed.isEmpty() -> emptyList()
-        else -> SessionSearch.matching(trimmed, snapshot).sortedByDescending { (_, s) -> s.lastTs }
+    val matches = remember(trimmed, snapshot, hits, batches) {
+        SessionSearch.merge(trimmed, snapshot, hits) { Matrix.roomName(it) }
     }
     val scroll = TopAppBarDefaults.enterAlwaysScrollBehavior()
     Scaffold(
@@ -110,34 +123,55 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
             )
             if (trimmed.isEmpty()) {
                 Text(
-                    if (loading) "Loading your sessions…" else "Type what you remember from the session — any of its words match.",
+                    if (loading) "Loading your sessions…" else "Type what you remember from the session — any word in any reply matches.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp),
                 )
             }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(matches, key = { "${it.first}|${it.second.root}" }) { (roomId, s) ->
+            val state = androidx.compose.foundation.lazy.rememberLazyListState()
+            val nearBottom by remember {
+                derivedStateOf {
+                    val info = state.layoutInfo
+                    (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 4
+                }
+            }
+            LaunchedEffect(nearBottom, trimmed, hits.size, search?.loadingNow) {
+                if (nearBottom && trimmed.isNotBlank()) search?.more()
+            }
+            LazyColumn(state = state, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                items(matches, key = { "${it.roomId}|${it.root}" }) { m ->
                     ListItem(
                         headlineContent = {
-                            Text(s.rootBody.ifBlank { "Session" }, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            when (m) {
+                                is SearchResult.SessionHit ->
+                                    Text(m.title.ifBlank { "Session" }, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                is SearchResult.Reply ->
+                                    Text(Matrix.roomName(m.roomId), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         },
                         supportingContent = {
                             Column {
-                                if (!s.latest.isNullOrBlank())
-                                    Text(s.latest, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                when (m) {
+                                    is SearchResult.SessionHit ->
+                                        Text("Session", maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    is SearchResult.Reply -> {
+                                        Text("“${m.snippet}”", maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(Matrix.roomName(roomId), style = MaterialTheme.typography.labelMedium)
-                                    Text(elapsed(s.lastTs, now), style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    if (s.replies > 0) Text("${s.replies} repl${if (s.replies == 1) "y" else "ies"}",
-                                        style = MaterialTheme.typography.labelMedium,
+                                    if (m is SearchResult.Reply) {
+                                        Text(Matrix.roomName(m.roomId), style = MaterialTheme.typography.labelMedium)
+                                        m.senderName?.let { Text(it, style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                    }
+                                    Text(elapsed(m.lastTs, now), style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         },
-                        modifier = Modifier.clickable { swap(Screen.Thread(roomId, s.root)) },
+                        modifier = Modifier.clickable { swap(Screen.Thread(m.roomId, m.root, eventOf(m))) },
                     )
                     HorizontalDivider()
                 }
@@ -145,3 +179,6 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
         }
     }
 }
+
+/** The reply event to scroll to (null: the session's own title is the match). */
+private fun eventOf(m: SearchResult): String? = (m as? SearchResult.Reply)?.eventId

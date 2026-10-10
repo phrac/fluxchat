@@ -101,7 +101,7 @@ fun shortName(userId: String, name: String?): String =
  * items otherwise land below the view. Scrolled up to read, it stays put.
  */
 @Composable
-fun FollowNewest(state: androidx.compose.foundation.lazy.LazyListState, content: Any?) {
+fun FollowNewest(state: androidx.compose.foundation.lazy.LazyListState, content: Any?, enabled: Boolean = true) {
     var follow by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
     // Decided only when a scroll ends: a new item arriving shifts the index
     // too, and that mustn't count as you scrolling away.
@@ -110,7 +110,13 @@ fun FollowNewest(state: androidx.compose.foundation.lazy.LazyListState, content:
             if (!scrolling) follow = state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset < FOLLOW_SLACK_PX
         }
     }
-    LaunchedEffect(content) { if (follow) state.scrollToItem(0) }
+    LaunchedEffect(content, enabled) {
+        if (!enabled) return@LaunchedEffect
+        // Re-check on restart: re-enabled after a deep-link jump, the view is
+        // wherever the jump left it, and only following at the bottom is right.
+        follow = state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset < FOLLOW_SLACK_PX
+        if (follow) state.scrollToItem(0)
+    }
 }
 
 /** How far from the bottom still counts as "at the bottom", in pixels. */

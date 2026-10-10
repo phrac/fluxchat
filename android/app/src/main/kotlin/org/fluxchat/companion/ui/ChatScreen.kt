@@ -117,7 +117,7 @@ private const val FOLLOW_WINDOW_MS = 3 * 60 * 1000L
 /** A room's timeline, or a thread's (`root`): messages, the run, the composer. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit = go) {
+fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit = go, jumpTo: String? = null) {
     val shared = remember(roomId, root) { if (root == null) Matrix.roomTimeline(roomId) else null }
     // Threads (and rooms that aren't kept open) get their own timeline while on screen.
     val own by produceState<TimelineModel?>(null, roomId, root) {
@@ -278,7 +278,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 } else {
                     // A session (a thread, or a DM with the agent) reads as a transcript.
                     val transcript = agents.isNotEmpty() && (root != null || Matrix.isDm(roomId))
-                    MessageList(model, msgs, root, agents, list, now, go, roomId, transcript, run)
+                    MessageList(model, msgs, root, agents, list, now, go, roomId, transcript, run, jumpTo)
                 }
             }
             if (run != null && (run.state.live || now - run.since < 60_000)) {
@@ -343,6 +343,7 @@ private fun MessageList(
     roomId: String,
     transcript: Boolean = false,
     run: RunInfo? = null,
+    jumpTo: String? = null,
 ) {
     val state = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -358,7 +359,10 @@ private fun MessageList(
         }
     }
     val reversed = remember(msgs) { msgs.asReversed() }
-    FollowNewest(state, msgs)
+    // A search deep-link: hold off following the newest until the hit has
+    // been scrolled to (it may still need older pages pulled in).
+    var jumped by remember(jumpTo) { mutableStateOf(jumpTo == null) }
+    FollowNewest(state, msgs, enabled = jumped)
     // The step log the working run is on: its activity block spins.
     val liveSteps = remember(msgs, run?.state) {
         if (run?.state != RunState.Working) null
@@ -378,6 +382,28 @@ private fun MessageList(
             m.sender in agents && (Runs.openPrompt(msgs, i, list.harnessOf(m.sender), now).isNotEmpty() ||
                 Runs.pendingQuestion(msgs, i, m.sender, list.harnessOf(m.sender), now) != null)
         }.asReversed()
+    }
+    // A search hit deep-linked in: scroll to the matching message (pulling
+    // older pages until it loads), then hand the list back to FollowNewest.
+    val hitInEntry: (TranscriptEntry, String) -> Boolean = { e, id ->
+        when (e) {
+            is TranscriptEntry.Row -> e.id == id
+            is TranscriptEntry.Work -> e.indices.any { msgs.getOrNull(it)?.id == id }
+            is TranscriptEntry.Answer -> e.id == id || msgs.getOrNull(e.answerIndex)?.id == id ||
+                e.askedIndex?.let { msgs.getOrNull(it)?.id } == id ||
+                e.work?.indices?.any { msgs.getOrNull(it)?.id == id } == true
+            is TranscriptEntry.Done -> msgs.getOrNull(e.answerIndex)?.id == id
+        }
+    }
+    LaunchedEffect(jumpTo, msgs.size, entries, atStart) {
+        if (jumpTo == null || jumped) return@LaunchedEffect
+        val at = if (transcript) entries.indexOfFirst { hitInEntry(it, jumpTo) }
+        else reversed.indexOfFirst { it.id == jumpTo }
+        when {
+            at >= 0 -> { state.scrollToItem(at); jumped = true }
+            !atStart -> model.paginateBack() // the hit isn't loaded yet: older pages
+            else -> jumped = true // everything loads and it's not here: open normally
+        }
     }
     @Composable
     fun transcriptRow(i: Int, prev: Msg?) {
