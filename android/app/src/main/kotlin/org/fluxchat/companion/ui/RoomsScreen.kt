@@ -30,6 +30,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -81,6 +82,8 @@ private const val FINISHED_ROW_WINDOW_MS = 10 * 60 * 1000L
 fun RoomsScreen(go: (Screen) -> Unit) {
     val rooms by Matrix.agentRooms.collectAsState()
     val list by Matrix.agentList.collectAsState()
+    val update by org.fluxchat.companion.Update.available.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val now by rememberNow()
     val scope = rememberCoroutineScope()
     var refreshing by rememberSaveable { mutableStateOf(false) }
@@ -97,6 +100,10 @@ fun RoomsScreen(go: (Screen) -> Unit) {
             LargeTopAppBar(
                 title = { Text("Projects") },
                 actions = {
+                    update?.let {
+                        // Subtle: a plain assist chip, no badge or colour shout.
+                        AssistChip(onClick = { org.fluxchat.companion.Update.openRelease(context) }, label = { Text("Update available") })
+                    }
                     IconButton(onClick = { go(Screen.Search) }) { Icon(Icons.Outlined.Search, "Search sessions") }
                     IconButton(onClick = { go(Screen.History) }) { Icon(Icons.Outlined.History, "Run history") }
                     IconButton(onClick = { go(Screen.Agents) }) { Icon(Icons.Outlined.SmartToy, "Your agents") }
@@ -113,6 +120,7 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                 scope.launch {
                     Matrix.resumed()
                     Matrix.loadAgentList()
+                    org.fluxchat.companion.Update.check(force = true)
                     delay(800)
                     refreshing = false
                 }

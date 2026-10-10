@@ -11,8 +11,8 @@ android {
         applicationId = "org.fluxchat.companion"
         minSdk = 28
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.2.2"
     }
 
     signingConfigs {
@@ -50,6 +50,8 @@ android {
 
     buildFeatures {
         compose = true
+        // Update.kt reads VERSION_NAME for the release check (off by default in AGP 8).
+        buildConfig = true
     }
 
     testOptions {
