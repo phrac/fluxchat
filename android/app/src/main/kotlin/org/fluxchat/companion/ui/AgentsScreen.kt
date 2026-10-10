@@ -19,6 +19,7 @@ import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.AlertDialog
@@ -199,6 +200,13 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
             )
             Section("Notifications")
             NotificationSettings()
+            Section("Runs")
+            ListItem(
+                leadingContent = { Icon(Icons.Outlined.History, null) },
+                headlineContent = { Text("Run history") },
+                supportingContent = { Text("What your agents worked on, how it ended, and what it cost") },
+                modifier = Modifier.clickable { go(Screen.History) },
+            )
             Section("About")
             ListItem(
                 leadingContent = { Icon(Icons.Outlined.BugReport, null) },
