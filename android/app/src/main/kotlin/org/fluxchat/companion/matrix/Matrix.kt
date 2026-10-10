@@ -165,6 +165,10 @@ object Matrix {
     private val recomputeLock = Any()
     private val roomEntries = ArrayList<Room>()
     private val _rooms = MutableStateFlow<Map<String, Room>>(emptyMap())
+    private val spacesLock = Any()
+    private val spaceEntries = ArrayList<Room>()
+    /** Your joined spaces (ID → room), refreshed from sync. */
+    @Volatile private var spaceRooms: Map<String, Room> = emptyMap()
     /** Which of your agents are in each room (agent rooms only). */
     private val agentMembers = HashMap<String, List<String>>()
     /** Per room checked: your agents in it (empty too), for the agent IDs in [cachedFor]. */
@@ -373,6 +377,8 @@ object Matrix {
         _typing.value = emptyMap()
         synchronized(roomsLock) { roomEntries.clear() }
         _rooms.value = emptyMap()
+        synchronized(spacesLock) { spaceEntries.clear() }
+        spaceRooms = emptyMap()
         agentMembers.clear()
         memberCache.clear()
         roomMeta.clear()
@@ -410,10 +416,24 @@ object Matrix {
         })
         result.controller().setFilter(RoomListEntriesDynamicFilterKind.All(listOf(RoomListEntriesDynamicFilterKind.Joined, RoomListEntriesDynamicFilterKind.NonSpace)))
         handles += result.entriesStream()
+        // Spaces ride their own list (the projects list filters NonSpace):
+        // watch it so createProject can file new projects into the space
+        // without fetching the hierarchy every time.
+        val spaceResult = list.entriesWithDynamicAdapters(50u, object : RoomListEntriesListener {
+            override fun onUpdate(roomEntriesUpdate: List<RoomListEntriesUpdate>) {
+                synchronized(spacesLock) {
+                    for (u in roomEntriesUpdate) applyRoomUpdate(u, spaceEntries)
+                    spaceRooms = spaceEntries.associateBy { it.id() }
+                }
+            }
+        })
+        spaceResult.controller().setFilter(RoomListEntriesDynamicFilterKind.All(listOf(RoomListEntriesDynamicFilterKind.Joined, RoomListEntriesDynamicFilterKind.Space)))
+        handles += spaceResult.entriesStream()
     }
 
-    private fun applyRoomUpdate(u: RoomListEntriesUpdate) {
-        val e = roomEntries
+    private fun applyRoomUpdate(u: RoomListEntriesUpdate) = applyRoomUpdate(u, roomEntries)
+
+    private fun applyRoomUpdate(u: RoomListEntriesUpdate, e: ArrayList<Room>) {
         when (u) {
             is RoomListEntriesUpdate.Append -> e.addAll(u.values)
             is RoomListEntriesUpdate.Clear -> e.clear()
@@ -823,7 +843,8 @@ object Matrix {
 
     /**
      * Start a project: a private room named [name], every agent from
-     * [agentList] invited so the room is workable the moment it opens.
+     * [agentList] invited so the room is workable the moment it opens, and
+     * filed under your space when you have one (see [attachToSpace]).
      * Encrypted, like every agent room on the homeserver today (the
      * desktop/Element rooms are all m.megolm) — not a new policy. Returns
      * the new room's ID, or null (with [error] set) if it failed; a room
@@ -857,6 +878,7 @@ object Matrix {
                 if (r != null) for (id in invites) runCatching { r.inviteUserById(id) }
                     .onFailure { Diag.error("Inviting $id into $roomId", it) }
             }
+            attachToSpace(roomId)
             Diag.note("project created: $trimmed ($roomId), invited ${invites.joinToString().ifEmpty { "nobody" }}")
             // Pull the room into the list now instead of waiting for the next sync.
             loadAgentListOnIo()
@@ -866,6 +888,43 @@ object Matrix {
             Diag.error("Creating the project \"$trimmed\"", e)
             _error.value = "Couldn't start your project: ${e.message}"
             null
+        }
+    }
+
+    /**
+     * File the new project [roomId] under your space: an m.space.child
+     * state event on the space (the authoritative half — Element keeps
+     * membership there and never writes the room's m.space.parent, so we
+     * match it). The space is the joined space named
+     * [org.fluxchat.companion.agents.Projects.SPACE_NAME]; no such space →
+     * the project stands on its own (noted, not an error — a space you
+     * never joined shouldn't sink a project), and a send failure (missing
+     * write power, server hiccup) is reported and also leaves the project
+     * standalone. Never rolls back a created project.
+     */
+    private suspend fun attachToSpace(roomId: String) {
+        val spaces = spaceRooms.entries.map { it.key to (runCatching { it.value.roomInfo().displayName }.getOrNull() ?: it.value.displayName()) }
+        val spaceId = org.fluxchat.companion.agents.Projects.findSpace(spaces)
+        if (spaceId == null) {
+            if (spaces.isEmpty()) Diag.note("project $roomId: no space joined, left standalone")
+            else Diag.note("project $roomId: no space named ${org.fluxchat.companion.agents.Projects.SPACE_NAME} (joined: ${spaces.joinToString { it.second }}), left standalone")
+            return
+        }
+        val space = spaceRooms[spaceId] ?: runCatching { client?.getRoom(spaceId) }.getOrNull()
+        if (space == null) {
+            Diag.error("Filing $roomId into the space: $spaceId not loadable, left standalone")
+            return
+        }
+        val via = runCatching { client?.userIdServerName() }.getOrNull()?.let { listOf(it) } ?: emptyList()
+        try {
+            space.sendStateEventRaw(
+                org.fluxchat.companion.agents.Projects.SPACE_CHILD,
+                roomId,
+                org.fluxchat.companion.agents.Projects.spaceChildContent(roomId, via),
+            )
+            Diag.note("project $roomId filed into space $spaceId")
+        } catch (e: Exception) {
+            Diag.error("Filing $roomId into the space $spaceId (left standalone)", e)
         }
     }
 
