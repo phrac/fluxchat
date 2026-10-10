@@ -234,7 +234,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                                 run != null && run.state.live -> runLine(run, now)
                                 typing != null -> typing
                                 run != null -> runLine(run, now)
-                                root != null -> "Thread in ${Matrix.roomName(roomId)}"
+                                root != null -> "Session in ${Matrix.roomName(roomId)}"
                                 else -> agents.joinToString { a -> shortName(a, all.lastOrNull { it.sender == a }?.senderName) }
                             }
                             Text(

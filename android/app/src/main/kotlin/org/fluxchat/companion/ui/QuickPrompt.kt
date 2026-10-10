@@ -141,7 +141,7 @@ fun QuickPromptSheet(roomArg: String?, voice: Boolean, onOpen: (String) -> Unit,
                             Avatar(room.roomId, room.name, room.avatar, 28.dp, room = !room.isDm)
                             Spacer(Modifier.width(10.dp))
                             Text(room.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Icon(Icons.Filled.ArrowDropDown, "Change room")
+                            Icon(Icons.Filled.ArrowDropDown, "Change project")
                         }
                         DropdownMenu(expanded = picking, onDismissRequest = { picking = false }, shape = MaterialTheme.shapes.medium) {
                             ordered.forEach { r ->

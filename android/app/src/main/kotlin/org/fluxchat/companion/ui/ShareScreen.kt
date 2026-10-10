@@ -127,7 +127,7 @@ fun ShareScreen(back: () -> Unit, swap: (Screen) -> Unit) {
             if (sorted.isEmpty()) {
                 item {
                     Text(
-                        "No agent rooms yet.", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        "No projects yet.", color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(24.dp),
                     )
                 }
@@ -146,7 +146,7 @@ fun ShareScreen(back: () -> Unit, swap: (Screen) -> Unit) {
                         Text(r.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val live = r.headline?.second?.takeIf { it.state.live }
                         Text(
-                            listOfNotNull(if (r.isDm) "Direct message" else "Room", live?.state?.label).joinToString(" · "),
+                            listOfNotNull(if (r.isDm) "Direct message" else "Project", live?.state?.label).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall, color = live?.state?.color() ?: MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

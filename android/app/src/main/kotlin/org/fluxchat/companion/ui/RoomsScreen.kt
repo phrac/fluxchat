@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.Badge
@@ -90,8 +91,9 @@ fun RoomsScreen(go: (Screen) -> Unit) {
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
             LargeTopAppBar(
-                title = { Text("Agents") },
+                title = { Text("Projects") },
                 actions = {
+                    IconButton(onClick = { go(Screen.Search) }) { Icon(Icons.Outlined.Search, "Search sessions") }
                     IconButton(onClick = { go(Screen.History) }) { Icon(Icons.Outlined.History, "Run history") }
                     IconButton(onClick = { go(Screen.Agents) }) { Icon(Icons.Outlined.SmartToy, "Your agents") }
                     IconButton(onClick = { go(Screen.Settings) }) { Icon(Icons.Outlined.Settings, "Settings") }
@@ -120,7 +122,7 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                     "Mark your agents in desktop fluxchat (their profile card → AI agent) and they show up here. Or add one now.",
                     "Add an agent",
                 ) { go(Screen.Agents) }
-                rooms.isEmpty() -> Empty(Icons.Outlined.Forum, "Looking for your agents", "Rooms appear here once sync finds one of your agents in them.", null) {}
+                rooms.isEmpty() -> Empty(Icons.Outlined.Forum, "Looking for your projects", "Projects appear here once one of your agents joins them.", null) {}
                 else -> {
                     val shown = rooms.values.filter { r ->
                         when (filter) {

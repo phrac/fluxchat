@@ -116,7 +116,7 @@ fun AgentsScreen(back: () -> Unit) {
             text = {
                 OutlinedTextField(
                     id, { id = it.trim() }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Matrix ID") }, placeholder = { Text("@hermes:example.org") },
+                    label = { Text("Agent ID") }, placeholder = { Text("@hermes:example.org") },
                 )
             },
             confirmButton = { TextButton(onClick = { save(list.agents + AgentEntry(id)); adding = false }, enabled = valid) { Text("Add") } },
@@ -231,7 +231,7 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
         AlertDialog(
             onDismissRequest = { confirm = false },
             title = { Text("Sign out of this phone?") },
-            text = { Text("Encrypted history needs your recovery key again after you sign back in.") },
+            text = { Text("Your past conversations need the recovery key again after you sign back in.") },
             confirmButton = { TextButton(onClick = { confirm = false; scope.launch { Matrix.logout() } }) { Text("Sign out") } },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
         )

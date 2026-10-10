@@ -72,7 +72,7 @@ class QuickWidgetConfig : ComponentActivity() {
                             }
                         }
                         if (ordered.isEmpty()) item {
-                            Text("Finding your agent rooms…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp))
+                            Text("Finding your projects…", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp))
                         }
                         items(ordered, key = { it.roomId }) { r ->
                             Row(

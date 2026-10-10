@@ -8,10 +8,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -20,7 +27,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.fluxchat.companion.matrix.Auth
 import org.fluxchat.companion.matrix.Matrix
@@ -33,6 +42,8 @@ sealed interface Screen {
     data object Agents : Screen
     /** Run history across rooms, with spend per agent. */
     data object History : Screen
+    /** Find a session by what it was about, across every project. */
+    data object Search : Screen
     data object Settings : Screen
     data object Diagnostics : Screen
     /** Pick a room for something shared from another app. */
@@ -48,9 +59,25 @@ fun AppRoot(opened: MutableStateFlow<Screen?>) {
                 Auth.Starting -> Box(Modifier.fillMaxSize())
                 Auth.SignedOut -> LoginScreen()
                 Auth.NeedsRecovery -> RecoveryScreen()
+                Auth.RestoreFailed -> RestoreFailedScreen()
                 Auth.Ready -> Navigator(opened)
             }
         }
+    }
+}
+
+/** A saved session that wouldn't restore (transient, usually): retry in place. */
+@Composable
+private fun RestoreFailedScreen() {
+    val error by Matrix.error.collectAsState()
+    Column(Modifier.fillMaxSize(), Arrangement.Center, Alignment.CenterHorizontally) {
+        Text(
+            error ?: "Couldn't reopen your sessions.",
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.padding(horizontal = 32.dp),
+        )
+        Spacer(Modifier.size(16.dp))
+        Button(onClick = { Matrix.launch { Matrix.ensureStarted() } }) { Text("Try again") }
     }
 }
 
@@ -97,6 +124,7 @@ private fun Screen(s: Screen, go: (Screen) -> Unit, back: () -> Unit, swap: (Scr
             is Screen.Thread -> ChatScreen(s.roomId, s.root, go, back, swap)
             Screen.Agents -> AgentsScreen(back)
             Screen.History -> HistoryScreen(go, back)
+            Screen.Search -> SearchScreen(go, back, swap)
             Screen.Settings -> SettingsScreen(go, back)
             Screen.Diagnostics -> DiagnosticsScreen(back)
             Screen.Share -> ShareScreen(back, swap)

@@ -63,6 +63,12 @@ sealed interface Auth {
     data object SignedOut : Auth
     /** Signed in on a new device: the recovery key unlocks encrypted history. */
     data object NeedsRecovery : Auth
+    /**
+     * A saved session exists but restoring it just failed (keystore busy,
+     * store locked by a half-dead process). The session is NOT dropped — the
+     * desktop's rule — so this shows "try again", never the sign-in form.
+     */
+    data object RestoreFailed : Auth
     data object Ready : Auth
 }
 
@@ -202,9 +208,11 @@ object Matrix {
         } catch (e: Exception) {
             Diag.error("Restoring the session failed", e)
             // Never drop the session over this (the desktop's rule): the
-            // error is shown and the next start tries again.
+            // error is shown and the next start tries again. SignedOut here
+            // showed a real user the sign-in form over a transient keystore
+            // failure; RestoreFailed retries without wiping anything.
             _error.value = "Couldn't restore your session: ${e.message}"
-            _auth.value = Auth.SignedOut
+            _auth.value = Auth.RestoreFailed
             false
         }
     }
@@ -533,14 +541,27 @@ object Matrix {
 
     /** A room's sessions (its threads, from the server), loading the first page. */
     suspend fun sessions(roomId: String): SessionList? = io {
-        synchronized(sessionLists) { sessionLists[roomId] }?.let { return@io it }
-        val room = room(roomId) ?: return@io null
+        sessionListNow(roomId) ?: openSessionList(roomId)?.also { it.more() }
+    }
+
+    /** An open session list, without opening or loading it. */
+    fun sessionListNow(roomId: String): SessionList? =
+        synchronized(sessionLists) { sessionLists[roomId] }
+
+    /** Open every project's session list (search reads them all). */
+    suspend fun sessionsEach(roomIds: List<String>) = io {
+        for (roomId in roomIds) openSessionList(roomId)?.more()
+        Unit
+    }
+
+    private fun openSessionList(roomId: String): SessionList? {
+        synchronized(sessionLists) { sessionLists[roomId] }?.let { return it }
+        val room = room(roomId) ?: return null
         val list = runCatching { SessionList(roomId, room.threadListService()) }
-            .onFailure { Diag.error("Opening the session list of $roomId", it) }.getOrNull() ?: return@io null
+            .onFailure { Diag.error("Opening the session list of $roomId", it) }.getOrNull() ?: return null
         synchronized(sessionLists) { sessionLists[roomId] = list }
         list.start()
-        list.more()
-        list
+        return list
     }
 
     private fun recompute() = synchronized(recomputeLock) {

@@ -36,10 +36,13 @@ class SessionList(val roomId: String, private val service: ThreadListService) : 
     private val raw = ArrayList<Session?>()
     private val _items = MutableStateFlow<List<Session>>(emptyList())
     val items: StateFlow<List<Session>> = _items
+    /** Read at composition time (search reads many lists at once). */
+    val itemsNow: List<Session> get() = _items.value
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading
     private val _endReached = MutableStateFlow(false)
     val endReached: StateFlow<Boolean> = _endReached
+    val endReachedNow: Boolean get() = _endReached.value
     private val handles = ArrayList<TaskHandle>()
 
     fun start() {
