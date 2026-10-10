@@ -18,12 +18,15 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.fluxchat.companion.agents.History
 import org.fluxchat.companion.agents.Harness
 import org.fluxchat.companion.agents.Harnesses
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
+import org.fluxchat.companion.agents.RunRecord
 import org.fluxchat.companion.agents.Runs
 import org.fluxchat.companion.agents.ViewKey
+import org.fluxchat.companion.ui.threadTitle
 import org.json.JSONArray
 import org.json.JSONObject
 import org.matrix.rustcomponents.sdk.Client
@@ -161,6 +164,12 @@ object Matrix {
     /** Who's typing in each agent room (user IDs, you left out). */
     val typing: StateFlow<Map<String, List<String>>> = _typing
     private val typingHandles = HashMap<String, TaskHandle>()
+    /** Runs this phone saw live (the desktop's run_history), kept encrypted. */
+    private val runHistory = ArrayList<RunRecord>()
+    private var historyLoaded = false
+    private val _runHistory = MutableStateFlow<List<RunRecord>>(emptyList())
+    /** Recorded run history (HistoryScreen reads it). */
+    val runHistoryView: StateFlow<List<RunRecord>> = _runHistory
     val agentRooms: StateFlow<Map<String, AgentRoom>> = _agentRooms
 
     val userId: String get() = runCatching { client?.userId() }.getOrNull().orEmpty()
@@ -268,6 +277,8 @@ object Matrix {
         sync.start()
         Diag.note("signed in as ${c.userId()} (device ${c.deviceId()}) on ${c.homeserver()}")
         watchRooms(sync)
+        loadRunHistory()
+        jobs += scope.launch { sweepStalledRuns() }
         jobs += scope.launch { pollAgentList() }
         jobs += combine(_rooms, _agentList) { rooms, list -> rooms to list }
             .debounce(300)
@@ -344,6 +355,10 @@ object Matrix {
         memberCache.clear()
         roomMeta.clear()
         _agentRooms.value = emptyMap()
+        runHistory.clear()
+        _runHistory.value = emptyList()
+        historyLoaded = false
+        HistoryStore.clear(appContext)
         client = null
         syncService = null
         notifications = null
@@ -544,8 +559,71 @@ object Matrix {
                 avatar = meta.avatar,
                 unread = meta.unread,
             )
+            recordRuns(roomId, msgs, r.runs, now)
         }
         _agentRooms.value = out
+    }
+
+    // --- Run history ---
+
+    /** Record what this recompute saw (the desktop's record_run per view). */
+    private fun recordRuns(roomId: String, msgs: List<Msg>, runs: Map<ViewKey, RunInfo?>, now: Long) {
+        if (!historyLoaded) return
+        var changed = false
+        for ((key, run) in runs) {
+            val rec = run ?: continue
+            // The request behind the run: the thread's root, or the room's
+            // latest own message at the run's start (lone commands aren't tasks).
+            val request = key.threadRoot?.let { root -> msgs.firstOrNull { it.id == root } }
+                ?: msgs.lastOrNull { it.isOwn && it.threadRoot == null && it.ts == rec.since }
+            val title = key.threadRoot?.let { root ->
+                threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.threadRoot == root })
+            } ?: "Request in the room"
+            if (History.record(runHistory, key, rec, title, request?.body, now)) changed = true
+        }
+        if (changed) {
+            Diag.note("run history: ${runHistory.size} records")
+            saveRunHistory()
+        }
+    }
+
+    /** After sign-in: the encrypted history (runs are only ever recorded live after this). */
+    private fun loadRunHistory() {
+        synchronized(recomputeLock) {
+            val bytes = HistoryStore.load(appContext)
+            runHistory.clear()
+            if (bytes != null) runHistory.addAll(History.decode(bytes))
+            // Older builds recorded lone commands (`!usage`) as runs.
+            val before = runHistory.size
+            runHistory.removeAll { History.isLoneCommand(it.title) }
+            historyLoaded = true
+            _runHistory.value = runHistory.toList()
+            Diag.note("run history: ${runHistory.size} records loaded")
+            if (runHistory.size != before) saveRunHistoryLocked()
+        }
+    }
+
+    private fun saveRunHistory() = synchronized(recomputeLock) { saveRunHistoryLocked() }
+
+    private fun saveRunHistoryLocked() {
+        HistoryStore.save(appContext, History.encode(runHistory))
+        _runHistory.value = runHistory.toList()
+    }
+
+    /** A working run silent for STALE_RUN_MS closes as stalled (the desktop's sweep). */
+    private suspend fun sweepStalledRuns() {
+        while (true) {
+            delay(60_000)
+            val now = System.currentTimeMillis()
+            val changed = synchronized(recomputeLock) {
+                if (!historyLoaded) false else History.settleStalled(runHistory, { rec ->
+                    val msgs = roomTimeline(rec.room)?.messages?.value.orEmpty()
+                    val root = rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key }
+                    msgs.filter { it.sender == rec.agent && (it.threadRoot == root || it.id == root) }.maxOfOrNull { it.ts } ?: 0L
+                }, now)
+            }
+            if (changed) saveRunHistory()
+        }
     }
 
     // --- Push, notification actions ---
