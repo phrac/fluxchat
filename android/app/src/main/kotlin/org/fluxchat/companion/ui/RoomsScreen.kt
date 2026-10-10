@@ -212,14 +212,30 @@ fun RoomsScreen(go: (Screen) -> Unit) {
     }
 
     if (creating) {
-        NewProjectDialog(agents = list.agents.size, onDismiss = { Matrix.clearError(); creating = false }) { name ->
-            scope.launch {
-                val roomId = Matrix.createProject(name, list)
-                if (roomId != null) {
-                    creating = false
-                    // Straight in: the first message can be sent immediately.
-                    go(Screen.Room(roomId))
-                }
+        CreateProjectFlow(list = list, go = go, onCreated = { creating = false }, onDismiss = { Matrix.clearError(); creating = false })
+    }
+}
+
+/**
+ * The dialog + the one thing it does: create, then straight into the new
+ * project. [create] is the Matrix call; tests inject a fake to watch it.
+ */
+@Composable
+internal fun CreateProjectFlow(
+    list: org.fluxchat.companion.matrix.AgentList,
+    go: (Screen) -> Unit,
+    onCreated: () -> Unit,
+    onDismiss: () -> Unit,
+    create: suspend (String, org.fluxchat.companion.matrix.AgentList) -> String? = Matrix::createProject,
+) {
+    val scope = rememberCoroutineScope()
+    NewProjectDialog(agents = list.agents.size, onDismiss = onDismiss) { name ->
+        scope.launch {
+            val roomId = create(name, list)
+            if (roomId != null) {
+                onCreated()
+                // Straight in: the first message can be sent immediately.
+                go(Screen.Room(roomId))
             }
         }
     }
