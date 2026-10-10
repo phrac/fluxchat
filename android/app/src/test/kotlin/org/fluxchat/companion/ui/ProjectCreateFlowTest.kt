@@ -14,7 +14,6 @@ import androidx.compose.ui.test.performTextInput
 import org.fluxchat.companion.matrix.AgentEntry
 import org.fluxchat.companion.matrix.AgentList
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -99,7 +98,7 @@ class ProjectCreateFlowTest {
         flow { _, _ -> null }
         // The visible copy: "project" yes, "room"/"channel" never.
         for (s in listOf("Project name", "Create", "Cancel")) compose.onNodeWithText(s).assertIsDisplayed()
-        compose.onAllNodes(matcher = androidx.compose.ui.test.hasText("room", ignoreCase = true, substring = true)).assertCountEquals(0)
-        compose.onAllNodes(matcher = androidx.compose.ui.test.hasText("channel", ignoreCase = true, substring = true)).assertCountEquals(0)
+        assertTrue("a room string leaked", compose.onAllNodes(matcher = androidx.compose.ui.test.hasText("room", ignoreCase = true, substring = true)).fetchSemanticsNodes().isEmpty())
+        assertTrue("a channel string leaked", compose.onAllNodes(matcher = androidx.compose.ui.test.hasText("channel", ignoreCase = true, substring = true)).fetchSemanticsNodes().isEmpty())
     }
 }
