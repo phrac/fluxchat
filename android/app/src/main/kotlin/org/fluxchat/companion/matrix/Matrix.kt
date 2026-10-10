@@ -192,6 +192,9 @@ object Matrix {
     fun init(context: Context) {
         if (::appContext.isInitialized) return
         appContext = context.applicationContext
+        // Decide once, before any client touches the store: did the last
+        // process die of a native SDK crash? (StoreHeal)
+        StoreHeal.bootStarted(appContext)
         vault = Vault(appContext)
         Harnesses.load(appContext)
     }
@@ -209,7 +212,12 @@ object Matrix {
         return try {
             val c = builder(saved.storePassphrase).homeserverUrl(saved.session.homeserverUrl).build()
             c.restoreSession(saved.session)
-            started(c)
+            // A native SDK crash poisons the on-disk event cache, and every
+            // later member lookup re-reads the poison (t_aa662dd8: the same
+            // build that passed acceptance crashed all afternoon). Notice
+            // that crash and rebuild the store before anyone touches it.
+            val live = if (StoreHeal.healRequested()) rebuildStore(c, saved.session, saved.storePassphrase) else c
+            started(live)
             true
         } catch (e: Exception) {
             Diag.error("Restoring the session failed", e)
@@ -239,6 +247,36 @@ object Matrix {
                     vault.load()?.let { vault.save(session, it.storePassphrase) }
                 }
             })
+    }
+
+    /**
+     * [StoreHeal]: the store on disk is poisoned by a native SDK crash.
+     * Ask the SDK to empty it ([Client.clearCaches] drops the event cache
+     * and the state store file; the crypto store and session survive),
+     * drop the client holding the bad caches, and build a fresh one on the
+     * now-clean store. Never fatal: a heal that fails returns the original
+     * client (crash risk accepted) rather than losing the sign-in.
+     */
+    private suspend fun rebuildStore(c: Client, session: Session, passphrase: String): Client {
+        Diag.note("store heal: rebuilding the local store after a native crash")
+        val clean = try {
+            c.clearCaches(null)
+            c.close()
+            val fresh = builder(passphrase).homeserverUrl(session.homeserverUrl).build()
+            fresh.restoreSession(session)
+            fresh
+        } catch (e: Exception) {
+            Diag.error("Store heal", e)
+            // The old client may already be closed by a mid-heal failure;
+            // only keep it if it still answers.
+            if (c.uniffiIsDestroyed) {
+                runCatching { builder(passphrase).homeserverUrl(session.homeserverUrl).build() }
+                    .onFailure { Diag.error("Rebuild after failed heal", it) }
+                    .getOrNull() ?: c
+            } else c
+        }
+        StoreHeal.healDone(appContext)
+        return clean
     }
 
     suspend fun login(homeserver: String, user: String, password: String) = io { loginOnIo(homeserver, user, password) }
@@ -479,13 +517,29 @@ object Matrix {
 
     private suspend fun agentsIn(room: Room, agents: List<String>): List<String> {
         if (agents.isEmpty()) return emptyList()
-        val heroes = runCatching { room.heroes().map { it.userId } }.getOrDefault(emptyList())
-        return agents.filter { a ->
-            a in heroes || runCatching {
-                val m = room.member(a).membership
-                m is MembershipState.Join || m is MembershipState.Invite
-            }.getOrDefault(false)
-        }
+        val wanted = agents.toSet()
+        val present = runCatching { room.heroes().map { it.userId } }.getOrDefault(emptyList()).toMutableSet()
+        // Membership comes from one chunked pass over the local member list,
+        // NOT a per-agent Room.member() future: polling that FFI call into a
+        // desynced event cache is what SIGSEGV'd after createProject
+        // (t_aa662dd8), and a SEGV walks past runCatching.
+        if (!present.containsAll(wanted)) runCatching {
+            // members() (not membersNoSync): like the old per-member lookup,
+            // it fetches membership from the server when the local copy is
+            // incomplete — a project's agents are invited seconds ago.
+            room.members().use { members ->
+                var seen = 0u
+                while (seen < members.len() && !present.containsAll(wanted)) {
+                    val chunk = members.nextChunk(256u)
+                    if (chunk.isEmpty()) break
+                    seen += chunk.size.toUInt()
+                    for (m in chunk) if (m.userId in wanted &&
+                        (m.membership is MembershipState.Join || m.membership is MembershipState.Invite)
+                    ) present += m.userId
+                }
+            }
+        }.onFailure { Diag.error("Reading members of ${room.id()}", it) }
+        return agents.filter { it in present }
     }
 
     private suspend fun openRoomTimeline(room: Room) {
