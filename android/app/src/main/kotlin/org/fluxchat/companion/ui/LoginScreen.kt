@@ -3,6 +3,7 @@ package org.fluxchat.companion.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -85,6 +86,7 @@ private fun Form(title: String, subtitle: String, content: @Composable () -> Uni
 @Composable
 fun LoginScreen() {
     var homeserver by remember { mutableStateOf("") }
+    var advanced by remember { mutableStateOf(false) }
     var user by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
@@ -101,14 +103,17 @@ fun LoginScreen() {
             }
         }
     }
-    Form("Your agents, anywhere", "Sign in with your Matrix account to follow and answer your AI agents.") {
-        OutlinedTextField(
-            homeserver, { homeserver = it }, Modifier.fillMaxWidth(),
-            label = { Text("Homeserver") }, placeholder = { Text("matrix.org") }, singleLine = true,
-            leadingIcon = { Icon(Icons.Outlined.Dns, null) },
-            supportingText = { Text("Optional with a full Matrix ID (@you:server)") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-        )
+    Form("Your agents, anywhere", "Sign in to your Flux account to follow and answer your agents.") {
+        if (advanced) {
+            OutlinedTextField(
+                homeserver, { homeserver = it }, Modifier.fillMaxWidth(),
+                label = { Text("Server address") }, placeholder = { Text("matrix.org") }, // lexicon:ok
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Outlined.Dns, null) },
+                supportingText = { Text("Usually not needed with a full @you:server ID") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+            )
+        }
         OutlinedTextField(
             user, { user = it }, Modifier.fillMaxWidth(),
             label = { Text("Username") }, singleLine = true,
@@ -132,11 +137,17 @@ fun LoginScreen() {
         Button(onClick = { submit() }, enabled = canSubmit, modifier = Modifier.fillMaxWidth().height(52.dp)) {
             if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else Text("Sign in")
         }
-        Text(
-            "This phone becomes a new session on your account.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "This phone becomes a new session on your account.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            TextButton(onClick = { advanced = !advanced }) {
+                Text(if (advanced) "Hide server details" else "Sign in on another server")
+            }
+        }
     }
 }
 
@@ -147,8 +158,8 @@ fun RecoveryScreen() {
     val error by Matrix.error.collectAsState()
     val scope = rememberCoroutineScope()
     Form(
-        "Unlock encrypted rooms",
-        "Enter your recovery key to read encrypted agent rooms here and verify this phone. It's the key Element or fluxchat gave you when you set up key backup.",
+        "Unlock your past conversations",
+        "Enter your recovery key to read your older conversations here and verify this phone. It's the key fluxchat gave you when you set up backups.",
     ) {
         OutlinedTextField(
             key, { key = it }, Modifier.fillMaxWidth(),
@@ -169,6 +180,6 @@ fun RecoveryScreen() {
             enabled = !busy && key.isNotBlank(),
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) { if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else Text("Unlock") }
-        TextButton(onClick = { Matrix.skipRecovery() }) { Text("Not now: unencrypted rooms only") }
+        TextButton(onClick = { Matrix.skipRecovery() }) { Text("Not now: skip past conversations") }
     }
 }

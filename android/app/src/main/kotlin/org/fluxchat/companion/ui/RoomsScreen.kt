@@ -90,7 +90,7 @@ fun RoomsScreen(go: (Screen) -> Unit) {
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
             LargeTopAppBar(
-                title = { Text("Agents") },
+                title = { Text("Projects") },
                 actions = {
                     IconButton(onClick = { go(Screen.History) }) { Icon(Icons.Outlined.History, "Run history") }
                     IconButton(onClick = { go(Screen.Agents) }) { Icon(Icons.Outlined.SmartToy, "Your agents") }
@@ -120,7 +120,7 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                     "Mark your agents in desktop fluxchat (their profile card → AI agent) and they show up here. Or add one now.",
                     "Add an agent",
                 ) { go(Screen.Agents) }
-                rooms.isEmpty() -> Empty(Icons.Outlined.Forum, "Looking for your agents", "Rooms appear here once sync finds one of your agents in them.", null) {}
+                rooms.isEmpty() -> Empty(Icons.Outlined.Forum, "Looking for your projects", "Projects appear here once one of your agents joins them.", null) {}
                 else -> {
                     val shown = rooms.values.filter { r ->
                         when (filter) {
