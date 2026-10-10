@@ -28,7 +28,9 @@ class FluxPushService : PushService() {
 
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
         Matrix.init(applicationContext)
-        Diag.note("push: new endpoint from the distributor")
+        // Host only: the endpoint's path is a secret topic.
+        val host = runCatching { java.net.URL(endpoint.url).host }.getOrNull() ?: "?"
+        Diag.note("push: new endpoint from the distributor ($host)")
         scope.launch { Push.newEndpoint(applicationContext, endpoint.url) }
     }
 
@@ -58,10 +60,11 @@ class FluxPushService : PushService() {
         val nc = Matrix.notificationClient() ?: return Diag.error("push: no notification client")
         val status = nc.getNotification(roomId, eventId)
         val item = (status as? NotificationStatus.Event)?.item ?: return Diag.note("push: $eventId → ${status.javaClass.simpleName}")
-        val ev = (item.event as? NotificationEvent.Timeline)?.event ?: return
+        val ev = (item.event as? NotificationEvent.Timeline)?.event ?: return Diag.note("push: $eventId is not a timeline event (${item.event.javaClass.simpleName})")
         val sender = ev.senderId()
-        if (sender == Matrix.userId) return
-        val msgType = ((ev.content() as? TimelineEventContent.MessageLike)?.content as? MessageLikeEventContent.RoomMessage)?.messageType ?: return
+        if (sender == Matrix.userId) return Diag.note("push: $eventId is our own message")
+        val msgType = ((ev.content() as? TimelineEventContent.MessageLike)?.content as? MessageLikeEventContent.RoomMessage)?.messageType
+            ?: return Diag.note("push: $eventId is not a renderable message (${ev.content().javaClass.simpleName})")
         val list = Matrix.agentList.value
         val isAgent = list.agents.any { it.userId == sender }
         // An agent companion: your agents, and people mentioning you.
@@ -79,7 +82,7 @@ class FluxPushService : PushService() {
             roomId, eventId, item.threadId ?: ev.threadRootEventId(), sender, senderName,
             item.roomInfo.displayName, body, Protocol.fromEventJson(item.rawEvent), list.harnessOf(sender),
             System.currentTimeMillis(), ev.timestamp().toLong(),
-        ) ?: return
+        ) ?: return Diag.note("push: $eventId is a step log, not notified")
         Notifier.show(applicationContext, note)
     }
 
@@ -89,6 +92,7 @@ class FluxPushService : PushService() {
 
     override fun onUnregistered(instance: String) {
         Matrix.init(applicationContext)
+        Diag.note("push: the distributor unregistered us")
         scope.launch { Push.forget(applicationContext) }
     }
 }
