@@ -13,8 +13,10 @@ class App : Application() {
         runCatching { org.matrix.rustsdk.Android.init(this) }
             .onFailure { Diag.error("Initializing the SDK for Android (TLS will fail)", it) }
         Matrix.init(this)
+        org.fluxchat.companion.Update.init(this)
         Notifications.createChannels(this)
         Matrix.launch { Matrix.ensureStarted() }
+        Matrix.launch { org.fluxchat.companion.Update.check() }
         org.fluxchat.companion.push.PromptWatcher.start(this)
         org.fluxchat.companion.push.LiveRuns.start(this)
         org.fluxchat.companion.quick.Quick.start(this)
