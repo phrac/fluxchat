@@ -58,24 +58,15 @@ class ProjectsTest {
     }
 
     @Test fun childContentMatchesWhatElementWrites() {
-        // The shape Element's existing children carry: room ID keys an
-        // empty object, plain via, no auto_join, no suggested.
-        val content = org.json.JSONObject(Projects.spaceChildContent("!new:dsflx.wtf", listOf("dsflx.wtf")))
-        assertEquals(0, content.getJSONObject("!new:dsflx.wtf").length())
-        org.junit.Assert.assertTrue(content.has("via"))
-        assertEquals("dsflx.wtf", content.getJSONArray("via").getString(0))
-        assertEquals(2, content.length())
-    }
-
-    @Test fun childContentWithoutViaOmitsTheKey() {
-        val content = org.json.JSONObject(Projects.spaceChildContent("!new:dsflx.wtf", emptyList()))
+        // The shape Element's existing children carry on the homeserver:
+        // content is just via (the room ID is the event's state key), plain
+        // via, no auto_join, no suggested.
+        val content = org.json.JSONObject(Projects.spaceChildContent(listOf("dsflx.wtf")))
         assertEquals(1, content.length())
-        org.junit.Assert.assertTrue(content.has("!new:dsflx.wtf"))
+        assertEquals("dsflx.wtf", content.getJSONArray("via").getString(0))
     }
 
-    @Test fun childKeysTheRoomIdVerbatim() {
-        // Matrix room IDs are opaque and sigil-prefixed — never rewritten.
-        val content = org.json.JSONObject(Projects.spaceChildContent("!a=b#c:dsflx.wtf", listOf("dsflx.wtf")))
-        org.junit.Assert.assertTrue(content.has("!a=b#c:dsflx.wtf"))
+    @Test fun childContentWithoutViaIsEmpty() {
+        assertEquals("{}", Projects.spaceChildContent(emptyList()))
     }
 }

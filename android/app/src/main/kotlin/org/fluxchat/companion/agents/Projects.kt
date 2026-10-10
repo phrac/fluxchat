@@ -45,13 +45,14 @@ object Projects {
     }
 
     /**
-     * The [SPACE_CHILD] content that files [roomId] into the space: the
-     * room ID keys an empty object, [via] names the homeserver to reach it
-     * through — the same shape Element's existing children carry (plain
-     * via, no auto_join, no suggested).
+     * The [SPACE_CHILD] content that files a project in the space. The
+     * child's room ID is the event's state key, not content — the content
+     * is just [via], the homeserver(s) the child can be reached through,
+     * the exact shape Element's existing children carry on the homeserver
+     * (plain via, no auto_join, no suggested).
      */
-    fun spaceChildContent(roomId: String, via: List<String>): String {
-        val content = JSONObject().put(roomId, JSONObject())
+    fun spaceChildContent(via: List<String>): String {
+        val content = JSONObject()
         if (via.isNotEmpty()) content.put("via", JSONArray(via))
         return content.toString()
     }
