@@ -21,16 +21,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -38,14 +41,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -88,6 +94,7 @@ fun RoomsScreen(go: (Screen) -> Unit) {
     val scope = rememberCoroutineScope()
     var refreshing by rememberSaveable { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf(RoomFilter.All) }
+    var creating by rememberSaveable { mutableStateOf(false) }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     val allRuns = rooms.values.flatMap { r -> r.runs.values.filterNotNull() }
@@ -104,6 +111,7 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                         // Subtle: a plain assist chip, no badge or colour shout.
                         AssistChip(onClick = { org.fluxchat.companion.Update.openRelease(context) }, label = { Text("Update available") })
                     }
+                    IconButton(onClick = { creating = true }) { Icon(Icons.Outlined.Add, "New project") }
                     IconButton(onClick = { go(Screen.Search) }) { Icon(Icons.Outlined.Search, "Search sessions") }
                     IconButton(onClick = { go(Screen.History) }) { Icon(Icons.Outlined.History, "Run history") }
                     IconButton(onClick = { go(Screen.Agents) }) { Icon(Icons.Outlined.SmartToy, "Your agents") }
@@ -134,7 +142,12 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                     "Mark your agents in desktop fluxchat (their profile card → AI agent) and they show up here. Or add one now.",
                     "Add an agent",
                 ) { go(Screen.Agents) }
-                rooms.isEmpty() -> Empty(Icons.Outlined.Forum, "Looking for your projects", "Projects appear here once one of your agents joins them.", null) {}
+                rooms.isEmpty() -> Empty(
+                    Icons.Outlined.Forum,
+                    "No projects yet",
+                    "Start one and your agents join right away. Or projects appear here once one of your agents joins one.",
+                    "New project",
+                ) { creating = true }
                 else -> {
                     val shown = rooms.values.filter { r ->
                         when (filter) {
@@ -190,6 +203,53 @@ fun RoomsScreen(go: (Screen) -> Unit) {
             }
         }
     }
+
+    if (creating) {
+        NewProjectDialog(agents = list.agents.size, onDismiss = { Matrix.clearError(); creating = false }) { name ->
+            scope.launch {
+                val roomId = Matrix.createProject(name, list)
+                if (roomId != null) {
+                    creating = false
+                    // Straight in: the first message can be sent immediately.
+                    go(Screen.Room(roomId))
+                }
+            }
+        }
+    }
+}
+
+/** Name a new project; the app invites every agent (the list's count is the promise). */
+@Composable
+private fun NewProjectDialog(agents: Int, onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    val error by Matrix.error.collectAsState()
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("New project") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    name, { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Project name") }, placeholder = { Text("Weekend build") },
+                )
+                Text(
+                    if (agents > 0) "Your $agents ${if (agents == 1) "agent" else "agents"} ${if (agents == 1) "is" else "are"} invited and can start right away."
+                    else "Add agents first and they'll be invited to every new project.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+            }
+        },
+        confirmButton = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                TextButton(onClick = { busy = true; onCreate(name.trim()) }, enabled = name.isNotBlank() && !busy) { Text("Create") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
+    )
 }
 
 @Composable

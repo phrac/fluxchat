@@ -57,6 +57,7 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -76,6 +77,7 @@ import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
@@ -254,14 +256,35 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                     if (sessionsButton) {
                         IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.History, "Sessions") }
                     }
-                    if (harness.menu.isNotEmpty()) {
+                    // One menu: the harness's commands, plus leaving a project
+                    // you started (a DM with an agent has nothing to leave; a
+                    // thread isn't a separate project).
+                    if (harness.menu.isNotEmpty() || (root == null && !Matrix.isDm(roomId))) {
+                        var confirmLeave by remember { mutableStateOf(false) }
                         Box {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Agent commands") }
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, shape = MaterialTheme.shapes.medium) {
                                 for (item in harness.menu) {
                                     DropdownMenuItem(text = { Text(item.label) }, onClick = { menu = false; command(item.command) })
                                 }
+                                if (root == null && !Matrix.isDm(roomId)) {
+                                    DropdownMenuItem(text = { Text("Leave project", color = MaterialTheme.colorScheme.error) }, onClick = { menu = false; confirmLeave = true })
+                                }
                             }
+                        }
+                        if (confirmLeave) {
+                            AlertDialog(
+                                onDismissRequest = { confirmLeave = false },
+                                title = { Text("Leave this project?") },
+                                text = { Text("It stays for your agents and on desktop fluxchat; it just leaves your phone.") },
+                                confirmButton = {
+                                    TextButton(onClick = {
+                                        confirmLeave = false
+                                        scope.launch { if (Matrix.leaveProject(roomId)) back() }
+                                    }) { Text("Leave") }
+                                },
+                                dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text("Cancel") } },
+                            )
                         }
                     }
                 },
