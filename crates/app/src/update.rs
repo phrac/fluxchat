@@ -479,7 +479,12 @@ impl FluxChat {
                         tracing::info!("update: {version} available (running {})", env!("CARGO_PKG_VERSION"));
                         self.update_available = Some(version);
                     }
-                    Ok(None) => self.update_available = None,
+                    // Logged so the screenshot of a quiet chip can be told
+                    // apart from a quiet 404.
+                    Ok(None) => {
+                        tracing::info!("update: up to date (running {})", env!("CARGO_PKG_VERSION"));
+                        self.update_available = None;
+                    }
                     // Silent by design (the repo being private 404s today);
                     // the log line is the whole diagnostics surface.
                     Err(e) => tracing::warn!("update check (github releases): {e}"),
