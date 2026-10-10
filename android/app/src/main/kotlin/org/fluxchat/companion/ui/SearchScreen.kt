@@ -61,7 +61,7 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
     val lists = rooms.keys.mapNotNull { roomId ->
         Matrix.sessionListNow(roomId)?.let { roomId to it }
     }
-    val now = rememberNow()
+    val now by rememberNow()
     // Open every project's list once, then pull older pages while results
     // still want them; `batches` re-gathers the snapshot as pages arrive.
     LaunchedEffect(rooms.keys.size) {
