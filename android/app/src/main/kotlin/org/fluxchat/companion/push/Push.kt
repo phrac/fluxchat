@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import org.fluxchat.companion.Diag
 import org.fluxchat.companion.matrix.Matrix
 import org.json.JSONObject
 import org.matrix.rustcomponents.sdk.HttpPusherData
@@ -56,9 +57,11 @@ object Push {
         _status.value = Status.Registering
         UnifiedPush.tryUseCurrentOrDefaultDistributor(activity) { ok ->
             if (ok) {
+                Diag.note("push: enabled via the default distributor")
                 prefs(activity).edit().putBoolean("enabled", true).apply()
                 UnifiedPush.register(activity, messageForDistributor = "fluxchat agents")
             } else {
+                Diag.note("push: enable refused — no distributor to pick")
                 _status.value = Status.NoDistributor
             }
         }
@@ -66,6 +69,7 @@ object Push {
 
     /** Use this distributor (a choice in Settings). */
     fun use(context: Context, distributor: String) {
+        Diag.note("push: using distributor $distributor")
         _status.value = Status.Registering
         UnifiedPush.saveDistributor(context, distributor)
         prefs(context).edit().putBoolean("enabled", true).apply()
@@ -81,9 +85,11 @@ object Push {
         }
         val distributor = UnifiedPush.getAckDistributor(context)
         if (distributor == null) {
+            Diag.note("push: enabled but no acknowledged distributor")
             _status.value = if (distributors(context).isEmpty()) Status.NoDistributor else Status.Off
             return
         }
+        if (p.getString("endpoint", null) == null) Diag.note("push: waiting on an endpoint from $distributor")
         p.getString("endpoint", null)?.let { setPusher(context, it) }
         // Checks the connection; a new endpoint comes back through the service.
         UnifiedPush.register(context, messageForDistributor = "fluxchat agents")
@@ -92,7 +98,9 @@ object Push {
     /** The distributor gave us an endpoint (new or changed). */
     suspend fun newEndpoint(context: Context, endpoint: String) {
         prefs(context).edit().putString("endpoint", endpoint).apply()
-        if (Matrix.ensureStarted()) setPusher(context, endpoint)
+        // No session yet: the pusher goes in when registerIfReady runs after sign-in.
+        if (!Matrix.ensureStarted()) Diag.note("push: endpoint saved, no session to set the pusher with")
+        else setPusher(context, endpoint)
     }
 
     private suspend fun setPusher(context: Context, endpoint: String) {
@@ -114,9 +122,9 @@ object Push {
             }
             prefs(context).edit().putString("pushed_endpoint", endpoint).putString("gateway", gateway).apply()
             _status.value = Status.On(UnifiedPush.getAckDistributor(context) ?: "?", gateway)
-            org.fluxchat.companion.Diag.note("pusher set: gateway $gateway")
+            Diag.note("pusher set: gateway $gateway")
         } catch (e: Exception) {
-            org.fluxchat.companion.Diag.error("Setting the pusher failed", e)
+            Diag.error("Setting the pusher failed", e)
             _status.value = Status.Failed("Couldn't register with your homeserver: ${e.message}")
         }
     }
@@ -165,7 +173,7 @@ object Push {
      * `{"unifiedpush":{"gateway":"matrix"}}`), else unifiedpush.org's.
      */
     private suspend fun gatewayFor(endpoint: String): String = withContext(Dispatchers.IO) {
-        runCatching {
+        val probed = runCatching {
             val u = URL(endpoint)
             val candidate = URL(u.protocol, u.host, u.port, GATEWAY_PATH).toString()
             val conn = URL(candidate).openConnection() as HttpURLConnection
@@ -179,6 +187,11 @@ object Push {
             } finally {
                 conn.disconnect()
             }
-        }.getOrNull() ?: FALLBACK_GATEWAY
+        }
+        probed.getOrNull()?.let { return@withContext it }
+        // A failed probe still means push works via the fallback; say which path we took.
+        probed.exceptionOrNull()?.let { Diag.note("push: gateway probe failed (${it.javaClass.simpleName}: ${it.message})") }
+        Diag.note("push: no Matrix gateway at the endpoint's server — using unifiedpush.org's")
+        FALLBACK_GATEWAY
     }
 }

@@ -16,8 +16,8 @@ import org.json.JSONObject
  */
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val room = intent.getStringExtra(ROOM) ?: return
-        val event = intent.getStringExtra(EVENT) ?: return
+        val room = intent.getStringExtra(ROOM) ?: return Diag.note("push: notification action without a room")
+        val event = intent.getStringExtra(EVENT) ?: return Diag.note("push: notification action without an event")
         val thread = intent.getStringExtra(THREAD)
         val value0 = intent.getStringExtra(VALUE).orEmpty()
         val label = intent.getStringExtra(LABEL).orEmpty()
