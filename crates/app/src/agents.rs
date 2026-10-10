@@ -460,6 +460,8 @@ pub struct Protocol {
     pub context: Option<f32>,
     pub cwd: Option<String>,
     pub cost_usd: Option<f64>,
+    /// How the run ended, one line (protocol `result`, on the final edit).
+    pub result: Option<String>,
     /// A prompt: answer by reacting with a choice's key.
     pub choices: Vec<ProtocolChoice>,
 }
@@ -513,11 +515,13 @@ pub struct RunInfo {
     /// The session's spend so far, as the agent reports it (protocol
     /// `cost_usd`: a running total for the session, not this run alone).
     pub cost_usd: Option<f64>,
+    /// How the run ended, one line (protocol `result`), once it has.
+    pub result: Option<String>,
 }
 
 impl RunInfo {
     pub(crate) fn new(state: RunState, since: u64) -> Self {
-        RunInfo { state, since, step: None, steps: 0, progress: None, agent: String::new(), cost_usd: None }
+        RunInfo { state, since, step: None, steps: 0, progress: None, agent: String::new(), cost_usd: None, result: None }
     }
 
     /// For picking between two agents' reports on one key: the livelier.
@@ -932,6 +936,9 @@ impl FluxChat {
                 progress: p.progress.map(|f| f.clamp(0.0, 1.0)),
                 agent: agent.to_string(),
                 cost_usd: cost.get(&run_id).copied(),
+                // The final edit carries it; the newest status message is
+                // that edit once the run ends.
+                result: p.result.clone(),
             }))
         }).collect()
     }
@@ -1894,6 +1901,10 @@ impl FluxChat {
             let mut body = iced::widget::column![
                 text(crate::view::ellipsize(&h.title, 80)).font(self.sidebar_font()).size(13).color(colors.text_normal)
                     .wrapping(iced::widget::text::Wrapping::None),
+                // How it ended, when the agent says (protocol `result`).
+                h.result.as_ref().filter(|s| !s.trim().is_empty())
+                    .map(|s| container(text(crate::view::ellipsize(s, 100)).font(self.sidebar_font()).size(11).color(colors.text_muted)
+                        .wrapping(iced::widget::text::Wrapping::None)).clip(true)),
                 container(row![
                     state_dot(state, 7.0),
                     text(format!("{label} \u{00b7} {extras}")).font(self.sidebar_font()).size(11).color(state.color())
@@ -2499,6 +2510,7 @@ mod tests {
         app.run_history.push(crate::history::RunRecord {
             key: "!r:x".into(), room: "!r:x".into(), agent: "@bot:x".into(), title: "Request in the room".into(),
             state: "working".into(), started: sent_ms(&ask), ended: None, steps: 0, model: None, cost: None, cost_usd: None,
+            ..Default::default()
         });
         app.refresh_agent_state("!r:x");
         assert_eq!(app.run_state("!r:x"), None, "not running");
@@ -2677,10 +2689,13 @@ mod tests {
         assert!(app.agent_prompt("!r:x", &prompt).is_empty());
         // Answered, then the status message is edited to done: the run is
         // done, though the prompt (sent later) still says "working".
-        status.agent = Some(serde_json::json!({"run": "$ask", "state": "done", "steps": 3}));
+        status.agent = Some(serde_json::json!({"run": "$ask", "state": "done", "steps": 3, "result": "All tests green."}));
         app.messages_by_room.insert(tk.clone(), vec![ask.clone(), status.clone(), prompt.clone()]);
         app.refresh_agent_state(&tk);
         assert_eq!(app.run_state(&tk), Some(RunState::Done));
+        // The final edit's `result` reaches the run and its history record.
+        assert_eq!(app.run_info(&tk).and_then(|r| r.result.clone()).as_deref(), Some("All tests green."));
+        assert_eq!(app.run_history.iter().find(|r| r.key == tk).and_then(|r| r.result.as_deref()), Some("All tests green."));
         // A second request in the same thread: its run is the thread's, every time.
         let mut ask2 = msg("$ask2", "@me:x", now + 1000);
         ask2.thread_root = Some("$ask".into());

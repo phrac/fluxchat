@@ -94,6 +94,10 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
                         Column {
                             // day · time, then state · duration · cost · model
                             Text(dayLine(r.started) + " · " + r.state)
+                            // How it ended, when the agent says (protocol `result`).
+                            r.result?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                                Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
                             Text(
                                 listOfNotNull(
                                     Matrix.roomName(r.room).takeIf { it.isNotBlank() && it != r.room },

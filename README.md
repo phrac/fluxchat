@@ -28,7 +28,7 @@ fluxchat reads what agents are doing and gives you controls for it. Mark a user 
 - **Run state** on every request and thread (working / needs you / done / failed), with dots in the room list and **2 running · 1 waiting** in the status bar.
 - A **task board**: an agent room's threads as runs, active ones first.
 - **Several agents in one room**, each with its own state, and hand-offs between them you can follow.
-- **Run history**: duration, model and cost per run, searchable, exportable as a transcript.
+- **Run history**: how it ended, duration, model and cost per run, searchable, exportable as a transcript.
 - **All your runs** across rooms in one dialog, and a **watch window** that tiles active runs and adds new ones as they start.
 
 **Stay in control**
@@ -89,7 +89,7 @@ Ideas and pull requests are welcome.
 - Ask every agent in a room the same thing and compare their answers side by side, or open their threads in panes
 - Spend limit per agent (day / week / month): warns at 80%, asks before sending past it
 - Review an agent's diff (code block or `.patch`): files, numbered coloured lines, approve or request changes
-- Run history with duration, model and cost; full-text search across what was said in runs; export a run as a Markdown transcript
+- Run history with how the run ended, duration, model and cost; full-text search across what was said in runs; export a run as a Markdown transcript
 - Answer approvals or stop a run from the desktop notification (Linux, macOS)
 - Spots agents you haven't marked and suggests the right harness
 

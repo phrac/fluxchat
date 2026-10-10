@@ -34,6 +34,7 @@ export interface Fields {
   context?: number;
   cwd?: string;
   cost_usd?: number;
+  result?: string;
   choices?: Choice[];
 }
 
@@ -64,6 +65,7 @@ export function fields(f: Fields = {}): Record<string, unknown> {
     ["run", f.run], ["state", f.state], ["step", f.step], ["steps", f.steps],
     ["progress", unit("progress", f.progress)], ["model", f.model],
     ["context", unit("context", f.context)], ["cwd", f.cwd], ["cost_usd", f.cost_usd],
+    ["result", f.result],
     ["choices", normalizeChoices(f.choices)],
   ];
   for (const [k, v] of entries) if (v !== undefined) out[k] = v;
@@ -173,11 +175,13 @@ export class Run {
     await this.status(this.stepText ?? "Working…", { state: "working", step: this.stepText, steps: this.steps || undefined });
   }
 
-  done(summary = "Done"): Promise<string> {
-    return this.status(summary, { state: "done", steps: this.steps || undefined, progress: 1 });
+  /** End the run. `result`: the one-line outcome (protocol `result`);
+   * `summary` stays the status message's body. */
+  done(summary = "Done", result?: string): Promise<string> {
+    return this.status(summary, { state: "done", steps: this.steps || undefined, progress: 1, result: result ?? summary });
   }
 
-  failed(error = "Failed"): Promise<string> {
-    return this.status(error, { state: "failed", steps: this.steps || undefined });
+  failed(error = "Failed", result?: string): Promise<string> {
+    return this.status(error, { state: "failed", steps: this.steps || undefined, result: result ?? error });
   }
 }

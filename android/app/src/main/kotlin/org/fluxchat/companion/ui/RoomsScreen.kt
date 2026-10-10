@@ -72,6 +72,10 @@ internal val AGENT_ROOM_ORDER: Comparator<AgentRoom> =
 
 private enum class RoomFilter(val label: String) { All("All"), NeedsYou("Needs you"), Running("Running") }
 
+/** A finished run keeps its row on the Projects screen this long, so its
+ * `result` is readable before the row folds into history. */
+private const val FINISHED_ROW_WINDOW_MS = 10 * 60 * 1000L
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RoomsScreen(go: (Screen) -> Unit) {
@@ -199,7 +203,12 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
     val headline = room.headline
     val roomRun = headline?.takeIf { it.first.threadRoot == null }?.second
     val threadRuns: List<Pair<ViewKey, RunInfo>> = room.runs
-        .mapNotNull { (k, r) -> if (k.threadRoot != null && r != null && r.state.live) k to r else null }
+        .mapNotNull { (k, r) ->
+            // Live runs, plus recently finished ones: their `result` is the row's body.
+            if (k.threadRoot != null && r != null &&
+                (r.state.live || now - r.since < FINISHED_ROW_WINDOW_MS)
+            ) k to r else null
+        }
         .sortedWith(compareBy({ it.second.rank().first }, { it.second.rank().second }))
     val needsYou = room.runs.values.any { it?.state == RunState.NeedsYou }
     Card(
@@ -245,6 +254,10 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
             }
             if (roomRun != null && (roomRun.state.live || now - roomRun.since < 10 * 60 * 1000)) {
                 StatePill(roomRun.state, runLine(roomRun, now))
+                // The room's run is over: its one-line outcome is the row's body.
+                runResult(roomRun)?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
             if (threadRuns.isNotEmpty()) {
                 Column(
@@ -263,6 +276,10 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
                             Column(Modifier.weight(1f)) {
                                 Text(threadTitle(root, replies), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(runLine(run, now), style = MaterialTheme.typography.labelMedium, color = run.state.color(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                // A finished run's body: how it ended (protocol `result`).
+                                runResult(run)?.let {
+                                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                             Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }

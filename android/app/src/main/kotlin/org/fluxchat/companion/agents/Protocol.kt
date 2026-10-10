@@ -17,6 +17,8 @@ data class Protocol(
     val context: Float? = null,
     val cwd: String? = null,
     val costUsd: Double? = null,
+    /** One-line outcome on the final status edit (protocol `result`). */
+    val result: String? = null,
     val choices: List<ProtocolChoice> = emptyList(),
 ) {
     fun runState(): RunState? = when (state) {
@@ -63,6 +65,7 @@ data class Protocol(
                 context = num("context")?.toFloat(),
                 cwd = str("cwd"),
                 costUsd = num("cost_usd"),
+                result = str("result"),
                 choices = choices,
             )
         }

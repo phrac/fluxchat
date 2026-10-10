@@ -1,4 +1,4 @@
-From 5a867baa2c7c5965887b21a2961947c2620a2e06 Mon Sep 17 00:00:00 2001
+From eeda2ece19ee7bc967f3649b919d55845068e10e Mon Sep 17 00:00:00 2001
 From: Derek Musselmann <derek@disflux.com>
 Date: Sun, 4 Oct 2026 20:50:59 -0500
 Subject: [PATCH 1/2] Matrix: agent protocol status on exec approvals
@@ -17,7 +17,7 @@ changes for clients that don't read the key.
  create mode 100644 tests/gateway/test_matrix_agent_protocol.py
 
 diff --git a/plugins/platforms/matrix/adapter.py b/plugins/platforms/matrix/adapter.py
-index 1a288fb0..9fd32932 100644
+index 69d1b09e18..ddd7c779dd 100644
 --- a/plugins/platforms/matrix/adapter.py
 +++ b/plugins/platforms/matrix/adapter.py
 @@ -127,6 +127,12 @@ def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
@@ -43,7 +43,7 @@ index 1a288fb0..9fd32932 100644
      bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
  
  
-@@ -1429,6 +1438,9 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1390,6 +1399,9 @@ class MatrixAdapter(BasePlatformAdapter):
                  self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
              msg_content = self._build_text_message_content(chunk)
              self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
@@ -53,7 +53,7 @@ index 1a288fb0..9fd32932 100644
              try:
                  last_event_id = await self._send_room_message(chat_id, msg_content)
                  logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
-@@ -1509,9 +1521,12 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1470,9 +1482,12 @@ class MatrixAdapter(BasePlatformAdapter):
      async def stop_typing(self, chat_id: str) -> None:
          await self._set_typing(chat_id, 0)
  
@@ -67,7 +67,7 @@ index 1a288fb0..9fd32932 100644
          msg_content: Dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
          if "m.mentions" in new_content:
              msg_content["m.mentions"] = new_content["m.mentions"]
-@@ -1519,6 +1534,8 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1480,6 +1495,8 @@ class MatrixAdapter(BasePlatformAdapter):
              msg_content["format"] = "org.matrix.custom.html"
              msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
          msg_content["m.relates_to"] = {"rel_type": "m.replace", "event_id": message_id}
@@ -76,7 +76,7 @@ index 1a288fb0..9fd32932 100644
          if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
              # The top-level copy is only the fallback for clients without edit support (edit-aware
              # clients render m.new_content); shorten it rather than double the event past the cap.
-@@ -1727,6 +1744,11 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1688,6 +1705,11 @@ class MatrixAdapter(BasePlatformAdapter):
              f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
          reactions = tuple(self._EA_REACTIONS[c] for c in choices)
          session_key, chat_id = prompt.session_key, prompt.chat_id
@@ -88,7 +88,7 @@ index 1a288fb0..9fd32932 100644
  
          def _make(message_id, requester, expires_at):
              old_event = self._approval_prompt_by_session.get(session_key)
-@@ -1735,9 +1757,9 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -1696,9 +1718,9 @@ class MatrixAdapter(BasePlatformAdapter):
              self._approval_prompt_by_session[session_key] = message_id
              return _MatrixApprovalPrompt(
                  session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
@@ -100,7 +100,7 @@ index 1a288fb0..9fd32932 100644
  
      async def send_model_picker(
          self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
-@@ -2561,6 +2583,7 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -2550,6 +2572,7 @@ class MatrixAdapter(BasePlatformAdapter):
                      "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                      count, prompt.session_key, choice, sender)
                  await self._redact_bot_approval_reactions(room_id, prompt)
@@ -108,7 +108,7 @@ index 1a288fb0..9fd32932 100644
          except Exception as exc:
              logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
          return True
-@@ -2640,11 +2663,22 @@ class MatrixAdapter(BasePlatformAdapter):
+@@ -2629,11 +2652,22 @@ class MatrixAdapter(BasePlatformAdapter):
          except Exception as exc:
              logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)
  
@@ -133,7 +133,7 @@ index 1a288fb0..9fd32932 100644
              t("platform.matrix.approval.expired"))
 diff --git a/tests/gateway/test_matrix_agent_protocol.py b/tests/gateway/test_matrix_agent_protocol.py
 new file mode 100644
-index 00000000..ac5265fb
+index 0000000000..ac5265fbc0
 --- /dev/null
 +++ b/tests/gateway/test_matrix_agent_protocol.py
 @@ -0,0 +1,71 @@
@@ -209,5 +209,5 @@ index 00000000..ac5265fb
 +    assert captured[0]["m.new_content"][KEY] == {"v": 1, "state": "done"}
 +    assert captured[0][KEY] == {"v": 1, "state": "done"}
 -- 
-2.53.0
+2.47.3
 

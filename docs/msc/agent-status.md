@@ -22,9 +22,12 @@ An agent MAY include an `org.fluxchat.agent` object (stable: `m.agent`) in the c
 | `context` | number | Share of the model's context window in use, 0.0–1.0. |
 | `cwd` | string | Working directory, where meaningful. |
 | `cost_usd` | number | Spend so far in the session, in US dollars. |
+| `result` | string | One-line summary of how the run ended, on the final (`done` / `failed`) status edit. |
 | `choices` | array of `{key, label}` | Options for a prompt. The user answers with an `m.annotation` reaction whose `key` is one of the keys. |
 
 **Status messages.** An agent reports a run through one message, sent when work starts (`state: working`) and edited (`m.replace`) as it progresses, ending in `done` or `failed`. Clients use the latest edit. The message's `body` stays a readable fallback.
+
+**Run result.** On the final status edit the agent MAY carry `result`: a one-line summary of the outcome (what was achieved, or why it failed), written for a reader of run lists rather than the whole thread. Clients MAY show it as the run's summary body. It is untrusted sender text like every other field.
 
 **Prompts.** A message with `choices` and `state: waiting` is an open prompt. When the agent has acted on the answer (or the prompt expires) it edits the prompt to another state; clients treat only `waiting` prompts as open. The run's state is taken from its status message; an open prompt makes the run `waiting`.
 

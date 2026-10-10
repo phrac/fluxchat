@@ -48,7 +48,7 @@ class RunTest(unittest.TestCase):
             await run.step("Testing", progress=0.5)
             prompt = await run.ask("Ship it?", [("✅", "Yes"), ("❌", "No")])
             await run.answered(prompt, "Approved")
-            await run.done("Shipped")
+            await run.done("Shipped", result="Deployed v1.0")
             return prompt
 
         prompt = asyncio.run(go())
@@ -63,6 +63,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(ask[fa.KEY]["choices"], [{"key": "✅", "label": "Yes"}, {"key": "❌", "label": "No"}])
         last = send.sent[-1]["m.new_content"][fa.KEY]
         self.assertEqual((last["state"], last["progress"], last["steps"]), ("done", 1.0, 2))
+        self.assertEqual(last["result"], "Deployed v1.0")
 
 
 if __name__ == "__main__":

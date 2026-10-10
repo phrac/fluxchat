@@ -330,7 +330,7 @@ mod tests {
         RunRecord {
             key: key.into(), room: "!r:x".into(), agent: "@bot:x".into(), title: "t".into(),
             state: "done".into(), started, ended: Some(started + 1), steps: 0, model: None,
-            cost: Some(format_usd(cost)), cost_usd: Some(cost),
+            cost: Some(format_usd(cost)), cost_usd: Some(cost), ..Default::default()
         }
     }
 
