@@ -31,12 +31,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import java.util.Calendar
 import java.util.Locale
 import org.fluxchat.companion.agents.History
@@ -53,8 +55,10 @@ import org.fluxchat.companion.matrix.Matrix
 fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
     val history by Matrix.runHistoryView.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
-    val now = System.currentTimeMillis()
-    val rooms = History.matching(history, query) { Matrix.roomName(it) }
+    // Live durations tick while a run is still going.
+    var now by rememberSaveable { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1_000) } }
+    val matches = History.matching(history, query) { Matrix.roomName(it) }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
@@ -81,7 +85,7 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
             if (query.isBlank()) {
                 item { SpendSummary(history, now) }
             }
-            items(rooms, key = { "${it.key}@${it.started}" }) { r ->
+            items(matches, key = { "${it.key}@${it.started}" }, contentType = { "run" }) { r ->
                 ListItem(
                     headlineContent = {
                         Text(r.title.ifBlank { "Run" }, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -95,7 +99,7 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
                                     Matrix.roomName(r.room).takeIf { it.isNotBlank() && it != r.room },
                                     shortName(r.agent, null),
                                     r.duration(now),
-                                    r.costUsd?.let { "$" + String.format(Locale.US, "%.2f", it) },
+                                    History.runCost(history, r)?.let { "$" + String.format(Locale.US, "%.2f", it) },
                                     r.model,
                                 ).joinToString(" · "),
                                 style = MaterialTheme.typography.bodySmall,
@@ -111,7 +115,7 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
                         .animateItem(),
                 )
             }
-            if (rooms.isEmpty()) {
+            if (matches.isEmpty()) {
                 item {
                     Text(
                         if (query.isBlank()) "No runs recorded yet on this phone. Runs get recorded while the app sees them work."
@@ -131,7 +135,8 @@ private fun SpendSummary(history: List<RunRecord>, now: Long) {
     val cal = Calendar.getInstance()
     cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0); cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
     val today = cal.timeInMillis
-    cal.add(Calendar.DAY_OF_YEAR, -7)
+    // Week: since Monday 00:00 local, like the desktop's budgets Period::Week.
+    while (cal.get(Calendar.DAY_OF_WEEK) != Calendar.MONDAY) cal.add(Calendar.DAY_OF_YEAR, -1)
     val week = cal.timeInMillis
     val agents = history.map { it.agent }.distinct().sorted()
     if (agents.isEmpty()) return

@@ -113,14 +113,62 @@ class HistoryTest {
 
     @Test
     fun costUsdIsASessionTotalSoOnlyTheIncreaseCounts() {
-        // Same session (key): records report 0.10 then 0.40 → the run cost 0.30, not 0.50.
-        // A drop restarts the count (new session).
+        // Same session (key): records report 0.10 then 0.40 → the second run cost
+        // 0.30, not 0.40; a different key counts whole. The desktop's
+        // spend_adds_up_session_increases is the reference.
         val h = listOf(
             RunRecord("$room::\$a", room, agent, "a", "done", now - 300, costUsd = 0.10),
             RunRecord("$room::\$a", room, agent, "a", "done", now - 200, costUsd = 0.40),
             RunRecord("$room::\$b", room, agent, "b", "done", now - 100, costUsd = 0.20),
         )
         assertEquals(0.60, History.spend(h, agent, 0), 1e-9)
+    }
+
+    @Test
+    fun aCostDropCountsWholeAsANewSession() {
+        // Same key: 0.40 then 0.10 — the drop is a new session, so 0.10 counts whole (budgets.rs).
+        val h = listOf(
+            RunRecord("$room::\$a", room, agent, "a", "done", now - 300, costUsd = 0.40),
+            RunRecord("$room::\$a", room, agent, "b", "done", now - 200, costUsd = 0.10),
+        )
+        assertEquals(0.50, History.spend(h, agent, 0), 1e-9)
+    }
+
+    @Test
+    fun aRecordBeforeThePeriodSetsTheBaselineButIsntCounted() {
+        // The desktop's spent(2500) == 0.40 case: the pre-period record raises the
+        // session total, the in-period record only counts the increase.
+        val h = listOf(
+            RunRecord("$room::\$a", room, agent, "a", "done", now - 300, costUsd = 0.60),
+            RunRecord("$room::\$a", room, agent, "b", "done", now - 200, costUsd = 1.00),
+        )
+        assertEquals(0.40, History.spend(h, agent, now - 250), 1e-9)
+        assertEquals(1.00, History.spend(h, agent, 0), 1e-9)
+    }
+
+    @Test
+    fun aRowShowsTheRunsOwnCostNotTheSessionTotal() {
+        val h = listOf(
+            RunRecord("$room::\$a", room, agent, "a", "done", now - 300, costUsd = 0.10),
+            RunRecord("$room::\$a", room, agent, "a", "done", now - 200, costUsd = 0.40),
+        )
+        assertEquals(0.10, History.runCost(h, h[0])!!, 1e-9)
+        assertEquals(0.30, History.runCost(h, h[1])!!, 1e-9)
+        assertNull(History.runCost(h, RunRecord("$room::\$z", room, agent, "z", "done", now)))
+    }
+
+    @Test
+    fun aSettledStalledRunIsNeverReopened() {
+        // Hermes leaving its 👀 behind: a later live sighting of the same run
+        // must not flip a settled record back to working (the desktop drops
+        // stalled states so record_run never sees them again).
+        val h = ArrayList<RunRecord>()
+        val started = now - 90_000
+        assertTrue(History.record(h, thread, run(RunState.Working, started), "Ship it", "ship it", now))
+        assertTrue(History.settleStalled(h, { 0L }, now + History.STALE_RUN_MS + 1))
+        assertEquals(History.STALLED, h[0].state)
+        assertFalse("settled stays settled", History.record(h, thread, run(RunState.Working, started), "Ship it", "ship it", now))
+        assertEquals(History.STALLED, h[0].state)
     }
 
     @Test

@@ -25,6 +25,8 @@ data class RunRecord(
     val model: String? = null,
     /** Max cost the agent reported for this run (protocol `cost_usd`). */
     val costUsd: Double? = null,
+    /** What was asked (when the phone saw it): lone commands prune on load. */
+    val request: String? = null,
 ) {
     /** "4s" / "4m" / "1h 20m" — start to end (or to now while going), like the desktop's `duration`. */
     fun duration(now: Long): String {
@@ -83,12 +85,16 @@ object History {
         return if (i < 0) {
             if (!live) return false
             if (requestBody != null && isLoneCommand(requestBody)) return false
-            history += RunRecord(key, view.roomId, run.agent, title, label, run.since, steps = run.steps, costUsd = run.costUsd)
+            history += RunRecord(
+                key, view.roomId, run.agent, title, label, run.since,
+                steps = run.steps, costUsd = run.costUsd, request = requestBody,
+            )
             val extra = history.size - HISTORY_LIMIT
             if (extra > 0) history.subList(0, extra).clear()
             true
         } else {
             val rec = history[i]
+            if (rec.state == STALLED) return false // settled stays settled (the desktop drops stalled states)
             val cost = run.costUsd?.let { c -> rec.costUsd?.let { maxOf(it, c) } ?: c } ?: rec.costUsd
             val model = run.model ?: rec.model
             val updated = rec.copy(
@@ -101,7 +107,9 @@ object History {
                 title = if (rec.title == "Thread" && title != "Thread") title else rec.title,
             )
             history[i] = updated
-            updated != rec
+            // Only the fields that can actually move count as a change (the desktop's tuple compare).
+            updated.state != rec.state || updated.steps != rec.steps ||
+                updated.costUsd != rec.costUsd || updated.model != rec.model || updated.ended != rec.ended
         }
     }
 
@@ -153,6 +161,18 @@ object History {
         return total
     }
 
+    /**
+     * What one record's run itself cost: the increase of its session-total
+     * `cost_usd` over the previous record of the same key (whole on a drop) —
+     * the number the desktop's Runs dialog formats.
+     */
+    fun runCost(history: List<RunRecord>, record: RunRecord): Double? {
+        val cost = record.costUsd ?: return null
+        val prev = history.filter { it.key == record.key && it.started < record.started && it.costUsd != null }
+            .maxByOrNull { it.started }?.costUsd
+        return if (prev != null && cost >= prev) cost - prev else cost
+    }
+
     // --- JSON codec (the desktop stores serde JSON under the same idea) ---
 
     fun encode(history: List<RunRecord>): ByteArray {
@@ -165,6 +185,7 @@ object History {
             o.put("steps", r.steps)
             if (r.model != null) o.put("model", r.model)
             if (r.costUsd != null) o.put("cost_usd", r.costUsd)
+            if (r.request != null) o.put("request", r.request)
             arr.put(o)
         }
         return arr.toString().toByteArray(Charsets.UTF_8)
@@ -189,6 +210,7 @@ object History {
                     steps = o.optInt("steps"),
                     model = o.optString("model").ifEmpty { null },
                     costUsd = if (o.has("cost_usd")) o.getDouble("cost_usd") else null,
+                    request = o.optString("request").ifEmpty { null },
                 )
             }
         }
