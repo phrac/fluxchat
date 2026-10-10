@@ -30,7 +30,10 @@ import org.robolectric.annotation.GraphicsMode
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = [35], qualifiers = "w411dp-h891dp-xxhdpi")
+// No dp qualifiers here on purpose: robolectric/robolectric#8460 — a dialog
+// containing a text field never goes idle when the screen size is pinned via
+// qualifiers, and the Compose test rule hangs 60 s per test waiting for idle.
+@Config(sdk = [35])
 class ProjectCreateFlowTest {
     @get:Rule val compose = createComposeRule()
 
