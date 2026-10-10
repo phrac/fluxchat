@@ -81,7 +81,10 @@ jobs:
         run: |
           VERSION="${TAG#v}"
           cd target/release
-          ditto -c -k --sequesterRsrc "FluxChat.app" "FluxChat-${VERSION}-macos-$(uname -m).zip"
+          # --keepParent: without it ditto zips the .app's CONTENTS (a bare
+          # Contents/ on unzip) instead of the FluxChat.app folder itself.
+          ditto -c -k --sequesterRsrc --keepParent "FluxChat.app" "FluxChat-${VERSION}-macos-$(uname -m).zip"
+          unzip -l "FluxChat-${VERSION}-macos-$(uname -m).zip" | grep -q "FluxChat.app/Contents/MacOS/fluxchat"
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
       - uses: actions/upload-artifact@v4
@@ -141,7 +144,7 @@ jobs:
         run: |
           ARGS=(--target "$TARGET" --title "FluxChat ${TAG}" --notes-file notes.md)
           if [ "$DRAFT" = "true" ]; then ARGS+=(--draft); fi
-          gh release create "$TAG" "${ARGS[@]}" \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${ARGS[@]}" \
             artifacts/fluxchat-linux-x86_64/*.tar.gz \
             artifacts/fluxchat-macos/*.zip
         env:
