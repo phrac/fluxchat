@@ -33,6 +33,7 @@ import org.json.JSONObject
 import org.matrix.rustcomponents.sdk.Client
 import org.matrix.rustcomponents.sdk.ClientBuilder
 import org.matrix.rustcomponents.sdk.ClientSessionDelegate
+import org.matrix.rustcomponents.sdk.CreateRoomParameters
 import org.matrix.rustcomponents.sdk.DateDividerMode
 import org.matrix.rustcomponents.sdk.MembershipState
 import org.matrix.rustcomponents.sdk.NotificationClient
@@ -42,6 +43,8 @@ import org.matrix.rustcomponents.sdk.Room
 import org.matrix.rustcomponents.sdk.RoomListEntriesDynamicFilterKind
 import org.matrix.rustcomponents.sdk.RoomListEntriesListener
 import org.matrix.rustcomponents.sdk.RoomListEntriesUpdate
+import org.matrix.rustcomponents.sdk.RoomPreset
+import org.matrix.rustcomponents.sdk.RoomVisibility
 import org.matrix.rustcomponents.sdk.Session
 import org.matrix.rustcomponents.sdk.SlidingSyncVersionBuilder
 import org.matrix.rustcomponents.sdk.SqliteStoreBuilder
@@ -816,6 +819,68 @@ object Matrix {
                 conn.disconnect()
             }
         }.onFailure { Diag.error("Fetching $type", it) }.getOrNull()
+    }
+
+    /**
+     * Start a project: a private room named [name], every agent from
+     * [agentList] invited so the room is workable the moment it opens.
+     * Encrypted, like every agent room on the homeserver today (the
+     * desktop/Element rooms are all m.megolm) — not a new policy. Returns
+     * the new room's ID, or null (with [error] set) if it failed; a room
+     * that exists but nobody joined is left behind, so the invite retry is
+     * possible without a duplicate project.
+     */
+    suspend fun createProject(name: String, agentList: AgentList): String? = io {
+        val c = client ?: return@io null
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return@io null
+        val me = runCatching { c.userId() }.getOrNull().orEmpty()
+        val invites = org.fluxchat.companion.agents.Projects.inviteList(agentList.agents.map { it.userId }, emptyList(), me)
+        try {
+            val roomId = c.createRoom(
+                // Positional (uniffi-generated): name, topic, encrypted,
+                // direct, visibility, preset, invite.
+                CreateRoomParameters(
+                    trimmed,
+                    null,
+                    true,
+                    false,
+                    RoomVisibility.Private,
+                    RoomPreset.PRIVATE_CHAT,
+                    invites,
+                ),
+            )
+            // Belt and braces: the create request already carries the
+            // invites; a per-member invite covers a server that ignored the
+            // field. A failure here is reported, not fatal — the room works.
+            runCatching { room(roomId) }.getOrNull().let { r ->
+                if (r != null) for (id in invites) runCatching { r.inviteUserById(id) }
+                    .onFailure { Diag.error("Inviting $id into $roomId", it) }
+            }
+            Diag.note("project created: $trimmed ($roomId), invited ${invites.joinToString().ifEmpty { "nobody" }}")
+            // Pull the room into the list now instead of waiting for the next sync.
+            loadAgentListOnIo()
+            _rooms.value[roomId]?.let { refreshAgentRooms(_rooms.value, _agentList.value) }
+            roomId
+        } catch (e: Exception) {
+            Diag.error("Creating the project \"$trimmed\"", e)
+            _error.value = "Couldn't start your project: ${e.message}"
+            null
+        }
+    }
+
+    /** Leave a project (the room goes on the server without you). */
+    suspend fun leaveProject(roomId: String): Boolean = io {
+        val r = room(roomId) ?: return@io false
+        try {
+            r.leave()
+            Diag.note("left project $roomId")
+            true
+        } catch (e: Exception) {
+            Diag.error("Leaving $roomId", e)
+            _error.value = "Couldn't leave the project: ${e.message}"
+            false
+        }
     }
 
     suspend fun saveAgentList(list: AgentList): Boolean = io { saveAgentListOnIo(list) }
