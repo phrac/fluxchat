@@ -57,7 +57,10 @@ jobs:
           path: fluxchat-*-linux-x86_64.tar.gz
 
   macos:
-    runs-on: macos-14
+    # libc++ on macos-14 (Xcode 15.4 SDK) cannot compile cxx-generated C++20
+    # headers — dtolnay/cxx#1535; webrtc-sys (livekit) builds with -std=c++20,
+    # so macos-15+ is required.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
