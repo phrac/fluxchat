@@ -1,9 +1,9 @@
 package org.fluxchat.companion.agents
 
 import org.fluxchat.companion.matrix.Session
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
 
 class SessionSearchTest {
     private fun session(root: String, latest: String?, lastTs: Long = 0) =
