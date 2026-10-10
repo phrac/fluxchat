@@ -1,6 +1,7 @@
 package org.fluxchat.companion.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,10 +17,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,21 +33,27 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.RunState
 import org.fluxchat.companion.agents.Runs
 import org.fluxchat.companion.agents.SendState
 import org.fluxchat.companion.agents.ViewKey
+import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.matrix.Session
 import org.fluxchat.companion.matrix.SessionList
+import org.fluxchat.companion.matrix.pinnedFirst
 
 /** How long a request the agent hasn't picked up reads as "waiting" rather than "no reply". */
 private const val PENDING_WINDOW_MS = 10 * 60 * 1000L
@@ -157,13 +167,23 @@ fun SessionFeed(
     val loading by (list?.loading ?: MutableStateFlow(list == null)).collectAsState()
     val end by (list?.endReached ?: MutableStateFlow(false)).collectAsState()
     val cards = remember(sessions, all, runs, agents) { sessionCards(roomId, sessions, all, runs, agents) }
+    val pins by Matrix.pins.collectAsState()
     val state = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val togglePin: (String) -> Unit = { root ->
+        val on = !pins.isPinned(roomId, root)
+        scope.launch { Matrix.setPinned(roomId, root, on) }
+    }
     val nearEnd by remember { derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 4 } }
     LaunchedEffect(nearEnd, sessions.size) {
         if (nearEnd && !end && !loading) list?.more()
     }
+    // Pinned sessions sit at the top of the feed; the rest keep their order.
+    val ordered = remember(cards, pins) { pinnedFirst(cards) { pins.isPinned(roomId, it.root) } }
+    val split = remember(ordered, pins) { ordered.indexOfFirst { !pins.isPinned(roomId, it.root) }.let { if (it < 0) ordered.size else it } }
+    val pinned = ordered.subList(0, split)
+    val rest = ordered.subList(split, ordered.size)
     // Newest at the bottom, by the composer, like a chat: what you just sent is where you look.
-    val ordered = cards
     FollowNewest(state, cards)
     LazyColumn(
         state = state,
@@ -173,12 +193,12 @@ fun SessionFeed(
         verticalArrangement = Arrangement.spacedBy(CARD_GAP),
     ) {
         var i = 0
-        while (i < ordered.size) {
-            val b = bucket(ordered[i].lastTs, now)
+        while (i < rest.size) {
+            val b = bucket(rest[i].lastTs, now)
             var j = i
-            while (j < ordered.size && bucket(ordered[j].lastTs, now) == b) j++
-            for (c in ordered.subList(i, j)) {
-                item(key = c.root) { SessionCard(c, now, Modifier.animateItem()) { onOpen(c.root) } }
+            while (j < rest.size && bucket(rest[j].lastTs, now) == b) j++
+            for (c in rest.subList(i, j)) {
+                item(key = c.root) { SessionCard(c, now, Modifier.animateItem(), pinned = false, onTogglePin = { togglePin(c.root) }) { onOpen(c.root) } }
             }
             // reverseLayout: the heading goes after its cards to sit above them.
             item(key = "h:$b") {
@@ -188,6 +208,20 @@ fun SessionFeed(
                 )
             }
             i = j
+        }
+        // Last emitted = top of a reverse-layout list: the pinned block sits above everything,
+        // newest emitted first so (newest at the bottom, like the rest) the newest pin ends up
+        // nearest the list below it, with the heading on top.
+        for (c in pinned) {
+            item(key = c.root) { SessionCard(c, now, Modifier.animateItem(), pinned = true, onTogglePin = { togglePin(c.root) }) { onOpen(c.root) } }
+        }
+        if (pinned.isNotEmpty()) {
+            item(key = "h:pinned") {
+                Text(
+                    "Pinned", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 8.dp, top = 12.dp, bottom = 2.dp),
+                )
+            }
         }
         if (loading) {
             item(key = "loading") { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) } }
@@ -205,15 +239,19 @@ fun SessionFeed(
 }
 
 @Composable
-fun SessionCard(c: SessionCardInfo, now: Long, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun SessionCard(c: SessionCardInfo, now: Long, modifier: Modifier = Modifier, pinned: Boolean = false, onTogglePin: () -> Unit = {}, onClick: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val run = c.run
     val live = run != null && run.state.live
     val needsYou = run?.state == RunState.NeedsYou
+    var menu by remember { mutableStateOf(false) }
     // Raised from the page and outlined, so neighbouring cards read as separate.
+    // Long-press anywhere on the card: pin it so it stays on top.
     Card(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().animateContentSize(),
+        modifier = modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .combinedClickable(onClick = onClick, onLongClick = { menu = true }),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
             containerColor = if (needsYou) LocalStatus.current.needsYouContainer else scheme.surfaceContainerHigh,
@@ -225,6 +263,10 @@ fun SessionCard(c: SessionCardInfo, now: Long, modifier: Modifier = Modifier, on
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.Top) {
+                if (pinned) {
+                    Icon(Icons.Outlined.PushPin, "Pinned", Modifier.size(16.dp).align(Alignment.CenterVertically), tint = scheme.primary)
+                    Spacer(Modifier.width(6.dp))
+                }
                 Text(
                     c.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                     maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
@@ -274,6 +316,13 @@ fun SessionCard(c: SessionCardInfo, now: Long, modifier: Modifier = Modifier, on
                 run?.state == RunState.Working -> LinearProgressIndicator(Modifier.fillMaxWidth(), color = run.state.color())
                 else -> {}
             }
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text(if (pinned) "Unpin session" else "Pin session") },
+                leadingIcon = { Icon(Icons.Outlined.PushPin, null) },
+                onClick = { menu = false; onTogglePin() },
+            )
         }
     }
 }

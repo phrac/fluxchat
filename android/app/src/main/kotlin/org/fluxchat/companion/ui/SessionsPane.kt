@@ -1,7 +1,7 @@
 package org.fluxchat.companion.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,8 +19,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,12 +48,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.ViewKey
 import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.matrix.Session
 import org.fluxchat.companion.matrix.SessionList
+import org.fluxchat.companion.matrix.pinnedFirst
 import java.util.Calendar
 
 /** When a session was last active, as the list groups them. */
@@ -84,9 +90,15 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
     val end by (list?.endReached ?: MutableStateFlow(false)).collectAsState()
     val rooms by Matrix.agentRooms.collectAsState()
     val runs: Map<ViewKey, RunInfo?> = rooms[roomId]?.runs.orEmpty()
+    val pins by Matrix.pins.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     val now by rememberNow(60_000)
     val state = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val togglePin: (String) -> Unit = { root ->
+        val on = !pins.isPinned(roomId, root)
+        scope.launch { Matrix.setPinned(roomId, root, on) }
+    }
     val nearEnd by remember { derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 5 } }
     LaunchedEffect(nearEnd, sessions.size, query) {
         // More while scrolled to the end, or while a search has few matches loaded.
@@ -97,6 +109,11 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
         if (q.isEmpty()) sessions
         else sessions.filter { s -> s.rootBody.lowercase().contains(q) || s.latest.orEmpty().lowercase().contains(q) }
     }
+    // Pinned sessions sit above the rest, which keep their newest-first order.
+    val ordered = remember(shown, pins) { pinnedFirst(shown) { pins.isPinned(roomId, it.root) } }
+    val split = remember(ordered, pins) { ordered.indexOfFirst { !pins.isPinned(roomId, it.root) }.let { if (it < 0) ordered.size else it } }
+    val pinned = ordered.subList(0, split)
+    val rest = ordered.subList(split, ordered.size)
 
     Column(modifier.fillMaxSize().statusBarsPadding()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -124,8 +141,18 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
             )
         }
         LazyColumn(state = state, modifier = Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
+            // Pinned first, in their own block; the rest grouped by when they were last active.
+            for (s in pinned) {
+                item(key = s.root) {
+                    SessionRow(
+                        s, runs[ViewKey(roomId, s.root)], s.root == current, now, pinned = true,
+                        onClick = { onOpen(s.root) },
+                        onTogglePin = { togglePin(s.root) },
+                    )
+                }
+            }
             var lastBucket: String? = null
-            val rows = shown.map { s -> s to bucket(s.lastTs, now) }
+            val rows = rest.map { s -> s to bucket(s.lastTs, now) }
             for ((s, b) in rows) {
                 if (b != lastBucket) {
                     lastBucket = b
@@ -136,7 +163,13 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
                         )
                     }
                 }
-                item(key = s.root) { SessionRow(s, runs[ViewKey(roomId, s.root)], s.root == current, now) { onOpen(s.root) } }
+                item(key = s.root) {
+                    SessionRow(
+                        s, runs[ViewKey(roomId, s.root)], s.root == current, now, pinned = false,
+                        onClick = { onOpen(s.root) },
+                        onTogglePin = { togglePin(s.root) },
+                    )
+                }
             }
             if (loading) {
                 item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) } }
@@ -159,40 +192,64 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
 }
 
 @Composable
-private fun SessionRow(s: Session, run: RunInfo?, selected: Boolean, now: Long, onClick: () -> Unit) {
+private fun SessionRow(
+    s: Session,
+    run: RunInfo?,
+    selected: Boolean,
+    now: Long,
+    pinned: Boolean,
+    onClick: () -> Unit,
+    onTogglePin: () -> Unit,
+) {
     val scheme = MaterialTheme.colorScheme
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp)
-            .background(if (selected) scheme.secondaryContainer else Color.Transparent, RoundedCornerShape(28.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                title(s), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                fontWeight = if (run?.state?.live == true) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) scheme.onSecondaryContainer else scheme.onSurface,
-            )
-            val sub = when {
-                run != null && run.state.live -> runLine(run, now)
-                s.latest != null -> listOfNotNull(s.latestSender?.let { shortName(it, it) }, s.latest.lineSequence().firstOrNull()).joinToString(": ")
-                else -> null
+    var menu by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp)
+                .background(if (selected) scheme.secondaryContainer else Color.Transparent, RoundedCornerShape(28.dp))
+                .combinedClickable(onClick = onClick, onLongClick = { menu = true })
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (pinned) {
+                        Icon(Icons.Outlined.PushPin, "Pinned", Modifier.size(14.dp), tint = scheme.primary)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(
+                        title(s), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        fontWeight = if (run?.state?.live == true) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) scheme.onSecondaryContainer else scheme.onSurface,
+                    )
+                }
+                val sub = when {
+                    run != null && run.state.live -> runLine(run, now)
+                    s.latest != null -> listOfNotNull(s.latestSender?.let { shortName(it, it) }, s.latest.lineSequence().firstOrNull()).joinToString(": ")
+                    else -> null
+                }
+                sub?.let {
+                    Text(
+                        it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = if (run != null && run.state.live) run.state.color() else scheme.onSurfaceVariant,
+                    )
+                }
             }
-            sub?.let {
-                Text(
-                    it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = if (run != null && run.state.live) run.state.color() else scheme.onSurfaceVariant,
-                )
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(elapsed(s.lastTs, now), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                if (run != null) {
+                    Spacer(Modifier.size(4.dp))
+                    StateDot(run.state, 8.dp)
+                }
             }
         }
-        Spacer(Modifier.width(8.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            Text(elapsed(s.lastTs, now), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
-            if (run != null) {
-                Spacer(Modifier.size(4.dp))
-                StateDot(run.state, 8.dp)
-            }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(
+                text = { Text(if (pinned) "Unpin session" else "Pin session") },
+                leadingIcon = { Icon(Icons.Outlined.PushPin, null) },
+                onClick = { menu = false; onTogglePin() },
+            )
         }
     }
 }

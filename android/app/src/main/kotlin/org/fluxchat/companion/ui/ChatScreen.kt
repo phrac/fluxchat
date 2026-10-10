@@ -56,7 +56,9 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -245,6 +247,15 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                     }
                 },
                 actions = {
+                    if (root != null) {
+                        // Pin: keep this session on top of the list and its project on the Projects screen.
+                        val pins by Matrix.pins.collectAsState()
+                        val sessionPinned = pins.isPinned(roomId, root)
+                        IconButton(onClick = { scope.launch { Matrix.setPinned(roomId, root, !sessionPinned) } }) {
+                            if (sessionPinned) Icon(Icons.Default.PushPin, "Unpin session")
+                            else Icon(Icons.Outlined.PushPin, "Pin session")
+                        }
+                    }
                     if (threaded) {
                         IconButton(onClick = { timelineView = !timelineView }) {
                             if (cards) Icon(Icons.AutoMirrored.Outlined.Chat, "Show the timeline")
