@@ -31,6 +31,16 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        // Nightly SDK bindings: published only as GitHub release assets
+        // (Element X reads them the same way). Needed for 26.10.x nightlies,
+        // which carry the event-cache fixes behind the post-create-room
+        // SIGSEGV (matrix-rust-sdk #7204, #7248).
+        ivy {
+            url = uri("https://github.com/matrix-org/matrix-rust-components-kotlin/releases/download")
+            patternLayout { artifact("sdk-[revision]/[artifact]-[revision](-[classifier])(.[ext])") }
+            metadataSources { gradleMetadata() }
+            content { includeModule("org.matrix.rustcomponents", "sdk-android") }
+        }
     }
 }
 
