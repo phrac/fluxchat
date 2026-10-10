@@ -288,6 +288,7 @@ object Matrix {
         sync.start()
         Diag.note("signed in as ${c.userId()} (device ${c.deviceId()}) on ${c.homeserver()}")
         watchRooms(sync)
+        startSearch(c)
         loadRunHistory()
         jobs += scope.launch { sweepStalledRuns() }
         jobs += scope.launch { pollAgentList() }
@@ -357,6 +358,8 @@ object Matrix {
             sessionLists.values.forEach { it.close() }
             sessionLists.clear()
         }
+        serverSearch?.close()
+        serverSearch = null
         typingHandles.values.forEach { it.cancel() }
         typingHandles.clear()
         _typing.value = emptyMap()
@@ -552,6 +555,23 @@ object Matrix {
     suspend fun sessionsEach(roomIds: List<String>) = io {
         for (roomId in roomIds) openSessionList(roomId)?.more()
         Unit
+    }
+
+    // --- Full-text search ---
+
+    /** The server-side full-text search over every session's replies (nil until signed in). */
+    @Volatile var serverSearch: ServerSearch? = null
+        private set
+
+    private fun startSearch(c: Client) {
+        val search = runCatching { ServerSearch(c.searchService()) }
+            .onFailure { Diag.error("Opening full-text search", it) }.getOrNull() ?: return
+        serverSearch = search
+        scope.launch { search.start() }
+        // Index the stored history for search, in the background: without it
+        // full-text only covers what sync delivered since the last session.
+        runCatching { handles += c.runSearchBackfill(uniffi.matrix_sdk.SearchBackfillStrategy.BACKGROUND) }
+            .onFailure { Diag.error("Starting the search index backfill", it) }
     }
 
     private fun openSessionList(roomId: String): SessionList? {
