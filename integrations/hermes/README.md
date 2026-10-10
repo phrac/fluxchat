@@ -8,7 +8,7 @@ Two patches for [Hermes Agent](https://github.com/NousResearch/hermes-agent) tha
 
 **0002: run state, progress and spend.**
 - Hermes's tool-progress message (the one it edits a line per tool) carries `state: "working"`, the request it belongs to (`run`), the latest step (the line without its emoji) and the step count.
-- The final reply carries `state: "done"` or `"failed"`, plus the model, the share of the context window in use, the session's estimated spend (`cost_usd`; left out when Hermes can't price the model) and the run's one-line outcome (`result`, the reply's first line).
+- The final reply carries `state: "done"` or `"failed"`, plus the model, the share of the context window in use, the session's estimated spend (`cost_usd`; left out when Hermes can't price the model) and the run's one-line outcome (`result`). The Matrix platform hint tells the agent to open its final reply with an outcome headline ("Deployed v0.2.0", "2 tests still failing"); `result` is that first line, stripped of heading/bold markup and capped at 240 chars — the headline is the agent's, the emitter only trims it.
 - When the run ends, the adapter edits the progress message to the same final state, so it never stays "working". That includes runs whose answer was streamed, and runs that were stopped.
 - Approval prompts name the run they hold up.
 
@@ -18,7 +18,7 @@ With 0002 applied, fluxchat shows the run's steps from the protocol rather than 
 
 ## Apply and test
 
-Made against `NousResearch/hermes-agent` at `38880bd2f1` (regenerated there on 2026-10-09 with the run result added; the earlier revision was `76534243`).
+Made against `NousResearch/hermes-agent` at `38880bd2f1` (regenerated there on 2026-10-10 so 0002 also carries the Matrix platform-hint guidance for writing the result headline; first regenerated 2026-10-09 with the run result added, earlier revision `76534243`).
 
 ```bash
 cd hermes-agent
@@ -27,7 +27,7 @@ pytest -q tests/gateway/test_agent_status.py tests/gateway/test_matrix_agent_pro
 ```
 
 Results here, with the `matrix`, `messaging`, `slack` and `telegram` extras and the `dev` and `test` groups installed (`uv sync --frozen`):
-- The 14 new tests pass.
+- The 15 new tests pass.
 - Hermes's gateway tests for Matrix, approvals, progress, final delivery, streaming and turns (111 files): 999 pass.
 - One fails, `test_update_streaming.py::…::test_gateway_flag_enables_gateway_prompt_for_stash`. It fails without the patches too.
 
@@ -38,7 +38,7 @@ Results here, with the `matrix`, `messaging`, `slack` and `telegram` extras and 
 > Matrix clients only see a Hermes run as reactions, a progress message and text, so they guess at its state, can't tell an approval prompt from a message, and never learn its spend. This adds an optional, namespaced `org.fluxchat.agent` object to the messages Hermes already sends:
 >
 > - the tool-progress message: `state: "working"`, `run` (the request's event ID), `step`, `steps`;
-> - the final reply: `state: "done"` / `"failed"`, `model`, `context`, `cost_usd` (session total, only when priced), `result` (the reply's first line, the run's one-line outcome);
+> - the final reply: `state: "done"` / `"failed"`, `model`, `context`, `cost_usd` (session total, only when priced), `result` (the reply's first line — the Matrix prompt hint asks the agent to open with a one-line outcome, so it reads as a headline, not a transcript fragment);
 > - when the run ends, the progress message is edited to the final state;
 > - approval prompts: `state: "waiting"`, the choices (reaction key + the prompt's own label) and the run, edited to `working` once resolved or expired.
 >
