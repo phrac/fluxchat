@@ -82,13 +82,24 @@ pub fn stamp_attempt(db: &AppDb) {
     let _ = db.set_setting(LAST_CHECK_KEY, &now_ms().to_string());
 }
 
-/// GET the newest release's tag. The repo is private today, so this 404s
-/// until it goes public — a silent path, not an error to surface.
+/// GET the newest release's tag. The repo is private today, so an
+/// unauthenticated call 404s until it goes public — a silent path, not an
+/// error to surface. A `GITHUB_TOKEN` in the environment rides along as a
+/// bearer token, which is what makes the check work against a private repo
+/// on a machine that has one.
 pub async fn fetch_latest_tag() -> Result<String, AppError> {
-    let resp = reqwest::Client::new()
-        .get(latest_api_url())
+    let url = latest_api_url();
+    let req = reqwest::Client::new()
+        .get(&url)
         .header("Accept", "application/vnd.github+json")
-        .header(reqwest::header::USER_AGENT, concat!("fluxchat/", env!("CARGO_PKG_VERSION")))
+        .header(reqwest::header::USER_AGENT, concat!("fluxchat/", env!("CARGO_PKG_VERSION")));
+    let req = match std::env::var("GITHUB_TOKEN") {
+        Ok(token) if !token.is_empty() => {
+            req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        }
+        _ => req,
+    };
+    let resp = req
         .timeout(Duration::from_secs(5))
         .send()
         .await
