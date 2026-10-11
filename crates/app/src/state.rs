@@ -434,6 +434,9 @@ pub struct FluxChat {
 
     // Status
     pub sync_lag_ms: u64,
+    /// A GitHub release newer than this build (release.rs); the status-bar
+    /// chip's payload. None = up to date, or the check hasn't run/failed.
+    pub update_available: Option<String>,
     pub sidebar_width: f32,
     /// Divider being dragged, if any.
     pub resizing: Option<ResizeTarget>,
@@ -853,6 +856,7 @@ impl FluxChat {
             notify_sound: true,
             app_focused: true,
             sync_lag_ms: 0,
+            update_available: None,
             sidebar_width: 220.0,
             resizing: None,
             layout_dirty: false,

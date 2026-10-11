@@ -12,6 +12,7 @@ pub mod notify_rules;
 pub mod models;
 pub mod preview;
 pub mod profile;
+pub mod release;
 pub mod room_admin;
 pub mod rooms;
 pub mod spaces;
