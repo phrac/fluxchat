@@ -5665,6 +5665,7 @@ impl FluxChat {
                 Some(x) => {
                     if t.last_activity > x.last_activity {
                         x.last_activity = t.last_activity;
+                        x.latest_sender = t.latest_sender.clone();
                         x.latest_sender_name = t.latest_sender_name.clone();
                         x.latest_body = t.latest_body.clone();
                     }
@@ -5686,6 +5687,7 @@ impl FluxChat {
                 Some(t) => {
                     if live.last_activity > t.last_activity {
                         t.last_activity = live.last_activity;
+                        t.latest_sender = live.latest_sender.clone();
                         t.latest_sender_name = live.latest_sender_name.clone();
                         t.latest_body = live.latest_body.clone();
                     }
@@ -5701,16 +5703,17 @@ impl FluxChat {
     /// server's list arrives).
     fn loaded_thread_previews(&self, room_id: &str) -> Vec<fluxchat_core::ThreadPreview> {
         let Some(msgs) = self.messages_by_room.get(room_id) else { return Vec::new() };
-        // root -> (latest ts, latest sender, reply count, latest body)
-        let mut latest: std::collections::HashMap<&str, (u64, &str, u32, &str)> = std::collections::HashMap::new();
+        // root -> (latest ts, latest sender name, reply count, latest body, latest sender id)
+        let mut latest: std::collections::HashMap<&str, (u64, &str, u32, &str, &str)> = std::collections::HashMap::new();
         for m in msgs {
             if let Some(root) = m.thread_root.as_deref() {
-                let e = latest.entry(root).or_insert((0, "", 0, ""));
+                let e = latest.entry(root).or_insert((0, "", 0, "", ""));
                 e.2 += 1;
                 if m.timestamp >= e.0 {
                     e.0 = m.timestamp;
                     e.1 = &m.sender_name;
                     e.3 = &m.body;
+                    e.4 = &m.sender;
                 }
             }
         }
@@ -5725,6 +5728,8 @@ impl FluxChat {
                     body: m.body.lines().next().unwrap_or("").chars().take(120).collect(),
                     reply_count: l.map(|l| l.2).unwrap_or(0).max(m.thread_count.unwrap_or(0)),
                     last_activity: l.map(|l| l.0).unwrap_or(m.timestamp),
+                    latest_sender: l.map(|l| l.4.to_string())
+                        .or_else(|| m.thread_latest.as_ref().map(|t| t.sender.clone())),
                     latest_sender_name: l.map(|l| l.1.to_string())
                         .or_else(|| m.thread_latest.as_ref().map(|t| t.sender_name.clone())),
                     full_body: m.body.trim().chars().take(600).collect(),
