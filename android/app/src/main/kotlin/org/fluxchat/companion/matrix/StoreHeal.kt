@@ -115,9 +115,9 @@ object StoreHeal {
         var entry: android.os.DropBoxManager.Entry? =
             db.getNextEntry("data_app_native_crash@${context.packageName}", since)
         while (entry != null) {
-            val text = entry.text ?: ""
+            val text = entry.getText(entry.flags) ?: ""
             if ("signal 11" in text || "signal 7" in text) return@runCatching true
-            val next = db.getNextEntry("data_app_native_crash@${context.packageName}", entry.timestamp + 1)
+            val next = db.getNextEntry("data_app_native_crash@${context.packageName}", entry.timeMillis + 1)
             entry.close()
             entry = next
         }
