@@ -747,6 +747,7 @@ pub async fn recent_threads(client: &matrix_sdk::Client, room_id: &str, limit: u
             body,
             reply_count: thread["count"].as_u64().unwrap_or(0) as u32,
             last_activity: ts(latest).or_else(|| ts(&json)).unwrap_or(0),
+            latest_sender: latest_sender.clone(),
             latest_sender_name: match latest_sender {
                 Some(s) => Some(name_of(&s).await),
                 None => None,

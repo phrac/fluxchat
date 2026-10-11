@@ -42,6 +42,11 @@ const RECENT_RUN_MS: u64 = 6 * 60 * 60 * 1000;
 /// A "working" run with no sign of life this long isn't running: the agent
 /// most likely restarted without taking its working reaction back.
 const STALE_RUN_MS: u64 = 2 * 60 * 60 * 1000;
+/// Typing counts as a sign of life only this long: a typing update renews
+/// every couple of seconds while an agent works, and Matrix expires the
+/// indicator on the server — but if the agent dies mid-typing, the client
+/// may never see the stop event.
+const TYPING_ALIVE_MS: u64 = 60_000;
 /// A run shorter than this finishes without a notification (you were
 /// probably still looking), unless you asked to be told.
 const DONE_NOTIFY_MIN_MS: u64 = 30_000;
@@ -1107,12 +1112,17 @@ impl FluxChat {
     }
 
     /// The latest sign that the agent is still on run `key` (ms): the request
-    /// itself, the agent's messages after it there, newer replies in its
-    /// thread, or the agent typing in the room right now.
+    /// itself, the agent's messages after it there, newer replies *from the
+    /// agent* in its thread, or the agent typing in the room right now.
+    /// A thread reply from anyone else (usually you, keep talking) is not a
+    /// sign of life — or a run the agent died mid-thread would show as
+    /// running for as long as the thread stays busy.
     pub(crate) fn last_sign_of_life(&self, key: &str, run: &RunInfo) -> u64 {
         let now = now_ms();
         let room = real_room_id(key);
-        if self.agent_runs.typing_since.get(room).is_some_and(|(a, _)| run.agent.is_empty() || *a == run.agent) {
+        if self.agent_runs.typing_since.get(room)
+            .is_some_and(|(a, since)| (run.agent.is_empty() || *a == run.agent) && now.saturating_sub(*since) < TYPING_ALIVE_MS)
+        {
             return now;
         }
         let by_agent = self.messages_by_room.get(key).into_iter().flatten()
@@ -1121,7 +1131,9 @@ impl FluxChat {
             .filter(|t| *t >= run.since)
             .max();
         let thread = parse_thread_key(key).and_then(|(_, root)| self.room_threads.get(room)?
-            .iter().find(|t| t.root_id == root).map(|t| t.last_activity * 1000));
+            .iter().find(|t| t.root_id == root))
+            .filter(|t| run.agent.is_empty() || t.latest_sender.as_deref() == Some(run.agent.as_str()))
+            .map(|t| t.last_activity * 1000);
         [Some(run.since), by_agent, thread].into_iter().flatten().max().unwrap_or(run.since)
     }
 
@@ -2531,6 +2543,33 @@ mod tests {
         app.note_agent_typing("!r:x", &[]);
         app.sweep_stalled_runs();
         assert_eq!(app.run_state("!r:x"), None);
+    }
+
+    #[tokio::test]
+    async fn your_replies_in_the_thread_are_not_the_agents_sign_of_life() {
+        let mut app = agent_app();
+        let now = now_ms();
+        let mut ask = msg("$ask", "@me:x", now - 3 * 60 * 60 * 1000); // 3 h ago
+        ask.reactions = vec![react(WORKING, &["@bot:x"])];
+        let tk = thread_key("!r:x", "$ask");
+        app.messages_by_room.insert(tk.clone(), vec![ask]);
+        app.room_threads.insert("!r:x".into(), vec![fluxchat_core::ThreadPreview {
+            root_id: "$ask".into(),
+            last_activity: now / 1000, // the thread is busy right now ..
+            latest_sender: Some("@me:x".into()), // .. but the latest reply is YOURS
+            ..Default::default()
+        }]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), None, "a dead run stays dead while you keep talking in its thread");
+        // The agent replies again: that IS a sign of life.
+        app.room_threads.insert("!r:x".into(), vec![fluxchat_core::ThreadPreview {
+            root_id: "$ask".into(),
+            last_activity: now / 1000,
+            latest_sender: Some("@bot:x".into()),
+            ..Default::default()
+        }]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Working));
     }
 
     #[tokio::test]

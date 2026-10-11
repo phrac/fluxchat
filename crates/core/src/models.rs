@@ -248,6 +248,9 @@ pub struct ThreadPreview {
     pub reply_count: u32,
     /// Latest activity (latest reply, else the root), seconds since epoch.
     pub last_activity: u64,
+    /// Matrix ID of the sender of the latest activity, when known (a
+    /// sender name would be guessable; this is checked against the agent).
+    pub latest_sender: Option<String>,
     pub latest_sender_name: Option<String>,
     /// Full text of the root message (capped), for hover previews.
     pub full_body: String,
