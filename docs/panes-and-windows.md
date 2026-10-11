@@ -18,7 +18,7 @@ Each pane shows a room or a thread. One pane at a time is **focused** (outlined 
   - right-click it in the room list (or a thread anywhere) → **Open to the right**, **Open below** or **Open in new window**;
   - **middle-click** it, or **⌘-click** (Ctrl-click on Linux/Windows): opens to the right;
   - **drag** it from the room list or the threads panel onto a pane. Drop near an edge to split that side, or in the middle to show it in that pane. The area it will fill is shaded while you drag.
-- **Threads** open in a pane beside their room, reusing that room's thread pane if one is open. The full rules are in [Threads](threads.md#reading-and-replying).
+- **Threads** open in a pane beside their room; each thread you click gets a pane of its own (an open thread pane is never replaced). The full rules are in [Threads](threads.md#reading-and-replying).
 - **Already open?** Clicking a room or thread that's already in a pane, in this window or another, takes you there instead of opening a second copy.
 - **Resize** by dragging the gap between panes.
 - **Rearrange** by dragging a pane's title bar onto another pane or an edge.

@@ -19,11 +19,9 @@ Opening a thread shows it in a pane **beside** the room, so you can follow both.
 **Clicking a thread** (its "N replies" row, the room list, the threads panel) decides where it goes like this, first match wins:
 
 1. Already open in this window: that pane is focused.
-2. You're in a thread pane of the same room: the new thread replaces it.
-3. A thread pane of that room is open: the new thread replaces it (the one next to the room first, so a room shown above its thread keeps its thread below it).
-4. Otherwise a new pane opens to the right of the room, and you stay in the room.
+2. Otherwise a new pane opens beside the room, and you stay where you were. Every thread you open gets a pane of its own — opening one never replaces a thread pane that's already open.
 
-If the room isn't on screen, it opens in the focused pane first, as clicking the room would.
+If the room isn't on screen, it opens in the focused pane first, as clicking the room would. (When an agent picks up your request in a thread by itself, that auto-opened thread swaps the room's thread pane rather than stacking a new pane per run — see [Agents](agents.md).)
 
 **Right-click a thread** (same places) to choose instead: **Open to the right**, **Open below** (a new pane next to the one you're in), **Open in this pane**, or **Open in new window**. Threads that are already open offer **Go to thread**. **Middle-click** or **⌘/Ctrl-click** opens a thread to the right, and you can **drag** one from the room list or threads panel onto a pane (see [Panes and windows](panes-and-windows.md)).
 
