@@ -321,23 +321,31 @@ impl FluxChat {
         w.grid.get_mut(target).and_then(|slot| slot.key.replace(key.to_string()))
     }
 
-    /// Open a room or thread view at `at`. One that's already open (in any
-    /// window) is focused instead, wherever it was asked to open.
+    /// Open a room or thread view at `at`. One that's already open is
+    /// focused instead for plain opens (`Auto` / `Follow`); an explicit
+    /// placement (menu / middle-click / Cmd+Ctrl-click) opens a pane of its
+    /// own even when it's already on screen — "open below" means a second
+    /// view you can read while the first one lives.
     pub(crate) fn open_at(&mut self, key: String, at: Placement) -> Task<Message> {
-        if self.selected_room_id.as_deref() == Some(key.as_str()) {
-            return Task::none();
-        }
-        if let Some((i, p)) = self.locate(&key) {
-            if i != self.active_window {
-                self.active_window = i;
-                self.layout_dirty = true;
+        let explicit = matches!(at, Placement::Right | Placement::Below | Placement::Here | Placement::NewWindow);
+        if !explicit {
+            if self.selected_room_id.as_deref() == Some(key.as_str()) {
+                return Task::none();
             }
-            return self.focus_pane(p);
+            if let Some((i, p)) = self.locate(&key) {
+                if i != self.active_window {
+                    self.active_window = i;
+                    self.layout_dirty = true;
+                }
+                return self.focus_pane(p);
+            }
         }
         match at {
             Placement::NewWindow => {
+                // Even when open elsewhere: it goes into the new window's
+                // pane, not back to the pane that already shows it.
                 let window = self.update(Message::WindowNew);
-                Task::batch([window, self.update(Message::SelectRoom(key))])
+                Task::batch([window, self.replace_focused(key)])
             }
             Placement::Here => self.replace_focused(key),
             Placement::Right | Placement::Below => {
@@ -1163,10 +1171,22 @@ pub(crate) mod flow_tests {
         assert_eq!(app.window().grid.len(), 3, "explicit placement never reuses a thread pane");
         assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"), "focus stays where you were");
 
-        // Already open: it's focused, not duplicated.
+        // Already open in a pane: an explicit placement opens a second view
+        // of it (focus still stays put); a plain open goes to a copy.
         let _ = app.update(at("$below", Placement::Right));
+        assert_eq!(app.window().grid.len(), 4);
+        assert_eq!(app.window().grid.iter().filter(|(_, s)| s.key.as_deref() == Some(t("$below").as_str())).count(), 2);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"), "explicit placement never steals focus");
+        let _ = app.update(at("$below", Placement::Auto));
+        assert_eq!(app.window().grid.len(), 4, "a plain open goes to a copy, never a third one");
+        assert_eq!(app.window().focused_key(), Some(t("$below").as_str()));
+        // Close the copy that isn't focused; the thread stays shown once.
+        let extra = *app.window().grid.iter()
+            .find(|(p, s)| s.key.as_deref() == Some(t("$below").as_str()) && **p != app.window().focus)
+            .unwrap().0;
+        click(&mut app, extra, Message::PaneClose(Some(extra)));
         assert_eq!(app.window().grid.len(), 3);
-        assert_eq!(app.selected_room_id.as_deref(), Some(t("$below").as_str()));
+        assert!(app.shown_in_pane(&t("$below")), "the other copy keeps it open");
 
         // Here: the focused pane shows it (the thread it replaces is released).
         let _ = app.update(at("$here", Placement::Here));
@@ -1179,6 +1199,11 @@ pub(crate) mod flow_tests {
         assert_eq!(app.windows.len(), 2);
         assert_eq!(keys(&app), vec![Some(t("$win"))]);
         assert_eq!(app.selected_room_id.as_deref(), Some(t("$win").as_str()));
+        // A new window of a thread that's already open goes to the new
+        // window's pane, not back to the pane that shows it.
+        let _ = app.update(at("$below", Placement::NewWindow));
+        assert_eq!(app.windows.len(), 3);
+        assert_eq!(keys(&app), vec![Some(t("$below"))]);
     }
 
     #[tokio::test]

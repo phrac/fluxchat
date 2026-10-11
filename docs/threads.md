@@ -23,7 +23,7 @@ Opening a thread shows it in a pane **beside** the room, so you can follow both.
 
 If the room isn't on screen, it opens in the focused pane first, as clicking the room would. (When an agent picks up your request in a thread by itself, that auto-opened thread swaps the room's thread pane rather than stacking a new pane per run — see [Agents](agents.md).)
 
-**Right-click a thread** (same places) to choose instead: **Open to the right**, **Open below** (a new pane next to the one you're in), **Open in this pane**, or **Open in new window**. Threads that are already open offer **Go to thread**. **Middle-click** or **⌘/Ctrl-click** opens a thread to the right, and you can **drag** one from the room list or threads panel onto a pane (see [Panes and windows](panes-and-windows.md)).
+**Right-click a thread** (same places) to choose instead: **Open to the right**, **Open below** (a new pane next to the one you're in), **Open in this pane**, or **Open in new window**. These open a view of the thread where you asked even when it's already open somewhere; a thread that's already open also offers **Go to thread** to jump to the pane it's in. **Middle-click** or **⌘/Ctrl-click** opens a thread to the right, and you can **drag** one from the room list or threads panel onto a pane (see [Panes and windows](panes-and-windows.md)).
 
 **Esc** in a thread pane goes back to its room when there's nothing else to close.
 - To give a thread the whole window, zoom its pane (**Ctrl+B z**) or click its title bar's zoom button.

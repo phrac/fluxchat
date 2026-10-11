@@ -1383,12 +1383,13 @@ impl FluxChat {
                     if self.locate(&rid).is_some() {
                         if self.selected_room_id.as_deref() != Some(rid.as_str()) {
                             col = col.push(self.context_menu_entry("Go to room", SVG_HASH, at(Placement::Auto)));
+                            col = col.push(self.context_menu_divider());
                         }
-                    } else {
-                        col = col.push(self.context_menu_entry("Open to the right", SVG_SPLIT_V, at(Placement::Right)));
-                        col = col.push(self.context_menu_entry("Open below", SVG_SPLIT_H, at(Placement::Below)));
-                        col = col.push(self.context_menu_entry("Open in new window", SVG_LAYERS, at(Placement::NewWindow)));
                     }
+                    col = col.push(self.context_menu_entry("Open to the right", SVG_SPLIT_V, at(Placement::Right)));
+                    col = col.push(self.context_menu_entry("Open below", SVG_SPLIT_H, at(Placement::Below)));
+                    col = col.push(self.context_menu_entry("Open in this pane", SVG_MAXIMIZE, at(Placement::Here)));
+                    col = col.push(self.context_menu_entry("Open in new window", SVG_LAYERS, at(Placement::NewWindow)));
                 }
                 if !is_dm {
                     col = col.push(self.context_menu_item(
@@ -1424,16 +1425,18 @@ impl FluxChat {
                 use crate::panes::Placement;
                 let key = fluxchat_core::timeline::thread_key(room_id, root_id);
                 let at = |p: Placement| Message::OpenAt(key.clone(), p);
-                // Already open: it would only be focused, wherever asked.
+                // Already open: "Go to thread" focuses it; the placements
+                // open a second view of it on purpose.
                 if self.locate(&key).is_some() {
                     col = col.push(self.context_menu_entry("Go to thread", SVG_THREAD, at(Placement::Auto)));
+                    col = col.push(self.context_menu_divider());
                 } else {
                     col = col.push(self.context_menu_entry("Open thread", SVG_THREAD, at(Placement::Auto)));
-                    col = col.push(self.context_menu_entry("Open to the right", SVG_SPLIT_V, at(Placement::Right)));
-                    col = col.push(self.context_menu_entry("Open below", SVG_SPLIT_H, at(Placement::Below)));
-                    col = col.push(self.context_menu_entry("Open in this pane", SVG_MAXIMIZE, at(Placement::Here)));
-                    col = col.push(self.context_menu_entry("Open in new window", SVG_LAYERS, at(Placement::NewWindow)));
                 }
+                col = col.push(self.context_menu_entry("Open to the right", SVG_SPLIT_V, at(Placement::Right)));
+                col = col.push(self.context_menu_entry("Open below", SVG_SPLIT_H, at(Placement::Below)));
+                col = col.push(self.context_menu_entry("Open in this pane", SVG_MAXIMIZE, at(Placement::Here)));
+                col = col.push(self.context_menu_entry("Open in new window", SVG_LAYERS, at(Placement::NewWindow)));
             }
             crate::state::ContextMenu::Agent { key } => {
                 for (label, icon, msg) in self.agent_menu_items(key) {
