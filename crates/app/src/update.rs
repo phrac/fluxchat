@@ -883,7 +883,7 @@ impl FluxChat {
                         tasks.push(self.update(Message::SendReadReceipt));
                     }
                     if let Some(thread) = follow {
-                        tasks.push(self.open_at(thread, crate::panes::Placement::Auto));
+                        tasks.push(self.open_at(thread, crate::panes::Placement::Follow));
                     }
                     self.announce_prompts(&room_id, &new_prompts);
                     self.announce_finished();
