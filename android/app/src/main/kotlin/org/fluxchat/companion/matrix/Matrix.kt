@@ -411,6 +411,7 @@ object Matrix {
         _typing.value = emptyMap()
         synchronized(roomsLock) { roomEntries.clear() }
         _rooms.value = emptyMap()
+        YoungRooms.clear()
         agentMembers.clear()
         memberCache.clear()
         roomMeta.clear()
@@ -501,10 +502,19 @@ object Matrix {
         if (pruned != _pins.value) _pins.value = pruned
         if (found.keys != before) Diag.note("agent rooms: ${found.size} of ${rooms.size} rooms (${found.values.flatten().distinct().joinToString()})")
         // Timelines: open new agent rooms', close the ones that aren't any more.
+        var youngestWait = 0L
         for (roomId in found.keys) {
             if (synchronized(timelines) { roomId in timelines }) continue
             val room = rooms[roomId] ?: continue
+            // A room created seconds ago has no sliding-sync backing yet:
+            // its timeline SIGSEGVs (YoungRooms); retry once the grace is over.
+            val wait = YoungRooms.waitMs(roomId)
+            if (wait > 0) { youngestWait = maxOf(youngestWait, wait); continue }
             runCatching { openRoomTimeline(room) }.onFailure { Diag.error("Timeline for $roomId", it) }
+        }
+        if (youngestWait > 0) jobs += scope.launch {
+            delay(youngestWait + 50)
+            refreshAgentRooms(_rooms.value, _agentList.value)
         }
         synchronized(timelines) {
             timelines.keys.filter { it !in found }.forEach {
@@ -555,6 +565,7 @@ object Matrix {
         )
         val model = TimelineModel(room.id(), null, timeline, scope)
         synchronized(timelines) { timelines[room.id()] = model }
+        YoungRooms.settle(room.id())
         val roomId = room.id()
         val me = userId
         typingHandles[roomId] = room.subscribeToTypingNotifications(object : TypingNotificationsListener {
@@ -580,6 +591,14 @@ object Matrix {
 
     private suspend fun openFocusedOnIo(roomId: String, root: String?, focus: TimelineFocus): TimelineModel? {
         val room = room(roomId) ?: return null
+        // A room this client created seconds ago has no sliding-sync backing
+        // yet: the timeline builder null-derefs inside the SDK (YoungRooms —
+        // t_aa662dd8's post-create SIGSEGV). Sit out the grace, then retry.
+        val wait = YoungRooms.waitMs(roomId)
+        if (wait > 0) {
+            delay(wait)
+            YoungRooms.settle(roomId)
+        }
         val timeline = room.timelineWithConfiguration(
             TimelineConfiguration(
                 focus = focus,
@@ -593,6 +612,7 @@ object Matrix {
         val model = TimelineModel(roomId, root, timeline, scope)
         model.start()
         model.refill()
+        YoungRooms.settle(roomId)
         return model
     }
 
@@ -905,6 +925,10 @@ object Matrix {
                     invites,
                 ),
             )
+            // From this instant the room must not get a timeline: the
+            // sliding-sync server doesn't know it yet and the timeline
+            // builder crashes on that (YoungRooms, t_aa662dd8).
+            YoungRooms.mark(roomId)
             // Belt and braces: the create request already carries the
             // invites; a per-member invite covers a server that ignored the
             // field. A failure here is reported, not fatal — the room works.
