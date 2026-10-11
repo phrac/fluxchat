@@ -29,8 +29,15 @@ object StoreHeal {
     /** Healing twice in a poisoned streak means the crash isn't (only) the store. */
     const val MAX_HEALS = 2
 
-    /** Debuggerd reports a native SIGSEGV/SIGBUS as REASON_CRASH_NATIVE. */
-    private val NATIVE_CRASH = ApplicationExitInfo.REASON_CRASH_NATIVE
+    /**
+     * How long a process must live before its non-native death counts as
+     * proof the store loaded fine: a crash-looping process is force-stopped
+     * or ANRs seconds after the last crash, which proves nothing.
+     */
+    const val HEALTHY_RUN_MS = 60_000L
+
+    /** Debuggerd reports a native SIGSEGV as REASON_CRASH_NATIVE; SIGBUS arrives as REASON_SIGNALED (t_aa662dd8 field data). */
+    private val NATIVE_CRASH = setOf(ApplicationExitInfo.REASON_CRASH_NATIVE, ApplicationExitInfo.REASON_SIGNALED)
 
     @Volatile private var pending = false
 
@@ -42,20 +49,40 @@ object StoreHeal {
         unackedNativeCrash && heals < maxHeals
 
     /**
-     * First thing at app start: look at how the last process died. A
-     * native crash newer than the last acknowledged one arms the heal;
-     * anything else (a clean death, the user swiping away, an ANR) proves
-     * the store was working, resets the streak and moves the watermark on.
+     * First thing at app start: read the exit history. A native crash newer
+     * than the last acknowledged one arms the heal — a force-stop or swipe
+     * after the crash does NOT excuse the poison, so benign exits do not
+     * mask it. A process that lived a healthy minute and then died of
+     * something else proves the store was fine: reset the streak and move
+     * the watermark past everything seen.
      */
     fun bootStarted(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return // ApplicationExitInfo is API 30
         val p = prefs(context)
         val ack = p.getLong(KEY_ACK, 0L)
-        if (crashedSince(context, ack)) {
+        val exits = exits(context)
+        // Second source: dropbox keeps our native crashes even where
+        // ApplicationExitInfo history is empty (t_aa662dd8 field device:
+        // exit-info persisted nothing, dropbox had the SIGSEGVs).
+        val crashed = exits.any { it.reason in NATIVE_CRASH && it.timestamp > ack } ||
+            nativeCrashInDropbox(context, ack)
+        if (crashed) {
             pending = decide(true, p.getInt(KEY_HEALS, 0))
         } else {
             pending = false
-            p.edit().putInt(KEY_HEALS, 0).putLong(KEY_ACK, System.currentTimeMillis()).apply()
+            // Exits arrive newest-first: a process' life is the gap from the
+            // exit before it. A non-native death after a healthy minute
+            // proves the store loaded fine.
+            var provedHealthy = false
+            for (i in exits.indices) {
+                val newer = exits[i]
+                if (newer.reason in NATIVE_CRASH || newer.timestamp <= ack) continue
+                val lifetimeOk = i + 1 >= exits.size || newer.timestamp - exits[i + 1].timestamp > HEALTHY_RUN_MS
+                if (lifetimeOk) { provedHealthy = true; break }
+            }
+            if (provedHealthy) {
+                val newest = (exits.maxOfOrNull { it.timestamp } ?: 0L).coerceAtLeast(ack)
+                p.edit().putInt(KEY_HEALS, 0).putLong(KEY_ACK, newest).apply()
+            }
         }
     }
 
@@ -72,13 +99,28 @@ object StoreHeal {
             .apply()
     }
 
-    /** True when the process died from a native crash after [since] (0 = all history). */
-    private fun crashedSince(context: Context, since: Long): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
-        val am = context.getSystemService(android.app.ActivityManager::class.java) ?: return false
-        val exits = runCatching {
-            am.getHistoricalProcessExitReasons(context.packageName, 0, 16)
-        }.getOrDefault(emptyList())
-        return exits.any { it.timestamp > since && it.reason == NATIVE_CRASH }
+    private fun exits(context: Context): List<ApplicationExitInfo> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList() // ApplicationExitInfo is API 30
+        val am = context.getSystemService(android.app.ActivityManager::class.java) ?: return emptyList()
+        return runCatching { am.getHistoricalProcessExitReasons(context.packageName, 0, 64) }
+            .getOrDefault(emptyList())
     }
+
+    /**
+     * Our native crashes in dropbox (data_app_native_crash@package@...),
+     * newer than [since]. Readable by the app itself via DropBoxManager.
+     */
+    private fun nativeCrashInDropbox(context: Context, since: Long): Boolean = runCatching {
+        val db = context.getSystemService(android.os.DropBoxManager::class.java) ?: return@runCatching false
+        var entry: android.os.DropBoxManager.Entry? =
+            db.getNextEntry("data_app_native_crash@${context.packageName}", since)
+        while (entry != null) {
+            val text = entry.getText(entry.flags) ?: ""
+            if ("signal 11" in text || "signal 7" in text) return@runCatching true
+            val next = db.getNextEntry("data_app_native_crash@${context.packageName}", entry.timeMillis + 1)
+            entry.close()
+            entry = next
+        }
+        false
+    }.getOrDefault(false)
 }
