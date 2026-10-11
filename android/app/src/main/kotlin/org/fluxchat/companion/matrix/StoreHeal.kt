@@ -111,8 +111,9 @@ object StoreHeal {
      * newer than [since]. Readable by the app itself via DropBoxManager.
      */
     private fun nativeCrashInDropbox(context: Context, since: Long): Boolean = runCatching {
-        val db = android.os.DropBoxManager.getInstance(context)
-        var entry = db.getNextEntry("data_app_native_crash@${context.packageName}", since)
+        val db = context.getSystemService(android.os.DropBoxManager::class.java) ?: return@runCatching false
+        var entry: android.os.DropBoxManager.Entry? =
+            db.getNextEntry("data_app_native_crash@${context.packageName}", since)
         while (entry != null) {
             val text = entry.text ?: ""
             if ("signal 11" in text || "signal 7" in text) return@runCatching true
