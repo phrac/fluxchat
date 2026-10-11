@@ -57,11 +57,15 @@ object StoreHeal {
      * the watermark past everything seen.
      */
     fun bootStarted(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return // ApplicationExitInfo is API 30
         val p = prefs(context)
         val ack = p.getLong(KEY_ACK, 0L)
         val exits = exits(context)
-        if (exits.any { it.reason in NATIVE_CRASH && it.timestamp > ack }) {
+        // Second source: dropbox keeps our native crashes even where
+        // ApplicationExitInfo history is empty (t_aa662dd8 field device:
+        // exit-info persisted nothing, dropbox had the SIGSEGVs).
+        val crashed = exits.any { it.reason in NATIVE_CRASH && it.timestamp > ack } ||
+            nativeCrashInDropbox(context, ack)
+        if (crashed) {
             pending = decide(true, p.getInt(KEY_HEALS, 0))
         } else {
             pending = false
@@ -93,8 +97,26 @@ object StoreHeal {
     }
 
     private fun exits(context: Context): List<ApplicationExitInfo> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList() // ApplicationExitInfo is API 30
         val am = context.getSystemService(android.app.ActivityManager::class.java) ?: return emptyList()
         return runCatching { am.getHistoricalProcessExitReasons(context.packageName, 0, 64) }
             .getOrDefault(emptyList())
     }
+
+    /**
+     * Our native crashes in dropbox (data_app_native_crash@package@...),
+     * newer than [since]. Readable by the app itself via DropBoxManager.
+     */
+    private fun nativeCrashInDropbox(context: Context, since: Long): Boolean = runCatching {
+        val db = android.os.DropBoxManager.getInstance(context)
+        var entry = db.getNextEntry("data_app_native_crash@${context.packageName}", since)
+        while (entry != null) {
+            val text = entry.text ?: ""
+            if ("signal 11" in text || "signal 7" in text) return@runCatching true
+            val next = db.getNextEntry("data_app_native_crash@${context.packageName}", entry.timestamp + 1)
+            entry.close()
+            entry = next
+        }
+        false
+    }.getOrDefault(false)
 }
