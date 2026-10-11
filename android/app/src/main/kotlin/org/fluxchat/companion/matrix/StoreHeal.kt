@@ -72,10 +72,13 @@ object StoreHeal {
             // Exits arrive newest-first: a process' life is the gap from the
             // exit before it. A non-native death after a healthy minute
             // proves the store loaded fine.
-            val provedHealthy = exits.windowed(2, 1, partialWindowsToEnd = true).any { (newer, older) ->
-                newer.reason !in NATIVE_CRASH && newer.timestamp > ack &&
-                    (older == null || newer.timestamp - older.timestamp > HEALTHY_RUN_MS)
-            } || (exits.size == 1 && exits[0].reason !in NATIVE_CRASH && exits[0].timestamp > ack)
+            var provedHealthy = false
+            for (i in exits.indices) {
+                val newer = exits[i]
+                if (newer.reason in NATIVE_CRASH || newer.timestamp <= ack) continue
+                val lifetimeOk = i + 1 >= exits.size || newer.timestamp - exits[i + 1].timestamp > HEALTHY_RUN_MS
+                if (lifetimeOk) { provedHealthy = true; break }
+            }
             if (provedHealthy) {
                 val newest = (exits.maxOfOrNull { it.timestamp } ?: 0L).coerceAtLeast(ack)
                 p.edit().putInt(KEY_HEALS, 0).putLong(KEY_ACK, newest).apply()
