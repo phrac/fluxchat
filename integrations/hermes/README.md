@@ -1,6 +1,6 @@
 # Hermes Agent: agent protocol support
 
-Three patches for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that make it send the [fluxchat agent protocol](../../docs/agent-protocol.md) on Matrix. 0001 and 0002 are ready to propose upstream; they haven't been sent. 0003 fixes a bug they expose and is ours alone until the other two land.
+Four patches for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that make it send the [fluxchat agent protocol](../../docs/agent-protocol.md) on Matrix. 0001 and 0002 are ready to propose upstream; they haven't been sent. 0003 and 0004 fix bugs they expose and are ours alone until the other two land.
 
 ## What they do
 
@@ -13,6 +13,8 @@ Three patches for [Hermes Agent](https://github.com/NousResearch/hermes-agent) t
 - Approval prompts name the run they hold up.
 
 **0003: settle runs the gateway died on.** A gateway killed mid-run never reaches `on_processing_complete`, so its 👀 stays on the request and its working bubble stays `state: "working"` on the wire forever — fluxchat shows the run as running until its own stall sweep. The adapter now persists in-flight runs (👀 event ids + bubbles) to `in_flight_runs.json` in its store dir and, on the next connect, redacts the leftover 👀s and edits the leftover bubbles to `failed` ("interrupted by a gateway restart"). Crash-safe: re-settling after a crash between write and clear is a no-op on both signals.
+
+**0004: settle the first working bubble, not the last tracked send.** 0002 tracked the run's settle target as "the most recent message sent with `state: working`", but later working sends (a step log, a heartbeat) are progress, not the bubble. When the queued-follow-up path ("final stream delivery not confirmed; sending first response before continuing") sent one, the run-end edit chased it and settled the wrong message; the real bubble stayed `state: "working"` on the wire forever (The Battlefront, 2026-10-12). The tracker now remembers only the FIRST working message per (room, run); edits of the bubble itself still refresh its remembered text, so 0003's restart-settle still lands the latest progress.
 
 Only adapters that declare `AGENT_STATUS = True` get the metadata, and only Matrix does. Other platforms see no change, and Matrix clients that don't know the key see what they see today. The 👀 / ✅ / ❌ reactions are unchanged.
 
@@ -29,7 +31,7 @@ pytest -q tests/gateway/test_agent_status.py tests/gateway/test_matrix_agent_pro
 ```
 
 Results here, with the `matrix`, `messaging`, `slack` and `telegram` extras and the `dev` and `test` groups installed (`uv sync --frozen`):
-- The 18 new tests pass (0003 adds `tests/gateway/test_matrix_settle_orphaned_runs.py`, 3 tests).
+- The 22 new tests pass (0003 adds `tests/gateway/test_matrix_settle_orphaned_runs.py`, 3 tests; 0004 adds 2 more there).
 - Hermes's gateway tests for Matrix, approvals, progress, final delivery, streaming and turns (111 files): 999 pass.
 - One fails, `test_update_streaming.py::…::test_gateway_flag_enables_gateway_prompt_for_stash`. It fails without the patches too.
 
