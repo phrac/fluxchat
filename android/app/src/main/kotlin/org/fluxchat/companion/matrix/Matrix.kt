@@ -41,6 +41,7 @@ import org.matrix.rustcomponents.sdk.NotificationProcessSetup
 import org.matrix.rustcomponents.sdk.RecoveryState
 import org.matrix.rustcomponents.sdk.Room
 import org.matrix.rustcomponents.sdk.RoomListEntriesDynamicFilterKind
+import org.matrix.rustcomponents.sdk.RoomListEntriesWithDynamicAdaptersResult
 import org.matrix.rustcomponents.sdk.RoomListEntriesListener
 import org.matrix.rustcomponents.sdk.RoomListEntriesUpdate
 import org.matrix.rustcomponents.sdk.RoomPreset
@@ -148,6 +149,18 @@ object Matrix {
     private var notifications: NotificationClient? = null
     private val handles = ArrayList<TaskHandle>()
     private val jobs = ArrayList<Job>()
+
+    /**
+     * The room list's entries result, held for as long as its stream runs.
+     * The SDK's entries task borrows the RoomList *through this object*
+     * (matrix-sdk-ffi `entries_with_dynamic_adapters` stores the RoomList in
+     * it and hands the stream a raw borrow), so letting it go while the task
+     * lives frees the RoomList under the task: the GC'd result was the
+     * post-createProject SIGSEGV — the next new room ran `rooms_stream`'s
+     * map closure on a freed `&Client` (tombstones 16/17/18). Released only
+     * after the task has finished ([releaseRoomList]).
+     */
+    private var roomList: RoomListEntriesWithDynamicAdaptersResult? = null
 
     private val _auth = MutableStateFlow<Auth>(Auth.Starting)
     val auth: StateFlow<Auth> = _auth
@@ -396,6 +409,7 @@ object Matrix {
         jobs.clear()
         handles.forEach { it.cancel() }
         handles.clear()
+        releaseRoomList()
         synchronized(timelines) {
             timelines.values.forEach { it.close() }
             timelines.clear()
@@ -448,7 +462,24 @@ object Matrix {
             }
         })
         result.controller().setFilter(RoomListEntriesDynamicFilterKind.All(listOf(RoomListEntriesDynamicFilterKind.Joined, RoomListEntriesDynamicFilterKind.NonSpace)))
-        handles += result.entriesStream()
+        roomList = result
+    }
+
+    /**
+     * Stop the room list stream, then let its result go once the task is
+     * really gone: `cancel` only aborts at the task's next await, and a
+     * stream mid-poll still reads the RoomList the result keeps alive.
+     */
+    private fun releaseRoomList() {
+        val result = roomList ?: return
+        roomList = null
+        val stream = result.entriesStream()
+        stream.cancel()
+        scope.launch {
+            while (!stream.isFinished()) delay(50)
+            result.destroy()
+            stream.destroy()
+        }
     }
 
     private fun applyRoomUpdate(u: RoomListEntriesUpdate) {
