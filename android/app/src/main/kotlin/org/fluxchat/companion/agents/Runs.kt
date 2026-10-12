@@ -263,7 +263,7 @@ object Runs {
 
         // The protocol wins: several runs on one view → the newest, or one waiting on you.
         val byKey = HashMap<ViewKey, RunInfo>()
-        for ((k, run) in protocolRuns(roomId, all, agent)) {
+        for ((k, run) in protocolRuns(roomId, all, agent, h)) {
             val old = byKey[k]
             if (old == null || compareValuesBy(run, old, { it.state == RunState.NeedsYou }, { it.since }) > 0) byKey[k] = run
         }
@@ -272,7 +272,7 @@ object Runs {
     }
 
     /** Runs the agent describes with the protocol, keyed by the view they're in. */
-    fun protocolRuns(roomId: String, all: List<Msg>, agent: String): List<Pair<ViewKey, RunInfo>> {
+    fun protocolRuns(roomId: String, all: List<Msg>, agent: String, h: Harness): List<Pair<ViewKey, RunInfo>> {
         data class Latest(val msg: Msg, val p: Protocol)
         val latest = HashMap<String, Latest>()
         val openPrompt = HashSet<String>()
@@ -298,7 +298,18 @@ object Runs {
                 request != null && request.hasThread -> ViewKey(roomId, runId)
                 else -> ViewKey(roomId)
             }
-            val state = if (runId in openPrompt) RunState.NeedsYou else l.p.runState() ?: return@mapNotNull null
+            var state = if (runId in openPrompt) RunState.NeedsYou else l.p.runState() ?: return@mapNotNull null
+            // One exception to "the protocol wins": the agent's own ✅/❌ on
+            // the request closes a run even while a protocol status still
+            // says it's going. When the gateway's stream delivery isn't
+            // confirmed it sends the response twice and its settle edit lands
+            // on whichever message it last tracked, so the working bubble can
+            // stay "working" on the wire forever; the ✅ always lands.
+            if (state == RunState.Working) {
+                request?.let { requestState(h, it, agent) }
+                    ?.takeIf { it == RunState.Done || it == RunState.Failed }
+                    ?.let { state = it }
+            }
             target to RunInfo(
                 state = state,
                 since = request?.ts ?: l.msg.ts,
