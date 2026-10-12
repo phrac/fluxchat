@@ -2791,7 +2791,7 @@ mod tests {
         let mut bubble2 = msg("$bubble2", "@bot:x", now - 9_000);
         bubble2.thread_root = Some("$root".into());
         bubble2.agent = Some(serde_json::json!({"v": 1, "run": "$ask2", "state": "working", "steps": 1}));
-        app.messages_by_room.insert(tk.clone(), vec![ask, bubble, ask2, bubble2]);
+        app.messages_by_room.insert(tk.clone(), vec![ask, bubble, ask2.clone(), bubble2.clone()]);
         app.refresh_agent_state(&tk);
         assert_eq!(app.run_state(&tk), Some(RunState::Working), "the newer, unclosed run is the thread's");
         // ❌ closes the same way.
