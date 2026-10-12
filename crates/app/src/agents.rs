@@ -893,7 +893,7 @@ impl FluxChat {
     /// Runs as the agent describes them (agent protocol) in a view's
     /// messages: per run, its latest status. Threaded requests go under
     /// their thread key; in a thread view, the thread's own key.
-    fn protocol_runs(&self, key: &str, msgs: &[MessageInfo], agent: &str) -> Vec<(String, RunInfo)> {
+    fn protocol_runs(&self, key: &str, msgs: &[MessageInfo], agent: &str, h: &Harness) -> Vec<(String, RunInfo)> {
         // Per run: its status message (the newest without choices — an edit
         // keeps its message's timestamp, so prompts mustn't outrank it), and
         // whether a prompt of it is still open.
@@ -932,7 +932,23 @@ impl FluxChat {
             } else {
                 key.to_string()
             };
-            let state = if open_prompt.contains(&run_id) { RunState::NeedsYou } else { p.run_state()? };
+            let mut state = if open_prompt.contains(&run_id) { RunState::NeedsYou } else { p.run_state()? };
+            // One exception to "the protocol wins": a reaction close — the
+            // agent's own ✅/❌ on the request — outranks a protocol status
+            // that still says the run is going. When the gateway's stream
+            // delivery isn't confirmed it sends the response twice and its
+            // settle edit lands on whichever message it last tracked (a
+            // heartbeat, a step log), so the working status bubble can stay
+            // "working" on the wire forever; the ✅ is the close signal that
+            // always lands, and a new run is always a new request event.
+            if state == RunState::Working {
+                if let Some(closed) = request
+                    .and_then(|r| request_state(h, r, agent))
+                    .filter(|s| matches!(s, RunState::Done | RunState::Failed))
+                {
+                    state = closed;
+                }
+            }
             Some((target, RunInfo {
                 state,
                 since: request.map(sent_ms).unwrap_or_else(|| sent_ms(m)),
@@ -1098,7 +1114,7 @@ impl FluxChat {
         // runs in one view (requests in one thread): the newest, unless an
         // older one is waiting on you.
         let mut by_key: HashMap<String, RunInfo> = HashMap::new();
-        for (k, run) in self.protocol_runs(key, msgs, &agent) {
+        for (k, run) in self.protocol_runs(key, msgs, &agent, h) {
             let ord = |r: &RunInfo| (r.state == RunState::NeedsYou, r.since);
             if by_key.get(&k).is_none_or(|old| ord(&run) > ord(old)) {
                 by_key.insert(k, run);
@@ -2746,6 +2762,64 @@ mod tests {
             app.refresh_agent_state(&tk);
             assert_eq!(app.run_state(&tk), Some(RunState::Working));
         }
+    }
+
+    #[tokio::test]
+    async fn a_reaction_close_ends_a_protocol_run_the_agent_never_settled() {
+        // The stream-unconfirmed double-delivery case (The Battlefront,
+        // 2026-10-12): the gateway's settle edit landed on a later message,
+        // so the working status bubble stayed "working" on the wire forever.
+        // The ✅ on the request is the close that always lands.
+        let mut app = agent_app();
+        app.prefs.agent_harness.insert("@bot:x".into(), "hermes".into());
+        let now = now_ms();
+        let mut ask = msg("$ask", "@me:x", now - 60_000);
+        ask.reactions = vec![react(WORKING, &["@bot:x"]), react(DONE, &["@bot:x"])];
+        ask.thread_root = Some("$root".into());
+        let mut bubble = msg("$bubble", "@bot:x", now - 50_000);
+        bubble.thread_root = Some("$root".into());
+        bubble.agent = Some(serde_json::json!({"v": 1, "run": "$ask", "state": "working", "steps": 3}));
+        let tk = thread_key("!r:x", "$root");
+        app.messages_by_room.insert(tk.clone(), vec![ask.clone(), bubble.clone()]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Done), "the ✅ closes the run the bubble left open");
+        // A run of its own still on the go in the same thread is untouched:
+        // only the ✅'d request's run closes.
+        let mut ask2 = msg("$ask2", "@me:x", now - 10_000);
+        ask2.thread_root = Some("$root".into());
+        ask2.reactions = vec![react(WORKING, &["@bot:x"])];
+        let mut bubble2 = msg("$bubble2", "@bot:x", now - 9_000);
+        bubble2.thread_root = Some("$root".into());
+        bubble2.agent = Some(serde_json::json!({"v": 1, "run": "$ask2", "state": "working", "steps": 1}));
+        app.messages_by_room.insert(tk.clone(), vec![ask, bubble, ask2.clone(), bubble2.clone()]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Working), "the newer, unclosed run is the thread's");
+        // ❌ closes the same way.
+        ask2.reactions = vec![react(FAILED, &["@bot:x"])];
+        app.messages_by_room.insert(tk.clone(), vec![ask2, bubble2]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Failed));
+    }
+
+    #[tokio::test]
+    async fn the_single_delivery_settle_still_closes_a_run() {
+        // Regression for the normal path: the settle edit on the bubble
+        // itself (state: done in the latest edit) closes the run on its own,
+        // with no reaction on the request yet (the 👀 taken back arrives a
+        // few seconds later).
+        let mut app = agent_app();
+        app.prefs.agent_harness.insert("@bot:x".into(), "hermes".into());
+        let now = now_ms();
+        let mut ask = msg("$ask", "@me:x", now - 60_000);
+        ask.reactions = vec![react(WORKING, &["@bot:x"])];
+        ask.thread_root = Some("$root".into());
+        let mut bubble = msg("$bubble", "@bot:x", now - 50_000);
+        bubble.thread_root = Some("$root".into());
+        bubble.agent = Some(serde_json::json!({"v": 1, "run": "$ask", "state": "done", "result": "All done."}));
+        let tk = thread_key("!r:x", "$root");
+        app.messages_by_room.insert(tk.clone(), vec![ask, bubble]);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Done));
     }
 
     #[tokio::test]
