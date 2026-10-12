@@ -103,8 +103,9 @@ class RunsTest {
     }
 
     @Test
-    fun theProtocolWinsOverReactions() {
-        val req = msg("req", me, now - 5000, "go", done to listOf(agent))
+    fun theProtocolWinsOverReactionsExceptAClose() {
+        // Richer info comes from the protocol even with a 👀 on the request.
+        val req = msg("req", me, now - 5000, "go", working to listOf(agent))
         val status = msg("s", agent, now - 1000, "📖 Reading").copy(
             agent = Protocol(run = "req", state = "working", step = "Reading", steps = 3, costUsd = 0.12),
         )
@@ -113,6 +114,17 @@ class RunsTest {
         assertEquals(RunState.Working, run.state)
         assertEquals("Reading", run.step)
         assertEquals(0.12, run.costUsd!!, 1e-9)
+        // But the agent's own ✅ on the request closes a run its protocol
+        // status left working: with an unconfirmed stream delivery the
+        // gateway settles whichever message it tracked last, not the working
+        // bubble, which then says "working" on the wire forever.
+        val closed = msg("req", me, now - 5000, "go", working to listOf(agent), done to listOf(agent))
+        val r2 = Runs.agentUpdates(room, listOf(closed, status), agent, hermes, isDm = true, now = now)
+        assertEquals(RunState.Done, r2.runs[ViewKey(room)]!!.state)
+        // ❌ closes the same way; a still-working (👀-only) request doesn't.
+        val fail = msg("req", me, now - 5000, "go", failed to listOf(agent))
+        val r3 = Runs.agentUpdates(room, listOf(fail, status), agent, hermes, isDm = true, now = now)
+        assertEquals(RunState.Failed, r3.runs[ViewKey(room)]!!.state)
     }
 
     @Test
