@@ -1,0 +1,1075 @@
+From 7f8e835b14cab0d03686cf77866c10e9f096a7cb Mon Sep 17 00:00:00 2001
+From: phrac <derek@disflux.com>
+Date: Mon, 12 Oct 2026 21:13:35 -0500
+Subject: [PATCH] Session bridge: mirror local sessions into one Matrix room
+ (thread per session)
+
+Desktop/TUI/webui-born sessions never touch Matrix, so FluxChat clients can't
+see or steer them. The bridge runs as a gateway watcher: it polls the session
+store and mirrors each eligible session into ONE room as a thread (root =
+session announcement; user rows and final replies as thread replies; working
+bubble settled via org.fluxchat.agent edits, reusing patch-0002/0004 protocol
+semantics so clients need zero changes).
+
+Room identity is the org.hermes.sessions state event (version 1 + sources),
+never the title; the bridge sets the marker itself when it creates the room.
+Matrix-origin and internal sessions are excluded; draft sessions get no thread
+until their first user row. Cost rides org.fluxchat.agent.cost_usd only when
+integral (Tuwunel canonical JSON rejects floats; FluxChat serde rejects
+strings); sub-dollar costs fold into the result headline.
+
+Inbound: thread replies from controller accounts (session_bridge_controllers)
+resume the mapped session via a headless turn; mirror-sent events are output
+and never echo back as input. The Matrix adapter drops foreign events for the
+bridge room via is_bridge_room so gateway session machinery never answers
+there. Config: matrix.extra.session_bridge{,_room,_sources,_invite,
+_controllers,_backfill_days}.
+
+Tests: tests/gateway/test_session_bridge.py (17).
+---
+ gateway/run_startup.py               |   1 +
+ gateway/run_watchers.py              |  19 +
+ gateway/session_bridge.py            | 733 +++++++++++++++++++++++++++
+ plugins/platforms/matrix/adapter.py  |   8 +
+ tests/gateway/test_session_bridge.py | 231 +++++++++
+ 5 files changed, 992 insertions(+)
+ create mode 100644 gateway/session_bridge.py
+ create mode 100644 tests/gateway/test_session_bridge.py
+
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+index 071330e0ab..1bccd5cd3e 100644
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -1563,6 +1563,7 @@ class GatewayStartupMixin:
+     )
+     _POST_RECONNECT_WATCHERS = (
+         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
++        "_session_bridge_watcher",
+     )
+ 
+     def _start_spawn_background_watchers(self) -> None:
+diff --git a/gateway/run_watchers.py b/gateway/run_watchers.py
+index 05a932550c..1ee9580571 100644
+--- a/gateway/run_watchers.py
++++ b/gateway/run_watchers.py
+@@ -246,3 +246,22 @@ class GatewaySessionWatchersMixin:
+             except Exception as exc:
+                 logger.debug("Session stall watcher error: %s", exc)
+             await _interruptible_sleep(self, max(1, int(float(interval))))
++
++    async def _session_bridge_watcher(self) -> None:
++        """Session bridge (patch 0005): mirror local desktop/tui/webui sessions into the
++        ``org.hermes.sessions`` Matrix room and steer them from thread replies. Opt-in via
++        ``matrix.extra.session_bridge``; runs one long-lived SessionBridge. A crash respawns
++        through the supervisor; a disabled/credential-less config returns immediately."""
++        from gateway.session_bridge import make_bridge_from_config
++        await asyncio.sleep(10)  # let platform adapters connect first
++        while self._running:
++            bridge = make_bridge_from_config(self.config)
++            if bridge is None:
++                return
++            try:
++                await bridge.run()
++            except asyncio.CancelledError:
++                raise
++            except Exception as exc:
++                logger.warning("session-bridge crashed, restarting in 30s: %s", exc)
++                await _interruptible_sleep(self, 30)
+diff --git a/gateway/session_bridge.py b/gateway/session_bridge.py
+new file mode 100644
+index 0000000000..f77119afad
+--- /dev/null
++++ b/gateway/session_bridge.py
+@@ -0,0 +1,733 @@
++"""Session bridge: mirror local (non-Matrix) Hermes sessions into ONE Matrix room.
++
++Desktop/TUI/webui-born sessions never touch Matrix, so FluxChat clients can't see or
++steer them. This bridge mirrors ALL of them into one room on the configured homeserver
++— one Matrix thread per session (thread root = session announcement) — and routes
++thread replies back into the session as a real turn, mirroring what the desktop
++sidebar shows (user + final agent replies; no tool noise).
++
++Room resolution NEVER keys off the room title: the session-hosting room is marked with
++the ``org.hermes.sessions`` state event (``{"version": 1, "sources": [...]}``). Config
++may pin the room by ID + expected marker; when unset, the bridge creates the room, sets
++the marker itself, and persists the room id in its state file. Room title is cosmetic.
++
++Wire shape reuses the FluxChat agent protocol (``org.fluxchat.agent`` hidden field,
++settle-edit semantics) exactly as the Matrix adapter emits it, so both FluxChat clients
++render mirrored sessions with zero client changes.
++
++Design notes:
++- The bridge owns its own mautrix client (same access token as the gateway's Matrix
++  adapter → same @fbhermes identity). Its outbound events are self-sent, so the
++  gateway adapter's ``_is_self_sender`` drop keeps them from re-entering as input; the
++  adapter additionally drops foreign room events for the bridge room (see
++  ``is_bridge_room``) so the gateway's own Matrix session machinery never double-answers
++  there. The bridge room stays unencrypted (the bridge creates it unencrypted).
++- INPUT is only foreign plain m.text events inside a KNOWN session thread. Everything
++  the bridge itself sends (roots, working bubbles, settle edits, mirrored replies) is
++  OUTPUT. Session execution for a remote reply is a one-turn resume subprocess
++  (``hermes -p <profile> chat --resume <session> -Q``), the same transport family the
++  bot relay uses; the appended transcript rows ride back out through the poller.
++- Sessions with zero user messages (drafts) never get threads; matrix-origin sessions
++  and internal listing sources are excluded (they already live in Matrix elsewhere).
++
++Heuristics worth knowing (poll-only observation — no desktop turn hooks exist):
++- A turn settles DONE when a final assistant row (non-empty content, no tool_calls,
++  not a compression summary) appears after a user row; the working bubble edits to the
++  reply's first line as the protocol ``result`` headline and the full reply posts as
++  its own thread reply.
++- A turn settles FAILED when the assistant row carries an error ``finish_reason`` or
++  when a bubble goes stale (no settle observed within ``_BUBBLE_STALE_SECONDS``).
++"""
++
++from __future__ import annotations
++
++import asyncio
++import contextlib
++import json
++import logging
++import os
++import re
++import sqlite3
++import tempfile
++import time
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any, Optional
++
++logger = logging.getLogger(__name__)
++
++AGENT_STATUS_KEY = "org.fluxchat.agent"
++MARKER_EVENT_TYPE = "org.hermes.sessions"
++MARKER_VERSION = 1
++DEFAULT_TITLE = "Hermes Sessions"
++DEFAULT_SOURCES = ("desktop", "tui", "webui")
++INTERNAL_SOURCES = ("kanban", "tool", "oneshot", "subagent", "cron", "matrix", "unknown")
++_POLL_SECONDS = 3.0
++_SYNC_TIMEOUT_MS = 30_000
++_BUBBLE_STALE_SECONDS = 45 * 60
++_TURN_TIMEOUT_SECONDS = 1800
++_MAX_QUEUED_TURNS_PER_SESSION = 5
++_MAX_CONCURRENT_TURNS = 2
++_BODY_CAP = 16_000  # mirror's own body cap, well under Matrix event limits
++
++# ---------------------------------------------------------------------------
++# Pure mapping logic (unit-testable, no I/O)
++# ---------------------------------------------------------------------------
++
++_RESULT_STRIP_RE = re.compile(r"^[#>\- ]+")
++
++
++def result_line(response: Any) -> str:
++    """First non-empty line of a reply, trimmed to one result line (protocol ``result``).
++
++    Mirrors ``gateway.agent_status._result_line`` so mirrored sessions headline exactly
++    like gateway-origin runs; kept local so the bridge imports no gateway runner state.
++    """
++    text = str(response or "").strip()
++    for line in text.splitlines():
++        if line := line.strip():
++            # Heading/list markers lead; bold markers wrap the lead-in ("**Done.**").
++            line = _RESULT_STRIP_RE.sub("", line).strip()
++            if line.startswith("**") and line.endswith("**"):
++                line = line[2:-2].strip()
++            return line[:240]
++    return ""
++
++
++def should_mirror_session(row: dict, sources: tuple[str, ...], *, backfill_days: float,
++                          now: float) -> bool:
++    """Sidebar-parity gate for a sessions-table row: mirror sources only, real content,
++    not archived/hidden, inside the backfill window (fresh rows always pass)."""
++    src = str(row.get("source") or "").strip().lower()
++    if src not in {s.strip().lower() for s in sources} or src in INTERNAL_SOURCES:
++        return False
++    if row.get("archived") or row.get("hidden"):
++        return False
++    if int(row.get("message_count") or 0) <= 0:
++        return False
++    started = float(row.get("started_at") or 0.0)
++    last = float(row.get("last_activity_at") or started or 0.0)
++    return now - last <= backfill_days * 86_400
++
++
++def visible_user_rows(rows: list[dict]) -> list[dict]:
++    """Rows a human sees as their own messages: role=user, real content."""
++    return [r for r in rows
++            if r.get("role") == "user" and str(r.get("content") or "").strip()]
++
++
++def final_reply_rows(rows: list[dict]) -> list[dict]:
++    """Final assistant messages (sidebar/transcript parity: no tool-call carriers, no
++    empty content, no compression summaries)."""
++    out = []
++    for r in rows:
++        if r.get("role") != "assistant" or int(r.get("_compressed_summary") or 0):
++            continue
++        if not str(r.get("content") or "").strip():
++            continue
++        tcs = str(r.get("tool_calls") or "").strip()
++        if tcs and tcs not in ("[]", "null"):
++            continue
++        out.append(r)
++    return out
++
++
++def error_reply_rows(rows: list[dict]) -> list[dict]:
++    """Assistant rows whose finish_reason marks a provider/agent error."""
++    return [r for r in rows
++            if r.get("role") == "assistant"
++            and str(r.get("finish_reason") or "") in ("error", "agent_error", "content_filter")]
++
++
++@dataclass
++class TurnDelta:
++    """What the poller observed since its last cursor for one session."""
++    new_user_rows: list[dict] = field(default_factory=list)
++    final_replies: list[dict] = field(default_factory=list)
++    error_replies: list[dict] = field(default_factory=list)
++
++
++def detect_turn_delta(rows: list[dict], last_msg_id: int) -> TurnDelta:
++    """Split rows after ``last_msg_id`` into mirrorable streams (pure)."""
++    after = [r for r in rows if int(r["id"]) > last_msg_id]
++    return TurnDelta(
++        new_user_rows=visible_user_rows(after),
++        final_replies=final_reply_rows(after),
++        error_replies=error_reply_rows(after),
++    )
++
++
++def thread_reply_content(body: str, root: str, *, agent_status: Optional[dict] = None) -> dict:
++    """One m.text event body threaded under ``root`` (adapter's relation shape)."""
++    content: dict[str, Any] = {"msgtype": "m.text", "body": body[:_BODY_CAP]}
++    if root:
++        content["m.relates_to"] = {
++            "rel_type": "m.thread", "event_id": root, "is_falling_back": True,
++            "m.in_reply_to": {"event_id": root},
++        }
++    if agent_status:
++        content[AGENT_STATUS_KEY] = agent_status
++    return content
++
++
++def status_edit_content(new_body: str, target_event: str, status: dict) -> dict:
++    """Settle edit of a tracked bubble (m.replace over m.new_content, adapter shape)."""
++    new_content: dict[str, Any] = {"msgtype": "m.text", "body": new_body[:_BODY_CAP],
++                                   AGENT_STATUS_KEY: status}
++    return {
++        "msgtype": "m.text", "body": f"* {new_body[:_BODY_CAP]}",
++        "m.new_content": new_content,
++        "m.relates_to": {"rel_type": "m.replace", "event_id": target_event},
++        AGENT_STATUS_KEY: status,
++    }
++
++
++def working_status(run: str) -> dict:
++    return {"v": 1, "state": "working", "run": run}
++
++
++def settled_status(run: str, reply: str, *, failed: bool = False, model: str = "",
++                   cost_usd: Optional[float] = None) -> dict:
++    status: dict[str, Any] = {"v": 1, "state": "failed" if failed else "done", "run": run}
++    if line := result_line(reply):
++        status["result"] = line
++    if model:
++        status["model"] = model
++    if isinstance(cost_usd, (int, float)) and cost_usd >= 0:
++        # Canonical JSON (unencrypted rooms) rejects floats outright, and FluxChat
++        # desktop's serde needs a JSON number (a string kills the whole protocol parse).
++        # Send the protocol field only when it's integral; otherwise fold the exact cost
++        # into the ``result`` headline (still ${:.2}-readable, just not in the chip).
++        cents = round(float(cost_usd) * 100)
++        if cents % 100 == 0:
++            status["cost_usd"] = cents // 100
++        else:
++            exact = f"${cents / 100:.2f}"
++            status["result"] = f"{status['result']} ({exact})" if status.get("result") else exact
++    return status
++
++
++def root_announcement(title: str, source: str, started_at: float) -> str:
++    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(started_at)) if started_at else "unknown time"
++    return f"🧵 {title or 'Untitled session'} — source: {source} · started {when}"
++
++
++def user_message_body(localpart: str, source: str, text: str) -> str:
++    return f"**{localpart} ({source}):** {text[:_BODY_CAP]}"
++
++
++def route_inbound_event(sender: str, own_mxid: str, content: dict,
++                        session_roots: dict[str, str],
++                        controllers: frozenset[str] = frozenset()) -> Optional[str]:
++    """INPUT routing: a controller's plain-text reply inside a KNOWN session thread
++    returns that session id; anything else (self-sent, non-controller, edits, notices,
++    protocol events, unknown threads, room-level chatter) is not session input → None.
++    Loop guard lives here."""
++    if not sender or (own_mxid and sender.lower() == own_mxid.lower()):
++        return None
++    if controllers and sender.lower() not in {c.lower() for c in controllers}:
++        return None
++    if content.get("msgtype") != "m.text":
++        return None
++    if AGENT_STATUS_KEY in content:  # protocol events are output vocabulary
++        return None
++    if (content.get("m.relates_to") or {}).get("rel_type") == "m.replace":
++        return None  # edits never steer
++    relates = content.get("m.relates_to") or {}
++    if relates.get("rel_type") != "m.thread":
++        return None
++    return session_roots.get(str(relates.get("event_id") or ""))
++
++
++# ---------------------------------------------------------------------------
++# Persisted bridge state
++# ---------------------------------------------------------------------------
++
++@dataclass
++class SessionThread:
++    root: str = ""
++    last_msg_id: int = 0
++    source: str = ""
++    title: str = ""
++    profile: str = "default"
++    created_at: float = field(default_factory=time.time)
++    # open turns: run_id -> {"bubble": event_id, "opened_at": ts, "user_row": message id}
++    open: dict[str, dict] = field(default_factory=dict)
++
++    def to_dict(self) -> dict:
++        return {"root": self.root, "last_msg_id": self.last_msg_id, "source": self.source,
++                "title": self.title, "profile": self.profile, "created_at": self.created_at,
++                "open": self.open}
++
++    @classmethod
++    def from_dict(cls, raw: dict) -> SessionThread:
++        return cls(root=str(raw.get("root") or ""), last_msg_id=int(raw.get("last_msg_id") or 0),
++                   source=str(raw.get("source") or ""), title=str(raw.get("title") or ""),
++                   profile=str(raw.get("profile") or "default"),
++                   created_at=float(raw.get("created_at") or 0) or time.time(),
++                   open=dict(raw.get("open") or {}))
++
++
++class BridgeState:
++    """JSON state file: room id + per-session thread bookkeeping. Atomic writes."""
++
++    def __init__(self, path: Path) -> None:
++        self.path = path
++        self.room_id: str = ""
++        self.sessions: dict[str, SessionThread] = {}
++        self._load()
++
++    def _load(self) -> None:
++        try:
++            raw = json.loads(self.path.read_text(encoding="utf-8"))
++        except (OSError, ValueError):
++            return
++        self.room_id = str(raw.get("room_id") or "")
++        self.sessions = {sid: SessionThread.from_dict(t)
++                         for sid, t in (raw.get("sessions") or {}).items()
++                         if isinstance(t, dict)}
++
++    def save(self) -> None:
++        payload = {"room_id": self.room_id,
++                   "sessions": {sid: t.to_dict() for sid, t in self.sessions.items()}}
++        tmp = self.path.with_suffix(".json.tmp")
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        tmp.write_text(json.dumps(payload), encoding="utf-8")
++        os.replace(tmp, self.path)
++
++
++# Module-level room-id cache the Matrix adapter's drop hook consults (mtime-cached).
++_room_cache: tuple[float, str] = (-1.0, "")
++
++
++def _state_path() -> Path:
++    from hermes_cli.config import get_hermes_home
++    return get_hermes_home() / "platforms" / "matrix" / "store" / "session_bridge.json"
++
++
++def is_bridge_room(room_id: str) -> bool:
++    """True when ``room_id`` is the session-bridge room (Matrix adapter drop hook).
++    Cheap: stat + mtime cache; False when the bridge has never run (no state file)."""
++    global _room_cache
++    path = _state_path()
++    try:
++        mtime = path.stat().st_mtime
++    except OSError:
++        return False
++    if mtime != _room_cache[0]:
++        try:
++            room = str(json.loads(path.read_text(encoding="utf-8")).get("room_id") or "")
++        except (OSError, ValueError):
++            room = ""
++        _room_cache = (mtime, room)
++    return bool(room_id) and room_id == _room_cache[1]
++
++
++# ---------------------------------------------------------------------------
++# Bridge runtime (own Matrix client; runs inside gateway or standalone)
++# ---------------------------------------------------------------------------
++
++class SessionBridge:
++    def __init__(self, *, homeserver: str, access_token: str,
++                 sources: tuple[str, ...] = DEFAULT_SOURCES, room_id: str = "",
++                 invite: tuple[str, ...] = (), controllers: tuple[str, ...] = (),
++                 backfill_days: float = 7.0,
++                 state_path: Optional[Path] = None, client: Any = None,
++                 db_path: Optional[Path] = None) -> None:
++        self._homeserver = homeserver
++        self._token = access_token
++        self.sources = tuple(s.strip().lower() for s in sources if s.strip())
++        self.configured_room = room_id.strip()
++        self.invite = tuple(i for i in invite if i.strip())
++        # Only these accounts may steer sessions from the room (empty → anyone but self).
++        self.controllers = frozenset(c for c in (x.strip() for x in controllers) if c)
++        self.backfill_days = backfill_days
++        self.state = BridgeState(state_path or _state_path())
++        self._client = client  # injected in tests; built lazily in production
++        self._own_mxid = ""
++        self._db_path = db_path
++        self._turn_locks: dict[str, asyncio.Lock] = {}
++        self._queues: dict[str, asyncio.Queue] = {}
++        self._drainers: dict[str, asyncio.Task] = {}
++        self._sem = asyncio.Semaphore(_MAX_CONCURRENT_TURNS)
++        self._running = True
++        self._room_ready = asyncio.Event()
++
++    # -- wiring ---------------------------------------------------------
++
++    def _db(self) -> sqlite3.Connection:
++        if self._db_path is None:
++            from hermes_cli.config import get_hermes_home
++            self._db_path = get_hermes_home() / "state.db"
++        conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
++        conn.row_factory = sqlite3.Row
++        return conn
++
++    async def _ensure_client(self):
++        if self._client is None:
++            from mautrix.api import HTTPAPI
++            from mautrix.client import Client
++            from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
++            from mautrix.types import UserID
++            # Token auth needs the mxid BEFORE Client construction: resolve it via the
++            # raw API (whoami) first — the adapter gets it from login; we have a token.
++            api = HTTPAPI(base_url=self._homeserver, token=self._token)
++            try:
++                resp = await api.request("GET", "_matrix/client/v3/account/whoami")
++                self._own_mxid = str(resp.get("user_id") or "")
++            finally:
++                session = getattr(api, "client_session", None)
++                if session is not None:
++                    await session.close()
++            self._client = Client(mxid=UserID(self._own_mxid),
++                                  device_id=os.environ.get("MATRIX_DEVICE_ID") or None,
++                                  api=HTTPAPI(base_url=self._homeserver, token=self._token),
++                                  state_store=MemoryStateStore(), sync_store=MemorySyncStore())
++        if not self._own_mxid:
++            whoami = await self._client.whoami()
++            self._own_mxid = str(whoami.user_id)
++        return self._client
++
++    async def _ensure_room(self) -> str:
++        """Resolve/create the session room; verify or set the org.hermes.sessions marker.
++        Never trust the title — the state event is the identity."""
++        from mautrix.types import EventType, RoomCreatePreset, RoomID, UserID
++        client = await self._ensure_client()
++        # mautrix EventType is a str subclass; the bare string serializes identically in
++        # the /state/{type}/{key} path (t_class only matters for typed deserialization).
++        marker: Any = MARKER_EVENT_TYPE
++        content: dict[str, Any] = {"version": MARKER_VERSION, "sources": list(self.sources)}
++
++        async def marker_present(room: str) -> bool:
++            try:
++                ev = await client.get_state_event(RoomID(room), marker)
++            except Exception:
++                return False
++            raw = ev if isinstance(ev, dict) else getattr(ev, "content", None)
++            return isinstance(raw, dict) and raw.get("version") == MARKER_VERSION
++
++        room = self.configured_room or self.state.room_id
++        if room:
++            if await marker_present(room):
++                self.state.room_id = room
++                return room
++            # Pinned/persisted room without the marker: set it (we hold power as creator
++            # of our own room; a pinned foreign room may legitimately reject) and proceed.
++            try:
++                await client.send_state_event(RoomID(room), marker, content=content)
++                self.state.room_id = room
++                return room
++            except Exception as exc:
++                logger.warning("session-bridge: cannot set %s marker in %s: %s",
++                               MARKER_EVENT_TYPE, room, exc)
++        new_room = await client.create_room(
++            name=DEFAULT_TITLE,
++            invitees=[UserID(u) for u in self.invite],
++            is_direct=False, preset=RoomCreatePreset.PRIVATE)
++        room = str(new_room)
++        await client.send_state_event(RoomID(room), marker, content=content)
++        self.state.room_id = room
++        self.state.save()
++        logger.info("session-bridge: created session room %s with %s marker",
++                    room, MARKER_EVENT_TYPE)
++        return room
++
++    # -- sends ----------------------------------------------------------
++
++    async def _send(self, content: dict) -> Optional[str]:
++        from mautrix.types import EventType, RoomID
++        try:
++            return str(await asyncio.wait_for(
++                self._client.send_message_event(RoomID(self.state.room_id),
++                                                EventType.ROOM_MESSAGE, content), timeout=45))
++        except Exception as exc:
++            logger.warning("session-bridge: send failed: %s", exc)
++            return None
++
++    async def _edit(self, target: str, content: dict) -> bool:
++        from mautrix.types import EventType, RoomID
++        try:
++            await asyncio.wait_for(
++                self._client.send_message_event(RoomID(self.state.room_id),
++                                                EventType.ROOM_MESSAGE, content), timeout=45)
++            return True
++        except Exception as exc:
++            logger.warning("session-bridge: edit of %s failed: %s", target, exc)
++            return False
++
++    # -- output poll loop -------------------------------------------------
++
++    async def _poll_once(self) -> None:
++        conn = self._db()
++        try:
++            rows = conn.execute(
++                "select id, source, title, started_at, last_activity_at, message_count, "
++                "archived, hidden, profile_name, model, estimated_cost_usd, actual_cost_usd, "
++                "cost_status from sessions").fetchall()
++            eligible = {}
++            now = time.time()
++            for row in rows:
++                d = dict(row)
++                if should_mirror_session(d, self.sources, backfill_days=self.backfill_days, now=now):
++                    eligible[str(d["id"])] = d
++            for sid, meta in eligible.items():
++                try:
++                    await self._sync_session(conn, sid, meta)
++                except Exception as exc:
++                    logger.debug("session-bridge: poll of %s failed: %s", sid, exc)
++        finally:
++            conn.close()
++        self.state.save()
++
++    async def _sync_session(self, conn: sqlite3.Connection, sid: str, meta: dict) -> None:
++        thread = self.state.sessions.get(sid)
++        if thread is None or not thread.root:
++            first_user = conn.execute(
++                "select 1 from messages where session_id = ? and role = 'user' "
++                "and content is not null and content != '' limit 1", (sid,)).fetchone()
++            if not first_user:  # draft rule: no thread before the first real user message
++                return
++            root = await self._send({"msgtype": "m.text", "body": root_announcement(
++                meta.get("title") or "", meta.get("source") or "",
++                float(meta.get("started_at") or 0))})
++            if not root:
++                return
++            thread = SessionThread(root=root, source=str(meta.get("source") or ""),
++                                   title=str(meta.get("title") or ""),
++                                   profile=str(meta.get("profile_name") or "default"))
++            self.state.sessions[sid] = thread
++            logger.info("session-bridge: opened thread %s for session %s (%s)",
++                        root, sid, thread.source)
++
++        rows = [dict(r) for r in conn.execute(
++            "select id, role, content, tool_calls, finish_reason, _compressed_summary, "
++            "message_uid, timestamp from messages where session_id = ? order by id", (sid,)).fetchall()]
++        delta = detect_turn_delta(rows, thread.last_msg_id)
++
++        # Protocol rule (gateway.agent_status): cost rides only when it isn't unknown.
++        session_cost = None
++        if meta.get("cost_status") not in (None, "unknown"):
++            for key in ("actual_cost_usd", "estimated_cost_usd"):
++                if isinstance(meta.get(key), (int, float)):
++                    session_cost = meta[key]
++                    break
++        model = str(meta.get("model") or "")
++
++        for r in delta.new_user_rows:
++            run = f"{sid}:{r.get('message_uid') or r['id']}"
++            localpart = self._own_mxid.split(":")[0].lstrip("@") or "hermes"
++            await self._send(thread_reply_content(
++                user_message_body(localpart, thread.source, str(r.get("content") or "")),
++                thread.root))
++            # Working bubbles are for LIVE turns only: a first sync backfills old history
++            # and every stale row would otherwise raise a phantom "working" bubble.
++            if float(r.get("timestamp") or 0) >= thread.created_at - 1:
++                bubble = await self._send(thread_reply_content(
++                    "⏳ Working…", thread.root, agent_status=working_status(run)))
++                if bubble:
++                    thread.open[run] = {"bubble": bubble, "opened_at": time.time(),
++                                        "user_row": int(r["id"])}
++
++        # Settle passes in row order: error rows then final replies close open bubbles.
++        for r in delta.error_replies:
++            await self._settle_open_bubbles(thread, str(r.get("content") or "error"),
++                                            failed=True, model=model, cost=None)
++        for r in delta.final_replies:
++            text = str(r.get("content") or "")
++            await self._settle_open_bubbles(thread, text, failed=False, model=model,
++                                            cost=session_cost)
++            await self._send(thread_reply_content(text, thread.root))
++
++        thread.last_msg_id = max([thread.last_msg_id] + [int(r["id"]) for r in rows])
++
++        # Stale bubbles: desktop runs can die without ever appending a settle row.
++        for run, info in list(thread.open.items()):
++            if time.time() - float(info.get("opened_at") or 0) > _BUBBLE_STALE_SECONDS:
++                await self._settle_bubble(thread, run, "no reply observed", failed=True,
++                                          model=model, cost=None)
++                thread.open.pop(run, None)
++
++    async def _settle_open_bubbles(self, thread: SessionThread, reply: str, *, failed: bool,
++                                   model: str, cost) -> None:
++        for run in list(thread.open):
++            await self._settle_bubble(thread, run, reply, failed=failed, model=model, cost=cost)
++            thread.open.pop(run, None)
++
++    async def _settle_bubble(self, thread: SessionThread, run: str, reply: str, *,
++                             failed: bool, model: str, cost) -> None:
++        info = thread.open.get(run)
++        if not info:
++            return
++        status = settled_status(run, reply, failed=failed, model=model, cost_usd=cost)
++        headline = status.get("result") or ("failed" if failed else "done")
++        await self._edit(str(info["bubble"]),
++                         status_edit_content(headline, str(info["bubble"]), status))
++
++    # -- input: sync loop + turn execution --------------------------------
++
++    async def _input_loop(self) -> None:
++        client = await self._ensure_client()
++        since = None
++        try:  # drain backlog; never replay history as new input
++            initial = await asyncio.wait_for(client.sync(timeout=0), timeout=60)
++            since = initial.get("next_batch") if isinstance(initial, dict) else None
++        except Exception as exc:
++            logger.debug("session-bridge: initial sync failed: %s", exc)
++        while self._running:
++            if not self.state.room_id:
++                await asyncio.sleep(1)
++                continue
++            try:
++                resp = await asyncio.wait_for(
++                    client.sync(since=since, timeout=_SYNC_TIMEOUT_MS),
++                    timeout=_SYNC_TIMEOUT_MS / 1000 + 15)
++            except asyncio.CancelledError:
++                raise
++            except Exception as exc:
++                logger.debug("session-bridge: sync error: %s", exc)
++                await asyncio.sleep(2)
++                continue
++            if not isinstance(resp, dict):
++                continue
++            since = resp.get("next_batch") or since
++            events = (resp.get("rooms", {}).get("join", {}).get(self.state.room_id, {})
++                      .get("timeline", {}).get("events", []) or [])
++            roots = {t.root: sid for sid, t in self.state.sessions.items() if t.root}
++            for ev in events:
++                if not isinstance(ev, dict) or ev.get("type") != "m.room.message":
++                    continue
++                raw_content = ev.get("content")
++                content: dict[str, Any] = raw_content if isinstance(raw_content, dict) else {}
++                sid = route_inbound_event(str(ev.get("sender") or ""), self._own_mxid,
++                                          content, roots, self.controllers)
++                body = str(content.get("body") or "").strip()
++                if sid and body:
++                    await self._enqueue_turn(sid, body)
++
++    async def _enqueue_turn(self, session_id: str, text: str) -> None:
++        queue = self._queues.get(session_id)
++        if queue is None:
++            queue = self._queues[session_id] = asyncio.Queue(maxsize=_MAX_QUEUED_TURNS_PER_SESSION)
++            self._drainers[session_id] = asyncio.get_running_loop().create_task(
++                self._drain_session(session_id))
++        try:
++            queue.put_nowait(text)
++        except asyncio.QueueFull:
++            thread = self.state.sessions.get(session_id)
++            if thread:
++                await self._send(thread_reply_content(
++                    "⚠️ Session is busy — too many queued turns; dropped this one.",
++                    thread.root))
++
++    async def _drain_session(self, session_id: str) -> None:
++        lock = self._turn_locks.setdefault(session_id, asyncio.Lock())
++        queue = self._queues[session_id]
++        while self._running:
++            text = await queue.get()
++            async with self._sem, lock:
++                await self._run_resume_turn(session_id, text)
++
++    async def _run_resume_turn(self, session_id: str, text: str) -> None:
++        thread = self.state.sessions.get(session_id)
++        profile = thread.profile if thread else "default"
++        from tools.bot_relay import _hermes_cli
++        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
++                                         encoding="utf-8") as fh:
++            fh.write(text)
++            query_file = fh.name
++        argv = [_hermes_cli(), "-p", profile, "chat", "--resume", session_id,
++                "-Q", "--query-file", query_file]
++        try:
++            proc = await asyncio.create_subprocess_exec(
++                *argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
++            try:
++                await asyncio.wait_for(proc.wait(), timeout=_TURN_TIMEOUT_SECONDS)
++            except TimeoutError:
++                proc.kill()
++                logger.warning("session-bridge: resume turn for %s timed out", session_id)
++        except Exception as exc:
++            logger.warning("session-bridge: resume turn for %s failed: %s", session_id, exc)
++        finally:
++            with contextlib.suppress(OSError):
++                os.unlink(query_file)
++            # The poller mirrors whatever the subprocess appended; nudge it for snappy UX.
++            with contextlib.suppress(Exception):
++                await self._poll_once()
++
++    # -- lifecycle --------------------------------------------------------
++
++    async def run(self) -> None:
++        room = await self._ensure_room()
++        self._room_ready.set()
++        logger.info("session-bridge: active in room %s (sources: %s)",
++                    room, ",".join(self.sources))
++        poll = asyncio.create_task(self._poll_loop())
++        inp = asyncio.create_task(self._input_loop())
++        try:
++            while self._running:
++                await asyncio.sleep(30)
++        finally:
++            self._running = False
++            poll.cancel()
++            inp.cancel()
++            for task in list(self._drainers.values()):
++                task.cancel()
++            for task in (poll, inp):
++                with contextlib.suppress(asyncio.CancelledError, Exception):
++                    await task
++
++    async def _poll_loop(self) -> None:
++        while self._running:
++            try:
++                await self._poll_once()
++            except Exception as exc:
++                logger.debug("session-bridge: poll tick failed: %s", exc)
++            await asyncio.sleep(_POLL_SECONDS)
++
++    def stop(self) -> None:
++        self._running = False
++
++
++def bridge_config(platform_config: Any) -> Optional[dict]:
++    """Read the ``session_bridge`` settings off the Matrix PlatformConfig extra."""
++    extra = getattr(platform_config, "extra", None) or {}
++    if not extra.get("session_bridge"):
++        return None
++    sources = str(extra.get("session_bridge_sources") or ",".join(DEFAULT_SOURCES))
++    cfg = {
++        "room_id": str(extra.get("session_bridge_room") or ""),
++        "sources": tuple(s for s in (x.strip().lower() for x in sources.split(",")) if s),
++        "invite": tuple(s for s in (x.strip() for x in str(
++            extra.get("session_bridge_invite") or "").split(",")) if s),
++        "controllers": tuple(s for s in (x.strip() for x in str(
++            extra.get("session_bridge_controllers") or "").split(",")) if s),
++        "backfill_days": float(extra.get("session_bridge_backfill_days") or 7),
++    }
++    return cfg
++
++
++def make_bridge_from_config(config: Any) -> Optional[SessionBridge]:
++    """Build a bridge from a gateway config's Matrix platform block; None when not
++    enabled or credentials are missing."""
++    try:
++        from gateway.config import Platform
++        pc = (getattr(config, "platforms", None) or {}).get(Platform.MATRIX)
++        if pc is None:
++            return None
++        cfg = bridge_config(pc)
++        if not cfg:
++            return None
++        homeserver = os.environ.get("MATRIX_HOMESERVER", "") or str(pc.extra.get("homeserver") or "")
++        token = os.environ.get("MATRIX_ACCESS_TOKEN", "") or str(pc.token or "")
++        if not homeserver or not token:
++            logger.warning("session-bridge: enabled but homeserver/token missing; not started")
++            return None
++        invite = cfg.pop("invite", ())
++        if not invite:
++            allowed = os.environ.get("MATRIX_ALLOWED_USERS", "") or str(
++                pc.extra.get("allowed_users") or "")
++            invite = tuple(u.strip() for u in allowed.split(",") if u.strip())
++        return SessionBridge(homeserver=homeserver, access_token=token, invite=invite, **cfg)
++    except Exception as exc:
++        logger.warning("session-bridge: could not initialize: %s", exc)
++        return None
+diff --git a/plugins/platforms/matrix/adapter.py b/plugins/platforms/matrix/adapter.py
+index e7c0570fbe..ea995b07f9 100644
+--- a/plugins/platforms/matrix/adapter.py
++++ b/plugins/platforms/matrix/adapter.py
+@@ -2172,6 +2172,14 @@ class MatrixAdapter(BasePlatformAdapter):
+             "Matrix: callback fired — event %s from %s in %s", getattr(event, "event_id", "?"), sender, room_id)
+         if self._is_self_sender(sender):
+             return
++        # Session-bridge room (patch 0005): desktop-session mirroring owns this room —
++        # its events are OUTPUT and remote replies are steered by the bridge itself, so
++        # the gateway's Matrix session machinery must never answer here (double-reply).
++        with suppress(ImportError):
++            from gateway.session_bridge import is_bridge_room
++            if is_bridge_room(room_id):
++                logger.debug("Matrix: ignoring event in session-bridge room %s", room_id)
++                return
+         # Bridge/system identities must never reach the pairing flow (echo loop once paired).
+         # Ignore own messages (case-insensitive; also drops when our own user_id hasn't been resolved yet —
+         # see _is_self_sender docstring and issue #15763).
+diff --git a/tests/gateway/test_session_bridge.py b/tests/gateway/test_session_bridge.py
+new file mode 100644
+index 0000000000..b72b4ec3be
+--- /dev/null
++++ b/tests/gateway/test_session_bridge.py
+@@ -0,0 +1,231 @@
++"""Unit tests for the session bridge (patch 0005): routing/mapping logic.
++
++Covers the pure functions (source gate, row classification, delta detection, event
++shapes, input routing / loop guard, protocol status payloads) and the state-file
++round-trip the adapter's is_bridge_room hook reads.
++"""
++
++
++import time
++
++from gateway.session_bridge import (
++    AGENT_STATUS_KEY,
++    BridgeState,
++    SessionThread,
++    detect_turn_delta,
++    error_reply_rows,
++    final_reply_rows,
++    is_bridge_room,
++    result_line,
++    root_announcement,
++    route_inbound_event,
++    settled_status,
++    should_mirror_session,
++    status_edit_content,
++    thread_reply_content,
++    user_message_body,
++    visible_user_rows,
++    working_status,
++)
++
++OWN = "@fbhermes:dsflx.wtf"
++ROOT = "$root1"
++
++
++def _row(id_, role, content="", **kw):
++    return {"id": id_, "role": role, "content": content, "tool_calls": kw.get("tool_calls", ""),
++            "finish_reason": kw.get("finish_reason", ""), "_compressed_summary": kw.get("summary", 0),
++            "message_uid": kw.get("uid", f"u{id_}")}
++
++
++# ------------------------------------------------------------------ result headline
++
++def test_result_line_first_line_only():
++    assert result_line("**Done.** details follow\nmore") == "**Done.** details follow"
++    assert result_line("**Done.**") == "Done."      # bold-wrapped lead-in unwrapped (gateway parity)
++    assert result_line("# Headed\nbody") == "Headed"
++    assert result_line("\n\nsecond line") == "second line"
++    assert result_line("") == ""
++    assert result_line("x" * 300)[:240] == "x" * 240
++
++
++# ------------------------------------------------------------------ session gate
++
++def _sess(**over):
++    base = {"source": "desktop", "message_count": 5, "started_at": time.time() - 60,
++            "last_activity_at": time.time(), "archived": 0, "hidden": 0}
++    base.update(over)
++    return base
++
++
++def test_should_mirror_source_and_content_rules():
++    now = time.time()
++    assert should_mirror_session(_sess(), ("desktop", "tui", "webui"), backfill_days=7, now=now)
++    assert not should_mirror_session(_sess(source="matrix"), ("desktop", "tui", "webui"),
++                                     backfill_days=7, now=now)
++    assert not should_mirror_session(_sess(source="kanban"), ("desktop", "tui", "webui", "kanban"),
++                                     backfill_days=7, now=now)
++    assert not should_mirror_session(_sess(message_count=0), ("desktop",), backfill_days=7, now=now)
++    assert not should_mirror_session(_sess(archived=1), ("desktop",), backfill_days=7, now=now)
++    assert should_mirror_session(_sess(source="DESKTOP"), ("desktop",), backfill_days=7,
++                                 now=now)  # case-insensitive source match
++
++
++def test_should_mirror_backfill_window():
++    now = time.time()
++    old = _sess(started_at=now - 30 * 86400, last_activity_at=now - 30 * 86400)
++    assert not should_mirror_session(old, ("desktop",), backfill_days=7, now=now)
++    # A freshly-active old session still mirrors (sidebar-parity: activity clock, not birth).
++    assert should_mirror_session(_sess(started_at=now - 30 * 86400), ("desktop",),
++                                 backfill_days=7, now=now)
++
++
++# ------------------------------------------------------------------ row classification
++
++def test_visible_and_final_row_classification():
++    rows = [
++        _row(1, "user", "hi"),
++        _row(2, "user", "   "),           # whitespace: not visible
++        _row(3, "assistant", "", tool_calls="[{}]"),  # tool-call carrier: not final
++        _row(4, "assistant", "answer"),   # final
++        _row(5, "assistant", "summary", summary=1),   # compression summary: not final
++        _row(6, "tool", "result"),
++        _row(7, "assistant", "boom", finish_reason="agent_error"),
++    ]
++    assert [r["id"] for r in visible_user_rows(rows)] == [1]
++    assert [r["id"] for r in final_reply_rows(rows)] == [4, 7]
++    assert [r["id"] for r in error_reply_rows(rows)] == [7]
++
++
++def test_detect_turn_delta_cursor():
++    rows = [_row(1, "user", "old"), _row(2, "assistant", "old reply"),
++            _row(3, "user", "new"), _row(4, "assistant", "new reply")]
++    delta = detect_turn_delta(rows, 2)
++    assert [r["id"] for r in delta.new_user_rows] == [3]
++    assert [r["id"] for r in delta.final_replies] == [4]
++    assert detect_turn_delta(rows, 10).new_user_rows == []
++
++
++# ------------------------------------------------------------------ wire shapes
++
++def test_thread_reply_content_shape():
++    content = thread_reply_content("hello", ROOT, agent_status=working_status("r1"))
++    assert content["msgtype"] == "m.text"
++    assert content["m.relates_to"] == {"rel_type": "m.thread", "event_id": ROOT,
++                                       "is_falling_back": True, "m.in_reply_to": {"event_id": ROOT}}
++    assert content[AGENT_STATUS_KEY] == {"v": 1, "state": "working", "run": "r1"}
++    assert "m.relates_to" not in thread_reply_content("root body", "")
++
++
++def test_status_edit_content_shape():
++    status = settled_status("r1", "**Done.** it worked", model="m1", cost_usd=0.0123456789)
++    edit = status_edit_content("Done. it worked", "$bubble", status)
++    assert edit["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$bubble"}
++    assert edit["m.new_content"][AGENT_STATUS_KEY]["state"] == "done"
++    # Non-integral cost never goes on the wire as a float (canonical JSON rejects it);
++    # it rides the result headline instead.
++    assert "cost_usd" not in edit[AGENT_STATUS_KEY]
++    assert edit[AGENT_STATUS_KEY]["result"] == "**Done.** it worked ($0.01)"
++    assert edit[AGENT_STATUS_KEY]["model"] == "m1"
++    integral = settled_status("r1", "ok", cost_usd=2.0)
++    assert integral["cost_usd"] == 2 and isinstance(integral["cost_usd"], int)
++    assert integral["result"] == "ok"
++
++
++def test_settled_status_failed_and_no_cost():
++    status = settled_status("r1", "", failed=True)
++    assert status["state"] == "failed" and "result" not in status and "cost_usd" not in status
++    zero = settled_status("r1", "done thing", cost_usd=0.0)
++    assert zero["cost_usd"] == 0  # integral zero still rides the protocol field
++
++
++def test_root_announcement_records_source():
++    body = root_announcement("My task", "desktop", 1791846753)
++    assert "My task" in body and "desktop" in body
++
++
++def test_user_message_body_attribution():
++    assert user_message_body("derek", "tui", "do it").startswith("**derek (tui):**")
++
++
++# ------------------------------------------------------------------ input routing / loop guard
++
++ROOTS = {ROOT: "20261012_abc"}
++
++
++def _content(**over):
++    base = {"msgtype": "m.text", "body": "steer", "m.relates_to": {
++        "rel_type": "m.thread", "event_id": ROOT}}
++    base.update(over)
++    return base
++
++
++def test_routes_known_thread_reply():
++    assert route_inbound_event("@phrac:dsflx.wtf", OWN, _content(), ROOTS) == "20261012_abc"
++
++
++def test_loop_guard_rejects_everything_else():
++    assert route_inbound_event(OWN, OWN, _content(), ROOTS) is None                # self-sent
++    assert route_inbound_event("", OWN, _content(), ROOTS) is None                 # no sender
++    edit = _content(**{"m.relates_to": {"rel_type": "m.replace", "event_id": ROOT}})
++    assert route_inbound_event("@phrac:dsflx.wtf", OWN, edit, ROOTS) is None       # edits never steer
++    assert route_inbound_event("@x:y", OWN, _content(msgtype="m.notice"), ROOTS) is None
++    assert route_inbound_event("@x:y", OWN, _content(**{AGENT_STATUS_KEY: {"v": 1}}), ROOTS) is None
++    assert route_inbound_event("@x:y", OWN, {"msgtype": "m.text", "body": "hi"}, ROOTS) is None  # room chatter
++    unknown = _content(**{"m.relates_to": {"rel_type": "m.thread", "event_id": "$other"}})
++    assert route_inbound_event("@x:y", OWN, unknown, ROOTS) is None                # unknown thread
++
++
++def test_route_is_sender_case_insensitive_on_own_mxid():
++    assert route_inbound_event("@FBHERMES:dsflx.wtf", OWN, _content(), ROOTS) is None
++
++
++def test_controller_gate():
++    controllers = frozenset({"@phrac:dsflx.wtf"})
++    assert route_inbound_event("@PHRAC:dsflx.wtf", OWN, _content(), ROOTS, controllers) == "20261012_abc"
++    assert route_inbound_event("@rando:dsflx.wtf", OWN, _content(), ROOTS, controllers) is None
++    # empty controllers → anyone but self may steer
++    assert route_inbound_event("@rando:dsflx.wtf", OWN, _content(), ROOTS, frozenset()) == "20261012_abc"
++
++
++# ------------------------------------------------------------------ state file + adapter hook
++
++def test_bridge_state_roundtrip(tmp_path, monkeypatch):
++    path = tmp_path / "session_bridge.json"
++    st = BridgeState(path)
++    st.room_id = "!room:dsflx.wtf"
++    st.sessions["s1"] = SessionThread(root="$r", last_msg_id=42, source="desktop",
++                                      title="t", profile="default",
++                                      open={"r1": {"bubble": "$b", "opened_at": 1.0, "user_row": 3}})
++    st.save()
++    reloaded = BridgeState(path)
++    assert reloaded.room_id == "!room:dsflx.wtf"
++    assert reloaded.sessions["s1"].last_msg_id == 42
++    assert reloaded.sessions["s1"].open["r1"]["bubble"] == "$b"
++    monkeypatch.setattr("gateway.session_bridge._state_path", lambda: path)
++    assert is_bridge_room("!room:dsflx.wtf")
++    assert not is_bridge_room("!other:dsflx.wtf")
++    assert not is_bridge_room("")
++
++
++def test_is_bridge_room_without_state_file(tmp_path, monkeypatch):
++    monkeypatch.setattr("gateway.session_bridge._state_path",
++                        lambda: tmp_path / "missing" / "session_bridge.json")
++    assert not is_bridge_room("!room:dsflx.wtf")
++
++
++def test_bridge_config_absent_and_present():
++    from gateway.session_bridge import bridge_config
++
++    class PC:
++        extra: dict = {}
++
++    assert bridge_config(PC()) is None
++    PC.extra = {"session_bridge": True, "session_bridge_room": "!r:d.wtf",
++                "session_bridge_sources": "desktop, TUI ", "session_bridge_invite": "@phrac:d.wtf",
++                "session_bridge_controllers": "@phrac:d.wtf,@mom:d.wtf"}
++    cfg = bridge_config(PC())
++    assert cfg["room_id"] == "!r:d.wtf"
++    assert cfg["sources"] == ("desktop", "tui")
++    assert cfg["invite"] == ("@phrac:d.wtf",)
++    assert cfg["controllers"] == ("@phrac:d.wtf", "@mom:d.wtf")
+-- 
+2.47.3
+
