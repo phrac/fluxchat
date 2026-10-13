@@ -7,6 +7,7 @@ import org.fluxchat.companion.App
 import org.fluxchat.companion.agents.Runs
 import org.fluxchat.companion.agents.ViewKey
 import org.fluxchat.companion.matrix.Matrix
+import org.fluxchat.companion.ui.threadTitle
 
 /**
  * Prompts seen while the app runs (sync going, e.g. after a push woke it):
@@ -42,9 +43,19 @@ object PromptWatcher {
                     val question = Runs.pendingQuestion(view, i, m.sender, h, now)
                     val kind = if (choices.isNotEmpty()) Note.Kind.Prompt else Note.Kind.Question
                     val name = m.senderName
+                    // Title = the project + what waits; subtext = the run's
+                    // headline (the thread's request), as the live-runs card has it.
+                    val headline = m.threadRoot?.let { root ->
+                        threadTitle(all.firstOrNull { it.id == root }, all.filter { it.threadRoot == root })
+                    }
                     Notifier.show(
                         app,
-                        Note(room.roomId, id, m.threadRoot, m.sender, "$name needs you · ${room.name}", m.body, kind, choices.ifEmpty { question.orEmpty() }),
+                        Note(
+                            room.roomId, id, m.threadRoot, m.sender,
+                            "${room.name} · $name needs you", m.body, kind,
+                            choices.ifEmpty { question.orEmpty() },
+                            headline = headline,
+                        ),
                     )
                 }
             }

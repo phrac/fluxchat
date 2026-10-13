@@ -78,10 +78,17 @@ class FluxPushService : PushService() {
             else -> "[message]"
         }
         val senderName = item.senderInfo.displayName ?: sender
+        val threadRoot = item.threadId ?: ev.threadRootEventId()
+        // The run's headline for the notification's subtext, when this room's
+        // timeline is loaded (a push alone doesn't load one).
+        val msgs = Matrix.roomTimeline(roomId)?.messages?.value.orEmpty()
+        val headline = threadRoot?.takeIf { msgs.isNotEmpty() }?.let { root ->
+            org.fluxchat.companion.ui.threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.threadRoot == root })
+        }
         val note = Notifier.noteFor(
-            roomId, eventId, item.threadId ?: ev.threadRootEventId(), sender, senderName,
+            roomId, eventId, threadRoot, sender, senderName,
             item.roomInfo.displayName, body, Protocol.fromEventJson(item.rawEvent), list.harnessOf(sender),
-            System.currentTimeMillis(), ev.timestamp().toLong(),
+            System.currentTimeMillis(), ev.timestamp().toLong(), headline,
         ) ?: return Diag.note("push: $eventId is a step log, not notified")
         Notifier.show(applicationContext, note)
     }

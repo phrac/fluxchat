@@ -28,6 +28,8 @@ data class Note(
     val choices: List<Pair<String, String>> = emptyList(),
     /** Stop, as the agent takes it ("!stop"), for a run still going. */
     val stopCommand: String? = null,
+    /** The run's headline (its thread's request), shown under the title. */
+    val headline: String? = null,
 ) {
     enum class Kind { Prompt, Question, Message }
 }
@@ -47,11 +49,15 @@ object Notifier {
     fun noteFor(
         roomId: String, eventId: String, threadRoot: String?, sender: String, senderName: String,
         roomName: String, body: String, protocol: Protocol?, harness: Harness, now: Long, ts: Long,
+        headline: String? = null,
     ): Note? {
         val name = if (senderName == roomName) senderName else "$senderName · $roomName"
         val waiting = protocol?.runState() == RunState.NeedsYou && protocol.choices.isNotEmpty()
         if (waiting) {
-            return Note(roomId, eventId, threadRoot, sender, "$name needs you", body, Note.Kind.Prompt, protocol.choices.map { it.key to it.label })
+            // Project first: in the shade, which room waits matters most (a DM
+            // with the agent by its name collapses to one name).
+            val title = if (senderName == roomName) "$roomName needs you" else "$roomName · $senderName needs you"
+            return Note(roomId, eventId, threadRoot, sender, title, body, Note.Kind.Prompt, protocol.choices.map { it.key to it.label }, headline = headline)
         }
         if (Runs.progressSteps(body) != null) return null
         val asQuestion = Msg(eventId, sender, senderName, body, ts, isOwn = false)
@@ -83,6 +89,7 @@ object Notifier {
             .setContentTitle(note.title)
             .setContentText(note.body.lineSequence().firstOrNull().orEmpty())
             .setStyle(NotificationCompat.BigTextStyle().bigText(note.body.take(1500)))
+            .setSubText(note.headline)
             .setContentIntent(openIntent(context, note))
             .setAutoCancel(true)
             .setGroup(note.roomId)
@@ -93,14 +100,17 @@ object Notifier {
             b.addAction(0, choiceTitle(key, label).take(30), actionIntent(context, note, choiceAction, key, label, i))
         }
         if (note.choices.isEmpty()) note.stopCommand?.let { b.addAction(0, "Stop", actionIntent(context, note, ActionReceiver.SEND, it, "Stop", 7)) }
+        // A prompt with a Deny answers its quick reply as a deny-with-reason;
+        // otherwise the reply is a plain message to the thread.
+        val deny = if (note.kind == Note.Kind.Prompt) Runs.denyChoice(note.choices) else null
         // Reply: to the thread the message is in (or the room). Every choice is
         // a chip there too (the buttons only fit two); a picked chip answers
         // as its button would.
         val input = RemoteInput.Builder(REPLY_KEY)
-            .setLabel(if (note.choices.isEmpty()) "Reply to the agent" else "Answer, or pick one")
+            .setLabel(if (deny != null) "Reason to deny (or pick one)" else if (note.choices.isEmpty()) "Reply to the agent" else "Answer, or pick one")
             .apply { if (note.choices.size > MAX_CHOICE_ACTIONS) setChoices(note.choices.map { (k, l) -> choiceTitle(k, l) }.toTypedArray()) }
             .build()
-        val reply = actionIntent(context, note, ActionReceiver.REPLY, "", "", 9, mutable = true) { i ->
+        val reply = actionIntent(context, note, if (deny != null) ActionReceiver.DENY else ActionReceiver.REPLY, deny ?: "", "Deny", 9, mutable = true) { i ->
             i.putExtra(ActionReceiver.CHOICE_TITLES, note.choices.map { (k, l) -> choiceTitle(k, l) }.toTypedArray())
                 .putExtra(ActionReceiver.CHOICE_KEYS, note.choices.map { it.first }.toTypedArray())
                 .putExtra(ActionReceiver.CHOICE_ACTION, choiceAction)

@@ -35,12 +35,18 @@ class ActionReceiver : BroadcastReceiver() {
                     REACT -> Matrix.sendReaction(room, event, value)
                     SEND -> Matrix.sendText(room, thread, value, inReplyTo = null)
                     REPLY -> !reply.isNullOrBlank() && Matrix.sendText(room, thread, reply, inReplyTo = event)
+                    // Deny with a reason: the same ❌ reaction the button
+                    // sends settles it; the typed reason follows in-thread so
+                    // the agent reads it next turn.
+                    DENY -> Matrix.sendReaction(room, event, value) &&
+                        (reply.isNullOrBlank() || Matrix.sendText(room, thread, "Denied: $reply", inReplyTo = event))
                     else -> false
                 }
                 org.fluxchat.companion.Diag.note("notification action $action on $event: ${if (ok) "sent" else "failed"}")
                 val text = when {
                     !ok -> "Couldn't send. Open fluxchat to answer."
                     action == REACT -> "Answered: $value $label".trim()
+                    action == DENY -> "Denied" + (if (reply.isNullOrBlank()) "" else ": $reply")
                     action == REPLY -> "Sent: $reply"
                     else -> "Sent: $value"
                 }
@@ -58,6 +64,7 @@ class ActionReceiver : BroadcastReceiver() {
         const val REACT = "org.fluxchat.companion.REACT"
         const val SEND = "org.fluxchat.companion.SEND"
         const val REPLY = "org.fluxchat.companion.REPLY"
+        const val DENY = "org.fluxchat.companion.DENY"
         const val ROOM = "room"
         const val EVENT = "event"
         const val THREAD = "thread"

@@ -74,6 +74,15 @@ object Runs {
     private fun bare(e: String) = e.trimEnd('️')
     private fun sameEmoji(a: String, b: String) = bare(a) == bare(b)
 
+    /**
+     * A prompt's Deny choice, if it has one (an approval's emoji, or its
+     * label): the notification's quick reply denies with a reason with it.
+     */
+    fun denyChoice(choices: List<Pair<String, String>>): String? =
+        choices.firstOrNull { (k, label) ->
+            bare(k) == "❌" || bare(k) == "❎" || label.contains("deny", ignoreCase = true)
+        }?.first
+
     fun choiceLabel(emoji: String, body: String, labels: List<Choice>): String {
         labels.firstOrNull { sameEmoji(it.emoji, emoji) }?.let { return it.label }
         when (bare(emoji)) {
