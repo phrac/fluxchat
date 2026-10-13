@@ -49,6 +49,23 @@ object History {
     /** A working run silent this long has stalled (agents.rs STALE_RUN_MS). */
     const val STALE_RUN_MS = 2 * 60 * 60 * 1000L
 
+    /**
+     * Start of today / this week containing [nowMs], local time — the
+     * desktop budgets.rs `Period::start`: days at 00:00, weeks from Monday
+     * 00:00 (not a rolling 7-day window, so both clients count the same runs).
+     */
+    fun periodStart(nowMs: Long, week: Boolean): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = nowMs
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        if (week) while (cal.get(java.util.Calendar.DAY_OF_WEEK) != java.util.Calendar.MONDAY)
+            cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+        return cal.timeInMillis
+    }
+
     /** `ViewKey` as a history key (the desktop's "thread::…"/room key equivalent). */
     fun keyOf(key: ViewKey): String = key.threadRoot?.let { "${key.roomId}::$it" } ?: key.roomId
 

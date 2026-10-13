@@ -113,6 +113,27 @@ class HistoryTest {
     }
 
     @Test
+    fun weekWindowStartsAtMondayMidnightLikeTheDesktop() {
+        // The desktop's budgets Period::start: weeks begin Monday 00:00 local.
+        // Thursday 2026-10-08 15:30 local → its week starts Monday 00:00 of 10-05.
+        fun local(y: Int, mo: Int, d: Int, h: Int, mi: Int): Long =
+            java.util.Calendar.getInstance().apply {
+                clear(); set(y, mo, d, h, mi)
+            }.timeInMillis
+        val thu = local(2026, 9, 8, 15, 30)
+        assertEquals(local(2026, 9, 8, 0, 0), History.periodStart(thu, week = false))
+        assertEquals(local(2026, 9, 5, 0, 0), History.periodStart(thu, week = true))
+        // Monday itself (even at 00:00): the week is today.
+        val mon = local(2026, 9, 5, 0, 0)
+        assertEquals(mon, History.periodStart(mon, week = true))
+        // Sunday: still the week that started six days earlier.
+        assertEquals(local(2026, 9, 5, 0, 0), History.periodStart(local(2026, 9, 11, 23, 59), week = true))
+        // A rolling 7-day window would start 7 days back (Oct 1 15:30), not
+        // Monday 00:00: the week start sits inside it, never before it.
+        assertTrue(History.periodStart(thu, week = true) > thu - 7 * 24 * 3600 * 1000L)
+    }
+
+    @Test
     fun spendAddsUpPerAgentOverAPeriod() {
         val h = listOf(
             RunRecord("$room::\$a", room, agent, "a", "done", now - 100, costUsd = 0.10),
