@@ -164,6 +164,18 @@ object History {
         return changed
     }
 
+    /**
+     * Drop records of lone commands older builds recorded as runs (the
+     * desktop's load_run_history retain). The stored request decides when a
+     * record has one; older records without it fall back to the title, which
+     * is the request for a thread run. Returns whether anything was dropped.
+     */
+    fun pruneLoneCommands(history: MutableList<RunRecord>): Boolean {
+        val before = history.size
+        history.removeAll { isLoneCommand(it.request ?: it.title) }
+        return history.size != before
+    }
+
     /** History matching `query` (title, room name, agent, state), newest first. */
     fun matching(history: List<RunRecord>, query: String, roomName: (String) -> String): List<RunRecord> {
         val q = query.trim().lowercase(Locale.US)

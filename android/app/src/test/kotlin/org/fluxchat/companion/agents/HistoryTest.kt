@@ -138,6 +138,28 @@ class HistoryTest {
     }
 
     @Test
+    fun loneCommandRecordsPruneOnLoad() {
+        // The desktop's load_run_history retain: older builds recorded
+        // `!usage` as a run; the stored request decides, title only as the
+        // fallback for records that predate the request field.
+        val h = mutableListOf(
+            RunRecord("$room::\$u", room, agent, "!usage", "done", now - 300, request = "!usage"),
+            RunRecord("$room::\$g", room, agent, "!goal ship it", "done", now - 200, request = "!goal ship it"),
+            RunRecord("$room::\$o", room, agent, "!status", "done", now - 100), // no request: title decides
+            RunRecord("$room::\$p", room, agent, "ship it", "done", now - 50, request = "!usage"), // request wins over title
+        )
+        assertTrue(History.pruneLoneCommands(h))
+        assertEquals(listOf("$room::\$g"), h.map { it.key })
+        assertFalse(History.pruneLoneCommands(h)) // idempotent
+        // A command with a task after it is a run, not a lone command.
+        val runs = mutableListOf(
+            RunRecord("$room::\$x", room, agent, "x", "done", now, request = "/new make it red"),
+        )
+        assertFalse(History.pruneLoneCommands(runs))
+        assertEquals(1, runs.size)
+    }
+
+    @Test
     fun weekWindowStartsAtMondayMidnightLikeTheDesktop() {
         // The desktop's budgets Period::start: weeks begin Monday 00:00 local.
         // Thursday 2026-10-08 15:30 local → its week starts Monday 00:00 of 10-05.

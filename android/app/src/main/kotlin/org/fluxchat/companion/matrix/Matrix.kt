@@ -751,14 +751,13 @@ object Matrix {
             val bytes = HistoryStore.load(appContext)
             runHistory.clear()
             if (bytes != null) runHistory.addAll(History.decode(bytes))
-            // Older builds recorded lone commands (`!usage`) as runs; newer ones
-            // store the request, which is what the desktop prunes on.
-            val before = runHistory.size
-            runHistory.removeAll { History.isLoneCommand(it.request ?: it.title) }
+            // Older builds recorded lone commands (`!usage`) as runs; the
+            // desktop drops them on load (load_run_history's retain).
+            val pruned = History.pruneLoneCommands(runHistory)
             historyLoaded = true
             _runHistory.value = runHistory.toList()
             Diag.note("run history: ${runHistory.size} records loaded")
-            if (runHistory.size != before) saveRunHistoryLocked()
+            if (pruned) saveRunHistoryLocked()
         }
     }
 
