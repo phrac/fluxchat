@@ -136,12 +136,11 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
 /** Today and this week, per agent: what they spent. */
 @Composable
 private fun SpendSummary(history: List<RunRecord>, now: Long) {
-    val cal = Calendar.getInstance()
-    cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0); cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
-    val today = cal.timeInMillis
-    // Week: since Monday 00:00 local, like the desktop's budgets Period::Week.
-    while (cal.get(Calendar.DAY_OF_WEEK) != Calendar.MONDAY) cal.add(Calendar.DAY_OF_YEAR, -1)
-    val week = cal.timeInMillis
+    // Today / this week's windows from History.periodStart — the desktop's
+    // budgets Period::start (weeks from Monday 00:00 local), so the numbers
+    // match the desktop's spend for the same runs.
+    val today = History.periodStart(now, week = false)
+    val week = History.periodStart(now, week = true)
     val agents = history.map { it.agent }.distinct().sorted()
     if (agents.isEmpty()) return
     Column(Modifier.padding(horizontal = 16.dp)) {

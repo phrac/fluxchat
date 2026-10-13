@@ -55,6 +55,31 @@ class HistoryTest {
     }
 
     @Test
+    fun aFinishedRunBackfillsModelAndCostFromTheRoomRuntime() {
+        // The desktop's record_run: when a run ends carrying no model / cost,
+        // the room's newest runtime info fills them (older agents say nothing
+        // on the last edit but did show a footer earlier).
+        val h = ArrayList<RunRecord>()
+        val rt = Runtime(model = "opus-5", contextPct = 42, costUsd = 0.18)
+        History.record(h, thread, run(RunState.Working, now - 5000), "x", "x", now)
+        assertTrue(History.record(h, thread, run(RunState.Done, now - 5000), "x", "x", now, runtime = rt))
+        assertEquals("opus-5", h[0].model)
+        assertEquals(0.18, h[0].costUsd!!, 1e-9)
+        // A run that reports its own fields is never overwritten by the runtime.
+        val h2 = ArrayList<RunRecord>()
+        History.record(h2, thread, run(RunState.Working, now - 5000, cost = 0.30, model = "glm-5"), "x", "x", now)
+        History.record(h2, thread, run(RunState.Done, now - 5000, cost = 0.30, model = "glm-5"), "x", "x", now, runtime = rt)
+        assertEquals("glm-5", h2[0].model)
+        assertEquals(0.30, h2[0].costUsd!!, 1e-9)
+        // While still working the runtime must not fill in (the desktop only
+        // pulls it on the end transition).
+        val h3 = ArrayList<RunRecord>()
+        History.record(h3, thread, run(RunState.Working, now - 5000), "x", "x", now, runtime = rt)
+        assertNull(h3[0].model)
+        assertNull(h3[0].costUsd)
+    }
+
+    @Test
     fun theFinalResultLandsOnTheRecordAndSearches() {
         val h = ArrayList<RunRecord>()
         History.record(h, thread, run(RunState.Working, now - 5000), "x", "x", now)
@@ -110,6 +135,49 @@ class HistoryTest {
         val back = History.decode(History.encode(h))
         assertEquals(h, back)
         assertTrue(History.decode("not json".toByteArray()).isEmpty())
+    }
+
+    @Test
+    fun loneCommandRecordsPruneOnLoad() {
+        // The desktop's load_run_history retain: older builds recorded
+        // `!usage` as a run; the stored request decides, title only as the
+        // fallback for records that predate the request field.
+        val h = mutableListOf(
+            RunRecord("$room::\$u", room, agent, "!usage", "done", now - 300, request = "!usage"),
+            RunRecord("$room::\$g", room, agent, "!goal ship it", "done", now - 200, request = "!goal ship it"),
+            RunRecord("$room::\$o", room, agent, "!status", "done", now - 100), // no request: title decides
+            RunRecord("$room::\$p", room, agent, "ship it", "done", now - 50, request = "!usage"), // request wins over title
+        )
+        assertTrue(History.pruneLoneCommands(h))
+        assertEquals(listOf("$room::\$g"), h.map { it.key })
+        assertFalse(History.pruneLoneCommands(h)) // idempotent
+        // A command with a task after it is a run, not a lone command.
+        val runs = mutableListOf(
+            RunRecord("$room::\$x", room, agent, "x", "done", now, request = "/new make it red"),
+        )
+        assertFalse(History.pruneLoneCommands(runs))
+        assertEquals(1, runs.size)
+    }
+
+    @Test
+    fun weekWindowStartsAtMondayMidnightLikeTheDesktop() {
+        // The desktop's budgets Period::start: weeks begin Monday 00:00 local.
+        // Thursday 2026-10-08 15:30 local → its week starts Monday 00:00 of 10-05.
+        fun local(y: Int, mo: Int, d: Int, h: Int, mi: Int): Long =
+            java.util.Calendar.getInstance().apply {
+                clear(); set(y, mo, d, h, mi)
+            }.timeInMillis
+        val thu = local(2026, 9, 8, 15, 30)
+        assertEquals(local(2026, 9, 8, 0, 0), History.periodStart(thu, week = false))
+        assertEquals(local(2026, 9, 5, 0, 0), History.periodStart(thu, week = true))
+        // Monday itself (even at 00:00): the week is today.
+        val mon = local(2026, 9, 5, 0, 0)
+        assertEquals(mon, History.periodStart(mon, week = true))
+        // Sunday: still the week that started six days earlier.
+        assertEquals(local(2026, 9, 5, 0, 0), History.periodStart(local(2026, 9, 11, 23, 59), week = true))
+        // A rolling 7-day window would start 7 days back (Oct 1 15:30), not
+        // Monday 00:00: the week start sits inside it, never before it.
+        assertTrue(History.periodStart(thu, week = true) > thu - 7 * 24 * 3600 * 1000L)
     }
 
     @Test

@@ -353,6 +353,17 @@ object Runs {
         return Result(merged, prompts)
     }
 
+    /**
+     * Whether a working run has shown no sign of life for STALE_RUN_MS
+     * (the desktop's agents.rs `stalled`): it drops from live views and its
+     * history record closes as `stalled`. [lastSign] is the run's latest
+     * sign of life (the desktop's `last_sign_of_life`: the agent's own
+     * messages / typing in the view, never your replies or local echoes).
+     */
+    fun stalled(run: RunInfo, lastSign: Long, now: Long): Boolean =
+        run.state == RunState.Working &&
+            now - maxOf(run.since, lastSign) > History.STALE_RUN_MS
+
     /** Busy-mode prefix for a message to a working agent ("!steer "), or null. */
     fun busyPrefix(h: Harness, mode: BusyMode): String? {
         val name = when (mode) {

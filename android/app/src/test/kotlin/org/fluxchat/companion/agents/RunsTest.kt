@@ -40,6 +40,21 @@ class RunsTest {
     }
 
     @Test
+    fun aQuietWorkingRunIsStalledNotWorking() {
+        // agents.rs `stalled`: Working silent past STALE_RUN_MS drops from live views.
+        val old = now - 5 * 3_600_000L
+        val working = RunInfo(RunState.Working, old, agent = agent)
+        assertTrue(Runs.stalled(working, old, now))
+        // Talking an hour ago: a long run, not a stalled one.
+        assertFalse(Runs.stalled(working, now - 3_600_000L, now))
+        // Exactly at the limit isn't past it (the desktop's strict >).
+        assertFalse(Runs.stalled(working, now - History.STALE_RUN_MS, now))
+        // Only Working stalls: a finished run was already settled.
+        assertFalse(Runs.stalled(working.copy(state = RunState.Done), old, now))
+        assertFalse(Runs.stalled(working.copy(state = RunState.NeedsYou), old, now))
+    }
+
+    @Test
     fun aPromptIsItsSendersOwnReactionsUntilItMovesOn() {
         val prompt = msg("p", agent, now - 1000, "Run `rm -rf build`?", done to listOf(agent), failed to listOf(agent))
         val msgs = listOf(prompt)

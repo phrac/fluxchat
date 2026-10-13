@@ -49,6 +49,23 @@ object History {
     /** A working run silent this long has stalled (agents.rs STALE_RUN_MS). */
     const val STALE_RUN_MS = 2 * 60 * 60 * 1000L
 
+    /**
+     * Start of today / this week containing [nowMs], local time — the
+     * desktop budgets.rs `Period::start`: days at 00:00, weeks from Monday
+     * 00:00 (not a rolling 7-day window, so both clients count the same runs).
+     */
+    fun periodStart(nowMs: Long, week: Boolean): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = nowMs
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        if (week) while (cal.get(java.util.Calendar.DAY_OF_WEEK) != java.util.Calendar.MONDAY)
+            cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+        return cal.timeInMillis
+    }
+
     /** `ViewKey` as a history key (the desktop's "thread::…"/room key equivalent). */
     fun keyOf(key: ViewKey): String = key.threadRoot?.let { "${key.roomId}::$it" } ?: key.roomId
 
@@ -79,6 +96,8 @@ object History {
         title: String,
         requestBody: String?,
         now: Long,
+        /** The room's newest runtime info (footer or protocol), for the end backfill. */
+        runtime: Runtime? = null,
     ): Boolean {
         val key = keyOf(view)
         val live = run.state.live
@@ -100,11 +119,18 @@ object History {
             if (rec.state == STALLED) return false // settled stays settled (the desktop drops stalled states)
             val cost = run.costUsd?.let { c -> rec.costUsd?.let { maxOf(it, c) } ?: c } ?: rec.costUsd
             val model = run.model ?: rec.model
+            // Ending with neither the run nor its record carrying model / cost
+            // (older agents report no protocol fields on the last edit): the
+            // room's runtime info backfills them (the desktop's record_run
+            // pulling agent_runtime on the end transition).
+            val ending = !live && rec.ended == null
+            val costFinal = if (ending && cost == null) runtime?.costUsd else cost
+            val modelFinal = if (ending) model ?: runtime?.model else model
             val updated = rec.copy(
                 state = label,
                 steps = maxOf(rec.steps, run.steps),
-                costUsd = cost,
-                model = model,
+                costUsd = costFinal,
+                model = modelFinal,
                 // The final edit's `result` (nothing else overwrites it).
                 result = rec.result ?: run.result,
                 ended = if (!live && rec.ended == null) now else rec.ended,
@@ -136,6 +162,18 @@ object History {
             changed = true
         }
         return changed
+    }
+
+    /**
+     * Drop records of lone commands older builds recorded as runs (the
+     * desktop's load_run_history retain). The stored request decides when a
+     * record has one; older records without it fall back to the title, which
+     * is the request for a thread run. Returns whether anything was dropped.
+     */
+    fun pruneLoneCommands(history: MutableList<RunRecord>): Boolean {
+        val before = history.size
+        history.removeAll { isLoneCommand(it.request ?: it.title) }
+        return history.size != before
     }
 
     /** History matching `query` (title, room name, agent, state), newest first. */
