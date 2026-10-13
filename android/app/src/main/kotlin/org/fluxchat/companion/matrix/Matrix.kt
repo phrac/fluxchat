@@ -186,6 +186,8 @@ object Matrix {
     /** Agent rooms' names, avatars and whether they're DMs. */
     private data class RoomMeta(val name: String, val isDm: Boolean, val avatar: String?, val unread: Int = 0)
     private val roomMeta = HashMap<String, RoomMeta>()
+    /** Newest runtime info per room, ms + info (the desktop's agent_runs.runtime). */
+    private val roomRuntimes = HashMap<String, Pair<Long, org.fluxchat.companion.agents.Runtime>>()
     private val timelines = HashMap<String, TimelineModel>()
     private val _agentRooms = MutableStateFlow<Map<String, AgentRoom>>(emptyMap())
     private val _typing = MutableStateFlow<Map<String, List<String>>>(emptyMap())
@@ -688,6 +690,12 @@ object Matrix {
             val meta = roomMeta[roomId] ?: RoomMeta(roomId, false, null)
             val (name, isDm) = meta.name to meta.isDm
             val msgs = roomTimeline(roomId)?.messages?.value.orEmpty()
+            // The desktop's take_agent_footers: remember the room's newest
+            // runtime info (protocol fields, or the footer when the harness
+            // says it comes) so finished runs get model / cost backfilled.
+            org.fluxchat.companion.agents.Runtime.noteAll(
+                roomRuntimes, roomId, msgs, agents,
+            ) { id -> list.harnessOf(id).runtimeFooter }
             val r = Runs.roomRuns(roomId, msgs, agents, list::harnessOf, isDm, now)
             // A Working run the agent fell silent on is over (agents.rs `stalled`):
             // drop it, so a 👀 Hermes left behind stops holding the room's headline
@@ -729,7 +737,7 @@ object Matrix {
             val title = key.threadRoot?.let { root ->
                 threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.threadRoot == root })
             } ?: "Request in the room"
-            if (History.record(runHistory, key, rec, title, request?.body, now)) changed = true
+            if (History.record(runHistory, key, rec, title, request?.body, now, runtime = roomRuntimes[roomId]?.second)) changed = true
         }
         if (changed) {
             Diag.note("run history: ${runHistory.size} records")

@@ -55,6 +55,31 @@ class HistoryTest {
     }
 
     @Test
+    fun aFinishedRunBackfillsModelAndCostFromTheRoomRuntime() {
+        // The desktop's record_run: when a run ends carrying no model / cost,
+        // the room's newest runtime info fills them (older agents say nothing
+        // on the last edit but did show a footer earlier).
+        val h = ArrayList<RunRecord>()
+        val rt = Runtime(model = "opus-5", contextPct = 42, costUsd = 0.18)
+        History.record(h, thread, run(RunState.Working, now - 5000), "x", "x", now)
+        assertTrue(History.record(h, thread, run(RunState.Done, now - 5000), "x", "x", now, runtime = rt))
+        assertEquals("opus-5", h[0].model)
+        assertEquals(0.18, h[0].costUsd!!, 1e-9)
+        // A run that reports its own fields is never overwritten by the runtime.
+        val h2 = ArrayList<RunRecord>()
+        History.record(h2, thread, run(RunState.Working, now - 5000, cost = 0.30, model = "glm-5"), "x", "x", now)
+        History.record(h2, thread, run(RunState.Done, now - 5000, cost = 0.30, model = "glm-5"), "x", "x", now, runtime = rt)
+        assertEquals("glm-5", h2[0].model)
+        assertEquals(0.30, h2[0].costUsd!!, 1e-9)
+        // While still working the runtime must not fill in (the desktop only
+        // pulls it on the end transition).
+        val h3 = ArrayList<RunRecord>()
+        History.record(h3, thread, run(RunState.Working, now - 5000), "x", "x", now, runtime = rt)
+        assertNull(h3[0].model)
+        assertNull(h3[0].costUsd)
+    }
+
+    @Test
     fun theFinalResultLandsOnTheRecordAndSearches() {
         val h = ArrayList<RunRecord>()
         History.record(h, thread, run(RunState.Working, now - 5000), "x", "x", now)

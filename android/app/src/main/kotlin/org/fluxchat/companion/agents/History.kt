@@ -96,6 +96,8 @@ object History {
         title: String,
         requestBody: String?,
         now: Long,
+        /** The room's newest runtime info (footer or protocol), for the end backfill. */
+        runtime: Runtime? = null,
     ): Boolean {
         val key = keyOf(view)
         val live = run.state.live
@@ -117,11 +119,18 @@ object History {
             if (rec.state == STALLED) return false // settled stays settled (the desktop drops stalled states)
             val cost = run.costUsd?.let { c -> rec.costUsd?.let { maxOf(it, c) } ?: c } ?: rec.costUsd
             val model = run.model ?: rec.model
+            // Ending with neither the run nor its record carrying model / cost
+            // (older agents report no protocol fields on the last edit): the
+            // room's runtime info backfills them (the desktop's record_run
+            // pulling agent_runtime on the end transition).
+            val ending = !live && rec.ended == null
+            val costFinal = if (ending && cost == null) runtime?.costUsd else cost
+            val modelFinal = if (ending) model ?: runtime?.model else model
             val updated = rec.copy(
                 state = label,
                 steps = maxOf(rec.steps, run.steps),
-                costUsd = cost,
-                model = model,
+                costUsd = costFinal,
+                model = modelFinal,
                 // The final edit's `result` (nothing else overwrites it).
                 result = rec.result ?: run.result,
                 ended = if (!live && rec.ended == null) now else rec.ended,
