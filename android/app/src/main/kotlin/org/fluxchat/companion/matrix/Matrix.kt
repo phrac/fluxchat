@@ -693,8 +693,7 @@ object Matrix {
             // drop it, so a 👀 Hermes left behind stops holding the room's headline
             // and history's re-opening of a settled record.
             val runs = r.runs.filter { (key, run) ->
-                run?.state != RunState.Working ||
-                    now - maxOf(run.since, signOfLife(roomId, run.agent, msgs, key.threadRoot, run.since)) <= History.STALE_RUN_MS
+                run == null || !Runs.stalled(run, signOfLife(roomId, run.agent, msgs, key.threadRoot, run.since), now)
             }
             out[roomId] = AgentRoom(
                 roomId = roomId,
