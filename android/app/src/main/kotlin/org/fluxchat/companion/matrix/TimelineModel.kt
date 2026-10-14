@@ -28,12 +28,12 @@ class TimelineModel(
     val threadRoot: String?,
     private val timeline: Timeline,
     private val scope: kotlinx.coroutines.CoroutineScope,
-) : AutoCloseable {
+) : GalleryPager {
     private val items = ArrayList<Msg?>()
     private val _messages = MutableStateFlow<List<Msg>>(emptyList())
-    val messages: StateFlow<List<Msg>> = _messages
+    override val messages: StateFlow<List<Msg>> = _messages
     private val _atStart = MutableStateFlow(false)
-    val atStart: StateFlow<Boolean> = _atStart
+    override val atStart: StateFlow<Boolean> = _atStart
     private var handle: TaskHandle? = null
     private var convertErrors = 0
 
@@ -124,6 +124,17 @@ class TimelineModel(
     /** Load older messages. False once the start of the timeline is reached. */
     suspend fun paginateBack(events: Int = 40): Boolean = io {
         val hitStart = runCatching { timeline.paginateBackwards(events.toUShort()) }.getOrDefault(false)
+        if (hitStart) _atStart.value = true
+        !hitStart
+    }
+
+    /**
+     * The gallery's paging: like [paginateBack] but a network failure throws
+     * instead of masquerading as "not at the start" — the gallery reports it
+     * and stops the burst instead of burning pages on a dead connection.
+     */
+    override suspend fun paginate(events: Int): Boolean = io {
+        val hitStart = timeline.paginateBackwards(events.toUShort())
         if (hitStart) _atStart.value = true
         !hitStart
     }

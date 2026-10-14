@@ -416,6 +416,10 @@ object Matrix {
             timelines.values.forEach { it.close() }
             timelines.clear()
         }
+        synchronized(galleries) {
+            galleries.values.forEach { it.close() }
+            galleries.clear()
+        }
         synchronized(sessionLists) {
             sessionLists.values.forEach { it.close() }
             sessionLists.clear()
@@ -609,15 +613,16 @@ object Matrix {
     /** A thread's own timeline (its whole history; sends go in the thread). Close it when done. */
     suspend fun openThread(roomId: String, root: String): TimelineModel? = openFocused(roomId, root, TimelineFocus.Thread(root))
 
-    private suspend fun openFocused(roomId: String, root: String?, focus: TimelineFocus): TimelineModel? = io { openFocusedOnIo(roomId, root, focus) }
+    private suspend fun openFocused(roomId: String, root: String?, focus: TimelineFocus, idPrefix: String? = null): TimelineModel? =
+        io { openFocusedOnIo(roomId, root, focus, idPrefix) }
 
-    private suspend fun openFocusedOnIo(roomId: String, root: String?, focus: TimelineFocus): TimelineModel? {
+    private suspend fun openFocusedOnIo(roomId: String, root: String?, focus: TimelineFocus, idPrefix: String? = null): TimelineModel? {
         val room = room(roomId) ?: return null
         val timeline = room.timelineWithConfiguration(
             TimelineConfiguration(
                 focus = focus,
                 filter = TimelineFilter.All,
-                internalIdPrefix = null,
+                internalIdPrefix = idPrefix,
                 dateDividerMode = DateDividerMode.DAILY,
                 trackReadReceipts = TimelineReadReceiptTracking.DISABLED,
                 reportUtds = false,
@@ -627,6 +632,45 @@ object Matrix {
         model.start()
         model.refill()
         return model
+    }
+
+    /**
+     * A media gallery view for a project (or session): kept after you close
+     * it so reopening shows what was loaded (like the desktop), the four most
+     * recent live, the rest released with their timelines.
+     */
+    private val galleries = LinkedHashMap<String, GalleryView>()
+
+    /** Open (or reopen) a gallery; it seeds from what's on screen, then pages. */
+    suspend fun openGallery(roomId: String, root: String?, seed: List<Msg>): GalleryView? {
+        val key = if (root == null) roomId else "$roomId\u0000$root"
+        val cached = synchronized(galleries) { galleries.remove(key)?.also { galleries[key] = it } }
+        if (cached != null) return cached
+        val focus = if (root == null) TimelineFocus.Live(hideThreadedEvents = false) else TimelineFocus.Thread(root)
+        val timeline = openFocused(roomId, root, focus, "gallery") ?: return null
+        val view = GalleryView(roomId, root, scope)
+        view.seed(seed)
+        view.attach(timeline)
+        val evicted = ArrayList<GalleryView>()
+        val stored =
+            synchronized(galleries) {
+                // A logout (stopAll) during the await above: don't re-cache a
+                // view whose client is gone. A racing second open of the same
+                // view wins; ours closes below instead of leaking a timeline.
+                if (client == null) null
+                else galleries[key]?.also { galleries[key] = it }
+                    ?: view.also {
+                        galleries[key] = it
+                        while (galleries.size > 4) {
+                            val it = galleries.entries.iterator()
+                            evicted += it.next().value
+                            it.remove()
+                        }
+                    }
+            }
+        evicted.forEach { it.close() }
+        if (stored !== view) view.close()
+        return stored
     }
 
     fun roomName(roomId: String): String = roomMeta[roomId]?.name ?: room(roomId)?.displayName() ?: roomId
