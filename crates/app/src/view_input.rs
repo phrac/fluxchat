@@ -17,6 +17,14 @@ impl FluxChat {
     pub(crate) fn view_input_area(&self, room_id: &str) -> Vec<Element<Message>> {
         let mut elements: Vec<Element<Message>> = Vec::new();
 
+        // Conditional bars (run card, budget, previews, panels, completion
+        // popups) go into ONE fixed slot, never straight into `elements`:
+        // iced matches widget state — the composer's focus included — to the
+        // widget tree by position, so a bar appearing or disappearing above
+        // the composer shifted its index, rebuilt its state, and stole focus
+        // mid-typing whenever an agent's run card came or went.
+        let mut bars: Vec<Element<Message>> = Vec::new();
+
         // Typing indicator: names, not IDs, in a row that's always there
         // (empty when nobody types) so the timeline doesn't jump.
         if self.prefs.show_typing {
@@ -45,24 +53,24 @@ impl FluxChat {
 
         // An agent working on this view's run: status, busy mode, Stop.
         if let Some(bar) = self.run_bar_key(room_id).and_then(|k| self.view_run_card(&k)) {
-            elements.push(bar);
+            bars.push(bar);
         }
         // The agent here is near / over its budget (or a send waits on it).
         if let Some(b) = self.view_budget_bar(room_id) {
-            elements.push(b);
+            bars.push(b);
         }
         // Someone here acts like an agent you haven't marked.
         if let Some(s) = self.view_agent_suggestion(room_id) {
-            elements.push(s);
+            bars.push(s);
         }
         // Several agents here: who you're talking to.
         if let Some(target) = self.view_agent_target(room_id) {
-            elements.push(target);
+            bars.push(target);
         }
 
         // Reply/edit preview bar
         if let Some((_, sender, body)) = &self.reply_to {
-            elements.push(
+            bars.push(
                 container(
                     row![
                         text(format!("replying to {sender}: {body}"))
@@ -93,7 +101,7 @@ impl FluxChat {
                 .into(),
             );
         } else if let Some((_, _)) = &self.edit_event {
-            elements.push(
+            bars.push(
                 container(
                     row![
                         text("editing message")
@@ -195,7 +203,7 @@ impl FluxChat {
                 );
             }
 
-            elements.push(
+            bars.push(
                 container(gif_col).padding([8, 12]).width(Fill)
                     .style(theme::container_panel)
                     .into(),
@@ -240,7 +248,7 @@ impl FluxChat {
                     }),
                 ].spacing(8).align_y(iced::Alignment::Center),
             ].spacing(8);
-            elements.push(
+            bars.push(
                 container(loc_col).padding([8, 12]).width(Fill)
                     .style(theme::container_panel)
                     .into(),
@@ -264,7 +272,7 @@ impl FluxChat {
             } else {
                 "Enter sends it with your message as the caption"
             };
-            elements.push(
+            bars.push(
                 container(
                     container(
                         row![
@@ -303,7 +311,7 @@ impl FluxChat {
 
         // Help text (command feedback)
         if let Some(ref help) = self.help_text {
-            elements.push(
+            bars.push(
                 container(
                     text(help.as_str())
                         .font(self.msg_font())
@@ -363,7 +371,7 @@ impl FluxChat {
                     }),
                 );
             }
-            elements.push(
+            bars.push(
                 container(
                     scrollable(popup_col)
                         .height(Length::Shrink)
@@ -410,7 +418,7 @@ impl FluxChat {
                     }),
                 );
             }
-            elements.push(
+            bars.push(
                 container(
                     container(popup_col)
                         .max_height(250)
@@ -462,7 +470,7 @@ impl FluxChat {
                     }),
                 );
             }
-            elements.push(
+            bars.push(
                 container(
                     container(popup_col)
                         .max_height(250)
@@ -487,6 +495,8 @@ impl FluxChat {
                 .into(),
             );
         }
+
+        elements.push(container(column(bars).width(Fill)).into());
 
         // Input bar
         let attach_btn = button(
