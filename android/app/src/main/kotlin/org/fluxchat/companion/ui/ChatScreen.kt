@@ -267,6 +267,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                     if (sessionsButton) {
                         IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.History, "Sessions") }
                     }
+                    IconButton(onClick = { go(Screen.Gallery(roomId, root)) }) { Icon(Icons.Outlined.Image, "Gallery") }
                     // One menu: the harness's commands, plus leaving a project
                     // you started (a DM with an agent has nothing to leave; a
                     // thread isn't a separate project).

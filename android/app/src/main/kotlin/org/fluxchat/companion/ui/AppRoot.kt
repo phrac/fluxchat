@@ -37,8 +37,11 @@ import org.fluxchat.companion.matrix.Matrix
 /** The app's screens, as a back stack. */
 sealed interface Screen {
     data object Rooms : Screen
-    data class Room(val roomId: String) : Screen
+    /** A project; [event] opens the timeline scrolled to that message. */
+    data class Room(val roomId: String, val event: String? = null) : Screen
     data class Thread(val roomId: String, val root: String, val event: String? = null) : Screen
+    /** A project's (or session's) media gallery. */
+    data class Gallery(val roomId: String, val root: String?) : Screen
     data object Agents : Screen
     /** Run history across rooms, with spend per agent. */
     data object History : Screen
@@ -120,8 +123,9 @@ private fun Navigator(opened: MutableStateFlow<Screen?>) {
 private fun Screen(s: Screen, go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit) {
         when (s) {
             Screen.Rooms -> RoomsScreen(go)
-            is Screen.Room -> ChatScreen(s.roomId, null, go, back, swap)
+            is Screen.Room -> ChatScreen(s.roomId, null, go, back, swap, jumpTo = s.event)
             is Screen.Thread -> ChatScreen(s.roomId, s.root, go, back, swap, jumpTo = s.event)
+            is Screen.Gallery -> GalleryScreen(s.roomId, s.root, go, back)
             Screen.Agents -> AgentsScreen(back)
             Screen.History -> HistoryScreen(go, back)
             Screen.Search -> SearchScreen(go, back, swap)
