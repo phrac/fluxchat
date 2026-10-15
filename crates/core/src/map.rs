@@ -6,6 +6,8 @@
 //! under every preview. Composed previews are cached in the shared media
 //! cache, so each distinct location hits the tile server at most once.
 
+use image::ImageEncoder;
+
 /// Zoom level for previews (building level; matches the OSM web deep link).
 pub const MAP_ZOOM: u8 = 16;
 /// Composed preview size — rendered at 2x and displayed at half size so it
@@ -119,7 +121,9 @@ fn compose(tiles: Vec<(i64, i64, Vec<u8>)>, tx0: i64, ty0: i64, ox: i64, oy: i64
     )
     .to_image();
     let mut out = Vec::new();
-    image::save_buffer(&mut out, crop.as_raw(), MAP_W, MAP_H, image::ExtendedColorType::Rgb8).ok()?;
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(crop.as_raw(), MAP_W, MAP_H, image::ExtendedColorType::Rgb8)
+        .ok()?;
     Some(out)
 }
 
@@ -194,7 +198,9 @@ mod tests {
     fn png_solid(r: u8, g: u8, b: u8) -> Vec<u8> {
         let img = image::RgbImage::from_pixel(256, 256, image::Rgb([r, g, b]));
         let mut out = Vec::new();
-        image::save_buffer(&mut out, img.as_raw(), 256, 256, image::ExtendedColorType::Rgb8).unwrap();
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(img.as_raw(), 256, 256, image::ExtendedColorType::Rgb8)
+            .unwrap();
         out
     }
 }
