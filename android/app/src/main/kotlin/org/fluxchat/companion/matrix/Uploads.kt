@@ -33,6 +33,15 @@ object Uploads {
     }
 
     /**
+     * A fresh staging file for a system camera app to write into (via the
+     * FileProvider). The caller deletes [File.getParentFile] when done.
+     */
+    fun stagingFile(context: Context, name: String): File {
+        val dir = File(context.cacheDir, "uploads/${UUID.randomUUID()}").apply { mkdirs() }
+        return File(dir, safeName(name))
+    }
+
+    /**
      * A copy of the file in the cache, under its own name (the upload names
      * the file after it). The caller deletes [File.getParentFile] when done.
      */
