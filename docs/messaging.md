@@ -80,7 +80,7 @@ The grid button in the room header (or **Ctrl/⌘+Shift+G**, `/gallery`, or *Gal
 
 ## Location
 
-`/location <lat> <lon> [description]` shares a location card with a link to OpenStreetMap.
+`/location <lat> <lon> [description]` shares a location card with an embedded map preview (OpenStreetMap tiles), the coordinates and a link to OpenStreetMap. Map previews are fetched once and cached; without a network the card still shows coordinates and the link.
 
 ## Voice messages
 

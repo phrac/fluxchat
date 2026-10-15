@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Downloaded attachments, handed to other apps to open (Files.open). -->
+<!-- Downloaded attachments, handed to other apps to open (Files.open);
+     staged uploads, and the file a system camera app writes a shot into. -->
 <paths>
     <cache-path name="files" path="files/" />
+    <cache-path name="uploads" path="uploads/" />
 </paths>
