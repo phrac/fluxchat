@@ -7,6 +7,7 @@
 //! cache, so each distinct location hits the tile server at most once.
 
 use image::ImageFormat;
+use image::{GenericImage, GenericImageView};
 use std::io::Cursor;
 
 /// Zoom level for previews (building level; matches the OSM web deep link).
@@ -65,8 +66,8 @@ pub async fn fetch_map_preview(lat: f64, lon: f64) -> Option<(Vec<u8>, u32, u32)
     let n = (1u64 << MAP_ZOOM) as i64;
     let (fx, fy) = tile_frac(lat, lon, MAP_ZOOM);
     // Center pixel in zoom-space, clamped so the window stays on the map.
-    let cx = (fx * TILE).round().clamp(MAP_W as i64 / 2, n * TILE - MAP_W as i64 / 2);
-    let cy = (fy * TILE).round().clamp(MAP_H as i64 / 2, n * TILE - MAP_H as i64 / 2);
+    let cx = (fx * TILE as f64).round().clamp(MAP_W as i64 / 2, n * TILE - MAP_W as i64 / 2);
+    let cy = (fy * TILE as f64).round().clamp(MAP_H as i64 / 2, n * TILE - MAP_H as i64 / 2);
     let ox = cx - MAP_W as i64 / 2;
     let oy = cy - MAP_H as i64 / 2;
     let (tx0, tx1) = (ox.div_euclid(TILE), (ox + MAP_W as i64 - 1).div_euclid(TILE));
@@ -109,9 +110,7 @@ fn compose(tiles: Vec<(i64, i64, Vec<u8>)>, tx0: i64, ty0: i64, ox: i64, oy: i64
     let mut canvas = image::RgbImage::new((cols * TILE) as u32, (rows * TILE) as u32);
     for (tx, ty, data) in &tiles {
         let tile = image::load_from_memory(data).ok()?;
-        let x = ((tx - tx0) * TILE) as u32;
-        let y = ((ty - ty0) * TILE) as u32;
-        image::imageops::overlay(&mut canvas, &tile.to_rgb8(), x, y);
+        image::imageops::overlay(&mut canvas, &tile.to_rgb8(), ((tx - tx0) * TILE), ((ty - ty0) * TILE));
     }
     let crop = canvas.crop_imm((ox - tx0 * TILE) as u32, (oy - ty0 * TILE) as u32, MAP_W, MAP_H);
     let mut out = Vec::new();
