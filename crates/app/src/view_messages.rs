@@ -494,8 +494,8 @@ impl FluxChat {
                                 .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().red) }),
                         )
                         .width(Length::Fixed(256.0)).height(Length::Fixed(160.0))
-                        .align_x(iced::widget::container::Horizontal::Center)
-                        .align_y(iced::widget::container::Vertical::Center)
+                        .align_x(iced::alignment::Horizontal::Center)
+                        .align_y(iced::alignment::Vertical::Center)
                         .padding(iced::Padding { bottom: 11.0, ..Default::default() })
                         .into(),
                     ],
