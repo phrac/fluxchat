@@ -420,15 +420,39 @@ impl FluxChat {
                 Some(Task::perform(
                     async move {
                         let client = core.get_client().await.map_err(|e| format!("{e}"))?;
-                        client.encryption().recovery().recover(&key).await.map_err(|e| format!("{e}"))
+                        let recovery = client.encryption().recovery();
+                        recovery.recover(&key).await.map_err(|e| format!("{e}"))?;
+                        // `recover()` only accepts the key and switches the backup on.
+                        // With the SDK's default lazy download strategy nothing is
+                        // fetched afterwards, so old rooms keep rendering UTD bubbles
+                        // forever. Pull each joined room's backed-up keys now; the
+                        // timeline's decryption-retry task decrypts them as they land.
+                        let backups = client.encryption().backups();
+                        if backups.are_enabled().await {
+                            let mut fetched = 0usize;
+                            let mut failed = 0usize;
+                            for room in client.joined_rooms() {
+                                match backups.download_room_keys_for_room(room.room_id()).await {
+                                    Ok(()) => fetched += 1,
+                                    Err(_) => failed += 1,
+                                }
+                            }
+                            Ok(if failed == 0 {
+                                format!("recovery successful! downloaded backed-up keys for {fetched} rooms.")
+                            } else {
+                                format!("recovered, but {failed} of {} room key downloads failed.", fetched + failed)
+                            })
+                        } else {
+                            Ok("recovery key accepted, but backup still isn't enabled on this device.".to_string())
+                        }
                     },
                     Message::SecurityRecoverResult,
                 ))
             }
             Message::SecurityRecoverResult(result) => {
                 match result {
-                    Ok(()) => {
-                        self.settings_status = Some("recovery successful! keys restored.".into());
+                    Ok(status) => {
+                        self.settings_status = Some(status);
                         self.security_recovery_key_input.clear();
                         Some(self.update(Message::SecurityLoadState))
                     }

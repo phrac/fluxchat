@@ -433,7 +433,7 @@ pub enum Message {
     SecurityBackupEnabled(Option<String>), // recovery key if full recovery was set up
     SecurityRecoveryKeyInputChanged(String),
     SecurityRecover,
-    SecurityRecoverResult(Result<(), String>),
+    SecurityRecoverResult(Result<String, String>), // Ok = status text with key-download counts
     // Reset-identity flow (throw away existing backup + cross-signing, start fresh)
     SecurityResetIdentityConfirm,                        // first click: arm destructive action
     SecurityResetPasswordChanged(String),
