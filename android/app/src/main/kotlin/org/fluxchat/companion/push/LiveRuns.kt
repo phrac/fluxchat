@@ -38,8 +38,8 @@ object LiveRuns {
     /** A working run silent this long has stalled (desktop agents.rs `STALE_RUN_MS`). */
     private const val STALE_RUN_MS = 2 * 60 * 60 * 1000L
 
-    /** A live run, as the notification shows it. */
-    private data class Live(val key: ViewKey, val run: RunInfo, val agent: String, val title: String, val room: String)
+    /** A live run, as the notification and the run widget show it. */
+    internal data class Live(val key: ViewKey, val run: RunInfo, val agent: String, val title: String, val room: String)
 
     @Volatile private var last: String? = null
     @Volatile private var current: android.app.Notification? = null
@@ -67,8 +67,23 @@ object LiveRuns {
         }.sortedWith(compareBy({ it.run.rank().first }, { it.run.rank().second }))
     }
 
+    /** Rows for the home-screen run widget: the same live() view as the notification. */
+    internal fun widgetRows(): List<org.fluxchat.companion.quick.RunWidgetRow> = live().map { l ->
+        org.fluxchat.companion.quick.RunWidgetRow(
+            key = l.key.toString(),
+            roomId = l.key.roomId,
+            threadRoot = l.key.threadRoot,
+            title = "${l.agent} · ${l.title}",
+            sub = Runs.stepLabel(l.run.step) ?: l.run.state.label,
+            stop = stopCommand(l),
+        )
+    }
+
     @Synchronized
     private fun update(context: Context) {
+        // The home-screen run widget follows every change (it draws from the
+        // saved snapshot, so this also keeps it current for a redraw later).
+        org.fluxchat.companion.quick.RunWidget.refresh(context)
         val runs = live()
         if (runs.isEmpty()) {
             if (last != null) {
@@ -137,12 +152,16 @@ object LiveRuns {
         return b.build()
     }
 
-    /** Stop, as the run's harness takes it (in the run's thread, addressed to the agent where it needs that). */
-    private fun stopAction(context: Context, l: Live): PendingIntent? {
+    /** Stop, as the harness takes it (in the run's thread, addressed to the agent where it needs that). */
+    internal fun stopCommand(l: Live): String? {
         val h = Matrix.agentList.value.harnessOf(l.agent)
         if (h.stop.isEmpty()) return null
         val c = h.command(h.stop)
-        val text = if (h.mentionCommands && !Matrix.isDm(l.key.roomId)) "${l.agent} $c" else c
+        return if (h.mentionCommands && !Matrix.isDm(l.key.roomId)) "${l.agent} $c" else c
+    }
+
+    private fun stopAction(context: Context, l: Live): PendingIntent? {
+        val text = stopCommand(l) ?: return null
         val i = Intent(context, ActionReceiver::class.java)
             .setAction(ActionReceiver.SEND)
             .putExtra(ActionReceiver.ROOM, l.key.roomId)

@@ -37,6 +37,10 @@ A small **New session** sheet opens over whatever you're doing: pick the agent r
 - **the Quick Settings tile** (edit your Quick Settings and drag *New session* in);
 - **a long-press on the app icon**: a *New session in …* shortcut for each of your top agent rooms.
 
+## A status board on the home screen
+
+Add the **Agent runs** widget (long-press the home screen → widgets → fluxchat): one row per live run — agent, session, current step, and a **Stop** pill — updated as the runs move. Tap a row to open that session. When nothing runs it shows *No agent runs · tap to start a session*, which opens the same quick prompt as the New session widget. It draws the same live-runs view as the ongoing notification (stalled runs left out), and keeps working from its last snapshot when the app's process has died.
+
 ## Speak instead of typing
 
 The **mic** in the message box (and in the New session sheet) uses your phone's speech input; what you say lands in the box to check and edit before you send. fluxchat doesn't record anything itself, so it needs no microphone permission.
