@@ -60,14 +60,18 @@ object RunWidgetData {
                 RunWidgetRow(
                     key = o.getString("k"),
                     roomId = o.getString("r"),
-                    threadRoot = o.optString("t").ifEmpty { null },
+                    threadRoot = text(o, "t"),
                     title = o.getString("a"),
                     sub = o.getString("s"),
-                    stop = o.optString("x").ifEmpty { null },
+                    stop = text(o, "x"),
                 )
             }
         }.getOrDefault(emptyList())
     }
+
+    /** Absent or JSONObject.NULL → null (optString would hand back "null" for NULL). */
+    private fun text(o: JSONObject, key: String): String? =
+        if (o.isNull(key)) null else o.getString(key).ifEmpty { null }
 
     fun clear(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_ROWS).apply()
