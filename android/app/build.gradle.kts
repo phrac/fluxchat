@@ -101,6 +101,7 @@ dependencies {
     implementation(libs.matrix.sdk)
     implementation(libs.rustls.platform.verifier)
     implementation(libs.unifiedpush)
+    implementation(libs.biometric)
     implementation(libs.tomlj)
 
     testImplementation(libs.junit)

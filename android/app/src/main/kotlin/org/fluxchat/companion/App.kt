@@ -12,6 +12,7 @@ class App : Application() {
         // Before any client: the SDK needs the Context to verify TLS certificates.
         runCatching { org.matrix.rustsdk.Android.init(this) }
             .onFailure { Diag.error("Initializing the SDK for Android (TLS will fail)", it) }
+        AppLock.init(this)
         Matrix.init(this)
         org.fluxchat.companion.Update.init(this)
         Notifications.createChannels(this)
@@ -28,6 +29,10 @@ class App : Application() {
 
             override fun onStop(owner: LifecycleOwner) {
                 foreground = false
+                // The app switcher and a later resume must not leak content.
+                // ProcessLifecycleOwner debounces ~700 ms, so a rotation
+                // (which stops and immediately restarts) doesn't re-lock.
+                AppLock.onBackground()
             }
         })
     }

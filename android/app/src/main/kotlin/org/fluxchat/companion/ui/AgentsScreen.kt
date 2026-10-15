@@ -21,6 +21,7 @@ import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,6 +37,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -49,8 +51,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import org.fluxchat.companion.AppLock
 import org.fluxchat.companion.agents.Harnesses
 import org.fluxchat.companion.matrix.AgentEntry
 import org.fluxchat.companion.matrix.Matrix
@@ -171,10 +175,12 @@ fun AgentsScreen(back: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var confirm by remember { mutableStateOf(false) }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val list by Matrix.agentList.collectAsState()
+    val lockOn by AppLock.enabled.collectAsState()
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
@@ -206,6 +212,27 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
                 headlineContent = { Text("Run history") },
                 supportingContent = { Text("What your agents worked on, how it ended, and what it cost") },
                 modifier = Modifier.clickable { go(Screen.History) },
+            )
+            Section("Security")
+            ListItem(
+                leadingContent = { Icon(Icons.Outlined.Lock, null) },
+                headlineContent = { Text("Require unlock") },
+                supportingContent = {
+                    Text(
+                        when {
+                            lockOn -> "Fingerprint, face, or screen lock when you open the app; hidden from the app switcher"
+                            !AppLock.canEnable(context) -> "Needs a fingerprint, face, or screen lock set up on this phone"
+                            else -> "Ask for biometrics or the screen lock when opening fluxchat"
+                        },
+                    )
+                },
+                trailingContent = {
+                    Switch(
+                        checked = lockOn,
+                        enabled = lockOn || AppLock.canEnable(context),
+                        onCheckedChange = { AppLock.setEnabled(context, it) },
+                    )
+                },
             )
             Section("About")
             ListItem(

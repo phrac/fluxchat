@@ -10,6 +10,7 @@ coroutines = "1.11.0"
 matrixSdk = "26.10.11-nightly"
 rustlsPlatformVerifier = "0.2.0"
 unifiedpush = "3.3.5"
+biometric = "1.1.0"
 tomlj = "2.2.0"
 junit = "4.13.2"
 json = "20260814"
@@ -34,6 +35,7 @@ coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-androi
 matrix-sdk = { module = "org.matrix.rustcomponents:sdk-android", version.ref = "matrixSdk" }
 rustls-platform-verifier = { module = "org.rustls:rustls-platform-verifier", version.ref = "rustlsPlatformVerifier" }
 unifiedpush = { module = "org.unifiedpush.android:connector", version.ref = "unifiedpush" }
+biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }
 tomlj = { module = "org.tomlj:tomlj", version.ref = "tomlj" }
 junit = { module = "junit:junit", version.ref = "junit" }
 json = { module = "org.json:json", version.ref = "json" }

@@ -5,12 +5,17 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import org.fluxchat.companion.matrix.Auth
 import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.ui.AppRoot
@@ -18,7 +23,11 @@ import org.fluxchat.companion.ui.FluxTheme
 import org.fluxchat.companion.ui.Screen
 import org.fluxchat.companion.ui.ShareInbox
 
-class MainActivity : ComponentActivity() {
+/**
+ * BiometricPrompt needs a FragmentActivity (it hosts its credential
+ * fragment); ComponentActivity isn't one.
+ */
+class MainActivity : FragmentActivity() {
     /** A screen a notification asked for. */
     private val opened = MutableStateFlow<Screen?>(null)
 
@@ -35,10 +44,33 @@ class MainActivity : ComponentActivity() {
         ) {
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        // The screenshot/recents guard follows the setting live.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AppLock.enabled.collect { applySecure() }
+            }
+        }
         setContent {
             FluxTheme {
                 AppRoot(opened)
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applySecure()
+    }
+
+    /** With the lock on, content stays out of screenshots and recents. */
+    private fun applySecure() {
+        if (AppLock.enabled.value) {
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE,
+            )
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         }
     }
 
