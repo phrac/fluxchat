@@ -3,5 +3,9 @@
     <string name="new_session">New session</string>
     <string name="new_session_hint">Ask your agent…</string>
     <string name="widget_description">Start a session with your agent: type or speak</string>
+    <string name="widget_runs_label">Agent runs</string>
+    <string name="widget_runs_description">Live agent runs: state, current step, Stop</string>
+    <string name="widget_runs_empty">No agent runs · tap to start a session</string>
+    <string name="widget_run_stop">Stop</string>
     <string name="dictate">Speak</string>
 </resources>

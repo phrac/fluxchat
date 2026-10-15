@@ -107,6 +107,19 @@
                 android:resource="@xml/widget_quick_info" />
         </receiver>
 
+        <!-- The home-screen run status board. -->
+        <receiver
+            android:name=".quick.RunWidget"
+            android:exported="false"
+            android:label="@string/widget_runs_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_runs_info" />
+        </receiver>
+
         <service
             android:name=".quick.QuickTile"
             android:exported="true"
