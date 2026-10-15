@@ -103,6 +103,10 @@ Hermes approvals sent without the [agent protocol](agent-protocol.md) only becom
 
 Without push, you only hear from agents while the app is open.
 
+## App lock
+
+**Settings → Security → Require unlock** asks for your fingerprint, face, or screen lock when you open the app. Leaving the app locks it again — the screen you left, draft and half-sent photo included, waits right behind the lock. Detours you start yourself — the camera, the photo and file pickers — come back without asking again. A cold start comes up locked; while it's on, the content also stays out of screenshots and the app switcher. Notification buttons (Approve, Deny, Reply) still work over the lock screen — answering an agent doesn't need the app open. The quick entry points are deliberately *not* locked: the home-screen widget, the Quick Settings tile, the app shortcuts and share-into-fluxchat only ever send what you type, they never read your history back.
+
 ## Diagnostics
 
 **Settings → Diagnostics** shows what the app knows and has done:
