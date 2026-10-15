@@ -1,11 +1,15 @@
 package org.fluxchat.companion.matrix
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.exifinterface.media.ExifInterface
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
 /** A file picked to send: what the composer shows, and where to read it from. */
@@ -33,6 +37,15 @@ object Uploads {
     }
 
     /**
+     * A fresh staging file for a system camera app to write into (via the
+     * FileProvider). The caller deletes [File.getParentFile] when done.
+     */
+    fun stagingFile(context: Context, name: String): File {
+        val dir = File(context.cacheDir, "uploads/${UUID.randomUUID()}").apply { mkdirs() }
+        return File(dir, safeName(name))
+    }
+
+    /**
      * A copy of the file in the cache, under its own name (the upload names
      * the file after it). The caller deletes [File.getParentFile] when done.
      */
@@ -41,6 +54,7 @@ object Uploads {
         val file = File(dir, safeName(a.name))
         context.contentResolver.openInputStream(a.uri)?.use { input -> file.outputStream().use { input.copyTo(it) } }
             ?: error("Couldn't read ${a.name}")
+        if (a.mime.equals("image/jpeg", true)) normalizeImage(file)
         return file
     }
 
@@ -48,11 +62,40 @@ object Uploads {
     fun safeName(name: String): String =
         name.replace('/', '_').replace('\\', '_').trimStart('.').take(120).ifBlank { "file" }
 
-    /** Width and height of an image file (null if it can't be read). */
+    /**
+     * Bake the JPEG's EXIF orientation into its pixels and drop the tag.
+     * Camera apps write sensor-oriented pixels plus an orientation hint;
+     * viewers that honor it show the shot upright, but the agents (and any
+     * plain image reader) saw sideways photos. Re-encoding keeps the byte
+     * size similar; a failed rewrite leaves the original bytes in place.
+     */
+    fun normalizeImage(file: File): File = runCatching {
+        val jpeg = file.name.endsWith(".jpg", true) || file.name.endsWith(".jpeg", true)
+        if (!jpeg) return@runCatching file
+        val exif = ExifInterface(file.path)
+        val deg = exif.rotationDegrees
+        if (deg == 0) return@runCatching file
+        val bmp = BitmapFactory.decodeFile(file.path) ?: return@runCatching file
+        val m = Matrix().apply { postRotate(deg.toFloat()) }
+        val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        FileOutputStream(file).use { rotated.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+        if (rotated != bmp) rotated.recycle()
+        bmp.recycle()
+        runCatching {
+            val after = ExifInterface(file.path)
+            after.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+            after.saveAttributes()
+        }
+        file
+    }.getOrDefault(file)
+
+    /** Width and height as an EXIF-aware viewer sees them (null if unreadable). */
     fun imageSize(file: File): Pair<Int, Int>? {
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, o)
-        return if (o.outWidth > 0 && o.outHeight > 0) o.outWidth to o.outHeight else null
+        if (o.outWidth <= 0 || o.outHeight <= 0) return null
+        val sideways = runCatching { ExifInterface(file.path).rotationDegrees % 180 != 0 }.getOrDefault(false)
+        return if (sideways) o.outHeight to o.outWidth else o.outWidth to o.outHeight
     }
 
     data class VideoMeta(val width: Int?, val height: Int?, val durationMs: Long?)

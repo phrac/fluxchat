@@ -13,6 +13,9 @@ import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.PhotoCamera
+import kotlin.concurrent.thread
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.ViewAgenda
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -627,6 +630,39 @@ internal fun Composer(
     val picked: (android.net.Uri?) -> Unit = { uri -> if (uri != null) attachment = Uploads.describe(context, uri) }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia(), picked)
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument(), picked)
+    // Direct capture: the system camera writes into a staging file we hand it
+    // through the FileProvider (no CAMERA permission — their camera, not ours);
+    // a cancelled shot leaves nothing behind.
+    var shotUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var shotFile by remember { mutableStateOf<java.io.File?>(null) }
+    val finishShot: (Boolean) -> Unit = { ok ->
+        val uri = shotUri
+        val f = shotFile
+        shotUri = null
+        shotFile = null
+        if (ok && uri != null && f != null && f.length() > 0)
+            thread(name = "photo-normalize") {
+                // bake EXIF rotation in so the agents see upright photos
+                Uploads.normalizeImage(f)
+                attachment = Uploads.describe(context, uri)
+            }
+        else f?.parentFile?.deleteRecursively()
+    }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture(), finishShot)
+    val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo(), finishShot)
+    val startShot: (Boolean) -> Unit = { video ->
+        val f = Uploads.stagingFile(context, if (video) "video.mp4" else "photo.jpg")
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", f)
+        shotUri = uri
+        shotFile = f
+        runCatching { if (video) takeVideo.launch(uri) else takePhoto.launch(uri) }.onFailure {
+            shotUri = null
+            shotFile = null
+            f.parentFile?.deleteRecursively()
+            org.fluxchat.companion.Diag.error("Opening the camera", it)
+            android.widget.Toast.makeText(context, "No camera app on this phone", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
     val modes = BusyMode.available(harness)
     val dictate = rememberDictation { said -> text = withDictation(text, said) }
     val shared by ShareInbox.pending.collectAsState()
@@ -666,6 +702,16 @@ internal fun Composer(
                 Box {
                     IconButton(onClick = { attachMenu = true }, modifier = Modifier.size(56.dp)) { Icon(Icons.Outlined.AttachFile, "Attach") }
                     DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }, shape = MaterialTheme.shapes.medium) {
+                        DropdownMenuItem(
+                            text = { Text("Take photo") },
+                            leadingIcon = { Icon(Icons.Outlined.PhotoCamera, null) },
+                            onClick = { attachMenu = false; startShot(false) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Take video") },
+                            leadingIcon = { Icon(Icons.Outlined.Videocam, null) },
+                            onClick = { attachMenu = false; startShot(true) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Photo or video") },
                             leadingIcon = { Icon(Icons.Outlined.Image, null) },
