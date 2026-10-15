@@ -388,6 +388,17 @@ impl FluxChat {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             // --- Auth ---
+            // iced's inputs have no native Tab traversal: the keys
+            // subscription maps Tab/Shift-Tab to this, walking the runtime
+            // focus chain (fields, then SSO/Sign In buttons).
+            Message::LoginTab(back) if self.screen == Screen::Login => {
+                return if back {
+                    iced::widget::operation::focus_previous::<Message>()
+                } else {
+                    iced::widget::operation::focus_next::<Message>()
+                };
+            }
+            Message::LoginTab(_) => {}
             Message::LoginHomeserverChanged(s) => {
                 self.login_homeserver = s.clone();
                 self.login_caps = None;
