@@ -8,6 +8,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,7 +73,13 @@ fun AppRoot(opened: MutableStateFlow<Screen?>) {
                 Auth.RestoreFailed -> RestoreFailedScreen()
                 Auth.Ready -> {
                     val locked by AppLock.locked.collectAsState()
-                    if (locked) LockScreen() else Navigator(opened)
+                    // The lock COVERS the app, never replaces it: the nav
+                    // stack and half-typed composers must survive, and a
+                    // camera/picker hop re-arms the lock on the way back.
+                    Box(Modifier.fillMaxSize()) {
+                        Navigator(opened)
+                        if (locked) LockScreen()
+                    }
                 }
             }
         }
@@ -86,7 +94,11 @@ fun AppRoot(opened: MutableStateFlow<Screen?>) {
 @Composable
 private fun LockScreen() {
     val activity = LocalContext.current as? FragmentActivity
-    Column(Modifier.fillMaxSize(), Arrangement.Center, Alignment.CenterHorizontally) {
+    Column(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).clickable(enabled = true, onClick = {}),
+        Arrangement.Center,
+        Alignment.CenterHorizontally,
+    ) {
         Icon(
             Icons.Outlined.Lock,
             null,
