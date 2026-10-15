@@ -105,6 +105,7 @@ dependencies {
     // biometric 1.1.0 drags fragment 1.1.0, which trips InvalidFragmentVersionForActivityResult
     // on our registerForActivityResult calls; pin a current one.
     implementation(libs.fragment)
+    implementation(libs.exifinterface)
     implementation(libs.tomlj)
 
     testImplementation(libs.junit)

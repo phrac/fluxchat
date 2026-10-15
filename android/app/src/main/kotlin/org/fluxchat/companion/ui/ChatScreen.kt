@@ -14,6 +14,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.PhotoCamera
+import kotlin.concurrent.thread
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.ViewAgenda
 import androidx.compose.material.icons.automirrored.outlined.Chat
@@ -639,7 +640,12 @@ internal fun Composer(
         val f = shotFile
         shotUri = null
         shotFile = null
-        if (ok && uri != null && f != null && f.length() > 0) attachment = Uploads.describe(context, uri)
+        if (ok && uri != null && f != null && f.length() > 0)
+            thread(name = "photo-normalize") {
+                // bake EXIF rotation in so the agents see upright photos
+                Uploads.normalizeImage(f)
+                attachment = Uploads.describe(context, uri)
+            }
         else f?.parentFile?.deleteRecursively()
     }
     val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture(), finishShot)
