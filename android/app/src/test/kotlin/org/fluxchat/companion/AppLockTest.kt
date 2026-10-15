@@ -62,7 +62,7 @@ class AppLockTest {
         assertFalse(AppLock.locked.value)
     }
 
-    @Test fun `the detour pass is one-shot: the next backgrounding locks`() {
+    @Test fun `the detour pass is one-shot, the next backgrounding locks`() {
         AppLock.init(context)
         AppLock.setEnabled(context, true)
         AppLock.hop()
