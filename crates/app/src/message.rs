@@ -13,6 +13,8 @@ pub enum Message {
     LoginPasswordChanged(String),
     LoginSubmit,
     LoginSso,
+    /// Tab / Shift-Tab pressed while on the login screen (shift = backwards).
+    LoginTab(bool),
     LoginResult(Result<LoginSuccess, String>),
     /// Login types for a homeserver; carries the homeserver string the lookup
     /// was for so stale results (user kept typing) can be ignored.

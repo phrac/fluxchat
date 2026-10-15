@@ -113,7 +113,16 @@ pub fn button_style(tone: Tone) -> impl Fn(&Theme, button::Status) -> button::St
 
 /// A text button. `None` renders it disabled.
 pub fn btn<'a>(label: impl Into<String>, tone: Tone, on_press: Option<Message>) -> button::Button<'a, Message> {
-    button(text(label.into()).font(MONO).size(13).align_x(Alignment::Center))
+    button(
+        text(label.into())
+            .font(MONO)
+            .size(13)
+            // A Fill-width button sizes itself, not its child: the label must
+            // fill it for align_x to center anything (a shrink button
+            // collapses to the label, so Fill is a no-op there).
+            .width(iced::Length::Fill)
+            .align_x(Alignment::Center),
+    )
         .on_press_maybe(on_press)
         .padding([7, 14])
         .style(button_style(tone))

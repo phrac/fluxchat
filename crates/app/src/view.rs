@@ -3334,6 +3334,14 @@ impl FluxChat {
                 key, modifiers, ..
             } = event
             {
+                // Tab / Shift-Tab: walk the login form's focus (iced inputs
+                // have no native traversal; no-ops outside the login screen).
+                if key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Tab)
+                    && !modifiers.alt()
+                    && !modifiers.control()
+                {
+                    return Message::LoginTab(modifiers.shift());
+                }
                 // Alt+Up/Down: previous/next room; with Shift: previous/next unread
                 if modifiers.alt() {
                     let dir = match key {
