@@ -392,13 +392,13 @@ impl FluxChat {
             // subscription maps Tab/Shift-Tab to this, walking the runtime
             // focus chain (fields, then SSO/Sign In buttons).
             Message::LoginTab(back) if self.screen == Screen::Login => {
-                if back {
+                return if back {
                     iced::widget::operation::focus_previous::<Message>()
                 } else {
                     iced::widget::operation::focus_next::<Message>()
-                }
+                };
             }
-            Message::LoginTab(_) => Task::none(),
+            Message::LoginTab(_) => {}
             Message::LoginHomeserverChanged(s) => {
                 self.login_homeserver = s.clone();
                 self.login_caps = None;
