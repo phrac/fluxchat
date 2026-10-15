@@ -6,10 +6,6 @@
 //! under every preview. Composed previews are cached in the shared media
 //! cache, so each distinct location hits the tile server at most once.
 
-use image::ImageFormat;
-use image::{GenericImage, GenericImageView};
-use std::io::Cursor;
-
 /// Zoom level for previews (building level; matches the OSM web deep link).
 pub const MAP_ZOOM: u8 = 16;
 /// Composed preview size — rendered at 2x and displayed at half size so it
@@ -66,14 +62,16 @@ pub async fn fetch_map_preview(lat: f64, lon: f64) -> Option<(Vec<u8>, u32, u32)
     let n = (1u64 << MAP_ZOOM) as i64;
     let (fx, fy) = tile_frac(lat, lon, MAP_ZOOM);
     // Center pixel in zoom-space, clamped so the window stays on the map.
-    let cx = (fx * TILE as f64).round().clamp(MAP_W as i64 / 2, n * TILE - MAP_W as i64 / 2);
-    let cy = (fy * TILE as f64).round().clamp(MAP_H as i64 / 2, n * TILE - MAP_H as i64 / 2);
+    let half_w = MAP_W as f64 / 2.0;
+    let half_h = MAP_H as f64 / 2.0;
+    let world = (n * TILE) as f64;
+    let cx = (fx * TILE as f64).round().clamp(half_w, world - half_w) as i64;
+    let cy = (fy * TILE as f64).round().clamp(half_h, world - half_h) as i64;
     let ox = cx - MAP_W as i64 / 2;
     let oy = cy - MAP_H as i64 / 2;
     let (tx0, tx1) = (ox.div_euclid(TILE), (ox + MAP_W as i64 - 1).div_euclid(TILE));
     let (ty0, ty1) = (oy.div_euclid(TILE), (oy + MAP_H as i64 - 1).div_euclid(TILE));
 
-    let client = TILE_CLIENT.clone();
     let mut tiles: Vec<(i64, i64, Vec<u8>)> = Vec::new();
     for ty in ty0..=ty1 {
         if ty < 0 || ty >= n {
@@ -81,7 +79,7 @@ pub async fn fetch_map_preview(lat: f64, lon: f64) -> Option<(Vec<u8>, u32, u32)
         }
         for tx in tx0..=tx1 {
             let x = tx.rem_euclid(n) as u32; // wrap the antimeridian
-            let bytes = fetch_tile(&client, MAP_ZOOM, x, ty as u32).await.ok()??;
+            let bytes = fetch_tile(&TILE_CLIENT, MAP_ZOOM, x, ty as u32).await.ok()??;
             tiles.push((tx, ty, bytes));
         }
     }
@@ -112,9 +110,16 @@ fn compose(tiles: Vec<(i64, i64, Vec<u8>)>, tx0: i64, ty0: i64, ox: i64, oy: i64
         let tile = image::load_from_memory(data).ok()?;
         image::imageops::overlay(&mut canvas, &tile.to_rgb8(), ((tx - tx0) * TILE), ((ty - ty0) * TILE));
     }
-    let crop = canvas.crop_imm((ox - tx0 * TILE) as u32, (oy - ty0 * TILE) as u32, MAP_W, MAP_H);
+    let crop = image::imageops::crop_imm(
+        &canvas,
+        (ox - tx0 * TILE) as u32,
+        (oy - ty0 * TILE) as u32,
+        MAP_W,
+        MAP_H,
+    )
+    .to_image();
     let mut out = Vec::new();
-    crop.write_to(&mut Cursor::new(&mut out), ImageFormat::Png).ok()?;
+    image::save_buffer(&mut out, crop.as_raw(), MAP_W, MAP_H, image::ExtendedColorType::Rgb8).ok()?;
     Some(out)
 }
 
@@ -182,14 +187,14 @@ mod tests {
         let png = compose(tiles, 0, 0, 128, 0).expect("compose");
         let img = image::load_from_memory(&png).unwrap().to_rgb8();
         assert_eq!((img.width(), img.height()), (MAP_W, MAP_H));
-        assert_eq!(img.pixel(120, 160)[0], 255); // left of the boundary: red
-        assert_eq!(img.pixel(136, 160)[2], 255); // right of it: blue
+        assert_eq!(img.get_pixel(120, 160)[0], 255); // left of the boundary: red
+        assert_eq!(img.get_pixel(136, 160)[2], 255); // right of it: blue
     }
 
     fn png_solid(r: u8, g: u8, b: u8) -> Vec<u8> {
         let img = image::RgbImage::from_pixel(256, 256, image::Rgb([r, g, b]));
         let mut out = Vec::new();
-        img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png).unwrap();
+        image::save_buffer(&mut out, img.as_raw(), 256, 256, image::ExtendedColorType::Rgb8).unwrap();
         out
     }
 }
