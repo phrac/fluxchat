@@ -110,7 +110,7 @@ fn compose(tiles: Vec<(i64, i64, Vec<u8>)>, tx0: i64, ty0: i64, ox: i64, oy: i64
     let mut canvas = image::RgbImage::new((cols * TILE) as u32, (rows * TILE) as u32);
     for (tx, ty, data) in &tiles {
         let tile = image::load_from_memory(data).ok()?;
-        image::imageops::overlay(&mut canvas, &tile.to_rgb8(), ((tx - tx0) * TILE), ((ty - ty0) * TILE));
+        image::imageops::overlay(&mut canvas, &tile.to_rgb8(), (tx - tx0) * TILE, (ty - ty0) * TILE);
     }
     let crop = image::imageops::crop_imm(
         &canvas,
