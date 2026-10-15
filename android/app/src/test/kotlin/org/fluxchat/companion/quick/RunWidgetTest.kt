@@ -10,8 +10,10 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35]) // the newer sandbox image breaks on the build host's JDK
 class RunWidgetTest {
     private val context: Context by lazy { ApplicationProvider.getApplicationContext() }
 
