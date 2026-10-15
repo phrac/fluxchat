@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import org.fluxchat.companion.launchHopping
 import org.fluxchat.companion.matrix.Attachment
 import org.fluxchat.companion.matrix.SessionList
 import org.fluxchat.companion.matrix.Uploads
@@ -654,7 +655,7 @@ internal fun Composer(
         val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", f)
         shotUri = uri
         shotFile = f
-        runCatching { if (video) takeVideo.launch(uri) else takePhoto.launch(uri) }.onFailure {
+        runCatching { if (video) takeVideo.launchHopping(uri) else takePhoto.launchHopping(uri) }.onFailure {
             shotUri = null
             shotFile = null
             f.parentFile?.deleteRecursively()
@@ -716,13 +717,13 @@ internal fun Composer(
                             leadingIcon = { Icon(Icons.Outlined.Image, null) },
                             onClick = {
                                 attachMenu = false
-                                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                                pickMedia.launchHopping(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                             },
                         )
                         DropdownMenuItem(
                             text = { Text("File") },
                             leadingIcon = { Icon(Icons.Outlined.Description, null) },
-                            onClick = { attachMenu = false; pickFile.launch(arrayOf("*/*")) },
+                            onClick = { attachMenu = false; pickFile.launchHopping(arrayOf("*/*")) },
                         )
                     }
                 }

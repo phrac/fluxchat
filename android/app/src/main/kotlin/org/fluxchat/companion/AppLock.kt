@@ -1,6 +1,7 @@
 package org.fluxchat.companion
 
 import android.content.Context
+import androidx.activity.result.ActivityResultLauncher
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -29,6 +30,24 @@ object AppLock {
     /** Whether the content currently sits behind the lock screen. */
     val locked = MutableStateFlow(false)
 
+    /**
+     * Set while WE start a trip out (camera, photo/file picker). Coming back
+     * from our own detour shouldn't make you prove who you are again — you
+     * never handed the phone to anyone. One-shot: cleared on return, so any
+     * other backgrounding (home, app switch, screen off) still locks.
+     */
+    @Volatile private var hopping = false
+
+    /** Mark the upcoming backgrounding as our own picker/camera detour. */
+    fun hop() {
+        hopping = true
+    }
+
+    /** The last activity started: the detour pass is spent. */
+    fun onForeground() {
+        hopping = false
+    }
+
     fun init(context: Context) {
         val on = prefs(context).getBoolean(KEY_ENABLED, false)
         enabled.value = on
@@ -52,7 +71,7 @@ object AppLock {
 
     /** The last activity stopped: content must not come back without an unlock. */
     fun onBackground() {
-        if (enabled.value) locked.value = true
+        if (enabled.value && !hopping) locked.value = true
     }
 
     /** Unlock with a fingerprint/face/credential prompt. */
@@ -87,4 +106,10 @@ object AppLock {
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+}
+
+/** `launch()` that tells the lock this detour is ours (camera, pickers). */
+fun <I> ActivityResultLauncher<I>.launchHopping(input: I) {
+    AppLock.hop()
+    launch(input)
 }

@@ -24,6 +24,7 @@ class App : Application() {
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground = true
+                AppLock.onForeground() // a detour we started is over
                 Matrix.resumed()
             }
 

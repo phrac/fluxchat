@@ -52,6 +52,26 @@ class AppLockTest {
         assertTrue(AppLock.locked.value)
     }
 
+    @Test fun `a detour we start (camera, picker) does not lock`() {
+        AppLock.init(context)
+        AppLock.setEnabled(context, true)
+        AppLock.hop()
+        AppLock.onBackground() // off to the camera app
+        assertFalse(AppLock.locked.value)
+        AppLock.onForeground() // back with the photo
+        assertFalse(AppLock.locked.value)
+    }
+
+    @Test fun `the detour pass is one-shot: the next backgrounding locks`() {
+        AppLock.init(context)
+        AppLock.setEnabled(context, true)
+        AppLock.hop()
+        AppLock.onBackground()
+        AppLock.onForeground()
+        AppLock.onBackground() // home button after coming back
+        assertTrue(AppLock.locked.value)
+    }
+
     @Test fun `disabling unlocks and stops background re-locking`() {
         AppLock.setEnabled(context, true)
         AppLock.onBackground()
