@@ -475,13 +475,40 @@ impl FluxChat {
                 Some(msg.body.clone())
             };
             let pin_handle = iced::widget::svg::Handle::from_memory(crate::icons::SVG_MAP_PIN);
-            let mut card_col = column![
+            let mut card_col = column![].spacing(4);
+            // Composed OSM tile preview (fetched by the prefetch loop); the
+            // card falls back to the plain coordinate row until/if it loads.
+            if let Some(handle) = fluxchat_core::map::map_cache_key(geo)
+                .and_then(|k| self.image_cache.get(&k).cloned())
+            {
+                let map_img: Element<'a, Message> = iced::widget::image(handle)
+                    .width(Length::Fixed(256.0))
+                    .height(Length::Fixed(160.0))
+                    .content_fit(iced::ContentFit::Fill)
+                    .into();
+                // Pin lifted so its tip marks the window center.
+                let pin_layer: Element<'a, Message> = container(
+                    iced::widget::svg(pin_handle.clone()).width(22).height(22)
+                        .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().red) }),
+                )
+                .width(Length::Fixed(256.0)).height(Length::Fixed(160.0))
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .padding(iced::Padding { bottom: 11.0, ..Default::default() })
+                .into();
+                card_col = card_col.push(iced::widget::stack![map_img, pin_layer]);
+                // Required attribution for OSM-rendered tiles.
+                card_col = card_col.push(
+                    text("© OpenStreetMap contributors").font(self.msg_font()).size(10)
+                        .color(theme::colors().text_muted),
+                );
+            }
+            card_col = card_col.push(
                 row![
                     iced::widget::svg(pin_handle).width(20).height(20)
                         .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().red) }),
                     text(format!("{lat}, {lon}")).font(self.msg_font()).size(fs).color(theme::colors().text_bright),
-                ].spacing(8).align_y(iced::Alignment::Center),
-            ].spacing(4);
+                ].spacing(8).align_y(iced::Alignment::Center));
             if let Some(desc) = description {
                 card_col = card_col.push(
                     text(desc).font(self.msg_font()).size(fs - 1.0).color(theme::colors().text_muted)
