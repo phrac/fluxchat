@@ -655,7 +655,7 @@ internal fun Composer(
         val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", f)
         shotUri = uri
         shotFile = f
-        runCatching { if (video) takeVideo.launch(uri) else takePhoto.launch(uri) }.onFailure {
+        runCatching { if (video) takeVideo.launchHopping(uri) else takePhoto.launchHopping(uri) }.onFailure {
             shotUri = null
             shotFile = null
             f.parentFile?.deleteRecursively()
