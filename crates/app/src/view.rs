@@ -1408,6 +1408,16 @@ impl FluxChat {
                 let eid = event_id.clone();
                 let is_local = event_id.starts_with('~');
                 if !is_local {
+                    // Media messages carry their content MXC too; the
+                    // thumbnail is a separate upload, never offered here.
+                    let mxc = self.messages_by_room.values().flatten()
+                        .find(|m| m.event_id == *event_id)
+                        .and_then(|m| crate::view_gallery::content_mxc(m));
+                    if let Some(url) = mxc {
+                        col = col.push(self.context_menu_item(
+                            "Copy MXC URL", SVG_LINK, url.to_string(), "copy_mxc",
+                        ));
+                    }
                     col = col.push(self.context_menu_item(
                         "Copy Message Link", SVG_LINK, eid.clone(), "msg_copy_link",
                     ));
@@ -1442,6 +1452,11 @@ impl FluxChat {
                 for (label, icon, msg) in self.agent_menu_items(key) {
                     col = col.push(self.context_menu_entry(label, icon, Message::Batch(vec![Message::CloseContextMenu, msg])));
                 }
+            }
+            crate::state::ContextMenu::Media { url } => {
+                col = col.push(self.context_menu_item(
+                    "Copy MXC URL", SVG_LINK, url.clone(), "copy_mxc",
+                ));
             }
             crate::state::ContextMenu::Space { space_id } => {
                 let sid = space_id.clone();

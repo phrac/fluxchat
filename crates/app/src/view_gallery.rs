@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
 use iced::{Color, Element, Fill, Length, Theme};
 
 use fluxchat_core::MessageInfo;
@@ -15,6 +15,17 @@ use crate::theme;
 use crate::ui::{self, Tone};
 use crate::update_gallery::{is_gallery_file, is_gallery_media};
 use crate::view::{thin_scrollbar, MONO};
+
+/// The full content MXC of a gallery item: video source for videos, image
+/// for images, then file/audio. Never a thumbnail — those are separate
+/// uploads, so the item's own bytes are what right-click offers to copy.
+pub(crate) fn content_mxc(m: &MessageInfo) -> Option<&str> {
+    if m.is_video {
+        m.video_mxc.as_deref().or(m.image_mxc.as_deref())
+    } else {
+        m.image_mxc.as_deref().or(m.file_mxc.as_deref()).or(m.audio_mxc.as_deref())
+    }
+}
 
 /// Grid viewport height assumed until the first scroll event reports it.
 pub(crate) const DEFAULT_VIEWPORT: f32 = 480.0;
@@ -289,6 +300,17 @@ impl FluxChat {
                 },
                 ..Default::default()
             });
+        // Right-click: media menu. A MouseArea without a left handler
+        // leaves the press to the child, so the button still opens the
+        // lightbox.
+        let tile: Element<Message> = match content_mxc(m) {
+            Some(url) => mouse_area(tile)
+                .on_right_press(Message::OpenContextMenu(crate::state::ContextMenu::Media {
+                    url: url.to_string(),
+                }))
+                .into(),
+            None => tile.into(),
+        };
         let tip = format!("{}\n{} \u{00b7} {}", m.body, m.sender_name, crate::view_messages::local_day_label(m.timestamp));
         ui::tooltip_at(tile, tip, iced::widget::tooltip::Position::Bottom)
     }
@@ -304,7 +326,7 @@ impl FluxChat {
         detail.push(m.sender_name.clone());
         detail.push(crate::view_messages::local_day_label(m.timestamp));
         let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
-        container(
+        let row = container(
             row![
                 container(ui::icon(svg, 16.0, c.text_muted))
                     .width(32).height(32)
@@ -332,8 +354,15 @@ impl FluxChat {
             .align_y(iced::Alignment::Center),
         )
         .height(FILE_ROW_H)
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
+        .align_y(iced::alignment::Vertical::Center);
+        match content_mxc(m) {
+            Some(url) => mouse_area(row)
+                .on_right_press(Message::OpenContextMenu(crate::state::ContextMenu::Media {
+                    url: url.to_string(),
+                }))
+                .into(),
+            None => row.into(),
+        }
     }
 
     /// Under the list: loading, an error with Retry, "Load older", or the

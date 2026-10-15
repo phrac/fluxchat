@@ -64,6 +64,8 @@ pub enum ContextMenu {
     Thread { room_id: String, root_id: String },
     /// The agent chip in a room header: quick commands (view key).
     Agent { key: String },
+    /// A gallery tile/file row or a message's media: its full content MXC.
+    Media { url: String },
 }
 
 /// Which modal is currently open.
