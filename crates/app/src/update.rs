@@ -393,9 +393,9 @@ impl FluxChat {
             // focus chain (fields, then SSO/Sign In buttons).
             Message::LoginTab(back) if self.screen == Screen::Login => {
                 if back {
-                    iced::widget::operation::focus_previous()
+                    iced::widget::operation::focus_previous::<Message>()
                 } else {
-                    iced::widget::operation::focus_next()
+                    iced::widget::operation::focus_next::<Message>()
                 }
             }
             Message::LoginTab(_) => Task::none(),
