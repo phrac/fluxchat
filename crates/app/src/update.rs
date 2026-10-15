@@ -2179,6 +2179,9 @@ impl FluxChat {
                     "msg_copy_id" => {
                         return iced::clipboard::write(target_id);
                     }
+                    "copy_mxc" => {
+                        return iced::clipboard::write(target_id);
+                    }
                     "msg_source" => {
                         let Some(room) = self.active_real_room().map(str::to_string) else { return Task::none() };
                         let core = self.core.clone();

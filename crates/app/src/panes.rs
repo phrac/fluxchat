@@ -969,6 +969,21 @@ pub(crate) mod flow_tests {
     }
 
     #[tokio::test]
+    async fn media_menu_opens_and_copy_mxc_closes_it() {
+        let mut app = app();
+        let _ = app.update(Message::OpenContextMenu(crate::state::ContextMenu::Media {
+            url: "mxc://x/y".into(),
+        }));
+        assert!(matches!(
+            app.context_menu,
+            Some(crate::state::ContextMenu::Media { .. })
+        ));
+        // The action is pure clipboard, run headless: just must close the menu.
+        let _ = app.update(Message::ContextMenuAction("copy_mxc".into(), "mxc://x/y".into()));
+        assert!(app.context_menu.is_none());
+    }
+
+    #[tokio::test]
     async fn ctrl_b_x_closes_focused_pane() {
         let mut app = app();
         let _ = app.update(Message::SelectRoom("!a:x".into()));
