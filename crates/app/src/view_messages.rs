@@ -479,7 +479,7 @@ impl FluxChat {
             // Composed OSM tile preview (fetched by the prefetch loop); the
             // card falls back to the plain coordinate row until/if it loads.
             if let Some(handle) = fluxchat_core::map::map_cache_key(geo)
-                .and_then(|k| self.image_cache.get(k).cloned())
+                .and_then(|k| self.image_cache.get(&k).cloned())
             {
                 card_col = card_col.push(
                     iced::widget::stack![
@@ -494,8 +494,8 @@ impl FluxChat {
                                 .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().red) }),
                         )
                         .width(Length::Fixed(256.0)).height(Length::Fixed(160.0))
-                        .align_x(iced::Alignment::Horizontal::Center)
-                        .align_y(iced::Alignment::Vertical::Center)
+                        .align_x(iced::widget::container::Horizontal::Center)
+                        .align_y(iced::widget::container::Vertical::Center)
                         .padding(iced::Padding { bottom: 11.0, ..Default::default() })
                         .into(),
                     ],
