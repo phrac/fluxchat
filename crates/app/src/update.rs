@@ -6226,6 +6226,42 @@ impl FluxChat {
                     },
                 ));
             }
+            // Location cards: composed OSM tile preview (fetched once, cached).
+            if let Some((geo, key)) = msg.geo_uri.as_deref().map(|g| (g.to_string(), fluxchat_core::map::map_cache_key(g))) {
+                let Some(key) = key else { continue };
+                if self.image_cache.contains_key(&key) || self.image_cache_pending.contains(&key)
+                    || self.image_failed.get(&key).is_some_and(|t| t.elapsed() < IMAGE_RETRY_AFTER)
+                {
+                    continue;
+                }
+                let Some((lat, lon)) = fluxchat_core::map::parse_geo_uri(&geo) else { continue };
+                self.image_cache_pending.insert(key.clone());
+                let core = self.core.clone();
+                let failed_key = key.clone();
+                tasks.push(Task::perform(
+                    async move {
+                        let cache_key = format!("iced_img:{key}");
+                        let cached = {
+                            let core = core.clone();
+                            let cache_key = cache_key.clone();
+                            tokio::task::spawn_blocking(move || read_cached_image(&core.db, &cache_key))
+                                .await.ok().flatten()
+                        };
+                        if let Some(data) = cached {
+                            return Some((key, data, fluxchat_core::map::MAP_W, fluxchat_core::map::MAP_H));
+                        }
+                        let _permit = MEDIA_FETCHES.acquire().await.ok()?;
+                        let (png, w, h) = fluxchat_core::map::fetch_map_preview(lat, lon).await?;
+                        let to_store = png.clone();
+                        drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
+                        Some((key, png, w, h))
+                    },
+                    move |result| match result {
+                        Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
+                        None => Message::ImageFailed(failed_key),
+                    },
+                ));
+            }
         }
         if tasks.is_empty() { Task::none() } else { Task::batch(tasks) }
     }
