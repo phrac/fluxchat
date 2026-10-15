@@ -4,6 +4,8 @@ use iced::widget::{
 };
 use iced::{Color, Element, Fill, Font, Length, Subscription, Theme};
 
+use crate::ui::{self, Tone};
+
 /// Fixed ID for the main message input so we can refocus it programmatically.
 pub fn input_id() -> iced::widget::Id {
     iced::widget::Id::new("main_input")
@@ -878,35 +880,54 @@ impl FluxChat {
         .into()
     }
 
-    /// Login screen with SSO + password support.
+    /// Login screen with SSO + password support. Built from the shared
+    /// dialog kit (`ui::input` / `ui::btn` / `dialog_style`) so the card,
+    /// inputs and buttons match the app's own chrome; Enter in any field
+    /// submits.
     fn view_login(&self) -> Element<Message> {
-        let title = text("fluxchat")
-            .size(22)
-            .font(self.sidebar_font())
-            .color(theme::colors().text_bright);
+        let c = theme::colors();
+        let a = iced::Alignment::Center;
 
-        let subtitle = text("Sign in with your Matrix account")
-            .size(15)
-            .font(self.sidebar_font())
-            .color(theme::colors().text_muted);
+        // Logo badge: accent-tinted tile, same idiom as the in-app icon chips.
+        let (logo_bg, logo_border) = (theme::with_alpha(c.accent, 0.12), theme::with_alpha(c.accent, 0.4));
+        let logo = container(ui::icon(crate::icons::SVG_CHAT, 26.0, c.accent))
+            .width(56)
+            .height(56)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center)
+            .style(move |_: &Theme| container::Style {
+                background: Some(logo_bg.into()),
+                border: iced::Border {
+                    color: logo_border,
+                    width: 1.0,
+                    radius: 14.0.into(),
+                },
+                ..Default::default()
+            });
 
-        let homeserver = text_input("homeserver (e.g. matrix.org)", &self.login_homeserver)
-            .on_input(Message::LoginHomeserverChanged)
-            .font(self.sidebar_font())
-            .size(14)
-            .padding(8);
+        let head = column![
+            logo,
+            text("FluxChat").size(26).font(self.sidebar_font()).color(c.text_bright),
+            text("Sign in with your Matrix account")
+                .size(13)
+                .font(self.sidebar_font())
+                .color(c.text_muted),
+        ]
+        .spacing(10)
+        .align_x(a);
 
-        let mut col = column![title, subtitle, homeserver].spacing(12).width(340);
+        let mut col = column![head].spacing(14).width(360).align_x(a);
 
         // Error display
         if let Some(err) = &self.login_error {
             col = col.push(
-                container(text(err.as_str()).size(15).font(self.sidebar_font()).color(theme::colors().red))
+                container(text(err.as_str()).size(13).font(self.sidebar_font()).color(c.red))
                     .padding([8, 12])
+                    .width(Fill)
                     .style(|_: &Theme| container::Style {
                         background: Some(iced::Color::from_rgba(0.94, 0.27, 0.27, 0.1).into()),
                         border: iced::Border {
-                            radius: 4.0.into(),
+                            radius: 8.0.into(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -917,103 +938,83 @@ impl FluxChat {
         // SSO buttons
         if let Some(caps) = &self.login_caps {
             if caps.has_sso {
-                if caps.sso_providers.is_empty() {
-                    let label = if self.login_submitting {
-                        "Opening browser..."
+                let sso_label = |name: &str| {
+                    if self.login_submitting {
+                        "Opening browser...".to_string()
+                    } else if name.is_empty() {
+                        "Sign in with SSO".to_string()
                     } else {
-                        "Sign in with SSO"
-                    };
-                    let mut btn = button(text(label).font(self.sidebar_font()).size(14).color(theme::colors().text_bright))
-                        .width(Fill)
-                        .padding([10, 0]);
-                    if !self.login_submitting {
-                        btn = btn.on_press(Message::LoginSso);
+                        format!("Sign in with {name}")
                     }
-                    col = col.push(btn);
+                };
+                let sso_btn = |label: String| {
+                    ui::btn(label, Tone::Secondary, (!self.login_submitting).then_some(Message::LoginSso))
+                        .width(Fill)
+                        .padding([10, 0])
+                };
+                if caps.sso_providers.is_empty() {
+                    col = col.push(sso_btn(String::new()));
                 } else {
                     for provider in &caps.sso_providers {
-                        let label = if self.login_submitting {
-                            "Opening browser...".to_string()
-                        } else {
-                            format!("Sign in with {}", provider.name)
-                        };
-                        let mut btn =
-                            button(text(label).font(self.sidebar_font()).size(14).color(theme::colors().text_bright))
-                                .width(Fill)
-                                .padding([10, 0]);
-                        if !self.login_submitting {
-                            btn = btn.on_press(Message::LoginSso);
-                        }
-                        col = col.push(btn);
+                        col = col.push(sso_btn(sso_label(&provider.name)));
                     }
                 }
 
                 col = col.push(
                     text("Opens your browser to authenticate")
-                        .size(13)
+                        .size(12)
                         .font(self.sidebar_font())
-                        .color(theme::colors().text_dim),
+                        .color(c.text_dim),
                 );
 
                 // Divider
                 col = col.push(
-                    row![
-                        rule::horizontal(1),
-                        text("or").size(14).font(self.sidebar_font()).color(theme::colors().text_dim),
-                        rule::horizontal(1),
-                    ]
-                    .spacing(12)
-                    .align_y(iced::Alignment::Center),
+                    row![ui::divider(), text("or").size(12).font(self.sidebar_font()).color(c.text_dim), ui::divider()]
+                        .spacing(12)
+                        .align_y(iced::Alignment::Center)
+                        .width(Fill),
                 );
             }
         }
 
         // Username + password fields
-        let username = text_input("username", &self.login_username)
-            .on_input(Message::LoginUsernameChanged)
-            .font(self.sidebar_font())
-            .size(14)
-            .padding(8);
+        col = col.push(ui::field(
+            "HOMESERVER",
+            ui::input("e.g. matrix.org", &self.login_homeserver, Message::LoginHomeserverChanged)
+                .on_submit(Message::LoginSubmit)
+                .width(Fill),
+        ));
+        col = col.push(ui::field(
+            "USERNAME",
+            ui::input("@you:example.org", &self.login_username, Message::LoginUsernameChanged)
+                .on_submit(Message::LoginSubmit)
+                .width(Fill),
+        ));
+        col = col.push(ui::field(
+            "PASSWORD",
+            ui::input("password", &self.login_password, Message::LoginPasswordChanged)
+                .on_submit(Message::LoginSubmit)
+                .secure(true)
+                .width(Fill),
+        ));
 
-        let password = text_input("password", &self.login_password)
-            .on_input(Message::LoginPasswordChanged)
-            .on_submit(Message::LoginSubmit)
-            .secure(true)
-            .font(self.sidebar_font())
-            .size(14)
-            .padding(8);
-
-        let login_label = if self.login_submitting {
-            "Signing in..."
-        } else {
-            "Sign In"
-        };
-        let mut login_btn = button(
-            text(login_label)
+        let login_label = if self.login_submitting { "Signing in..." } else { "Sign In" };
+        col = col.push(
+            ui::btn(login_label, Tone::Primary, (!self.login_submitting).then_some(Message::LoginSubmit))
+                .width(Fill)
+                .padding([11, 0]),
+        );
+        col = col.push(
+            text(format!("v{}", env!("CARGO_PKG_VERSION")))
+                .size(11)
                 .font(self.sidebar_font())
-                .size(14)
-                .color(theme::colors().bg_deep),
-        )
-        .width(Fill)
-        .padding([10, 0]);
-        if !self.login_submitting {
-            login_btn = login_btn.on_press(Message::LoginSubmit);
-        }
-
-        col = col.push(username).push(password).push(login_btn);
+                .color(c.text_dim),
+        );
 
         center(
             container(col)
-                .padding(32)
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::colors().bg_dark.into()),
-                    border: iced::Border {
-                        color: theme::colors().border,
-                        width: 1.0,
-                        radius: 8.0.into(),
-                    },
-                    ..Default::default()
-                }),
+                .padding([32, 36])
+                .style(ui::dialog_style)
         )
         .style(|_: &Theme| container::Style {
             background: Some(theme::colors().bg_deep.into()),
