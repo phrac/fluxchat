@@ -101,6 +101,10 @@ dependencies {
     implementation(libs.matrix.sdk)
     implementation(libs.rustls.platform.verifier)
     implementation(libs.unifiedpush)
+    implementation(libs.biometric)
+    // biometric 1.1.0 drags fragment 1.1.0, which trips InvalidFragmentVersionForActivityResult
+    // on our registerForActivityResult calls; pin a current one.
+    implementation(libs.fragment)
     implementation(libs.tomlj)
 
     testImplementation(libs.junit)
