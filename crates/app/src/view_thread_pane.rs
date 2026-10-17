@@ -343,7 +343,7 @@ impl FluxChat {
                                 Some(Binding::Custom(Message::PaneSend(send_key.clone()))),
                             Key::Named(Named::Enter) if !ctrl_enter && !key_press.modifiers.shift() =>
                                 Some(Binding::Custom(Message::PaneSend(send_key.clone()))),
-                            _ => Binding::from_key_press(key_press),
+                            _ => crate::view_input::editor_binding(key_press),
                         }
                     })
                     .font(self.msg_font())

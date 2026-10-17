@@ -572,7 +572,7 @@ impl FluxChat {
                         Key::Named(Named::ArrowUp) if input_empty => {
                             Some(Binding::Custom(Message::InputChanged("\x1b[A".into())))
                         }
-                        _ => Binding::from_key_press(key_press),
+                        _ => editor_binding(key_press),
                     }
                 }
             })
@@ -885,6 +885,25 @@ impl FluxChat {
 
 /// Keep tmux keys out of composers: Ctrl+B and the key after it are pane
 /// commands (handled by the global key listener), not text.
+/// iced's default editor bindings plus the CUA clipboard keys it lacks:
+/// Shift+Insert paste, Ctrl+Insert copy, Shift+Delete cut (GTK/Qt apps on
+/// Linux and Windows honour them; iced only binds Ctrl+C/X/V).
+pub(crate) fn editor_binding(key_press: iced::widget::text_editor::KeyPress) -> Option<iced::widget::text_editor::Binding<Message>> {
+    use iced::keyboard::Key;
+    use iced::keyboard::key::Named;
+    use iced::widget::text_editor::{Binding, Status};
+    if matches!(key_press.status, Status::Focused { .. }) {
+        let m = key_press.modifiers;
+        match key_press.key {
+            Key::Named(Named::Insert) if m.shift() && !m.control() && !m.alt() => return Some(Binding::Paste),
+            Key::Named(Named::Insert) if m.control() && !m.shift() && !m.alt() => return Some(Binding::Copy),
+            Key::Named(Named::Delete) if m.shift() && !m.control() && !m.alt() => return Some(Binding::Cut),
+            _ => {}
+        }
+    }
+    iced::widget::text_editor::Binding::from_key_press(key_press)
+}
+
 pub(crate) fn tmux_binding(key_press: &iced::widget::text_editor::KeyPress) -> Option<iced::widget::text_editor::Binding<Message>> {
     use iced::keyboard::Key;
     let ctrl_b = key_press.modifiers.control()

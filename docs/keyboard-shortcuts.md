@@ -16,6 +16,7 @@
 | Ctrl/⌘ + ] | Hide / show the member list |
 | Ctrl/⌘ + C | Copy selected text |
 | Ctrl/⌘ + V | Paste an image from the clipboard as an attachment |
+| Shift + Insert / Ctrl + Insert / Shift + Delete | Paste / copy / cut in the message box (Linux and Windows) |
 | Alt + 1–9 | Go to the Nth room in the room list |
 | Alt + ↑ / ↓ | Previous / next room |
 | Alt + Shift + ↑ / ↓ | Previous / next unread room |

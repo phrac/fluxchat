@@ -3441,6 +3441,13 @@ impl FluxChat {
                         }
                     }
                 }
+                // Shift+Insert pastes like Ctrl+V (the editor binds the text
+                // side in `editor_binding`); pick up images/files here too.
+                if *key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Insert)
+                    && modifiers.shift() && !modifiers.control() && !modifiers.alt()
+                {
+                    return Some(Message::PasteClipboardImage);
+                }
                 // Escape: close the topmost modal/panel/completion. Handled
                 // here (all events) rather than in `keyboard::listen` (ignored
                 // events only) so it also works while a text input has focus —
