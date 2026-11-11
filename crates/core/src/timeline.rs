@@ -160,7 +160,16 @@ pub async fn mark_as_read(
     let Some(timeline) = timelines.get(key).await else { return Ok(()) };
     // A private receipt clears our unread state without telling others.
     let read = if private { ReceiptType::ReadPrivate } else { ReceiptType::Read };
-    for receipt_type in [read, ReceiptType::FullyRead] {
+    // The fully-read marker is one per room and always unthreaded: sent from
+    // a thread view it moved the room's marker onto a thread reply (back into
+    // read history, or past unread room messages), which is where the room
+    // then opened. A thread only gets its threaded receipt.
+    let receipts: &[ReceiptType] = if parse_thread_key(key).is_some() {
+        &[read]
+    } else {
+        &[read, ReceiptType::FullyRead]
+    };
+    for receipt_type in receipts.iter().cloned() {
         timeline.mark_as_read(receipt_type).await
             .map_err(|e| crate::error::AppError::Other(format!("Failed to send receipt: {e}")))?;
     }
@@ -205,6 +214,100 @@ pub async fn send_text(
         None => timeline.send(content.into()).await.map(|_| ()),
     };
     result.map_err(|e| crate::error::AppError::Other(format!("Failed to send: {e}")))
+}
+
+/// Send ready-made message content into a view through its Timeline: local
+/// echo, the send queue, and the thread relation in thread views (a bare
+/// `room.send` from a thread view put the message in the room instead).
+pub async fn send_content(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+    content: matrix_sdk::ruma::events::room::message::RoomMessageEventContent,
+) -> Result<(), crate::error::AppError> {
+    let timeline = get_or_create_for_key(client, timelines, key).await?;
+    timeline.send(content.into()).await
+        .map(|_| ())
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to send: {e}")))
+}
+
+/// Most answers a poll can have (MSC3381).
+pub const POLL_MAX_ANSWERS: usize = 20;
+
+/// Start a poll (MSC3381, one choice per person, results visible) in a view.
+pub async fn create_poll(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+    question: &str,
+    answers: &[String],
+) -> Result<(), crate::error::AppError> {
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::events::poll::unstable_start::{
+        NewUnstablePollStartEventContent, UnstablePollAnswer, UnstablePollAnswers,
+        UnstablePollStartContentBlock, UnstablePollStartEventContent,
+    };
+    let poll_answers: Vec<UnstablePollAnswer> = answers.iter().enumerate()
+        .map(|(i, text)| UnstablePollAnswer::new(format!("{}", i + 1), text.as_str()))
+        .collect();
+    let poll_answers = UnstablePollAnswers::try_from(poll_answers)
+        .map_err(|e| crate::error::AppError::Other(format!("A poll needs 1 to {POLL_MAX_ANSWERS} answers: {e}")))?;
+    // What clients without polls show.
+    let mut fallback = question.to_string();
+    for (i, text) in answers.iter().enumerate() {
+        fallback.push_str(&format!("\n{}. {text}", i + 1));
+    }
+    let content = NewUnstablePollStartEventContent::plain_text(
+        fallback, UnstablePollStartContentBlock::new(question, poll_answers),
+    );
+    let timeline = get_or_create_for_key(client, timelines, key).await?;
+    timeline
+        .send(AnyMessageLikeEventContent::UnstablePollStart(UnstablePollStartEventContent::New(content)))
+        .await
+        .map(|_| ())
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to send the poll: {e}")))
+}
+
+/// Vote in a poll (a new vote replaces the last one).
+pub async fn vote_poll(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+    poll_event_id: &str,
+    answer_id: &str,
+) -> Result<(), crate::error::AppError> {
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::events::poll::unstable_response::UnstablePollResponseEventContent;
+    let poll = matrix_sdk::ruma::EventId::parse(poll_event_id)
+        .map_err(|_| crate::error::AppError::Other("Invalid event ID".into()))?;
+    let timeline = get_or_create_for_key(client, timelines, key).await?;
+    timeline
+        .send(AnyMessageLikeEventContent::UnstablePollResponse(
+            UnstablePollResponseEventContent::new(vec![answer_id.to_string()], poll),
+        ))
+        .await
+        .map(|_| ())
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to vote: {e}")))
+}
+
+/// Close a poll. `text` is what clients without polls show (the outcome).
+pub async fn end_poll(
+    client: &matrix_sdk::Client,
+    timelines: &RoomTimelines,
+    key: &str,
+    poll_event_id: &str,
+    text: &str,
+) -> Result<(), crate::error::AppError> {
+    use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
+    use matrix_sdk::ruma::events::poll::unstable_end::UnstablePollEndEventContent;
+    let poll = matrix_sdk::ruma::EventId::parse(poll_event_id)
+        .map_err(|_| crate::error::AppError::Other("Invalid event ID".into()))?;
+    let timeline = get_or_create_for_key(client, timelines, key).await?;
+    timeline
+        .send(AnyMessageLikeEventContent::UnstablePollEnd(UnstablePollEndEventContent::new(text, poll)))
+        .await
+        .map(|_| ())
+        .map_err(|e| crate::error::AppError::Other(format!("Failed to end the poll: {e}")))
 }
 
 /// Send a file into a view through its Timeline (local echo, send queue,
@@ -421,8 +524,16 @@ impl Backfill {
                         this.done.store(true, Ordering::Release);
                     } else {
                         tracing::warn!("Back-pagination failed for {key} (attempt {failures}), retrying: {e}");
-                        // A failed page doesn't use up the page budget.
-                        this.pages.fetch_sub(1, Ordering::AcqRel);
+                        // A failed page doesn't use up the page budget. Saturating:
+                        // a `restart` while this page was in flight already zeroed
+                        // it, and wrapping to u32::MAX ended the fill for good.
+                        let mut pages = this.pages.load(Ordering::Acquire);
+                        while pages > 0 {
+                            match this.pages.compare_exchange_weak(pages, pages - 1, Ordering::AcqRel, Ordering::Acquire) {
+                                Ok(_) => break,
+                                Err(now) => pages = now,
+                            }
+                        }
                         tokio::time::sleep(BACKFILL_RETRY_DELAY * 2u32.pow(failures - 1)).await;
                     }
                 }
@@ -456,6 +567,38 @@ fn utd_cause_text(cause: &str) -> &'static str {
         "WithheldBySender" => "sender withheld the key",
         _ => "missing session key",
     }
+}
+
+/// Replace a thread view's undecryptable rows with the room view's decrypted
+/// copies of the same events. Returns how many rows it replaced.
+///
+/// When a room key arrives after the message it encrypts, SDK 0.18's event
+/// cache re-decrypts the event in the room's cache (so the room Timeline
+/// updates) but never in the thread's in-memory cache — a thread-focused
+/// Timeline keeps showing "can't decrypt" until the app restarts (fixed
+/// upstream in 0.19, `redecryptor.rs` "Resolve in-memory UTDs on the thread
+/// caches"). Agents answer in threads, so that's exactly where it shows. The
+/// room Timeline holds the same replies (they're only hidden from the room
+/// view), already re-decrypted and with edits applied, so its rows stand in.
+pub fn fill_decrypted_from_room(thread: &mut [MessageInfo], room: &[MessageInfo]) -> usize {
+    let mut filled = 0;
+    for row in thread.iter_mut().filter(|m| m.utd.is_some()) {
+        let Some(decrypted) = room.iter().find(|m| m.event_id == row.event_id && m.utd.is_none()) else {
+            continue;
+        };
+        // Receipts are per view (threaded receipts differ from the room's).
+        let receipts = std::mem::take(&mut row.read_receipt_user_ids);
+        *row = decrypted.clone();
+        row.read_receipt_user_ids = receipts;
+        filled += 1;
+    }
+    filled
+}
+
+/// Whether `fill_decrypted_from_room` would replace anything.
+pub fn has_decrypted_in_room(thread: &[MessageInfo], room: &[MessageInfo]) -> bool {
+    thread.iter().filter(|m| m.utd.is_some())
+        .any(|row| room.iter().any(|m| m.event_id == row.event_id && m.utd.is_none()))
 }
 
 /// Collect the displayable messages and derive thread reply counts from the
@@ -755,6 +898,7 @@ fn convert_event(ev: &EventTimelineItem) -> Option<MessageInfo> {
                 let body = sc.body.clone();
                 let mxc = match &sc.source {
                     matrix_sdk::ruma::events::sticker::StickerMediaSource::Plain(uri) => Some(uri.to_string()),
+                    matrix_sdk::ruma::events::sticker::StickerMediaSource::Encrypted(file) => Some(file.url.to_string()),
                     _ => None,
                 };
                 let w = sc.info.width.and_then(|v| u32::try_from(v).ok());
@@ -996,5 +1140,39 @@ mod tests {
         assert_eq!(real_room_id(&key), "!room:example.org");
         assert_eq!(real_room_id("!room:example.org"), "!room:example.org");
         assert_eq!(parse_thread_key("!room:example.org"), None);
+    }
+
+    fn row(id: &str, body: &str, undecryptable: bool) -> MessageInfo {
+        MessageInfo {
+            event_id: id.into(),
+            body: body.into(),
+            thread_root: Some("$root".into()),
+            utd: undecryptable.then(|| crate::models::UtdInfo {
+                session_id: "s".into(), sender_key: None, device_id: None, cause: "Unknown".into(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn thread_rows_take_the_rooms_decrypted_copy() {
+        let mut stuck = row("$b", "can't decrypt", true);
+        stuck.read_receipt_user_ids = vec!["@reader:x".into()];
+        let mut thread = vec![row("$a", "first", false), stuck, row("$c", "can't decrypt", true)];
+        let mut room_b = row("$b", "the answer", false);
+        room_b.read_receipt_user_ids = vec!["@other:x".into()];
+        // $c is still undecryptable in the room too; $d isn't in the thread.
+        let room = vec![row("$a", "room copy", false), room_b, row("$c", "can't decrypt", true), row("$d", "x", false)];
+
+        assert!(has_decrypted_in_room(&thread, &room));
+        assert_eq!(fill_decrypted_from_room(&mut thread, &room), 1);
+        assert_eq!(thread[0].body, "first", "decrypted rows are left alone");
+        assert_eq!(thread[1].body, "the answer");
+        assert!(thread[1].utd.is_none());
+        assert_eq!(thread[1].read_receipt_user_ids, vec!["@reader:x".to_string()], "the thread's own receipts stay");
+        assert!(thread[2].utd.is_some(), "nothing to take while the room can't read it either");
+
+        assert!(!has_decrypted_in_room(&thread, &room));
+        assert_eq!(fill_decrypted_from_room(&mut thread, &room), 0);
     }
 }

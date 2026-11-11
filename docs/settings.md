@@ -27,7 +27,7 @@ Open Settings with the ⚙ in the status bar, by clicking your own name, from th
 - **Expand code blocks** by default.
 
 **Media**
-- Show images and videos **Always**, **In private rooms** (not in rooms anyone can join), or **Never**. Hidden media shows as "Image hidden": click to show it. It isn't downloaded until you do. Your own media always shows.
+- Show images and videos **Always**, **In private rooms** (not in rooms anyone can join), or **Never**. Hidden media shows as "Image hidden": click to show it. It isn't downloaded until you do. Your own media always shows. To hide one room's images whatever this says, use the [picture button in its header](messaging.md#hiding-a-rooms-images).
 - **Invite avatars**: show the icons of rooms you're invited to.
 
 These are saved to your account, so Element and your other devices use them too.

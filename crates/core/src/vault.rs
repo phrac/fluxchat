@@ -30,6 +30,11 @@ pub struct SavedSession {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
+    /// The homeserver's resolved base URL (`homeserver` is what was typed,
+    /// which may need .well-known discovery — i.e. the network). Restoring
+    /// with this works offline. Absent in sessions saved by older versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homeserver_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -174,6 +179,7 @@ mod tests {
             device_id: "DEV".into(),
             access_token: "syt_secret".into(),
             refresh_token: None,
+            homeserver_url: None,
         }
     }
 

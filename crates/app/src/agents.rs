@@ -925,12 +925,27 @@ impl FluxChat {
         let room = real_room_id(key);
         latest.into_iter().filter_map(|(run_id, (m, p))| {
             let request = msgs.iter().find(|r| r.event_id == run_id);
+            // Seen from the room, a run belongs to its thread: the one its
+            // request started, the one the request was asked in (a follow-up
+            // in a session), or the one its status message is in. Filed under
+            // the room, a session's follow-ups made the room itself "busy"
+            // (plain messages got steered) and interleaved different
+            // sessions' running costs under one key, which spend counts as
+            // new money each time.
             let target = if in_thread {
                 key.to_string()
-            } else if request.is_some_and(|r| r.thread_count.unwrap_or(0) > 0 || r.thread_latest.is_some()) {
-                thread_key(room, &run_id)
             } else {
-                key.to_string()
+                let root = match request {
+                    Some(r) if r.thread_count.unwrap_or(0) > 0 || r.thread_latest.is_some() => Some(run_id.clone()),
+                    Some(r) => r.thread_root.clone(),
+                    None => None,
+                }.or_else(|| m.thread_root.clone());
+                match root {
+                    // Its own view, when open, knows the thread better.
+                    Some(root) if self.messages_by_room.contains_key(&thread_key(room, &root)) => return None,
+                    Some(root) => thread_key(room, &root),
+                    None => key.to_string(),
+                }
             };
             let mut state = if open_prompt.contains(&run_id) { RunState::NeedsYou } else { p.run_state()? };
             // One exception to "the protocol wins": a reaction close — the
@@ -1023,8 +1038,15 @@ impl FluxChat {
             if starting {
                 self.agent_runs.started.push(k.clone());
             }
-            if let Some(r) = &run {
-                self.record_run(&k, r);
+            match &run {
+                Some(r) => self.record_run(&k, r),
+                // A live run that's simply gone (a prompt answered, with no
+                // request reaction to say "done"): its record gets an end.
+                None => {
+                    if let Some(old) = self.agent_runs.states.get(&k).filter(|_| was_live).cloned() {
+                        self.close_run_record(&k, old.since);
+                    }
+                }
             }
             self.agent_runs.set(k, run);
         }
@@ -1058,7 +1080,6 @@ impl FluxChat {
             .filter(|m| !self.agent_runs.announced.contains(&m.event_id))
             .map(|m| m.event_id.clone())
             .collect();
-        let needs_you = !prompts.is_empty();
         // The agent's latest step after `since`, from its progress messages.
         let step_after = |since: u64, run: &mut RunInfo| {
             if !h.progress_steps {
@@ -1077,10 +1098,14 @@ impl FluxChat {
             // A thread: its latest request (the root or a reply of yours).
             let latest = msgs.iter().rev().filter(|m| m.sender == me)
                 .find_map(|m| request_state(h, m, &agent).map(|s| RunInfo::new(s, sent_ms(m))));
-            let run = match (latest, needs_you) {
-                (Some(mut r), true) => { r.state = RunState::NeedsYou; Some(r) }
-                (None, true) => Some(RunInfo::new(RunState::NeedsYou, now)),
-                (r, false) => r,
+            // With no request to date it from (a harness without status
+            // reactions), the run starts at its prompt: `now` made it a new
+            // run — and a new history record — on every refresh.
+            let asked = prompts.iter().map(|p| sent_ms(p)).max();
+            let run = match (latest, asked) {
+                (Some(mut r), Some(_)) => { r.state = RunState::NeedsYou; Some(r) }
+                (None, Some(at)) => Some(RunInfo::new(RunState::NeedsYou, at)),
+                (r, None) => r,
             };
             updates.push((key.to_string(), run.map(|mut r| { step_after(r.since, &mut r); r })));
         } else {
@@ -1088,6 +1113,12 @@ impl FluxChat {
             // knows better, approvals included).
             let loaded_replies = self.thread_counts.get(key);
             let expect_thread = self.replies_in_threads(key, &agent, h);
+            // A prompt asked in a thread is that thread's, not the room's.
+            let asked_in = |root: &str| prompts.iter()
+                .filter(|p| p.thread_root.as_deref() == Some(root))
+                .map(|p| sent_ms(p))
+                .max();
+            let open = |tk: &str| self.messages_by_room.contains_key(tk);
             let mut latest_unthreaded: Option<RunInfo> = None;
             for m in msgs.iter().filter(|m| m.sender == me && m.thread_root.is_none()) {
                 let Some(state) = request_state(h, m, &agent) else { continue };
@@ -1096,17 +1127,44 @@ impl FluxChat {
                 let threaded = has_thread(m, loaded_replies)
                     || (expect_thread && state == RunState::Working);
                 let tk = thread_key(key, &m.event_id);
-                if !self.messages_by_room.contains_key(&tk) {
-                    updates.push((tk, Some(RunInfo::new(state, sent_ms(m)))));
+                // Only a threaded request is a thread's run (an unthreaded
+                // one, as in a DM, was counted twice: here and as the
+                // room's) — or one tracked there already, so it gets its end.
+                if !open(&tk) && (threaded || self.agent_runs.states.contains_key(&tk)) {
+                    let mut run = RunInfo::new(state, sent_ms(m));
+                    if asked_in(&m.event_id).is_some() {
+                        run.state = RunState::NeedsYou;
+                    }
+                    updates.push((tk, Some(run)));
                 }
                 if !threaded {
                     latest_unthreaded = Some(RunInfo::new(state, sent_ms(m)));
                 }
             }
-            let run = match (latest_unthreaded, needs_you) {
-                (Some(mut r), true) => { r.state = RunState::NeedsYou; Some(r) }
-                (None, true) => Some(RunInfo::new(RunState::NeedsYou, now)),
-                (r, false) => r,
+            // Prompts in threads with no request to hang them on (a harness
+            // without status reactions): the thread waits on you from the
+            // prompt on…
+            for root in prompts.iter().filter_map(|p| p.thread_root.as_deref()) {
+                let tk = thread_key(key, root);
+                if open(&tk) || updates.iter().any(|(k, _)| *k == tk) {
+                    continue;
+                }
+                let at = asked_in(root).unwrap_or(now);
+                updates.push((tk, Some(RunInfo::new(RunState::NeedsYou, at))));
+            }
+            // …and stops waiting once the prompt is gone.
+            let prefix = format!("thread::{key}::");
+            let answered: Vec<String> = self.agent_runs.states.iter()
+                .filter(|(k, r)| k.starts_with(&prefix) && r.state == RunState::NeedsYou && r.agent == agent)
+                .map(|(k, _)| k.clone())
+                .filter(|k| !open(k) && !updates.iter().any(|(u, _)| u == k))
+                .collect();
+            updates.extend(answered.into_iter().map(|k| (k, None)));
+            let asked = prompts.iter().filter(|p| p.thread_root.is_none()).map(|p| sent_ms(p)).max();
+            let run = match (latest_unthreaded, asked) {
+                (Some(mut r), Some(_)) => { r.state = RunState::NeedsYou; Some(r) }
+                (None, Some(at)) => Some(RunInfo::new(RunState::NeedsYou, at)),
+                (r, None) => r,
             };
             updates.push((key.to_string(), run.map(|mut r| { step_after(r.since, &mut r); r })));
         }
@@ -1196,17 +1254,25 @@ impl FluxChat {
             let room_name = self.rooms.iter().find(|r| r.room_id == room).map(|r| r.name.clone()).unwrap_or_default();
             // Answer from the notification: its choices (as reactions in this
             // view), and Stop when the agent's harness has one.
+            // Text answers go where the prompt is: seen from the room view, a
+            // prompt in a thread is answered in that thread (its session), not
+            // as a new request in the room. Reactions stay with this view,
+            // whose timeline holds the event.
+            let reply_key = match &m.thread_root {
+                Some(root) if fluxchat_core::timeline::parse_thread_key(key).is_none() => thread_key(&room, root),
+                _ => key.to_string(),
+            };
             let mut actions: Vec<(String, Message)> = match self.agent_question(key, m) {
                 // A question: answering is replying with the choice's number.
                 Some(choices) => choices.into_iter().take(3)
-                    .map(|(n, label)| (format!("{n}. {label}"), Message::AgentSend(key.to_string(), n)))
+                    .map(|(n, label)| (format!("{n}. {label}"), Message::AgentSend(reply_key.clone(), n)))
                     .collect(),
                 None => self.agent_prompt(key, m).into_iter().take(3)
                     .map(|(emoji, label)| (format!("{emoji} {label}"), Message::AgentReact(key.to_string(), id.clone(), emoji)))
                     .collect(),
             };
             if let Some(stop) = self.agent_command_text(key, &self.harness_of(&m.sender).stop) {
-                actions.push(("Stop".into(), Message::AgentSend(key.to_string(), stop)));
+                actions.push(("Stop".into(), Message::AgentSend(reply_key, stop)));
             }
             crate::update::show_actionable_notification(
                 format!("{} needs you - {room_name}", m.sender_name),
@@ -2349,6 +2415,75 @@ mod tests {
     fn msg(id: &str, sender: &str, ts: u64) -> MessageInfo {
         // MessageInfo.timestamp is in seconds (the SDK's origin_server_ts / 1000).
         MessageInfo { event_id: id.into(), sender: sender.into(), body: id.into(), timestamp: ts / 1000, ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn an_unthreaded_request_is_one_run() {
+        let mut app = agent_app();
+        let now = now_ms();
+        // It answers in the room here (its last finished request did).
+        let mut earlier = msg("$earlier", "@me:x", now - 90_000);
+        earlier.reactions = vec![react(DONE, &["@bot:x"])];
+        let mut ask = msg("$ask", "@me:x", now - 5000);
+        ask.reactions = vec![react(WORKING, &["@bot:x"])];
+        app.messages_by_room.insert("!r:x".into(), vec![earlier, ask]);
+        app.refresh_agent_state("!r:x");
+        assert_eq!(app.run_state("!r:x"), Some(RunState::Working));
+        assert_eq!(app.run_state(&thread_key("!r:x", "$ask")), None, "no thread, no thread run");
+        assert_eq!(app.agent_runs.states.len(), 1);
+        assert_eq!(app.run_history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_prompt_in_a_thread_is_that_threads_and_is_one_record() {
+        let mut app = agent_app();
+        // No status reactions on requests: only its prompts say anything.
+        app.prefs.agent_harness.insert("@bot:x".into(), "claude-code".into());
+        let now = now_ms();
+        let ask = msg("$ask", "@me:x", now - 60_000);
+        let mut prompt = msg("$approve", "@bot:x", now - 20_000);
+        prompt.thread_root = Some("$ask".into());
+        prompt.reactions = vec![react("\u{2705}", &["@bot:x"]), react("\u{274c}", &["@bot:x"])];
+        let tk = thread_key("!r:x", "$ask");
+        // Seen from the room (the thread isn't open), refreshed a few times
+        // as reactions and receipts come in.
+        app.messages_by_room.insert("!r:x".into(), vec![ask.clone(), prompt.clone()]);
+        for _ in 0..3 {
+            app.refresh_agent_state("!r:x");
+        }
+        assert_eq!(app.run_state(&tk), Some(RunState::NeedsYou));
+        assert_eq!(app.run_state("!r:x"), None, "the room itself isn't waiting");
+        assert!(app.room_needs_you("!r:x"), "but it shows in the room list");
+        assert_eq!(app.run_info(&tk).unwrap().since, prompt.timestamp * 1000);
+        assert_eq!(app.run_history.len(), 1, "one prompt, one record");
+        // Answered: the agent takes its reactions back.
+        prompt.reactions = vec![react("\u{2705}", &["@me:x"])];
+        app.messages_by_room.insert("!r:x".into(), vec![ask, prompt]);
+        app.refresh_agent_state("!r:x");
+        assert_eq!(app.run_state(&tk), None);
+        assert!(!app.room_needs_you("!r:x"));
+        assert!(app.run_history[0].ended.is_some(), "and its record ends");
+    }
+
+    #[tokio::test]
+    async fn a_protocol_run_asked_inside_a_thread_stays_with_the_thread() {
+        let mut app = agent_app();
+        app.prefs.agent_harness.insert("@bot:x".into(), "generic".into());
+        let now = now_ms();
+        let mut root = msg("$root", "@me:x", now - 600_000);
+        root.thread_count = Some(3);
+        // A follow-up in the session, and the agent's status for it.
+        let mut again = msg("$again", "@me:x", now - 30_000);
+        again.thread_root = Some("$root".into());
+        let mut status = msg("$status", "@bot:x", now - 10_000);
+        status.thread_root = Some("$root".into());
+        status.agent = Some(serde_json::json!({"v": 1, "run": "$again", "state": "working", "cost_usd": 3.6}));
+        app.messages_by_room.insert("!r:x".into(), vec![root, again, status]);
+        app.refresh_agent_state("!r:x");
+        let tk = thread_key("!r:x", "$root");
+        assert_eq!(app.run_state(&tk), Some(RunState::Working));
+        assert_eq!(app.run_state("!r:x"), None, "the room isn't busy");
+        assert!(app.run_history.iter().all(|r| r.key == tk), "its cost is the session's");
     }
 
     #[tokio::test]

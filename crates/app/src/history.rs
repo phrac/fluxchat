@@ -191,6 +191,19 @@ impl FluxChat {
 
     /// Close the history entry of a run that went quiet while "working"
     /// (`stalled`): ended at its last sign of life.
+    /// End the record of a run that stopped being reported without a final
+    /// state (see `refresh_agent_state`).
+    pub(crate) fn close_run_record(&mut self, key: &str, started: u64) {
+        let Some(rec) = self.run_history.iter_mut()
+            .find(|r| r.key == key && r.started == started && r.ended.is_none())
+        else {
+            return;
+        };
+        rec.state = RunState::Done.label().to_string();
+        rec.ended = Some(now_ms());
+        self.save_run_history();
+    }
+
     pub(crate) fn end_stalled_run(&mut self, key: &str, run: &RunInfo) {
         let Some(i) = self.run_history.iter().position(|r| r.key == key && r.started == run.since && r.ended.is_none()) else {
             return;

@@ -55,6 +55,7 @@ static COMMANDS: &[Command] = &[
     Command { name: "/pins", usage: "", description: "Toggle pinned messages", needs_room: true },
     Command { name: "/gallery", usage: "", description: "Images and videos in this room or thread", needs_room: true },
     Command { name: "/files", usage: "", description: "Files in this room or thread", needs_room: true },
+    Command { name: "/images", usage: "[on|off]", description: "Hide or show this room's images and videos", needs_room: true },
     Command { name: "/clear", usage: "", description: "Clear scrollback", needs_room: true },
     Command { name: "/refresh", usage: "", description: "Drop cached Timeline and rebuild from event cache", needs_room: true },
     Command { name: "/shrug", usage: "[text]", description: r"Append ¯\_(ツ)_/¯", needs_room: true },
@@ -160,6 +161,20 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         "/pins" => CommandResult::Messages(vec![Message::TogglePins]),
         "/gallery" => CommandResult::Messages(vec![Message::OpenGallery(crate::state::GalleryTab::Media)]),
         "/files" => CommandResult::Messages(vec![Message::OpenGallery(crate::state::GalleryTab::Files)]),
+        "/images" => {
+            let hidden = current_room.as_deref().is_some_and(|r| state.room_media_hidden(r));
+            let want_hidden = match args.to_ascii_lowercase().as_str() {
+                "" => !hidden,
+                "on" | "show" => false,
+                "off" | "hide" => true,
+                _ => return CommandResult::Help("Usage: /images [on|off]".into()),
+            };
+            if want_hidden == hidden {
+                CommandResult::Noop
+            } else {
+                CommandResult::Messages(vec![Message::ToggleRoomMedia(current_room.clone())])
+            }
+        }
         "/quit" => CommandResult::Messages(vec![Message::Logout]),
 
         // --- Prefs ---
@@ -394,7 +409,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 if state.giphy_api_key.is_empty() {
                     CommandResult::Help("No Giphy API key set. Usage: /giphykey <key>".into())
                 } else {
-                    CommandResult::Help(format!("Giphy API key: {}...", &state.giphy_api_key[..state.giphy_api_key.len().min(8)]))
+                    CommandResult::Help(format!("Giphy API key: {}...", state.giphy_api_key.chars().take(8).collect::<String>()))
                 }
             } else {
                 CommandResult::Messages(vec![Message::SetGiphyKey(args.to_string())])
@@ -416,6 +431,9 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
                 } else {
                     CommandResult::Help(format!("Ignored: {}", list.join(", ")))
                 }
+            } else if state.ignored_users.contains(args) {
+                // The message toggles: ignoring twice must not unignore.
+                CommandResult::Help(format!("{args} is already ignored"))
             } else {
                 CommandResult::Messages(vec![Message::ToggleIgnoreUser(args.to_string())])
             }
@@ -423,6 +441,8 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
         "/unignore" => {
             if args.is_empty() {
                 CommandResult::Help("Usage: /unignore <user>".into())
+            } else if !state.ignored_users.contains(args) {
+                CommandResult::Help(format!("{args} isn't ignored"))
             } else {
                 CommandResult::Messages(vec![Message::ToggleIgnoreUser(args.to_string())])
             }
@@ -446,12 +466,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         // --- Status ---
         "/status" | "/away" => {
-            // Status/away — just show feedback (presence is handled by SDK automatically)
-            if args.is_empty() {
-                CommandResult::Help("Status cleared".into())
-            } else {
-                CommandResult::Help(format!("Status: {args}"))
-            }
+            CommandResult::Messages(vec![Message::SetStatus { away: cmd == "/away", text: args.to_string() }])
         }
 
         // --- Encryption ---
@@ -515,7 +530,15 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         // --- Directory ---
         "/users" => {
-            CommandResult::Help("User directory search coming soon".into())
+            // The New message dialog searches the user directory.
+            let mut messages = vec![
+                Message::OpenModal(crate::state::Modal::CreateDm),
+                Message::DmSearchChanged(args.to_string()),
+            ];
+            if !args.is_empty() {
+                messages.push(Message::DmSearchSubmit);
+            }
+            CommandResult::Messages(messages)
         }
         "/directory" => {
             CommandResult::Messages(vec![
@@ -526,15 +549,20 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
 
         // --- Polls ---
         "/poll" => {
-            if args.is_empty() {
-                CommandResult::Help("Usage: /poll <question> | <option1> | <option2>...".into())
-            } else {
-                CommandResult::Help("Poll creation coming soon".into())
+            let mut parts = args.split('|').map(str::trim).filter(|p| !p.is_empty());
+            let question = parts.next();
+            let answers: Vec<String> = parts.map(str::to_string).collect();
+            match question {
+                Some(question) if (2..=fluxchat_core::timeline::POLL_MAX_ANSWERS).contains(&answers.len()) => {
+                    CommandResult::Messages(vec![Message::PollCreate(question.to_string(), answers)])
+                }
+                _ => CommandResult::Help(format!(
+                    "Usage: /poll <question> | <option1> | <option2>... (2 to {} options)",
+                    fluxchat_core::timeline::POLL_MAX_ANSWERS,
+                )),
             }
         }
-        "/pollend" => {
-            CommandResult::Help("Poll ending coming soon".into())
-        }
+        "/pollend" => CommandResult::Messages(vec![Message::PollEnd(None, None)]),
 
         // --- Mute/unmute ---
         "/mute" => CommandResult::Messages(vec![Message::MuteRoom]),

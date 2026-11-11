@@ -19,10 +19,20 @@ fn store_dir() -> PathBuf {
     data_dir().join("matrix_store")
 }
 
+/// How long startup waits for the display name before going on without it
+/// (offline, the request would otherwise hold the app at "restoring").
+const DISPLAY_NAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// A client on the SDK store in `matrix_store/`, encrypted with `key`.
-async fn build_client(homeserver: &str, key: &[u8; 32]) -> Result<Client, AppError> {
-    Ok(Client::builder()
-        .server_name_or_homeserver_url(homeserver)
+/// `resolved_url` is the homeserver's base URL when it's already known (a
+/// restored session): no discovery, so no network needed to open the app.
+/// Otherwise `homeserver` is what the user typed and is discovered.
+async fn build_client(homeserver: &str, resolved_url: Option<&str>, key: &[u8; 32]) -> Result<Client, AppError> {
+    let builder = match resolved_url {
+        Some(url) => Client::builder().homeserver_url(url),
+        None => Client::builder().server_name_or_homeserver_url(homeserver),
+    };
+    Ok(builder
         .sqlite_store_with_config_and_cache_path(
             matrix_sdk::SqliteStoreConfig::new(store_dir()).key(Some(key)),
             None::<PathBuf>,
@@ -42,15 +52,52 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> anyhow::Result<T> + Sen
         .map_err(|e| AppError::Other(e.to_string()))
 }
 
-/// Start a fresh store for a new login: the old one belongs to another
-/// session (or none), and its key is about to be replaced.
+/// Delete the store (sign-out).
 fn clear_store() {
     let dir = store_dir();
     if dir.exists() {
-        info!("Clearing old matrix store for fresh login");
+        info!("Clearing the matrix store");
         let _ = std::fs::remove_dir_all(&dir);
     }
     crate::store_migration::discard(&dir);
+    crate::store_migration::drop_aside(&dir);
+}
+
+/// Sign in on a fresh store, keeping the current one until `authenticate`
+/// succeeds: only then is it another session's. A failed attempt (wrong
+/// password, cancelled SSO, no network) puts it back untouched — the saved
+/// session and its keys still work once whatever stopped the restore is gone.
+async fn sign_in<F, Fut>(
+    state: &AppState,
+    homeserver: &str,
+    authenticate: F,
+) -> Result<(Client, LoginResult), AppError>
+where
+    F: FnOnce(Client) -> Fut,
+    Fut: std::future::Future<Output = Result<Client, AppError>>,
+{
+    let dir = store_dir();
+    crate::store_migration::set_aside(&dir);
+    let key = vault::new_key().map_err(|e| AppError::Other(e.to_string()));
+    let attempt = match key {
+        Ok(key) => match build_client(homeserver, None, &key).await {
+            Ok(client) => authenticate(client).await.map(|client| (client, key)),
+            Err(e) => Err(e),
+        },
+        Err(e) => Err(e),
+    };
+    match attempt {
+        Ok((client, key)) => {
+            crate::store_migration::drop_aside(&dir);
+            crate::store_migration::discard(&dir);
+            complete_login(state, client, homeserver, key).await
+        }
+        Err(e) => {
+            // The attempt's client is gone by now (dropped with its error).
+            crate::store_migration::put_back(&dir);
+            Err(e)
+        }
+    }
 }
 
 /// After a login: keep the session and store key in the vault, start the
@@ -71,6 +118,7 @@ async fn complete_login(
         device_id: session.meta.device_id.to_string(),
         access_token: session.tokens.access_token,
         refresh_token: session.tokens.refresh_token,
+        homeserver_url: Some(client.homeserver().to_string()),
     }, &key);
     let dir = data_dir();
     let protection = blocking(move || vault::save(&dir, &vault)).await?;
@@ -92,7 +140,8 @@ async fn start_client(
     if let Err(e) = client.event_cache().subscribe() {
         warn!("Failed to subscribe event cache: {e}");
     }
-    let display_name = client.account().get_display_name().await.ok().flatten();
+    let display_name = tokio::time::timeout(DISPLAY_NAME_TIMEOUT, client.account().get_display_name())
+        .await.ok().and_then(Result::ok).flatten();
     state.set_client(client.clone()).await;
     Ok((client, LoginResult { user_id, display_name, protection }))
 }
@@ -104,16 +153,13 @@ pub async fn login(
     username: &str,
     password: &str,
 ) -> Result<(Client, LoginResult), AppError> {
-    clear_store();
-    let key = vault::new_key().map_err(|e| AppError::Other(e.to_string()))?;
-    let client = build_client(homeserver, &key).await?;
-
-    client.matrix_auth()
-        .login_username(username, password)
-        .initial_device_display_name("FluxChat")
-        .await?;
-
-    complete_login(state, client, homeserver, key).await
+    sign_in(state, homeserver, |client| async move {
+        client.matrix_auth()
+            .login_username(username, password)
+            .initial_device_display_name("FluxChat")
+            .await?;
+        Ok(client)
+    }).await
 }
 
 /// Log out, clearing the saved session and matrix store.
@@ -188,23 +234,20 @@ pub async fn login_sso(
     state: &AppState,
     homeserver: &str,
 ) -> Result<(Client, LoginResult), AppError> {
-    clear_store();
-    let key = vault::new_key().map_err(|e| AppError::Other(e.to_string()))?;
-    let client = build_client(homeserver, &key).await?;
-
-    client.matrix_auth()
-        .login_sso(|url| async move {
-            // Open the SSO URL in the system browser
-            if let Err(e) = open::that(&url) {
-                warn!("Failed to open browser: {e}");
-            }
-            Ok(())
-        })
-        .initial_device_display_name("FluxChat")
-        .await
-        .map_err(|e| AppError::Other(format!("SSO login failed: {e}")))?;
-
-    complete_login(state, client, homeserver, key).await
+    sign_in(state, homeserver, |client| async move {
+        client.matrix_auth()
+            .login_sso(|url| async move {
+                // Open the SSO URL in the system browser
+                if let Err(e) = open::that(&url) {
+                    warn!("Failed to open browser: {e}");
+                }
+                Ok(())
+            })
+            .initial_device_display_name("FluxChat")
+            .await
+            .map_err(|e| AppError::Other(format!("SSO login failed: {e}")))?;
+        Ok(client)
+    }).await
 }
 
 /// Restore the saved session: from the vault, or once from the session
@@ -213,6 +256,9 @@ pub async fn login_sso(
 pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginResult)>, AppError> {
     let dir = data_dir();
     let store = store_dir();
+    // A sign-in attempt that never finished (the app quit during it) left
+    // the store it set aside: that is the saved session's store.
+    crate::store_migration::put_back(&store);
     let vault = {
         let dir = dir.clone();
         blocking(move || vault::load(&dir)).await?
@@ -257,7 +303,17 @@ pub async fn restore_session(state: &AppState) -> Result<Option<(Client, LoginRe
     let key = vault.store_key().map_err(|e| AppError::Other(e.to_string()))?;
 
     info!("Restoring session for {} (device {}, {protection:?})", user_id, device_id);
-    let client = build_client(&session.homeserver, &key).await?;
+    let client = build_client(&session.homeserver, session.homeserver_url.as_deref(), &key).await?;
+    // Sessions saved before the URL was kept: remember it now, so the next
+    // launch doesn't need the network to find the server again.
+    if session.homeserver_url.is_none() {
+        let mut updated = vault.clone();
+        updated.session.homeserver_url = Some(client.homeserver().to_string());
+        let dir = dir.clone();
+        if let Err(e) = blocking(move || vault::save(&dir, &updated)).await {
+            warn!("Couldn't save the homeserver URL with the session: {e}");
+        }
+    }
 
     let matrix_session = MatrixSession {
         meta: SessionMeta { user_id: user_id.clone(), device_id },

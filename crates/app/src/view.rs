@@ -1378,14 +1378,17 @@ impl FluxChat {
                 col = col.push(self.context_menu_item(
                     "Copy Link", SVG_LINK, rid.clone(), "copy_link",
                 ));
+                col = col.push(if self.room_media_hidden(&rid) {
+                    self.context_menu_entry("Show images", crate::icons::SVG_IMAGE, Message::ToggleRoomMedia(Some(rid.clone())))
+                } else {
+                    self.context_menu_entry("Hide images", crate::icons::SVG_IMAGE_OFF, Message::ToggleRoomMedia(Some(rid.clone())))
+                });
                 {
                     use crate::panes::Placement;
                     let at = |p: Placement| Message::OpenAt(rid.clone(), p);
-                    if self.locate(&rid).is_some() {
-                        if self.selected_room_id.as_deref() != Some(rid.as_str()) {
-                            col = col.push(self.context_menu_entry("Go to room", SVG_HASH, at(Placement::Auto)));
-                            col = col.push(self.context_menu_divider());
-                        }
+                    if self.locate(&rid).is_some() && self.selected_room_id.as_deref() != Some(rid.as_str()) {
+                        col = col.push(self.context_menu_entry("Go to room", SVG_HASH, at(Placement::Auto)));
+                        col = col.push(self.context_menu_divider());
                     }
                     col = col.push(self.context_menu_entry("Open to the right", SVG_SPLIT_V, at(Placement::Right)));
                     col = col.push(self.context_menu_entry("Open below", SVG_SPLIT_H, at(Placement::Below)));
@@ -2715,6 +2718,16 @@ impl FluxChat {
             .push((!narrow).then_some(pin_btn))
             .push((!narrow).then(|| make_action_btn(crate::icons::SVG_GALLERY, Message::OpenGallery(crate::state::GalleryTab::Media),
                 matches!(self.modal, Some(crate::state::Modal::Gallery)), "Gallery (\u{2318}/Ctrl+Shift+G)")))
+            .push((!narrow).then(|| {
+                // Reads as pressed while this room's images are hidden.
+                let hidden = self.room_media_hidden(room_id);
+                make_action_btn(
+                    if hidden { crate::icons::SVG_IMAGE_OFF } else { crate::icons::SVG_IMAGE },
+                    Message::ToggleRoomMedia(Some(room_id.to_string())),
+                    hidden,
+                    if hidden { "Show images here (\u{2318}/Ctrl+Shift+H)" } else { "Hide images here (\u{2318}/Ctrl+Shift+H)" },
+                )
+            }))
             .push((!in_title).then(|| row![
                 divider(),
                 make_action_btn(SVG_SPLIT_V, Message::PaneSplit(iced::widget::pane_grid::Axis::Vertical), false, "Split side by side (Ctrl+B %)"),
@@ -3408,6 +3421,9 @@ impl FluxChat {
                     if let iced::keyboard::Key::Character(c) = key {
                         if modifiers.shift() && c.as_str().eq_ignore_ascii_case("g") {
                             return Some(Message::OpenGallery(crate::state::GalleryTab::Media));
+                        }
+                        if modifiers.shift() && c.as_str().eq_ignore_ascii_case("h") {
+                            return Some(Message::ToggleRoomMedia(None));
                         }
                         if c.as_str() == "k" || c.as_str() == "K" {
                             return Some(Message::ToggleQuickSwitcher);

@@ -30,6 +30,8 @@ When a message can't be decrypted, fluxchat explains why under it when it can te
 - the message was sent before you joined;
 - key backup isn't set up.
 
+A message whose key arrives after it (common right after your computer wakes, when a long backlog syncs) unlocks by itself once the key is in, in the room and in its thread.
+
 ## Data on this computer
 
 Your sign-in (access token) and a random key are kept in the system's credential store: the **macOS Keychain**, **Windows Credential Manager**, or the **Secret Service** on Linux (GNOME Keyring, KWallet). That key encrypts everything FluxChat stores locally that matters: your encryption keys, sync data, cached messages and media. Someone who copies FluxChat's data folder can't read it without the key.

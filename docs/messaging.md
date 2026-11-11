@@ -39,7 +39,7 @@ Type `@` and part of a name to get suggestions; **Tab** or click to insert. Ment
 ## Replies, edits, deletions
 
 - **Reply**: hover a message and click the reply arrow. The quote is shown above your message; click a quote to jump to the original.
-- **Edit**: hover your message and click the pencil, or press **↑** in an empty message box to edit your last message. Edited messages say *(edited)*.
+- **Edit**: hover your message and click the pencil, or press **↑** in an empty message box to edit your last message. Edited messages say *(edited)*. Editing a message with a file edits its **caption** (clear it to remove the caption); the file itself stays. A `/me` action stays an action.
 - **Delete**: hover your message and click the trash can. With *Deleted messages* on in Preferences, a "Message deleted" placeholder remains.
 - **Sending and retry**: a message on its way shows *sending… [cancel]*, and one that failed shows *failed to send [retry] [delete]*. **cancel** and **delete** take it back before it reaches anyone.
   - After a network error, fluxchat retries by itself, less often the longer it keeps failing.
@@ -58,6 +58,15 @@ Hover a message and click the smiley to pick a reaction, or click an existing re
 - Files show as download cards; PDFs show their first page on the card. Videos play inline.
 - Files over your server's upload limit are rejected with a message before uploading.
 
+## Hiding a room's images
+
+The picture button in the room header hides every image and video in that room behind an "Image hidden" card; click it again to bring them back. Also **Ctrl/⌘+Shift+H**, `/images` (`/images off`, `/images on`), *Hide images in this room* in the command palette, or *Hide images* in the room's right-click menu.
+
+- It's per room and remembered on this computer. The room's threads follow it.
+- Everything is covered, your own images included, along with link preview thumbnails and PDF first pages. Nothing new is downloaded while a room is hidden.
+- Click one hidden image to show just that one. Hiding the room again covers it.
+- For a rule across all rooms (never, or only in private rooms), use [Settings → Preferences → Media](settings.md).
+
 ## Gallery
 
 The grid button in the room header (or **Ctrl/⌘+Shift+G**, `/gallery`, or *Gallery* in the command palette) shows every image and video in the room, or in the thread you're viewing, as thumbnails grouped by month, newest first. The **Files** tab (`/files`) lists files and audio with their size, sender and date, each with **Download** and **Jump to message**.
@@ -66,7 +75,7 @@ The grid button in the room header (or **Ctrl/⌘+Shift+G**, `/gallery`, or *Gal
 - In an encrypted room the server can't tell which messages have attachments, so fluxchat reads through the history itself, which takes longer. It stops after about 2,000 messages at a time; click **Load older** to keep going.
 - Click an image to view it large, with **←** / **→** (or the arrow buttons) to step through the gallery, and **Jump to message** to see it in the conversation. **Esc** or clicking the image goes back to the gallery.
 - Click a video to go to its message, where it plays.
-- Media hidden by your *Show media* setting stays covered: click once to show it, again to open it.
+- Media hidden by your *Show media* setting, or in a room whose images you've [hidden](#hiding-a-rooms-images), stays covered: click once to show it, again to open it.
 - Thumbnails only download as they come into view. GIFs animate in the grid when *Autoplay GIFs* is on, and always when opened.
 - **Jump to message** loads older history until it reaches the message. A thread reply opens its thread.
 
@@ -76,7 +85,7 @@ The grid button in the room header (or **Ctrl/⌘+Shift+G**, `/gallery`, or *Gal
 
 ## Polls
 
-`/poll Question | Option 1 | Option 2 | …` creates a poll. Click an option to vote; results show as bars. `/pollend` ends your latest poll.
+`/poll Question | Option 1 | Option 2 | …` creates a poll (2 to 20 options, one vote each). Click an option to vote, or another one to change your vote; each option fills with its share of the votes and yours is marked ✓. **End poll** under your own poll, or `/pollend` for your latest one here, closes it.
 
 ## Location
 

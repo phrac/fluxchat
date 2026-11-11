@@ -36,7 +36,8 @@ pub struct FileDiff {
 
 /// `-a,b` / `+c,d` → the start line.
 fn range_start(part: &str) -> u32 {
-    part[1..].split(',').next().and_then(|n| n.parse().ok()).unwrap_or(1)
+    // `get`: agents write headers like `@@ … @@`, where byte 1 isn't a boundary.
+    part.get(1..).and_then(|s| s.split(',').next()).and_then(|n| n.parse().ok()).unwrap_or(1)
 }
 
 /// A path from `--- a/x` / `+++ b/x` / `diff --git a/x b/x` (prefix dropped).
@@ -153,5 +154,16 @@ mod tests {
         assert_eq!(diffs.len(), 1);
         assert_eq!(parse(&diffs[0])[0].path, "x.py");
         assert!(parse("just some text").is_empty());
+    }
+
+    /// Agents elide or prettify hunk headers; this is parsed on every render
+    /// of the message, so it must not panic.
+    #[test]
+    fn odd_hunk_headers_do_not_panic() {
+        for header in ["@@ \u{2026} @@", "@@ \u{2212}1,3 +1,3 @@", "@@ @@", "@@"] {
+            let files = parse(&format!("--- a/x\n+++ b/x\n{header}\n-old\n+new\n"));
+            assert_eq!(files.len(), 1, "{header}");
+            assert_eq!((files[0].added, files[0].removed), (1, 1), "{header}");
+        }
     }
 }

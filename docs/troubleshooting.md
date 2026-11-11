@@ -17,6 +17,7 @@ Presence comes from their homeserver. If their server doesn't share presence, or
 The explanation under the message says why: unknown device, changed keys, key never shared, sent before you joined, or no key backup.
 - Verify this session, and recover from your key backup (Settings → Security).
 - Messages encrypted to keys you never received can't be recovered.
+- **An agent's messages stop decrypting until its gateway is restarted**: the agent's client rotated its room key and this session wasn't given the new one, so it says "The key for this message was never shared with this session". fluxchat can only ask its own devices for keys, not the agent's, so the fix is on the sender's side: restarting the gateway makes it share a new key. If it keeps happening, the gateway's log around the time of the first locked message says which devices it shared the key with.
 
 ## "key backup not connected"
 
@@ -30,7 +31,9 @@ The connection to your homeserver dropped; fluxchat reconnects automatically, re
 
 The error is shown on the sign-in screen. fluxchat never deletes your saved session or encryption keys on its own. A common cause is another fluxchat instance still running and holding the database; quit it and try again.
 
-If it says the saved session couldn't be read from the system keyring, the keyring is locked or FluxChat was denied access: unlock it (or choose **Always Allow** when macOS asks) and restart. Signing in again also works, but creates a new session that needs verifying.
+If it says the saved session couldn't be read from the system keyring, the keyring is locked or FluxChat was denied access: unlock it (or choose **Always Allow** when macOS asks) and restart. Signing in again also works, but creates a new session that needs verifying. A sign-in that doesn't go through (wrong password, cancelled SSO, no network) leaves the saved session and its keys as they were, so you can still fix the cause and restart.
+
+Launching with no connection no longer ends at the sign-in screen: the saved session opens and fluxchat keeps trying to reconnect. (The first launch after updating from an older version still needs the network once, to record the server's address.)
 
 ## GIF search says it needs a key
 

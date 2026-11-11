@@ -138,6 +138,7 @@ Ideas and pull requests are welcome.
 - Member list with filter and presence
 - Ignore users (synced to your account, list in Settings), direct messages
 - Media previews: always / private rooms only / never, click to show; shared with Element
+- Hide one room's images with a header button (Ctrl/⌘+Shift+H, `/images`), remembered per room
 
 ### Encryption
 - End-to-end encryption, emoji (SAS) verification, cross-signing

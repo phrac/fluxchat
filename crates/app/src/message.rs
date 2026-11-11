@@ -588,6 +588,18 @@ pub enum Message {
     SetMediaPreviews(fluxchat_core::profile::MediaPreviewConfig),
     /// Show one hidden image/video: (view key, event id).
     RevealMedia(String, String),
+    /// Hide or show a room's images and videos (a view key; `None` = the
+    /// room on screen).
+    ToggleRoomMedia(Option<String>),
+    /// `/status` / `/away`: set (or with empty text clear) our status message.
+    SetStatus { away: bool, text: String },
+    /// `/poll`: start a poll in the view on screen (question, answers).
+    PollCreate(String, Vec<String>),
+    /// Vote in a poll: (view key, poll event id, answer id).
+    PollVote(String, String, String),
+    /// Close a poll: (view key, poll event id). `/pollend` (`None`s) closes
+    /// your latest open poll in the view on screen.
+    PollEnd(Option<String>, Option<String>),
     /// An ignore-list change finished: (user, now ignored?, error).
     IgnoreDone(String, bool, Option<String>),
     SettingsDeactivatePasswordChanged(String),

@@ -41,10 +41,11 @@ The people button in the room header toggles it.
 
 ## Finding people
 
-`/users <query>` searches your server's user directory. `/whois <user>` shows someone's info.
+`/users <query>` searches your server's user directory (it opens the New message dialog with the results). `/whois <user>` shows someone's info.
 
 ## Your own presence and status
 
-- `/status <message>` sets your status message.
-- `/away [message]` marks you away.
+- `/status <message>` sets your status message; `/status` alone clears it.
+- `/away [message]` marks you away, with an optional message.
+- Both need a homeserver with presence turned on (some large public servers have it off).
 - Turn off *Share presence* in [Preferences](settings.md#preferences) to stop showing when you're online.
