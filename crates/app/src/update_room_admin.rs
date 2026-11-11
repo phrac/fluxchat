@@ -500,4 +500,150 @@ mod tests {
         let _ = app.update(Message::RevealMedia("!priv:x".into(), "$img-@a:x".into()));
         assert!(!app.media_hidden("!priv:x", &image("@a:x")));
     }
+
+    #[tokio::test]
+    async fn room_toggle_hides_and_shows_its_images() {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        app.rooms = vec![room("!a:x"), room("!b:x")];
+        let image = |sender: &str| fluxchat_core::MessageInfo {
+            event_id: format!("$img-{sender}"), sender: sender.into(), image_mxc: Some("mxc://x/1".into()),
+            ..Default::default()
+        };
+        app.messages_by_room.insert("!a:x".into(), vec![image("@a:x"), image("@me:x")]);
+        assert!(!app.media_hidden("!a:x", &image("@a:x")), "shown by default");
+
+        let _ = app.update(Message::ToggleRoomMedia(Some("!a:x".into())));
+        assert!(app.media_hidden("!a:x", &image("@a:x")));
+        assert!(app.media_hidden("!a:x", &image("@me:x")), "the room toggle hides ours too");
+        assert!(app.media_hidden("thread::!a:x::$root", &image("@a:x")), "threads follow their room");
+        assert!(!app.media_hidden("!b:x", &image("@a:x")), "other rooms are untouched");
+        assert_eq!(app.core.db.get_setting("hidden_media_rooms").as_deref(), Some(r#"["!a:x"]"#));
+
+        // One image can still be clicked open…
+        let _ = app.update(Message::RevealMedia("!a:x".into(), "$img-@a:x".into()));
+        assert!(!app.media_hidden("!a:x", &image("@a:x")));
+        // …and hiding the room again covers it.
+        let _ = app.update(Message::ToggleRoomMedia(Some("!a:x".into())));
+        assert!(!app.media_hidden("!a:x", &image("@me:x")), "showing the room shows everything");
+        let _ = app.update(Message::ToggleRoomMedia(Some("thread::!a:x::$root".into())));
+        assert!(app.media_hidden("!a:x", &image("@a:x")), "a thread's toggle is its room's; revealed images hide again");
+
+        // No argument: the room on screen.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        let _ = app.update(Message::ToggleRoomMedia(None));
+        assert!(app.room_media_hidden("!b:x"));
+        let _ = app.update(Message::ToggleRoomMedia(None));
+        assert!(!app.room_media_hidden("!b:x"));
+        assert_eq!(app.core.db.get_setting("hidden_media_rooms").as_deref(), Some(r#"["!a:x"]"#));
+
+        // `/images`: no argument toggles; on/off only act when they change something.
+        use crate::commands::{dispatch, CommandResult};
+        assert!(matches!(dispatch("/images", &app), CommandResult::Messages(_)));
+        assert!(matches!(dispatch("/images off", &app), CommandResult::Messages(_)));
+        assert!(matches!(dispatch("/images on", &app), CommandResult::Noop), "already showing");
+        assert!(matches!(dispatch("/images sideways", &app), CommandResult::Help(_)));
+    }
+
+    #[tokio::test]
+    async fn room_settings_close_when_the_room_changes_under_them() {
+        use crate::state::Modal;
+        let mut app = app();
+        app.rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenModal(Modal::RoomSettings));
+        assert!(matches!(app.modal, Some(Modal::RoomSettings)));
+        // Its own thread is still the same room.
+        let _ = app.update(Message::SelectRoom("thread::!a:x::$root".into()));
+        assert!(matches!(app.modal, Some(Modal::RoomSettings)));
+        // Another room (a notification click, Alt+arrows): A's fields must
+        // not be saved onto B.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(app.modal.is_none());
+        // Dialogs that carry their own target stay.
+        let _ = app.update(Message::OpenModal(Modal::Gallery));
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        assert!(matches!(app.modal, Some(Modal::Gallery)));
+    }
+
+    #[tokio::test]
+    async fn logout_forgets_the_accounts_state() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.prompt_history = vec!["a secret prompt".into()];
+        app.snippets = vec![("s".into(), "text".into())];
+        app.drafts.insert("!a:x".into(), "half a message".into());
+        app.input_text = "typing".into();
+        app.call_room_id = Some("!a:x".into());
+        let _ = app.update(Message::Logout);
+        assert!(app.prompt_history.is_empty() && app.snippets.is_empty() && app.drafts.is_empty());
+        assert!(app.input_text.is_empty() && app.run_history.is_empty() && app.mentions.is_empty());
+        assert!(app.call_room_id.is_none(), "a call ends with the session");
+        assert_eq!(app.windows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn commands_parse_polls_and_refuse_to_toggle_ignores() {
+        use crate::commands::{dispatch, CommandResult};
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        match dispatch("/poll Lunch? | Pizza | Sushi |  ", &app) {
+            CommandResult::Messages(m) => assert!(matches!(&m[..],
+                [Message::PollCreate(q, a)] if q == "Lunch?" && a == &["Pizza".to_string(), "Sushi".to_string()])),
+            _ => panic!("a poll"),
+        }
+        assert!(matches!(dispatch("/poll Lunch? | Pizza", &app), CommandResult::Help(_)), "one option isn't a poll");
+        assert!(matches!(dispatch("/status in a meeting", &app), CommandResult::Messages(_)));
+        // The message toggles, so the commands check first.
+        assert!(matches!(dispatch("/unignore @a:x", &app), CommandResult::Help(_)));
+        assert!(matches!(dispatch("/ignore @a:x", &app), CommandResult::Messages(_)));
+        app.ignored_users.insert("@a:x".into());
+        assert!(matches!(dispatch("/ignore @a:x", &app), CommandResult::Help(_)));
+        assert!(matches!(dispatch("/unignore @a:x", &app), CommandResult::Messages(_)));
+    }
+
+    #[test]
+    fn editing_an_attachment_edits_its_caption() {
+        let image = fluxchat_core::MessageInfo {
+            body: "cat.png".into(), image_mxc: Some("mxc://x/1".into()), caption: Some("look at her".into()),
+            ..Default::default()
+        };
+        assert_eq!(crate::update::editable_text(&image), "look at her");
+        let bare = fluxchat_core::MessageInfo { body: "report.pdf".into(), file_mxc: Some("mxc://x/2".into()), ..Default::default() };
+        assert_eq!(crate::update::editable_text(&bare), "", "never the file name");
+        let text = fluxchat_core::MessageInfo { body: "hello".into(), ..Default::default() };
+        assert_eq!(crate::update::editable_text(&text), "hello");
+    }
+
+    #[tokio::test]
+    async fn thread_view_takes_the_rooms_late_decrypted_reply() {
+        use crate::message::SyncEvent;
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        app.rooms = vec![room("!a:x")];
+        let thread = "thread::!a:x::$root";
+        let reply = |body: &str, undecryptable: bool| fluxchat_core::MessageInfo {
+            event_id: "$reply".into(), sender: "@agent:x".into(), body: body.into(),
+            thread_root: Some("$root".into()), timestamp: 10,
+            utd: undecryptable.then(|| fluxchat_core::UtdInfo {
+                session_id: "s".into(), sender_key: None, device_id: None, cause: "Unknown".into(),
+            }),
+            ..Default::default()
+        };
+        let body_in = |app: &crate::state::FluxChat, key: &str| app.messages_by_room[key][0].body.clone();
+
+        // The reply arrives before its key: undecryptable in both views.
+        let _ = app.update(Message::SyncEvent(SyncEvent::MessagesUpdated("!a:x".into(), vec![reply("locked", true)])));
+        let _ = app.update(Message::SyncEvent(SyncEvent::MessagesUpdated(thread.into(), vec![reply("locked", true)])));
+        assert!(app.messages_by_room[thread][0].utd.is_some());
+
+        // The key arrives: the SDK re-decrypts the room's copy only. The
+        // thread's watcher re-sends its (still locked) list on request.
+        let _ = app.update(Message::SyncEvent(SyncEvent::MessagesUpdated("!a:x".into(), vec![reply("the answer", false)])));
+        let _ = app.update(Message::SyncEvent(SyncEvent::MessagesUpdated(thread.into(), vec![reply("locked", true)])));
+        assert_eq!(body_in(&app, thread), "the answer");
+        assert!(app.messages_by_room[thread][0].utd.is_none());
+    }
 }

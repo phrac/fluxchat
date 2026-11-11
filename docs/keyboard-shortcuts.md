@@ -11,6 +11,7 @@
 | Ctrl/⌘ + I | Mentions inbox |
 | Ctrl/⌘ + F | Search the current room |
 | Ctrl/⌘ + Shift + G | Gallery of the room's (or thread's) images, videos and files |
+| Ctrl/⌘ + Shift + H | Hide / show the current room's images and videos |
 | ← / → | In an image opened from the gallery: newer / older image |
 | Ctrl/⌘ + [ | Hide / show the room list |
 | Ctrl/⌘ + ] | Hide / show the member list |

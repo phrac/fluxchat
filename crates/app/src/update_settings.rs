@@ -603,6 +603,39 @@ impl FluxChat {
                     None => Task::none(),
                 })
             }
+            Message::ToggleRoomMedia(key) => {
+                self.context_menu = None;
+                let Some(room) = key.as_deref().or(self.selected_room_id.as_deref())
+                    .map(|k| fluxchat_core::timeline::real_room_id(k).to_string())
+                else {
+                    return Some(Task::none());
+                };
+                let task = if self.hidden_media_rooms.remove(&room) {
+                    // Showing again: fetch what the views on screen skipped.
+                    self.resolve_visible_media()
+                } else {
+                    // Hiding the room also re-hides what was clicked open in it.
+                    let in_room = |key: &str| fluxchat_core::timeline::real_room_id(key) == room;
+                    let shown: Vec<String> = self.messages_by_room.iter()
+                        .filter(|(key, _)| in_room(key))
+                        .flat_map(|(_, msgs)| msgs.iter())
+                        .chain(self.gallery.iter().filter(|g| in_room(&g.view_key)).flat_map(|g| g.items.iter()))
+                        .filter(|m| self.revealed_media.contains(&m.event_id))
+                        .map(|m| m.event_id.clone())
+                        .collect();
+                    for event_id in shown {
+                        self.revealed_media.remove(&event_id);
+                    }
+                    self.hidden_media_rooms.insert(room);
+                    Task::none()
+                };
+                let mut rooms: Vec<&String> = self.hidden_media_rooms.iter().collect();
+                rooms.sort();
+                if let Ok(json) = serde_json::to_string(&rooms) {
+                    let _ = self.core.db.set_setting("hidden_media_rooms", &json);
+                }
+                Some(task)
+            }
             Message::IgnoredUsersLoaded(users) => {
                 self.ignored_users = users.into_iter().collect();
                 Some(Task::none())

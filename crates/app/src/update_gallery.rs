@@ -236,7 +236,7 @@ impl FluxChat {
 
     /// Show a view and scroll to one of its messages, loading older history
     /// until it turns up (see `continue_jump_search`).
-    fn jump_to_message(&mut self, key: String, event_id: String) -> Task<Message> {
+    pub(crate) fn jump_to_message(&mut self, key: String, event_id: String) -> Task<Message> {
         let select = if self.selected_room_id.as_deref() != Some(key.as_str()) {
             self.update(Message::SelectRoom(key.clone()))
         } else {

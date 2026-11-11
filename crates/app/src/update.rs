@@ -41,6 +41,33 @@ static MEDIA_FETCHES: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(MEDIA_FETCH_CONCURRENCY));
 /// How long to wait before retrying an inline image / video thumbnail that failed.
 const IMAGE_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a message carries an attachment (so its text is a caption).
+fn has_attachment(msg: &fluxchat_core::MessageInfo) -> bool {
+    msg.image_mxc.is_some() || msg.is_video || msg.file_mxc.is_some() || msg.audio_mxc.is_some()
+}
+
+/// What editing this message replaces.
+fn edit_kind(msg: &fluxchat_core::MessageInfo) -> fluxchat_core::messages::EditKind {
+    use fluxchat_core::messages::EditKind;
+    if has_attachment(msg) {
+        EditKind::Caption
+    } else if msg.is_emote {
+        EditKind::Emote
+    } else {
+        EditKind::Text
+    }
+}
+
+/// The text the composer starts an edit with: an attachment's caption (its
+/// body is the file name), else the message.
+pub(crate) fn editable_text(msg: &fluxchat_core::MessageInfo) -> String {
+    if has_attachment(msg) {
+        msg.caption.clone().unwrap_or_default()
+    } else {
+        msg.body.clone()
+    }
+}
 /// Mentions kept in the inbox / fetched from the server.
 const MENTIONS_LIMIT: usize = 200;
 const MENTIONS_FETCH: u32 = 50;
@@ -386,6 +413,55 @@ impl FluxChat {
 
     /// Elm-style update: process a message and return a task.
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // Room Settings, Invite and DevTools act on the room on screen, and
+        // show what was loaded for it when they opened. If the selection
+        // moves under one (a notification click, Alt+arrows, the palette),
+        // close it rather than apply room A's fields to room B.
+        let bound_to = self.room_bound_modal()
+            .then(|| self.active_real_room().map(str::to_string))
+            .flatten();
+        let task = self.update_inner(message);
+        if let Some(room) = bound_to {
+            if self.room_bound_modal() && self.active_real_room() != Some(room.as_str()) {
+                self.modal = None;
+            }
+        }
+        task
+    }
+
+    /// Send ready-made content into the view on screen (the thread, in a
+    /// thread view) through its Timeline; failures go to the notice line.
+    fn send_content_here(
+        &self,
+        content: fluxchat_core::ruma::events::room::message::RoomMessageEventContent,
+        failed: &'static str,
+    ) -> Task<Message> {
+        let Some(key) = self.selected_room_id.clone() else { return Task::none() };
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let client = core.get_client().await.map_err(|e| e.to_string())?;
+                fluxchat_core::timeline::send_content(&client, &core.timelines, &key, content)
+                    .await.map_err(|e| e.to_string())
+            },
+            move |result| match result {
+                Ok(()) => Message::Noop,
+                Err(e) => Message::ShowError(format!("{failed}: {e}")),
+            },
+        )
+    }
+
+    /// Whether the open dialog works on whichever room is selected.
+    fn room_bound_modal(&self) -> bool {
+        match self.modal {
+            Some(crate::state::Modal::RoomSettings | crate::state::Modal::DevTools) => true,
+            // An invite opened for a named room or space carries its target.
+            Some(crate::state::Modal::Invite) => self.invite_target_id.is_none(),
+            _ => false,
+        }
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             // --- Auth ---
             // iced's inputs have no native Tab traversal: the keys
@@ -543,9 +619,54 @@ impl FluxChat {
                 self.deactivating = false;
                 self.modal = None;
                 self.sync_running = false;
+                // Everything else that belongs to the account: the next
+                // sign-in here may be someone else, and the loaders only
+                // overwrite what the (now wiped) store has.
+                self.prompt_history.clear();
+                self.snippets.clear();
+                self.run_history.clear();
+                self.run_texts = Default::default();
+                self.agent_runs = Default::default();
+                self.budgets = Default::default();
+                self.compare = Default::default();
+                self.review = None;
+                self.mentions.clear();
+                self.pending_jump = None;
+                self.gallery = None;
+                self.search_results.clear();
+                self.pinned_messages.clear();
+                self.thread_list.clear();
+                self.room_threads.clear();
+                self.context_threads = None;
+                self.drafts.clear();
+                self.pane_inputs.clear();
+                self.input_text.clear();
+                self.input_content = iced::widget::text_editor::Content::new();
+                self.reply_to = None;
+                self.edit_event = None;
+                self.upload_pending = None;
+                self.windows = vec![crate::panes::Window::new(None)];
+                self.active_window = 0;
+                // A call in progress ends with the session: hang up, and take
+                // our membership out of the room while the token still works.
+                crate::update_call::set_call_on_exit(&self.core, None);
+                if let Some(tx) = self.call_disconnect_tx.take() {
+                    let _ = tx.send(true);
+                }
+                self.call_mute_tx = None;
+                self.call_participants.clear();
+                self.call_state = fluxchat_core::rtc::CallConnectionState::Disconnected;
+                let call_room = self.call_room_id.take();
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
+                        if let Some(room_id) = call_room {
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                                if let Ok(client) = core.get_client().await {
+                                    let _ = fluxchat_core::rtc::leave_call(&client, &room_id).await;
+                                }
+                            }).await;
+                        }
                         if let Err(e) = fluxchat_core::auth::logout(&core).await {
                             tracing::warn!("Logout failed: {e}");
                         }
@@ -807,6 +928,13 @@ impl FluxChat {
                     // so it replaces what we had outright — except messages we
                     // deleted whose redaction hasn't reached the timeline yet.
                     let mut merged = new_messages;
+                    // A thread view never re-decrypts a message whose key came
+                    // late (SDK 0.18); its room's timeline does, so use that.
+                    if let Some((parent, _)) = fluxchat_core::timeline::parse_thread_key(&room_id) {
+                        if let Some(room_msgs) = self.messages_by_room.get(parent) {
+                            fluxchat_core::timeline::fill_decrypted_from_room(&mut merged, room_msgs);
+                        }
+                    }
                     // The agent's runtime footer moves to the chip / status bar.
                     self.take_agent_footers(&room_id, &mut merged);
                     if let Some(pending) = self.pending_redactions.get_mut(&room_id) {
@@ -876,6 +1004,7 @@ impl FluxChat {
                     let _ = new_count;
                     let utd_task = if is_active { self.check_utd_reasons(&room_id) } else { Task::none() };
                     let mut tasks = vec![self.resolve_avatars(mxc_uris), preview_task, image_task, members_task, utd_task, compare_threads];
+                    tasks.push(self.refresh_threads_decrypted_in(&room_id));
                     let jump_now = self.pending_jump.as_ref()
                         .filter(|(r, e)| is_active && *r == room_id
                             && self.messages_by_room.get(&room_id).is_some_and(|m| m.iter().any(|m| m.event_id == *e)))
@@ -1001,6 +1130,13 @@ impl FluxChat {
                         } else {
                             self.drafts.insert(prev, draft);
                         }
+                    }
+                    // A jump still looking for its message belongs to the view
+                    // it was started in; left armed, scrolling up in that room
+                    // later would suddenly jump.
+                    if self.pending_jump.as_ref().is_some_and(|(view, _)| *view != room_id) {
+                        self.pending_jump = None;
+                        self.jump_search_pages = 0;
                     }
                     self.input_text = self.drafts.get(&room_id).cloned().unwrap_or_default();
                     self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
@@ -1209,7 +1345,7 @@ impl FluxChat {
                     if let Some(room_id) = &self.selected_room_id {
                         if let Some(msgs) = self.messages_by_room.get(room_id) {
                             if let Some(msg) = msgs.iter().rev().find(|m| m.sender == self.user_id && !m.event_id.starts_with('~')) {
-                                return self.update(Message::StartEdit(msg.event_id.clone(), msg.body.clone()));
+                                return self.update(Message::StartEdit(msg.event_id.clone(), editable_text(msg)));
                             }
                         }
                     }
@@ -1368,25 +1504,36 @@ impl FluxChat {
                 if let Some(room_id) = self.selected_room_id.clone() {
                     let core = self.core.clone();
                     let reply_to = self.reply_to.take();
-                    let edit = self.edit_event.take();
+                    // What the edit replaces: an attachment's caption, an
+                    // emote, or text (a text edit would turn a file into text).
+                    let edit = self.edit_event.take().map(|(event_id, _)| {
+                        let kind = self.messages_by_room.get(&room_id)
+                            .and_then(|msgs| msgs.iter().find(|m| m.event_id == event_id))
+                            .map(edit_kind)
+                            .unwrap_or(fluxchat_core::messages::EditKind::Text);
+                        (event_id, kind)
+                    });
                     let send = Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
-                            let result = if let Some((event_id, _)) = edit {
-                                fluxchat_core::messages::edit_message(&client, &real_room, &event_id, &body).await
+                            let result = if let Some((event_id, kind)) = edit {
+                                fluxchat_core::messages::edit_message(&client, &real_room, &event_id, &body, kind, markdown).await
                             } else {
                                 let reply_to = reply_to.as_ref().map(|(event_id, _, _)| event_id.as_str());
                                 fluxchat_core::timeline::send_text(
                                     &client, &core.timelines, &room_id, &body, reply_to, markdown,
                                 ).await
                             };
-                            if let Err(e) = result {
+                            if let Err(e) = &result {
                                 tracing::warn!("Failed to send message in {room_id}: {e}");
                             }
-                            Some(())
+                            Some(result.err().map(|e| e.to_string()))
                         },
-                        |_| Message::Noop,
+                        |result| match result.flatten() {
+                            Some(e) => Message::ShowError(format!("Couldn't send: {e}")),
+                            None => Message::Noop,
+                        },
                     );
                     let snap = iced::widget::operation::snap_to_end(
                         crate::view::messages_scrollable_id(),
@@ -1754,18 +1901,15 @@ impl FluxChat {
                     self.search_results.clear();
                     self.search_query.clear();
                     self.search_selected = None;
-                    // Scroll to the message if it exists in loaded messages
-                    if let Some(room_id) = &self.selected_room_id {
-                        if let Some(msgs) = self.messages_by_room.get(room_id) {
-                            if let Some(pos) = msgs.iter().position(|m| m.event_id == event_id) {
-                                // Estimate scroll offset: each message ~40px
-                                let offset = (pos as f32) * 40.0;
-                                return iced::widget::operation::scroll_to(
-                                    crate::view::messages_scrollable_id(),
-                                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: offset },
-                                );
-                            }
-                        }
+                    // Go to it: in this view if it's loaded here, else in the
+                    // room (the search covers the room), loading older history
+                    // until it turns up — server results are mostly older than
+                    // what's loaded, and used to do nothing when clicked.
+                    if let Some(view) = self.selected_room_id.clone() {
+                        let here = self.messages_by_room.get(&view)
+                            .is_some_and(|msgs| msgs.iter().any(|m| m.event_id == event_id));
+                        let key = if here { view } else { fluxchat_core::timeline::real_room_id(&view).to_string() };
+                        return self.jump_to_message(key, event_id);
                     }
                 }
             }
@@ -1981,23 +2125,10 @@ impl FluxChat {
                 }
             }
             Message::OpenMention(room_id, event_id) => {
-                let select = if self.active_real_room() != Some(room_id.as_str()) {
-                    self.update(Message::SelectRoom(room_id.clone()))
-                } else {
-                    Task::none()
-                };
-                let loaded = self.messages_by_room.get(&room_id)
-                    .is_some_and(|msgs| msgs.iter().any(|m| m.event_id == event_id));
-                let jump = if loaded {
-                    self.read_anchor_pending = None;
-                    Task::done(Message::JumpToEvent(event_id))
-                } else {
-                    // Jump once the room's timeline has it (see MessagesUpdated).
-                    self.read_anchor_pending = None;
-                    self.pending_jump = Some((room_id, event_id));
-                    Task::none()
-                };
-                return Task::batch([select, jump]);
+                // Loads older history until the message turns up: an old
+                // mention (or a matrix.to event link) used to open the room
+                // at the bottom and stop there.
+                return self.jump_to_message(room_id, event_id);
             }
             Message::ThreadListLoaded(room_id, for_menu, threads) => {
                 if for_menu {
@@ -2828,28 +2959,100 @@ impl FluxChat {
                 }
             }
             Message::SendHtml(html) => {
-                if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::send_html(&client, &room_id, &html).await.ok()
-                        },
-                        |_| Message::Noop,
-                    );
-                }
+                return self.send_content_here(fluxchat_core::messages::html_message(&html), "Couldn't send");
+            }
+            Message::SetStatus { away, text } => {
+                use fluxchat_core::ruma::presence::PresenceState;
+                let text = text.trim().to_string();
+                // Away is "unavailable"; otherwise what presence sharing says.
+                let state = if away {
+                    PresenceState::Unavailable
+                } else if self.prefs.share_presence {
+                    PresenceState::Online
+                } else {
+                    PresenceState::Offline
+                };
+                self.help_text = Some(match (away, text.is_empty()) {
+                    (true, true) => "Away".to_string(),
+                    (true, false) => format!("Away: {text}"),
+                    (false, true) => "Status cleared".to_string(),
+                    (false, false) => format!("Status: {text}"),
+                });
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let status = (!text.is_empty()).then_some(text.as_str());
+                        fluxchat_core::messages::set_status(&client, state, status).await.map_err(|e| e.to_string())
+                    },
+                    |result| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(e),
+                    },
+                );
+            }
+            Message::PollCreate(question, answers) => {
+                let Some(key) = self.selected_room_id.clone() else { return Task::none() };
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::timeline::create_poll(&client, &core.timelines, &key, &question, &answers)
+                            .await.map_err(|e| e.to_string())
+                    },
+                    |result| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(e),
+                    },
+                );
+            }
+            Message::PollVote(key, poll, answer) => {
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::timeline::vote_poll(&client, &core.timelines, &key, &poll, &answer)
+                            .await.map_err(|e| e.to_string())
+                    },
+                    |result| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(e),
+                    },
+                );
+            }
+            Message::PollEnd(key, poll) => {
+                let Some(key) = key.or_else(|| self.selected_room_id.clone()) else { return Task::none() };
+                // `/pollend`: your latest poll here that's still open.
+                let target = self.messages_by_room.get(&key).and_then(|msgs| msgs.iter().rev().find(|m| match &poll {
+                    Some(id) => m.event_id == *id,
+                    None => m.sender == self.user_id && m.poll.as_ref().is_some_and(|p| !p.is_ended),
+                }));
+                let Some((event_id, info)) = target.and_then(|m| Some((m.event_id.clone(), m.poll.clone()?))) else {
+                    self.help_text = Some("No open poll of yours here".into());
+                    return Task::none();
+                };
+                // What clients without polls show: the outcome.
+                let top = info.answers.iter()
+                    .max_by_key(|(id, _)| info.votes.get(id).map_or(0, Vec::len))
+                    .filter(|_| info.total_votes > 0)
+                    .map(|(_, text)| format!("The poll has ended. Top answer: {text}"))
+                    .unwrap_or_else(|| "The poll has ended.".to_string());
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::timeline::end_poll(&client, &core.timelines, &key, &event_id, &top)
+                            .await.map_err(|e| e.to_string())
+                    },
+                    |result| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(e),
+                    },
+                );
             }
             Message::SendPlain(text) => {
-                if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::send_plain(&client, &room_id, &text).await.ok()
-                        },
-                        |_| Message::Noop,
-                    );
-                }
+                use fluxchat_core::ruma::events::room::message::RoomMessageEventContent;
+                return self.send_content_here(RoomMessageEventContent::text_plain(text), "Couldn't send");
             }
             Message::UpgradeRoom(version) => {
                 if let Some(room_id) = self.active_real_room().map(str::to_string) {
@@ -3140,6 +3343,7 @@ impl FluxChat {
                 | Message::SecurityResetIdentityResult(_)
                 | Message::ToggleIgnoreUser(_) | Message::IgnoredUsersLoaded(_) | Message::IgnoreDone(..)
                 | Message::MediaPreviewsLoaded(_) | Message::SetMediaPreviews(_) | Message::RevealMedia(..)
+                | Message::ToggleRoomMedia(_)
                 | Message::SettingsDeactivatePasswordChanged(_) | Message::SettingsDeactivateArm(_)
                 | Message::SettingsDeactivate | Message::DeactivateDone(_)
                 | Message::ProfilePowerInputChanged(_)
@@ -3757,6 +3961,20 @@ impl FluxChat {
             }
             Message::JumpToEvent(event_id) => {
                 self.highlight_event_id = Some(event_id.clone());
+                // A thread reply has no row in its room's view: open the
+                // thread and go to it there.
+                let in_thread = self.selected_room_id.as_ref()
+                    .filter(|view| fluxchat_core::timeline::parse_thread_key(view).is_none())
+                    .and_then(|view| {
+                        let root = self.messages_by_room.get(view)?.iter()
+                            .find(|m| m.event_id == event_id)?.thread_root.clone()?;
+                        Some((view.clone(), root))
+                    });
+                if let Some((room, root)) = in_thread {
+                    let thread = fluxchat_core::timeline::thread_key(&room, &root);
+                    let open = self.update(Message::OpenThread(room, root));
+                    return Task::batch([open, self.jump_to_message(thread, event_id)]);
+                }
                 if let Some(room_id) = &self.selected_room_id {
                     if let Some(msgs) = self.messages_by_room.get(room_id) {
                         if msgs.iter().any(|m| m.event_id == event_id) {
@@ -3903,22 +4121,7 @@ impl FluxChat {
                 return self.update(Message::SendLocation(geo_uri));
             }
             Message::SendLocation(geo_uri) => {
-                if let Some(room_id) = self.selected_room_id.clone() {
-                    let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.map_err(|e| e.to_string())?;
-                            fluxchat_core::messages::send_location(&client, &real_room, &geo_uri).await
-                                .map(|_| ())
-                                .map_err(|e| e.to_string())
-                        },
-                        |result| match result {
-                            Ok(()) => Message::Noop,
-                            Err(e) => Message::ShowError(format!("Couldn't share location: {e}")),
-                        },
-                    );
-                }
+                return self.send_content_here(fluxchat_core::messages::location_message(&geo_uri), "Couldn't share location");
             }
 
             // --- Panels data ---
@@ -5238,6 +5441,8 @@ impl FluxChat {
                 A::new("Invite people", "Invite to this room", Message::OpenModal(Modal::Invite)),
                 A::new("Search messages", "Search this room", Message::ToggleSearch),
                 A::new("Gallery", "Images, videos and files  Ctrl/\u{2318}+Shift+G", Message::OpenGallery(crate::state::GalleryTab::Media)),
+                A::new(if self.room_media_hidden(&room) { "Show images in this room" } else { "Hide images in this room" },
+                    "Images, videos and link thumbnails  Ctrl/\u{2318}+Shift+H", Message::ToggleRoomMedia(Some(room.clone()))),
                 A::new(if self.threads_open { "Hide threads" } else { "Show threads" }, "Threads sidebar", Message::ToggleThreads),
                 A::new(if self.show_member_list { "Hide members" } else { "Show members" }, "Member list  Ctrl/\u{2318}+]", Message::ToggleMemberList),
                 A::new("Mark as read", "Clear this room's unread count", Message::ContextMenuAction("mark_read".into(), room.clone())),
@@ -5757,13 +5962,55 @@ impl FluxChat {
         out
     }
 
+    /// A room's timeline just updated: its thread views that still show
+    /// "can't decrypt" for a message the room can now read re-send their
+    /// lists, which `MessagesUpdated` fills from the room's copy.
+    fn refresh_threads_decrypted_in(&self, room_id: &str) -> Task<Message> {
+        use fluxchat_core::timeline::{has_decrypted_in_room, parse_thread_key};
+        if parse_thread_key(room_id).is_some() {
+            return Task::none();
+        }
+        let Some(room_msgs) = self.messages_by_room.get(room_id) else { return Task::none() };
+        let stale: Vec<String> = self.messages_by_room.iter()
+            .filter(|(key, _)| parse_thread_key(key).is_some_and(|(parent, _)| parent == room_id))
+            .filter(|(_, thread)| has_decrypted_in_room(thread, room_msgs))
+            .map(|(key, _)| key.clone())
+            .collect();
+        if stale.is_empty() {
+            return Task::none();
+        }
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                for key in stale {
+                    core.timelines.request_snapshot(&key).await;
+                }
+            },
+            |_| Message::Noop,
+        )
+    }
+
+    /// Whether the room a view belongs to has its images hidden with the
+    /// header toggle (thread views follow their room).
+    pub(crate) fn room_media_hidden(&self, view_key: &str) -> bool {
+        !self.hidden_media_rooms.is_empty()
+            && self.hidden_media_rooms.contains(fluxchat_core::timeline::real_room_id(view_key))
+    }
+
     /// Whether a message's image/video stays behind a "Show" button: the
-    /// media preview setting (everywhere, or in public rooms), unless it's
-    /// ours or was clicked open.
+    /// room's own toggle (hides everything, ours included), else the media
+    /// preview setting (everywhere, or in public rooms) unless it's ours.
+    /// Media that was clicked open always shows.
     pub(crate) fn media_hidden(&self, view_key: &str, msg: &fluxchat_core::MessageInfo) -> bool {
         use fluxchat_core::profile::MediaPreviews;
         let has_media = msg.image_mxc.is_some() || msg.is_video;
-        if !has_media || msg.sender == self.user_id || self.revealed_media.contains(&msg.event_id) {
+        if !has_media || self.revealed_media.contains(&msg.event_id) {
+            return false;
+        }
+        if self.room_media_hidden(view_key) {
+            return true;
+        }
+        if msg.sender == self.user_id {
             return false;
         }
         match self.media_previews.media {
@@ -6633,6 +6880,11 @@ impl FluxChat {
         if let Some(json) = self.core.db.get_setting("collapsed_sections") {
             if let Ok(sections) = serde_json::from_str::<Vec<String>>(&json) {
                 self.collapsed_sections = sections.into_iter().collect();
+            }
+        }
+        if let Some(json) = self.core.db.get_setting("hidden_media_rooms") {
+            if let Ok(rooms) = serde_json::from_str::<Vec<String>>(&json) {
+                self.hidden_media_rooms = rooms.into_iter().collect();
             }
         }
         if let Some(val) = self.core.db.get_setting("timestamp_format") {

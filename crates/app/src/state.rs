@@ -401,6 +401,9 @@ pub struct FluxChat {
     /// and the hidden media clicked open this session (event ids).
     pub media_previews: fluxchat_core::profile::MediaPreviewConfig,
     pub revealed_media: HashSet<String>,
+    /// Rooms whose images and videos are hidden behind "Show" buttons
+    /// (the header toggle; real room ids, persisted as `hidden_media_rooms`).
+    pub hidden_media_rooms: HashSet<String>,
     pub highlight_words: Vec<String>,
     pub timestamp_format: String,  // "short", "full", "off"
     pub compact_mode: bool,
@@ -686,6 +689,8 @@ pub struct FluxChat {
     pub rooms_with_calls: HashSet<String>,
     pub call_mic_muted: bool,
     pub call_disconnect_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// Tells the call's session task to mute / unmute the microphone track.
+    pub call_mute_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub call_event_tx: CallEventTx,
 }
 
@@ -832,6 +837,7 @@ impl FluxChat {
             ignored_users: HashSet::new(),
             media_previews: Default::default(),
             revealed_media: HashSet::new(),
+            hidden_media_rooms: HashSet::new(),
             highlight_words: Vec::new(),
             timestamp_format: "short".into(),
             compact_mode: false,
@@ -998,6 +1004,7 @@ impl FluxChat {
             rooms_with_calls: HashSet::new(),
             call_mic_muted: true,
             call_disconnect_tx: None,
+            call_mute_tx: None,
             call_event_tx,
         }
     }

@@ -153,9 +153,89 @@ pub fn finish(store_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn aside_dir(store_dir: &Path) -> PathBuf {
+    store_dir.with_extension("previous")
+}
+
+/// Move the store out of the way for a sign-in attempt, instead of deleting
+/// it: until the new sign-in has authenticated, the saved session still
+/// belongs to this store, and a mistyped password or a cancelled SSO must
+/// not cost the device its keys. Follow with `drop_aside` or `put_back`.
+pub fn set_aside(store_dir: &Path) {
+    // A leftover from an attempt that never finished is the store to keep.
+    put_back(store_dir);
+    if !store_dir.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::rename(store_dir, aside_dir(store_dir)) {
+        // Signing in needs an empty store; an explicit new sign-in wins.
+        tracing::warn!("Couldn't set the current store aside ({e}); replacing it");
+        let _ = std::fs::remove_dir_all(store_dir);
+    }
+}
+
+/// The sign-in failed (or the app quit during it): bring back the store
+/// that was set aside, replacing whatever the attempt created.
+pub fn put_back(store_dir: &Path) {
+    let aside = aside_dir(store_dir);
+    if !aside.exists() {
+        return;
+    }
+    if store_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(store_dir) {
+            tracing::warn!("Couldn't remove the unfinished sign-in's store: {e}");
+        }
+    }
+    if let Err(e) = std::fs::rename(&aside, store_dir) {
+        tracing::warn!("Couldn't restore the previous store: {e}");
+    }
+}
+
+/// The new sign-in authenticated: the store that was set aside is another
+/// session's now. Call before saving the new session, so a leftover always
+/// means "put it back".
+pub fn drop_aside(store_dir: &Path) {
+    let _ = std::fs::remove_dir_all(aside_dir(store_dir));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_sign_in_gets_the_previous_store_back() {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("fluxchat-aside-test-{}-{nanos}", std::process::id()));
+        let store = tmp.join("matrix_store");
+        let write = |name: &str| {
+            std::fs::create_dir_all(&store).unwrap();
+            std::fs::write(store.join(name), name).unwrap();
+        };
+        write("old-keys");
+
+        // A failed attempt: the old store comes back, the attempt's is gone.
+        set_aside(&store);
+        assert!(!store.exists());
+        write("attempt");
+        put_back(&store);
+        assert!(store.join("old-keys").exists() && !store.join("attempt").exists());
+
+        // The app quit mid-attempt: the next attempt still keeps the old one.
+        set_aside(&store);
+        write("attempt");
+        set_aside(&store);
+        assert!(!store.exists());
+        put_back(&store);
+        assert!(store.join("old-keys").exists());
+
+        // A successful one replaces it for good.
+        set_aside(&store);
+        write("new-keys");
+        drop_aside(&store);
+        put_back(&store);
+        assert!(store.join("new-keys").exists() && !store.join("old-keys").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
     use matrix_sdk_crypto::olm::{Account, SenderData};
     use matrix_sdk_crypto::EncryptionSettings;
     use matrix_sdk::ruma::{device_id, room_id, user_id};

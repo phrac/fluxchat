@@ -158,10 +158,9 @@ pub async fn send_message(client: &matrix_sdk::Client, room_id: &str, body: &str
     Ok(result.response.event_id.to_string())
 }
 
-/// Send a message as raw HTML (for /html command).
-pub async fn send_html(client: &matrix_sdk::Client, room_id: &str, html: &str) -> Result<String, AppError> {
-    let room_id_parsed = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+/// A message from raw HTML (the /html command). Send it with
+/// `timeline::send_content`, so it lands in the view it was typed in.
+pub fn html_message(html: &str) -> RoomMessageEventContent {
     // Strip HTML tags for the plain-text body fallback
     let plain = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n");
     let mut plain_stripped = String::with_capacity(plain.len());
@@ -172,18 +171,7 @@ pub async fn send_html(client: &matrix_sdk::Client, room_id: &str, html: &str) -
         else if !in_tag { plain_stripped.push(c); }
     }
     let plain = plain_stripped;
-    let content = RoomMessageEventContent::text_html(&plain, html);
-    let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
-    Ok(result.response.event_id.to_string())
-}
-
-/// Send a plain text message without any markdown processing (for /plain command).
-pub async fn send_plain(client: &matrix_sdk::Client, room_id: &str, text: &str) -> Result<String, AppError> {
-    let room_id_parsed = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    let content = RoomMessageEventContent::text_plain(text);
-    let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send: {e}")))?;
-    Ok(result.response.event_id.to_string())
+    RoomMessageEventContent::text_html(&plain, html)
 }
 
 
@@ -198,19 +186,15 @@ pub async fn report_message(client: &matrix_sdk::Client, room_id: &str, event_id
     Ok(())
 }
 
-/// Send a location message (MSC3488).
-pub async fn send_location(client: &matrix_sdk::Client, room_id: &str, geo_uri: &str) -> Result<String, AppError> {
-    use matrix_sdk::ruma::events::room::message::{LocationMessageEventContent, RoomMessageEventContent};
-    let room_id_parsed = parse_room_id(room_id)?;
-    let room = client.get_room(&room_id_parsed).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
+/// A location message (MSC3488). Send it with `timeline::send_content`.
+pub fn location_message(geo_uri: &str) -> RoomMessageEventContent {
+    use matrix_sdk::ruma::events::room::message::LocationMessageEventContent;
     let body = format!("Location: {geo_uri}");
-    let content = RoomMessageEventContent::new(
+    RoomMessageEventContent::new(
         matrix_sdk::ruma::events::room::message::MessageType::Location(
             LocationMessageEventContent::new(body, geo_uri.to_string()),
         ),
-    );
-    let result = room.send(content).await.map_err(|e| AppError::Other(format!("Failed to send location: {e}")))?;
-    Ok(result.response.event_id.to_string())
+    )
 }
 
 /// Build message content with mention resolution, markdown formatting,
@@ -225,10 +209,7 @@ pub async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMe
         let escaped = html_escape(body);
         let html = simple_markdown(&escaped);
         if html != escaped {
-            let mut final_html = html;
-            if final_html.contains('\n') {
-                final_html = final_html.replace('\n', "<br>");
-            }
+            let final_html = newlines_to_br(&html);
             RoomMessageEventContent::emote_html(body, &final_html)
         } else {
             RoomMessageEventContent::emote_plain(body)
@@ -250,8 +231,9 @@ pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomM
 
     // Everything below builds HTML, so the raw text must be escaped first —
     // otherwise `Vec<u8>` or `a < b` corrupt the formatted body.
-    let mut html = html_escape(body);
-    let mut changed = false;
+    // Code comes out first: neither mentions nor formatting apply inside it.
+    let (mut html, code) = stash_code(&html_escape(body));
+    let mut changed = !code.is_empty();
     let mut mentioned_user_ids: std::collections::BTreeSet<matrix_sdk::ruma::OwnedUserId> =
         std::collections::BTreeSet::new();
     let mut mentions_room = false;
@@ -304,17 +286,15 @@ pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomM
     // Markdown
     if has_markdown {
         let before = html.clone();
-        html = simple_markdown(&html);
+        html = inline_markdown(&html);
         if html != before {
             changed = true;
         }
     }
+    let html = restore_code(&html, &code);
 
     let mut content = if changed {
-        let mut final_html = html;
-        if final_html.contains('\n') {
-            final_html = final_html.replace('\n', "<br>");
-        }
+        let final_html = newlines_to_br(&html);
         RoomMessageEventContent::text_html(body, &final_html)
     } else {
         RoomMessageEventContent::text_plain(body)
@@ -363,28 +343,104 @@ fn apply_headings(text: &str) -> String {
     out
 }
 
-fn simple_markdown(text: &str) -> String {
+/// Brackets a stashed code span's index in the text (private-use characters,
+/// which no later pass treats as markup or as part of a word).
+const CODE_OPEN: char = '\u{e000}';
+const CODE_CLOSE: char = '\u{e001}';
+
+/// Turn ``` fences and `inline code` into their HTML and swap each for a
+/// placeholder, so the mention, bold, strike, italic and heading passes can't
+/// reach inside code: `a ** b ** c` in a block lost its asterisks and gained
+/// a `<strong>`, and "`*.rs` and `*.toml`" came out with mis-nested tags. A
+/// fence's first line, when it's one word, is its language.
+fn stash_code(text: &str) -> (String, Vec<String>) {
+    let mut code: Vec<String> = Vec::new();
     let mut result = text.to_string();
+    let mut stash = |html: String| {
+        code.push(html);
+        format!("{CODE_OPEN}{}{CODE_CLOSE}", code.len() - 1)
+    };
     // Code blocks (``` ... ```)
     while let Some(start) = result.find("```") {
-        if let Some(end) = result[start + 3..].find("```") {
-            let code = &result[start + 3..start + 3 + end];
-            let replacement = format!("<pre><code>{code}</code></pre>");
-            result = format!("{}{}{}", &result[..start], replacement, &result[start + 6 + end..]);
-        } else {
-            break;
-        }
+        let Some(end) = result[start + 3..].find("```") else { break };
+        let inner = &result[start + 3..start + 3 + end];
+        let is_language = |tag: &str| !tag.is_empty()
+            && tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_' | '#' | '.'));
+        let (language, body) = match inner.split_once('\n') {
+            Some((first, rest)) if is_language(first.trim()) => (Some(first.trim()), rest),
+            Some((first, rest)) if first.trim().is_empty() => (None, rest),
+            _ => (None, inner),
+        };
+        let body = body.strip_suffix('\n').unwrap_or(body);
+        let html = match language {
+            Some(language) => format!("<pre><code class=\"language-{language}\">{body}</code></pre>"),
+            None => format!("<pre><code>{body}</code></pre>"),
+        };
+        let token = stash(html);
+        result = format!("{}{}{}", &result[..start], token, &result[start + 6 + end..]);
     }
     // Inline code (` ... `)
     while let Some(start) = result.find('`') {
-        if let Some(end) = result[start + 1..].find('`') {
-            let code = &result[start + 1..start + 1 + end];
-            let replacement = format!("<code>{code}</code>");
-            result = format!("{}{}{}", &result[..start], replacement, &result[start + 2 + end..]);
-        } else {
-            break;
+        let Some(end) = result[start + 1..].find('`') else { break };
+        let token = stash(format!("<code>{}</code>", &result[start + 1..start + 1 + end]));
+        result = format!("{}{}{}", &result[..start], token, &result[start + 2 + end..]);
+    }
+    (result, code)
+}
+
+/// Put stashed code back where its placeholders are.
+fn restore_code(text: &str, code: &[String]) -> String {
+    if code.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(CODE_OPEN) {
+        let after = &rest[start + CODE_OPEN.len_utf8()..];
+        let stashed = after.find(CODE_CLOSE)
+            .and_then(|end| after[..end].parse::<usize>().ok().and_then(|i| code.get(i)).map(|html| (html, end)));
+        out.push_str(&rest[..start]);
+        match stashed {
+            Some((html, end)) => {
+                out.push_str(html);
+                rest = &after[end + CODE_CLOSE.len_utf8()..];
+            }
+            // Not one of ours: keep the character.
+            None => {
+                out.push(CODE_OPEN);
+                rest = after;
+            }
         }
     }
+    out.push_str(rest);
+    out
+}
+
+/// Line breaks as `<br>`, except inside `<pre>` (code keeps its newlines) and
+/// right around one (a block already breaks the line).
+fn newlines_to_br(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 16);
+    let mut rest = html;
+    while let Some(start) = rest.find("<pre>") {
+        let end = rest[start..].find("</pre>").map(|e| start + e + "</pre>".len()).unwrap_or(rest.len());
+        let before = &rest[..start];
+        out.push_str(&before.strip_suffix('\n').unwrap_or(before).replace('\n', "<br>"));
+        out.push_str(&rest[start..end]);
+        rest = &rest[end..];
+        rest = rest.strip_prefix('\n').unwrap_or(rest);
+    }
+    out.push_str(&rest.replace('\n', "<br>"));
+    out
+}
+
+fn simple_markdown(text: &str) -> String {
+    let (text, code) = stash_code(text);
+    restore_code(&inline_markdown(&text), &code)
+}
+
+/// Bold, strike, italics and headings (code is stashed away by now).
+fn inline_markdown(text: &str) -> String {
+    let mut result = text.to_string();
     // Bold (**...**)
     while let Some(start) = result.find("**") {
         if let Some(end) = result[start + 2..].find("**") {
@@ -527,18 +583,88 @@ mod tests {
     #[test]
     fn headings_skip_code_blocks() {
         let html = simple_markdown("```\n# not a heading\n```");
-        assert_eq!(html, "<pre><code>\n# not a heading\n</code></pre>");
+        assert_eq!(html, "<pre><code># not a heading</code></pre>");
+    }
+
+    #[test]
+    fn code_is_left_alone_by_the_other_passes() {
+        // Two `**` in a block used to become <strong> around the middle.
+        assert_eq!(
+            simple_markdown("```\na ** b ** c\n```"),
+            "<pre><code>a ** b ** c</code></pre>",
+        );
+        assert_eq!(
+            simple_markdown("`*.rs` and `*.toml` are **both** fine"),
+            "<code>*.rs</code> and <code>*.toml</code> are <strong>both</strong> fine",
+        );
+        // A one-word first line is the language, not code.
+        assert_eq!(
+            simple_markdown("```rust\nfn main() {}\n```"),
+            "<pre><code class=\"language-rust\">fn main() {}</code></pre>",
+        );
+        assert_eq!(simple_markdown("```ls -la```"), "<pre><code>ls -la</code></pre>");
+    }
+
+    #[test]
+    fn line_breaks_stay_real_inside_code_blocks() {
+        let html = simple_markdown("see:\n```\none\ntwo\n```\nthen\nthis");
+        assert_eq!(newlines_to_br(&html), "see:<pre><code>one\ntwo</code></pre>then<br>this");
     }
 }
 
-/// Edit an existing message in a room.
-pub async fn edit_message(client: &matrix_sdk::Client, room_id: &str, event_id: &str, new_body: &str) -> Result<(), AppError> {
+/// What an edit replaces. The SDK accepts a text replacement for any
+/// `m.room.message`, so editing an image as `Text` turned the attachment
+/// into a text message (its file name) for everyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditKind {
+    /// A text message.
+    Text,
+    /// A `/me` action: stays an emote.
+    Emote,
+    /// An image, video, file or audio message: the edit is its caption
+    /// (empty removes it); the attachment stays.
+    Caption,
+}
+
+/// Edit an existing message in a room. `markdown` as for `send_text`.
+pub async fn edit_message(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    event_id: &str,
+    new_body: &str,
+    kind: EditKind,
+    markdown: bool,
+) -> Result<(), AppError> {
     let room_id = parse_room_id(room_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     let event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|_| AppError::Other("Invalid event ID".into()))?;
     // Same markdown / mention processing as a new message.
-    let content: RoomMessageEventContentWithoutRelation = build_message_content(&room, new_body).await.into();
-    let edit = room.make_edit_event(&event_id, EditedContent::RoomMessage(content)).await.map_err(|e| AppError::Other(format!("Failed to edit: {e}")))?;
+    let text_content = |built: RoomMessageEventContent| {
+        if markdown {
+            return built;
+        }
+        // Plain text as typed; keep the resolved intentional mentions.
+        let mut plain = RoomMessageEventContent::text_plain(new_body);
+        plain.mentions = built.mentions;
+        plain
+    };
+    let edited = match kind {
+        EditKind::Text => EditedContent::RoomMessage(text_content(build_message_content(&room, new_body).await).into()),
+        EditKind::Emote => EditedContent::RoomMessage(build_emote_content(&room, new_body).await.into()),
+        EditKind::Caption if new_body.trim().is_empty() => {
+            EditedContent::MediaCaption { caption: None, formatted_caption: None, mentions: None }
+        }
+        EditKind::Caption => {
+            let content = text_content(build_message_content(&room, new_body).await);
+            let mentions = content.mentions.clone();
+            let (caption, formatted_caption) = match content.msgtype {
+                MessageType::Text(text) => (text.body, text.formatted),
+                _ => (new_body.to_string(), None),
+            };
+            EditedContent::MediaCaption { caption: Some(caption), formatted_caption, mentions }
+        }
+    };
+    let edit = room.make_edit_event(&event_id, edited).await.map_err(|e| AppError::Other(format!("Failed to edit: {e}")))?;
     room.send(edit).await?;
     Ok(())
 }
@@ -771,6 +897,22 @@ pub async fn set_own_presence(client: &matrix_sdk::Client, online: bool) -> Resu
     let state = if online { PresenceState::Online } else { PresenceState::Offline };
     client.send(set_presence::v3::Request::new(user_id, state)).await
         .map_err(|e| AppError::Other(format!("Couldn't set presence: {e}")))?;
+    Ok(())
+}
+
+/// Set our status message (`/status`, `/away`): shown with our presence in
+/// other clients' member lists and profile cards. `None` clears it.
+pub async fn set_status(
+    client: &matrix_sdk::Client,
+    state: matrix_sdk::ruma::presence::PresenceState,
+    status: Option<&str>,
+) -> Result<(), AppError> {
+    use matrix_sdk::ruma::api::client::presence::set_presence;
+    let user_id = client.user_id().ok_or_else(|| AppError::Other("Not logged in".into()))?.to_owned();
+    let mut request = set_presence::v3::Request::new(user_id, state);
+    request.status_msg = status.map(str::to_owned);
+    client.send(request).await
+        .map_err(|e| AppError::Other(format!("Couldn't set status: {e}")))?;
     Ok(())
 }
 

@@ -25,6 +25,8 @@ const BIG_EMOJI_SCALE: f32 = 2.2;
 const CODE_BLOCK_LINES: usize = 5;
 /// Width a PDF's first-page preview is shown at.
 const PDF_PREVIEW_SHOWN: f32 = 240.0;
+/// Width of a poll's answer buttons.
+const POLL_WIDTH: f32 = 360.0;
 /// An agent answer longer than this many lines (or `LONG_ANSWER_CHARS`) is
 /// folded to `LONG_ANSWER_HEIGHT` px with a Show full answer button.
 const LONG_ANSWER_LINES: usize = 30;
@@ -422,38 +424,98 @@ impl FluxChat {
             .spacing(4);
 
             for (answer_id, answer_text) in &poll.answers {
-                let votes = poll.votes.get(answer_id).map(|v| v.len() as u32).unwrap_or(0);
+                let voters = poll.votes.get(answer_id);
+                let votes = voters.map(|v| v.len() as u32).unwrap_or(0);
                 let pct = if poll.total_votes > 0 {
                     (votes as f32 / poll.total_votes as f32 * 100.0) as u32
                 } else {
                     0
                 };
-                let is_my_vote = poll.my_vote.as_deref() == Some(answer_id);
+                // Ours: from the votes themselves (the conversion doesn't
+                // know who we are, so `my_vote` is never set).
+                let is_my_vote = voters.is_some_and(|v| v.contains(&self.user_id));
                 let label_color = if is_my_vote { theme::colors().accent } else { theme::colors().text_normal };
-
-                poll_col = poll_col.push(
-                    row![
-                        text(format!("{answer_text} ({votes})"))
-                            .font(self.msg_font())
-                            .size(14)
-                            .color(label_color),
-                        text(format!("{pct}%"))
-                            .font(self.msg_font())
-                            .size(13)
-                            .color(theme::colors().text_dim),
-                    ]
-                    .spacing(8),
-                );
-            }
-
-            if poll.is_ended {
-                poll_col = poll_col.push(
-                    text("Poll ended")
+                let answer = row![
+                    text(format!("{}{answer_text}", if is_my_vote { "\u{2713} " } else { "" }))
+                        .font(self.msg_font())
+                        .size(14)
+                        .color(label_color)
+                        .width(Fill),
+                    text(format!("{votes} \u{00b7} {pct}%"))
                         .font(self.msg_font())
                         .size(13)
                         .color(theme::colors().text_dim),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+                // Each answer is a button until the poll closes; its fill
+                // shows the share of votes.
+                let share = pct as f32 / 100.0;
+                let ended = poll.is_ended;
+                let vote = button(answer)
+                    .padding([5, 10])
+                    .width(Length::Fixed(POLL_WIDTH))
+                    .style(move |_, status| {
+                        let c = theme::colors();
+                        let fill = if is_my_vote { theme::with_alpha(c.accent, 0.28) } else { theme::tint(0.10) };
+                        let rest = if !ended && matches!(status, button::Status::Hovered) { theme::tint(0.08) } else { theme::tint(0.03) };
+                        // Left to right, with a hard edge at the share (two
+                        // stops at one offset would blend instead).
+                        let background = if share <= 0.0 {
+                            iced::Background::Color(rest)
+                        } else if share >= 1.0 {
+                            iced::Background::Color(fill)
+                        } else {
+                            iced::Background::Gradient(iced::Gradient::Linear(
+                                iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
+                                    .add_stop(0.0, fill)
+                                    .add_stop(share, fill)
+                                    .add_stop((share + 0.002).min(1.0), rest)
+                                    .add_stop(1.0, rest),
+                            ))
+                        };
+                        button::Style {
+                            background: Some(background),
+                            border: iced::Border {
+                                color: if is_my_vote { c.accent } else { c.border },
+                                width: 1.0,
+                                radius: 6.0.into(),
+                            },
+                            ..Default::default()
+                        }
+                    });
+                poll_col = poll_col.push(if ended {
+                    vote
+                } else {
+                    vote.on_press(Message::PollVote(view_key.to_string(), msg.event_id.clone(), answer_id.clone()))
+                });
+            }
+
+            let total = match poll.total_votes {
+                1 => "1 vote".to_string(),
+                n => format!("{n} votes"),
+            };
+            let mut footer = row![
+                text(if poll.is_ended { format!("Poll ended \u{00b7} {total}") } else { total })
+                    .font(self.msg_font())
+                    .size(13)
+                    .color(theme::colors().text_dim),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center);
+            if !poll.is_ended && msg.sender == self.user_id {
+                footer = footer.push(
+                    button(text("End poll").font(self.msg_font()).size(12).color(theme::colors().text_muted))
+                        .on_press(Message::PollEnd(Some(view_key.to_string()), Some(msg.event_id.clone())))
+                        .padding([2, 8])
+                        .style(|_, status| button::Style {
+                            background: matches!(status, button::Status::Hovered).then(|| theme::tint(0.08).into()),
+                            border: iced::Border { color: theme::colors().border, width: 1.0, radius: 4.0.into() },
+                            ..Default::default()
+                        }),
                 );
             }
+            poll_col = poll_col.push(footer);
 
             return row![time, nick, msg_avatar, make_sep(), poll_col].spacing(MSG_COL_GAP).width(Fill).align_y(iced::Alignment::Start).into();
         }
@@ -649,7 +711,9 @@ impl FluxChat {
                 ..Default::default()
             })
             .into()
-        } else if let Some(ref mxc) = msg.image_mxc {
+        // A video's `image_mxc` is its thumbnail: that goes to the video
+        // branch below (thumbnail + play), not here.
+        } else if let Some(mxc) = msg.image_mxc.as_ref().filter(|_| !msg.is_video) {
             if !msg.is_video {
                 // Image messages
                 if let Some(frames) = self.gif_frames_cache.get(mxc).filter(|_| self.prefs.autoplay_gifs) {
@@ -927,7 +991,7 @@ impl FluxChat {
             let rid = view_key.to_string();
             // A PDF shows its first page above the name (click opens it).
             let preview = msg.file_mxc.as_ref()
-                .filter(|_| msg.file_mimetype.as_deref() == Some("application/pdf"))
+                .filter(|_| msg.file_mimetype.as_deref() == Some("application/pdf") && !self.room_media_hidden(view_key))
                 .and_then(|m| self.image_cache.get(&format!("pdf_preview:{m}")))
                 .map(|handle| {
                     container(
@@ -1455,7 +1519,7 @@ impl FluxChat {
         if is_own {
             action_row = action_row.push(make_msg_action(SVG_EDIT, "Edit", Message::StartEdit(
                 event_id.clone(),
-                msg.body.clone(),
+                crate::update::editable_text(msg),
             )));
             action_row = action_row.push(make_msg_action(SVG_DELETE, "Delete", Message::DeleteMessage(event_id.clone())));
         } else {
@@ -1510,7 +1574,7 @@ impl FluxChat {
         let mut preview_elements: Vec<Element<'a, Message>> = all_previews
             .into_iter()
             .take(max_show)
-            .map(|preview| self.view_url_preview(preview, indent))
+            .map(|preview| self.view_url_preview(preview, indent, !self.room_media_hidden(view_key)))
             .collect();
         if extra_count > 0 {
             let eid = msg.event_id.clone();
@@ -1802,7 +1866,7 @@ impl FluxChat {
             .into()
     }
 
-    pub(crate) fn view_url_preview<'a>(&self, preview: &'a fluxchat_core::UrlPreview, indent: f32) -> Element<'a, Message> {
+    pub(crate) fn view_url_preview<'a>(&self, preview: &'a fluxchat_core::UrlPreview, indent: f32, show_image: bool) -> Element<'a, Message> {
         let mut content_col = column![].spacing(2);
 
         if let Some(ref site_name) = preview.site_name {
@@ -1835,8 +1899,8 @@ impl FluxChat {
 
         let mut card_row = row![].spacing(8);
 
-        // OG image thumbnail (on the left)
-        if let Some(ref image_url) = preview.image_url {
+        // OG image thumbnail (on the left), unless the room's images are hidden
+        if let Some(image_url) = preview.image_url.as_ref().filter(|_| show_image) {
             if let Some(handle) = self.url_preview_images.get(image_url) {
                 card_row = card_row.push(
                     container(

@@ -81,6 +81,11 @@ impl FluxChat {
 
                         let (disconnect_tx, disconnect_rx) = tokio::sync::watch::channel(false);
                         self.call_disconnect_tx = Some(disconnect_tx);
+                        // Calls start muted; the mic button talks to the session
+                        // task through this (it used to flip only the icon).
+                        let (mute_tx, mut mute_rx) = tokio::sync::watch::channel(true);
+                        self.call_mute_tx = Some(mute_tx);
+                        self.call_mic_muted = true;
 
                         let (call_tx, mut call_rx) = tokio::sync::mpsc::unbounded_channel::<fluxchat_core::rtc_audio::CallEvent>();
                         let msg_tx2 = msg_tx.clone();
@@ -108,7 +113,22 @@ impl FluxChat {
                                         let _ = msg_tx.send(Message::CallError(e));
                                     }
                                     session.set_mic_muted(true);
-                                    let _ = disconnect_rx.wait_for(|v| *v).await;
+                                    // The watch `Ref`s aren't Send: keep them out of
+                                    // the select's outputs and off every await.
+                                    let mut mute_open = true;
+                                    loop {
+                                        tokio::select! {
+                                            _ = async { let _ = disconnect_rx.wait_for(|v| *v).await; } => break,
+                                            changed = mute_rx.changed(), if mute_open => match changed {
+                                                Ok(()) => {
+                                                    let muted = *mute_rx.borrow_and_update();
+                                                    session.set_mic_muted(muted);
+                                                }
+                                                // The app let go of the call: only leaving is left.
+                                                Err(_) => mute_open = false,
+                                            },
+                                        }
+                                    }
                                     tracing::info!("Disconnecting LiveKit session");
                                     session.disconnect().await;
                                 }
@@ -190,6 +210,9 @@ impl FluxChat {
             }
             Message::CallToggleMic => {
                 self.call_mic_muted = !self.call_mic_muted;
+                if let Some(tx) = &self.call_mute_tx {
+                    let _ = tx.send(self.call_mic_muted);
+                }
                 Some(Task::none())
             }
             Message::CallRoomsWithCallsUpdated(rooms) => {

@@ -445,7 +445,8 @@ impl<'a> WalkCtx<'a> {
                 if text.trim().is_empty() {
                     return;
                 }
-                let text = convert_inline_latex(text);
+                // Code keeps its dollars (`$HOME:$PATH`).
+                let text = if style.code { text.to_string() } else { convert_inline_latex(text) };
                 if style.code || style.mention {
                     self.segments.push(Segment::Text(text, style.clone()));
                     return;
@@ -1338,10 +1339,8 @@ pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
                 let prefix_rest: String = chars.clone().take(7).collect();
                 if prefix_rest.starts_with("ttps://") || prefix_rest.starts_with("ttp://") {
                     // Consume the URL
-                    for ch in chars.by_ref() {
-                        if ch.is_whitespace() || ch == '<' || ch == '>' {
-                            break;
-                        }
+                    // `next_if`: the character ending the URL stays in the text.
+                    while let Some(ch) = chars.next_if(|c| !c.is_whitespace() && *c != '<' && *c != '>') {
                         url.push(ch);
                     }
                     // Trim trailing punctuation
@@ -1413,6 +1412,21 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Where the `$` closing inline math is, for the text after an opening `$`.
+/// Pandoc's rule, so prices stay prices ("$0.18 of $5.00"): the opening `$`
+/// has a non-space right after it, the closing one a non-space right before
+/// it and no digit after it.
+fn math_end(after_dollar: &str) -> Option<usize> {
+    if after_dollar.chars().next().is_none_or(char::is_whitespace) {
+        return None;
+    }
+    after_dollar.match_indices('$').map(|(i, _)| i).find(|&i| {
+        let before = after_dollar[..i].chars().next_back();
+        let after = after_dollar[i + 1..].chars().next();
+        before.is_some_and(|c| !c.is_whitespace()) && !after.is_some_and(|c| c.is_ascii_digit())
+    })
+}
+
 /// Convert inline LaTeX math ($...$) to Unicode via unicodeit.
 /// Leaves non-math text unchanged.
 fn convert_inline_latex(text: &str) -> String {
@@ -1430,7 +1444,7 @@ fn convert_inline_latex(text: &str) -> String {
             remaining = after_dollar;
             continue;
         }
-        if let Some(end) = after_dollar.find('$') {
+        if let Some(end) = math_end(after_dollar) {
             let latex = &after_dollar[..end];
             // Strip \text{...}, \mathrm{...}, \mathbf{...} etc. to just their content
             let mut cleaned = latex.to_string();
@@ -1553,5 +1567,22 @@ mod tests {
         assert_eq!(builds, 1);
         cache.get_or_insert(("k", 2u8), || { builds += 1; RenderedBody::Spans(Vec::new()) });
         assert_eq!(builds, 2);
+    }
+
+    #[test]
+    fn prices_are_not_math() {
+        assert_eq!(convert_inline_latex("Spent $0.18 of $5.00 today"), "Spent $0.18 of $5.00 today");
+        assert_eq!(convert_inline_latex("costs $5"), "costs $5");
+        assert_eq!(convert_inline_latex("a $ b $ c"), "a $ b $ c");
+        // Real inline math still converts.
+        assert_eq!(convert_inline_latex("so $\\alpha$ it is"), "so \u{3b1} it is");
+        assert_eq!(convert_inline_latex("$x$"), "x");
+    }
+
+    #[test]
+    fn plain_urls_keep_the_character_after_them() {
+        let joined = |input: &str| texts(&plain_text_to_spans(input)).concat();
+        assert_eq!(joined("see https://x.org now"), "see https://x.org now");
+        assert_eq!(joined("https://x.org/a."), "https://x.org/a.");
     }
 }

@@ -72,6 +72,7 @@ Commands marked *room* need a room open. Where a command takes `<user>`, you can
 | `/pins` | Pinned messages sidebar |
 | `/gallery` | [Gallery](messaging.md#gallery) of images and videos |
 | `/files` | Gallery, Files tab |
+| `/images [on\|off]` | [Hide or show](messaging.md#hiding-a-rooms-images) this room's images and videos (no argument toggles) |
 | `/notices` | Server notices panel |
 | `/clear` | Clear the visible scrollback (it comes back on the next update) |
 | `/refresh` | Rebuild the room's timeline |
