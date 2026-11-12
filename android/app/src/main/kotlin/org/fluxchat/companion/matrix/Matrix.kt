@@ -478,6 +478,13 @@ object Matrix {
         _auth.value = Auth.Ready
     }
 
+    private val _recoveryPending = MutableStateFlow(false)
+    val recoveryPending: StateFlow<Boolean> = _recoveryPending
+
+    fun askRecovery() {
+        _auth.value = Auth.NeedsRecovery
+    }
+
     suspend fun logout() = io { logoutOnIo() }
 
     private suspend fun logoutOnIo() = startLock.withLock {

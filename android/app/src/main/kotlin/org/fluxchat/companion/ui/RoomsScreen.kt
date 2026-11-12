@@ -115,15 +115,12 @@ fun RoomsScreen(go: (Screen) -> Unit) {
             LargeTopAppBar(
                 title = { Text("Projects") },
                 actions = {
-                    update?.let {
-                        // Subtle: a plain assist chip, no badge or colour shout.
-                        AssistChip(onClick = { org.fluxchat.companion.Update.openRelease(context) }, label = { Text("Update available") })
-                    }
-                    IconButton(onClick = { creating = true }) { Icon(Icons.Outlined.Add, "New project") }
-                    IconButton(onClick = { go(Screen.Search) }) { Icon(Icons.Outlined.Search, "Search sessions") }
-                    IconButton(onClick = { go(Screen.History) }) { Icon(Icons.Outlined.History, "Run history") }
-                    IconButton(onClick = { go(Screen.Agents) }) { Icon(Icons.Outlined.SmartToy, "Your agents") }
-                    IconButton(onClick = { go(Screen.Settings) }) { Icon(Icons.Outlined.Settings, "Settings") }
+                    ProjectsActions(
+                        update = update != null,
+                        onUpdate = { org.fluxchat.companion.Update.openRelease(context) },
+                        onNew = { creating = true },
+                        go = go,
+                    )
                 },
                 scrollBehavior = scroll,
             )

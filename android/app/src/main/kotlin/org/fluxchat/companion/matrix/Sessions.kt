@@ -95,7 +95,15 @@ class SessionList(val roomId: String, private val service: ThreadListService) : 
 
     /** The next page (older sessions). */
     suspend fun more() = withContext(Dispatchers.IO) {
-        if (!_endReached.value) runCatching { service.paginate() }.onFailure { Diag.error("Loading sessions in $roomId", it) }
+        if (_endReached.value) return@withContext
+        try {
+            service.paginate()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // The list left the screen mid-page: not an error to report.
+            throw e
+        } catch (e: Exception) {
+            Diag.error("Loading sessions in $roomId", e)
+        }
     }
 
     override fun close() {
