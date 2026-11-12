@@ -15,6 +15,7 @@ import org.matrix.rustcomponents.sdk.MessageContent
 import org.matrix.rustcomponents.sdk.MessageType
 import org.matrix.rustcomponents.sdk.MsgLikeKind
 import org.matrix.rustcomponents.sdk.ProfileDetails
+import org.matrix.rustcomponents.sdk.QueueWedgeError
 import org.matrix.rustcomponents.sdk.TimelineItem
 import org.matrix.rustcomponents.sdk.TimelineItemContent
 
@@ -77,11 +78,13 @@ fun convert(ev: EventTimelineItem): Msg {
         }
         else -> {}
     }
-    val sendState = when (ev.localSendState) {
+    val local = ev.localSendState
+    val sendState = when (local) {
         null, is EventSendState.Sent -> SendState.Sent
         is EventSendState.NotSentYet -> SendState.Sending
         else -> SendState.Failed
     }
+    val failed = local as? EventSendState.SendingFailed
     return Msg(
         id = id,
         sender = ev.sender,
@@ -101,7 +104,28 @@ fun convert(ev: EventTimelineItem): Msg {
         senderAvatar = profile?.avatarUrl,
         media = media,
         file = file,
+        sendRetrying = failed?.isRecoverable == true,
+        sendError = failed?.takeIf { !it.isRecoverable }?.let { sendErrorText(it.error) },
+        // (only our own reactions still on their way out carry a send state)
+        parkedReactions = ev.reactions
+            .filter { r -> r.senders.any { s -> (s.sendState as? EventSendState.SendingFailed)?.isRecoverable == false } }
+            .map { it.key },
     )
+}
+
+/**
+ * Why the SDK parked a send, for the row. Null for the catch-all (a server or
+ * SDK error text, which reads as plumbing): the send-queue keeper writes that
+ * one to Diagnostics.
+ */
+private fun sendErrorText(e: QueueWedgeError): String? = when (e) {
+    is QueueWedgeError.CrossVerificationRequired -> "this phone isn't verified yet"
+    is QueueWedgeError.InsecureDevices -> "someone here has an unverified device"
+    is QueueWedgeError.IdentityViolations -> "someone here changed their identity"
+    is QueueWedgeError.MissingMediaContent -> "the file is no longer on this phone"
+    is QueueWedgeError.InvalidMimeType -> "the file's type wasn't accepted"
+    is QueueWedgeError.ExpiredAccessToken -> "your sign-in has expired"
+    else -> null
 }
 
 private fun messageBody(c: MessageContent): String = when (val t = c.msgType) {

@@ -11,6 +11,7 @@ import org.matrix.rustcomponents.sdk.UploadParameters
 import org.matrix.rustcomponents.sdk.UploadSource
 import org.matrix.rustcomponents.sdk.VideoInfo
 import org.matrix.rustcomponents.sdk.ReceiptType
+import org.matrix.rustcomponents.sdk.SendTarget
 import org.matrix.rustcomponents.sdk.TaskHandle
 import org.matrix.rustcomponents.sdk.Timeline
 import org.matrix.rustcomponents.sdk.TimelineDiff
@@ -75,6 +76,7 @@ class TimelineModel(
             }
         }
         val shown = items.filterNotNull()
+        dropParkedReactions(shown)
         // The SDK clears a live timeline when sync reports a gap; it fills
         // again only from new events, so fetch the history back.
         val reset = diffs.any { it is TimelineDiff.Clear || it is TimelineDiff.Reset } && shown.size < REFILL_BELOW
@@ -87,6 +89,38 @@ class TimelineModel(
             org.fluxchat.companion.Diag.note("timeline $roomId reset ($before → ${items.size} items, [$kinds]): loading history again")
             refillAgain = refilling
             refill()
+        }
+    }
+
+    /** Parked reactions being dropped (message + key): each once. Guarded by [items]. */
+    private val dropping = HashSet<String>()
+
+    /**
+     * A reaction of yours whose send failed for good is parked like a message
+     * — it holds up every later send in the project — but has no row to retry
+     * or delete it from (the desktop's SDK skipped such requests; this one
+     * waits on them). It's dropped, and said in Diagnostics: a lost 👍 is the
+     * lesser harm than a project that sends nothing more.
+     */
+    private fun dropParkedReactions(msgs: List<Msg>) {
+        for (m in msgs) for (key in m.parkedReactions) {
+            if (!dropping.add(m.id + "\u0000" + key)) continue
+            scope.launch {
+                try {
+                    val id = if (m.isLocal) EventOrTransactionId.TransactionId(m.id.removePrefix("~")) else EventOrTransactionId.EventId(m.id)
+                    val dropped = timeline.abortSend(id, SendTarget.Reaction(key))
+                    org.fluxchat.companion.Diag.error(
+                        "The reaction $key on ${m.id} in $roomId couldn't be sent" + if (dropped) ": dropped, so the sends after it aren't held up" else "",
+                    )
+                    // Gone: the same reaction, made again, is a new one.
+                    synchronized(items) { dropping.remove(m.id + "\u0000" + key) }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // (kept in `dropping`: not tried again on every update)
+                    org.fluxchat.companion.Diag.error("Dropping the unsent reaction $key on ${m.id} in $roomId", e)
+                }
+            }
         }
     }
 
@@ -212,6 +246,26 @@ class TimelineModel(
 
     suspend fun react(eventId: String, key: String) = io {
         timeline.toggleReaction(EventOrTransactionId.EventId(eventId), key)
+    }
+
+    /**
+     * Un-park a local echo ([txnId], without the `~`) whose send failed for
+     * good, so the queue tries it again. False: this timeline has nothing of
+     * the kind (it went out meanwhile, or isn't here). A recoverable failure
+     * isn't parked — it goes out when the project's queue is back on
+     * ([SendQueue.resume]) — and un-parking it is harmless.
+     */
+    suspend fun retrySend(txnId: String): Boolean = io {
+        timeline.retrySend(EventOrTransactionId.TransactionId(txnId), SendTarget.Event)
+    }
+
+    /**
+     * Drop a local echo that hasn't gone out (failed, or still on its way; one
+     * already in flight is taken back once it lands). False: nothing left to
+     * abort here — it was sent meanwhile, or isn't in this timeline.
+     */
+    suspend fun abortSend(txnId: String): Boolean = io {
+        timeline.abortSend(EventOrTransactionId.TransactionId(txnId), SendTarget.Event)
     }
 
     suspend fun markRead() = io {

@@ -563,6 +563,8 @@ object Matrix {
         watchRooms(sync)
         startSearch(c)
         loadRunHistory()
+        // On `tasks`: a keeper that cannot start is reported, not fatal.
+        jobs += SendQueue.keep(c, tasks)
         // The loops everything else hangs off: supervised, so a throw in one
         // is reported and the loop starts again instead of ending for good.
         jobs += supervise("Sweeping stalled runs") { sweepStalledRuns() }
