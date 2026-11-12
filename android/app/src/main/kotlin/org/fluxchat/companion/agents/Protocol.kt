@@ -64,7 +64,10 @@ data class Protocol(
                 model = str("model"),
                 context = num("context")?.toFloat(),
                 cwd = str("cwd"),
-                costUsd = num("cost_usd"),
+                // A spend is a finite, non-negative amount; anything else (an
+                // overflowing literal parses to Infinity) is dropped here, before
+                // it can reach the history file, whose JSON encoder throws on it.
+                costUsd = num("cost_usd")?.takeIf { it.isFinite() && it >= 0 },
                 result = str("result"),
                 choices = choices,
             )

@@ -43,8 +43,11 @@ class ActionReceiver : BroadcastReceiver() {
                     else -> false
                 }
                 org.fluxchat.companion.Diag.note("notification action $action on $event: ${if (ok) "sent" else "failed"}")
+                if (!ok) {
+                    Notifier.failed(context, room, thread, event)
+                    return@launch
+                }
                 val text = when {
-                    !ok -> "Couldn't send. Open fluxchat to answer."
                     action == REACT -> "Answered: $value $label".trim()
                     action == DENY -> "Denied" + (if (reply.isNullOrBlank()) "" else ": $reply")
                     action == REPLY -> "Sent: $reply"
@@ -53,7 +56,7 @@ class ActionReceiver : BroadcastReceiver() {
                 Notifier.answered(context, event, text)
             } catch (e: Exception) {
                 org.fluxchat.companion.Diag.error("Notification action failed", e)
-                Notifier.answered(context, event, "Couldn't send. Open fluxchat to answer.")
+                Notifier.failed(context, room, thread, event)
             } finally {
                 pending.finish()
             }

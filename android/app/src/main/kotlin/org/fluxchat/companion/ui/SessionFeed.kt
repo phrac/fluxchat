@@ -170,9 +170,14 @@ fun SessionFeed(
     val pins by Matrix.pins.collectAsState()
     val state = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // A request still on its way out has no session to open yet: its card
+    // is keyed on a send id that stops existing once it lands (opening it
+    // asked the SDK for a thread on that id).
+    val openCard: (String) -> Unit = { r -> if (!r.startsWith("~")) onOpen(r) }
     val togglePin: (String) -> Unit = { root ->
         val on = !pins.isPinned(roomId, root)
-        scope.launch { Matrix.setPinned(roomId, root, on) }
+        scope.launch { setPinnedOrSay(context, roomId, root, on) }
     }
     val nearEnd by remember { derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 4 } }
     LaunchedEffect(nearEnd, sessions.size) {
@@ -198,7 +203,7 @@ fun SessionFeed(
             var j = i
             while (j < rest.size && bucket(rest[j].lastTs, now) == b) j++
             for (c in rest.subList(i, j)) {
-                item(key = c.root) { SessionCard(c, now, Modifier.animateItem(), pinned = false, onTogglePin = { togglePin(c.root) }) { onOpen(c.root) } }
+                item(key = c.root) { SessionCard(c, now, Modifier.animateItem(), pinned = false, onTogglePin = { togglePin(c.root) }) { openCard(c.root) } }
             }
             // reverseLayout: the heading goes after its cards to sit above them.
             item(key = "h:$b") {
@@ -213,7 +218,7 @@ fun SessionFeed(
         // newest emitted first so (newest at the bottom, like the rest) the newest pin ends up
         // nearest the list below it, with the heading on top.
         for (c in pinned) {
-            item(key = c.root) { SessionCard(c, now, Modifier.animateItem(), pinned = true, onTogglePin = { togglePin(c.root) }) { onOpen(c.root) } }
+            item(key = c.root) { SessionCard(c, now, Modifier.animateItem(), pinned = true, onTogglePin = { togglePin(c.root) }) { openCard(c.root) } }
         }
         if (pinned.isNotEmpty()) {
             item(key = "h:pinned") {
@@ -317,7 +322,7 @@ fun SessionCard(c: SessionCardInfo, now: Long, modifier: Modifier = Modifier, pi
                 else -> {}
             }
         }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+        DropdownMenu(expanded = menu && unlocked(), onDismissRequest = { menu = false }) {
             DropdownMenuItem(
                 text = { Text(if (pinned) "Unpin session" else "Pin session") },
                 leadingIcon = { Icon(Icons.Outlined.PushPin, null) },

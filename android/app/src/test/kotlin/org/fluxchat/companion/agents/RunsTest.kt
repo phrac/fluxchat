@@ -170,4 +170,126 @@ class RunsTest {
         assertEquals("!steer look at b", Runs.outgoing(hermes, "look at b", working = true, mode = BusyMode.Steer, addressedTo = null))
         assertEquals("look at b", Runs.outgoing(hermes, "look at b", working = false, mode = BusyMode.Steer, addressedTo = null))
     }
+
+    @Test
+    fun onlyRealEmojiStartAStep() {
+        // A file tree, a tick list and an arrow are text an agent wrote, not
+        // a step log (they used to fold away, and stopped ending prompts).
+        assertFalse(Runs.isEmoji("├──"))
+        assertFalse(Runs.isEmoji("✓"))
+        assertFalse(Runs.isEmoji("→"))
+        assertFalse(Runs.isEmoji("●"))
+        assertNull(Runs.progressSteps("├── src\n└── build"))
+        assertNull(Runs.progressSteps("✓ tests pass\n✓ lint clean"))
+        // Emoji below U+1F000 still count, with or without the variation selector.
+        for (e in listOf("⚙️", "⚙", "✅", "❌", "⏳", "⌛", "✏️", "⚡", "⚠️", "❓", "♾️", "▶️", "ℹ️", "‼️", "⭐", "1️⃣")) {
+            assertTrue(e, Runs.isEmoji(e))
+        }
+    }
+
+    @Test
+    fun anUnthreadedRequestIsOneRun() {
+        // agents.rs `an_unthreaded_request_is_one_run`.
+        val earlier = msg("earlier", me, now - 60_000, "first", done to listOf(agent))
+        val ask = msg("ask", me, now - 5000, "second", working to listOf(agent))
+        val r = Runs.agentUpdates(room, listOf(earlier, ask), agent, hermes, isDm = false, now = now)
+        assertEquals(RunState.Working, r.runs[ViewKey(room)]?.state)
+        assertFalse(r.runs.containsKey(ViewKey(room, "ask")))
+        assertEquals(1, r.runs.values.count { it?.state?.live == true })
+    }
+
+    @Test
+    fun aTrackedThreadRunStillGetsItsEnd() {
+        // Hermes answers in threads here, so its 👀 puts the run on the
+        // request's thread before any reply…
+        val tk = ViewKey(room, "ask")
+        val going = msg("ask", me, now - 5000, "do it", working to listOf(agent))
+        val r1 = Runs.agentUpdates(room, listOf(going), agent, hermes, isDm = false, now = now)
+        assertEquals(RunState.Working, r1.runs[tk]?.state)
+        // …and when it ends with no reply in that thread, the key is only
+        // still reported because it was being tracked.
+        val ended = msg("ask", me, now - 5000, "do it", done to listOf(agent))
+        assertFalse(Runs.agentUpdates(room, listOf(ended), agent, hermes, isDm = false, now = now).runs.containsKey(tk))
+        val r2 = Runs.agentUpdates(room, listOf(ended), agent, hermes, isDm = false, now = now, tracked = setOf(tk))
+        assertEquals(RunState.Done, r2.runs[tk]?.state)
+        val h = ArrayList<RunRecord>()
+        assertTrue(History.record(h, tk, r1.runs[tk]!!, "do it", "do it", now))
+        assertTrue(History.record(h, tk, r2.runs[tk]!!, "do it", "do it", now + 1000))
+        assertEquals("done", h.single().state)
+        assertEquals(now + 1000, h.single().ended)
+    }
+
+    @Test
+    fun aPromptInAThreadIsThatThreadsAndIsOneRecord() {
+        // agents.rs `a_prompt_in_a_thread_is_that_threads_and_is_one_record`:
+        // no reaction on the request to date the run from, so the prompt does.
+        val tk = ViewKey(room, "ask")
+        val ask = msg("ask", me, now - 5000, "deploy", threadCount = 1)
+        val prompt = msg("p", agent, now - 1000, "Run deploy.sh?", done to listOf(agent), failed to listOf(agent), threadRoot = "ask")
+        val h = ArrayList<RunRecord>()
+        for (later in listOf(0L, 1000L, 2000L)) {
+            val r = Runs.agentUpdates(room, listOf(ask, prompt), agent, hermes, isDm = false, now = now + later)
+            val run = r.runs[tk]!!
+            assertEquals(RunState.NeedsYou, run.state)
+            assertEquals("dated from the prompt, not from now", prompt.ts, run.since)
+            assertNull("the room isn't waiting on you", r.runs[ViewKey(room)])
+            History.record(h, tk, run, "deploy", "deploy", now + later)
+        }
+        assertEquals("one record, however often it's looked at", 1, h.size)
+        // Answered (the agent took its reactions back): the run is gone, and its record ends.
+        val answered = prompt.copy(reactions = emptyList())
+        val gone = Runs.agentUpdates(room, listOf(ask, answered), agent, hermes, isDm = false, now = now + 3000)
+        assertTrue(gone.runs.containsKey(tk))
+        assertNull(gone.runs[tk])
+        assertTrue(History.close(h, tk, prompt.ts, now + 3000))
+        assertEquals("done", h.single().state)
+        assertEquals(now + 3000, h.single().ended)
+    }
+
+    @Test
+    fun anUnthreadedPromptIsTheRoomsAndDatedFromItself() {
+        val prompt = msg("p", agent, now - 1000, "Run deploy.sh?", done to listOf(agent), failed to listOf(agent))
+        val r1 = Runs.agentUpdates(room, listOf(prompt), agent, hermes, isDm = true, now = now)
+        val r2 = Runs.agentUpdates(room, listOf(prompt), agent, hermes, isDm = true, now = now + 5000)
+        assertEquals(RunState.NeedsYou, r1.runs[ViewKey(room)]?.state)
+        assertEquals(prompt.ts, r1.runs[ViewKey(room)]?.since)
+        assertEquals(r1.runs[ViewKey(room)], r2.runs[ViewKey(room)])
+    }
+
+    @Test
+    fun aProtocolRunAskedInsideAThreadStaysWithTheThread() {
+        // agents.rs `a_protocol_run_asked_inside_a_thread_stays_with_the_thread`:
+        // filed under the room, two sessions' running cost totals interleave
+        // and spend counts the difference as new money.
+        val generic = Harness()
+        val root = msg("root", me, now - 60_000, "start", threadCount = 3)
+        val again = msg("again", me, now - 5000, "and now this", threadRoot = "root")
+        val status = msg("s", agent, now - 1000, "working").copy(agent = Protocol(run = "again", state = "working", costUsd = 3.6))
+        for (where in listOf(status.copy(threadRoot = "root"), status)) {
+            val r = Runs.agentUpdates(room, listOf(root, again, where), agent, generic, isDm = false, now = now)
+            val run = r.runs[ViewKey(room, "root")]!!
+            assertEquals(RunState.Working, run.state)
+            assertEquals(3.6, run.costUsd!!, 1e-9)
+            assertEquals(again.ts, run.since)
+            assertNull(r.runs[ViewKey(room)])
+        }
+    }
+
+    @Test
+    fun loadedRepliesSayAnAgentAnswersInThreads() {
+        // The thread summary can trail the replies: the last finished request
+        // has a reply loaded but no count yet.
+        val finished = msg("a", me, now - 60_000, "first", done to listOf(agent))
+        assertFalse(Runs.repliesInThreads(listOf(finished), agent, hermes, isDm = false))
+        assertTrue(Runs.repliesInThreads(listOf(finished), agent, hermes, isDm = false, loaded = setOf("a")))
+    }
+
+    @Test
+    fun aSpendIsAFiniteAmountOrNothing() {
+        fun cost(v: Any) = Protocol.fromJson(org.json.JSONObject().put("state", "working").put("cost_usd", v)).costUsd
+        assertEquals(1.25, cost(1.25)!!, 1e-9)
+        assertNull(cost("Infinity"))
+        assertNull(cost("NaN"))
+        assertNull(cost(-3.0))
+    }
 }

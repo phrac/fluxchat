@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -100,7 +101,8 @@ data class AgentList(val agents: List<AgentEntry> = emptyList(), val notAgents: 
                 }
             } ?: emptyList()
             val not = o.optJSONArray("not_agents")?.let { arr -> (0 until arr.length()).map { arr.optString(it) } } ?: emptyList()
-            return AgentList(agents, not)
+            // One row per agent: a list naming someone twice crashed the screen that keys rows by ID.
+            return AgentList(agents.distinctBy { it.userId }, not)
         }
     }
 }
@@ -135,6 +137,15 @@ data class AgentRoom(
 object Matrix {
     private const val TAG = "fluxchat"
     private const val AGENT_LIST_POLL_MS = 60_000L
+    /** Sync that ended in an error is started again after this long, doubling up to the max. */
+    private const val SYNC_RETRY_MIN_MS = 5_000L
+    private const val SYNC_RETRY_MAX_MS = 5 * 60_000L
+    /** Typing counts as a sign of life this long after it was last reported (agents.rs). */
+    private const val TYPING_ALIVE_MS = 60_000L
+    /** How long the store may still hold the pins from before our own write. */
+    private const val PIN_ECHO_MS = 30_000L
+    /** Under cacheDir: what an account leaves outside the SDK store (see logout). */
+    private val ACCOUNT_CACHE_DIRS = listOf("files", "uploads", "media-tmp")
     /** Own-message ↔ run-start match tolerance (echo vs server timestamps). */
     private const val REQUEST_MATCH_SLACK_MS = 2_000L
 
@@ -180,8 +191,15 @@ object Matrix {
     private val _rooms = MutableStateFlow<Map<String, Room>>(emptyMap())
     /** Which of your agents are in each room (agent rooms only). */
     private val agentMembers = HashMap<String, List<String>>()
-    /** Per room checked: your agents in it (empty too), for the agent IDs in [cachedFor]. */
-    private val memberCache = HashMap<String, List<String>>()
+    /**
+     * Per room checked: its member count then, and your agents in it (empty
+     * too), for the agent IDs in [cachedFor]. The count is what makes an
+     * entry stale: an agent invited after the room was first looked at never
+     * made it a project until the app restarted.
+     */
+    private val memberCache = HashMap<String, Pair<ULong, List<String>>>()
+    /** One pass over the rooms at a time (the room-list collector and createProject both ask). */
+    private val refreshLock = Mutex()
     @Volatile private var cachedFor: List<String> = emptyList()
     /** Agent rooms' names, avatars and whether they're DMs. */
     private data class RoomMeta(val name: String, val isDm: Boolean, val avatar: String?, val unread: Int = 0)
@@ -194,6 +212,8 @@ object Matrix {
     /** Who's typing in each agent room (user IDs, you left out). */
     val typing: StateFlow<Map<String, List<String>>> = _typing
     private val typingHandles = HashMap<String, TaskHandle>()
+    /** When each "room|user" was last reported typing (see [TYPING_ALIVE_MS]). */
+    private val typingAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     /** Runs this phone saw live (the desktop's run_history), kept encrypted. */
     private val runHistory = ArrayList<RunRecord>()
     private var historyLoaded = false
@@ -219,7 +239,20 @@ object Matrix {
 
     private suspend fun ensureStartedOnIo(): Boolean = startLock.withLock {
         if (client != null) return true
-        val saved = vault.load()
+        // A sign-in that never finished (the process died in it) left the
+        // old store set aside: it goes back before anything opens a store.
+        storeAside().putBack()
+        val saved = try {
+            vault.load()
+        } catch (e: Exception) {
+            // Saved but unreadable (the keystore hiccuped) is NOT "signed
+            // out": that put the sign-in form up, and signing in replaced
+            // the store — the device's keys — over a passing error.
+            Diag.error("Reading the saved session", e)
+            _error.value = "Couldn't read your saved session: ${e.message}"
+            _auth.value = Auth.RestoreFailed
+            return false
+        }
         if (saved == null) {
             _auth.value = Auth.SignedOut
             return false
@@ -236,6 +269,9 @@ object Matrix {
             true
         } catch (e: Exception) {
             Diag.error("Restoring the session failed", e)
+            // Whatever started() got going before it threw: with the client
+            // left in place, "Try again" returned at once and did nothing.
+            stopAll(forget = false)
             // Never drop the session over this (the desktop's rule): the
             // error is shown and the next start tries again. SignedOut here
             // showed a real user the sign-in form over a transient keystore
@@ -259,7 +295,8 @@ object Matrix {
                     vault.load()?.session ?: throw IllegalStateException("No session")
 
                 override fun saveSessionInKeychain(session: Session) {
-                    vault.load()?.let { vault.save(session, it.storePassphrase) }
+                    runCatching { vault.load()?.let { vault.save(session, it.storePassphrase) } }
+                        .onFailure { Diag.error("Saving the refreshed session", it) }
                 }
             })
     }
@@ -285,7 +322,7 @@ object Matrix {
             // The old client may already be closed by a mid-heal failure;
             // only keep it if it still answers.
             if (c.uniffiIsDestroyed) {
-                runCatching { builder(passphrase).homeserverUrl(session.homeserverUrl).build() }
+                runCatching { builder(passphrase).homeserverUrl(session.homeserverUrl).build().also { it.restoreSession(session) } }
                     .onFailure { Diag.error("Rebuild after failed heal", it) }
                     .getOrNull() ?: c
             } else c
@@ -298,23 +335,49 @@ object Matrix {
 
     private suspend fun loginOnIo(homeserver: String, user: String, password: String) = startLock.withLock {
         _error.value = null
-        try {
-            // A new login starts a new store (the old one belongs to the old device).
-            File(appContext.filesDir, "matrix").deleteRecursively()
-            File(appContext.cacheDir, "matrix").deleteRecursively()
-            val passphrase = Vault.newPassphrase()
+        // A new login starts a new store (the old one belongs to the old
+        // device) — but only once it has signed in. Until then the old store
+        // is set aside, not deleted: a mistyped password after a failed
+        // restore used to cost the device its keys (the desktop's
+        // `auth::sign_in` / `store_migration::set_aside`).
+        val aside = storeAside()
+        aside.setAside()
+        var built: Client? = null
+        val passphrase = Vault.newPassphrase()
+        val c = try {
             // A full Matrix ID in the homeserver field means its server.
             val server = homeserver.trim().let { if (it.startsWith("@") && ':' in it) it.substringAfter(':') else it }
             val c = builder(passphrase).serverNameOrHomeserverUrl(server).build()
+            built = c
             // "@name" without ":server" isn't a Matrix ID: the server wants just the name then.
             val name = user.trim().let { if (it.startsWith("@") && ':' !in it) it.removePrefix("@") else it }
             c.login(name, password, "fluxchat companion (${android.os.Build.MODEL})", null)
+            c
+        } catch (e: Exception) {
+            Diag.error("Login failed", e)
+            runCatching { built?.close() }
+            aside.putBack()
+            _error.value = loginError(e, homeserver.trim())
+            return@withLock
+        }
+        try {
+            aside.drop()
             vault.save(c.session(), passphrase)
             started(c)
         } catch (e: Exception) {
-            Diag.error("Login failed", e)
-            _error.value = loginError(e, homeserver.trim())
+            Diag.error("Starting after sign-in", e)
+            stopAll(forget = false)
+            _error.value = "Signed in, but couldn't start: ${e.message}"
+            _auth.value = Auth.RestoreFailed
         }
+    }
+
+    private fun storeAside() = StoreAside(File(appContext.filesDir, "matrix"), File(appContext.cacheDir, "matrix"))
+
+    /** From "couldn't reopen your sessions": give up on the saved session and sign in afresh. */
+    fun signInAgain() {
+        _error.value = null
+        _auth.value = Auth.SignedOut
     }
 
     /** A sign-in failure in words. */
@@ -336,12 +399,17 @@ object Matrix {
 
     private suspend fun started(c: Client) {
         client = c
-        val sync = c.syncService().finish()
+        // Offline mode: a failed request (wifi handing over to mobile data)
+        // parks the service until the server answers again, instead of ending
+        // it. Without it one network error stopped sync until the app was
+        // next opened — the live-runs notification kept saying "Working".
+        val sync = c.syncService().withOfflineMode().finish()
         syncService = sync
         handles += sync.state(object : SyncServiceStateObserver {
             override fun onUpdate(state: SyncServiceState) {
                 syncState = state.name.lowercase()
                 Diag.note("sync: $syncState")
+                onSyncState(state)
             }
         })
         sync.start()
@@ -363,6 +431,26 @@ object Matrix {
             .launchIn(scope)
         _auth.value = if (needsRecovery(c)) Auth.NeedsRecovery else Auth.Ready
         org.fluxchat.companion.push.Push.registerIfReady(appContext)
+    }
+
+    @Volatile private var syncRetry: Job? = null
+    @Volatile private var syncBackoffMs = SYNC_RETRY_MIN_MS
+
+    /** Sync that ended in an error (not a network one: those go Offline) is started again, with backoff. */
+    private fun onSyncState(state: SyncServiceState) {
+        when (state) {
+            SyncServiceState.RUNNING -> syncBackoffMs = SYNC_RETRY_MIN_MS
+            SyncServiceState.ERROR -> {
+                if (syncRetry?.isActive == true) return
+                val wait = syncBackoffMs
+                syncBackoffMs = (wait * 2).coerceAtMost(SYNC_RETRY_MAX_MS)
+                syncRetry = scope.launch {
+                    delay(wait)
+                    runCatching { syncService?.start() }.onFailure { Diag.error("Restarting sync", it) }
+                }
+            }
+            else -> {}
+        }
     }
 
     private suspend fun needsRecovery(c: Client): Boolean = runCatching {
@@ -392,21 +480,29 @@ object Matrix {
 
     suspend fun logout() = io { logoutOnIo() }
 
-    private suspend fun logoutOnIo() {
-        val c = client ?: return
+    private suspend fun logoutOnIo() = startLock.withLock {
+        val c = client ?: return@withLock
         org.fluxchat.companion.push.Push.unregister(appContext)
-        runCatching { syncService?.stop() }
+        runCatching { syncService?.stop() }.onFailure { Diag.error("Stopping sync", it) }
         runCatching { c.logout() }
-        stopAll()
+            .onFailure { Diag.error("Signing out on the server (this device may still be listed in your account's sessions)", it) }
+        // The vault first: a push arriving now must find nothing to restore.
         vault.clear()
+        stopAll(forget = true)
         File(appContext.filesDir, "matrix").deleteRecursively()
         File(appContext.cacheDir, "matrix").deleteRecursively()
+        // What the account left on the phone outside the store: decrypted
+        // attachments, half-sent uploads, and notifications quoting messages.
+        for (dir in ACCOUNT_CACHE_DIRS) File(appContext.cacheDir, dir).deleteRecursively()
+        runCatching { androidx.core.app.NotificationManagerCompat.from(appContext).cancelAll() }
+            .onFailure { Diag.error("Clearing notifications", it) }
         _agentList.value = AgentList()
         _pins.value = PinStore.Pins()
         _auth.value = Auth.SignedOut
     }
 
-    private fun stopAll() {
+    /** Stop everything a client had running. [forget]: signing out — the saved run history goes too. */
+    private fun stopAll(forget: Boolean) {
         jobs.forEach { it.cancel() }
         jobs.clear()
         handles.forEach { it.cancel() }
@@ -429,6 +525,11 @@ object Matrix {
         typingHandles.values.forEach { it.cancel() }
         typingHandles.clear()
         _typing.value = emptyMap()
+        typingAt.clear()
+        pinsWritten = null
+        syncRetry?.cancel()
+        syncRetry = null
+        syncBackoffMs = SYNC_RETRY_MIN_MS
         synchronized(roomsLock) { roomEntries.clear() }
         _rooms.value = emptyMap()
         agentMembers.clear()
@@ -440,7 +541,7 @@ object Matrix {
             historyLoaded = false
         }
         _runHistory.value = emptyList()
-        HistoryStore.clear(appContext)
+        if (forget) HistoryStore.clear(appContext)
         client = null
         syncService = null
         notifications = null
@@ -449,7 +550,7 @@ object Matrix {
     /** Back in the foreground: sync again and look for agent list changes. */
     fun resumed() {
         scope.launch {
-            runCatching { syncService?.start() }
+            runCatching { syncService?.start() }.onFailure { Diag.error("Starting sync again", it) }
             loadAgentList()
         }
     }
@@ -510,7 +611,7 @@ object Matrix {
     fun room(roomId: String): Room? = _rooms.value[roomId] ?: runCatching { client?.getRoom(roomId) }.getOrNull()
 
     /** Find the rooms your agents are in and keep their timelines live. */
-    private suspend fun refreshAgentRooms(rooms: Map<String, Room>, list: AgentList) {
+    private suspend fun refreshAgentRooms(rooms: Map<String, Room>, list: AgentList) = refreshLock.withLock {
         val ids = list.agents.map { it.userId }
         if (ids != cachedFor) {
             memberCache.clear()
@@ -519,7 +620,12 @@ object Matrix {
         val before = agentMembers.keys.toSet()
         val found = HashMap<String, List<String>>()
         for ((roomId, room) in rooms) {
-            val members = memberCache.getOrPut(roomId) { agentsIn(room, ids) }
+            val count = runCatching { room.activeMembersCount() }.getOrDefault(0UL)
+            // A failed read is not "no agents here": it's asked again next time.
+            val members = memberCache[roomId]?.takeIf { it.first == count }?.second
+                ?: agentsIn(room, ids)?.also { memberCache[roomId] = count to it }
+                ?: memberCache[roomId]?.second
+                ?: emptyList()
             if (members.isNotEmpty()) {
                 found[roomId] = members
                 val info = runCatching { room.roomInfo() }.getOrNull()
@@ -547,12 +653,15 @@ object Matrix {
             timelines.keys.filter { it !in found }.forEach {
                 timelines.remove(it)?.close()
                 typingHandles.remove(it)?.cancel()
+                val gone = it
+                _typing.update { t -> t - gone }
             }
         }
         recompute()
     }
 
-    private suspend fun agentsIn(room: Room, agents: List<String>): List<String> {
+    /** Which of [agents] are in [room]; null when its members couldn't be read. */
+    private suspend fun agentsIn(room: Room, agents: List<String>): List<String>? {
         if (agents.isEmpty()) return emptyList()
         val wanted = agents.toSet()
         val present = runCatching { room.heroes().map { it.userId } }.getOrDefault(emptyList()).toMutableSet()
@@ -560,6 +669,7 @@ object Matrix {
         // NOT a per-agent Room.member() future: polling that FFI call into a
         // desynced event cache is what SIGSEGV'd after createProject
         // (t_aa662dd8), and a SEGV walks past runCatching.
+        var failed = false
         if (!present.containsAll(wanted)) runCatching {
             // members() (not membersNoSync): like the old per-member lookup,
             // it fetches membership from the server when the local copy is
@@ -575,7 +685,11 @@ object Matrix {
                     ) present += m.userId
                 }
             }
-        }.onFailure { Diag.error("Reading members of ${room.id()}", it) }
+        }.onFailure {
+            failed = true
+            Diag.error("Reading members of ${room.id()}", it)
+        }
+        if (failed && !present.containsAll(wanted)) return null
         return agents.filter { it in present }
     }
 
@@ -596,7 +710,11 @@ object Matrix {
         val me = userId
         typingHandles[roomId] = room.subscribeToTypingNotifications(object : TypingNotificationsListener {
             override fun call(typingUserIds: List<String>) {
-                _typing.value = _typing.value + (roomId to typingUserIds.filter { it != me })
+                val now = System.currentTimeMillis()
+                val others = typingUserIds.filter { it != me }
+                for (u in others) typingAt["$roomId|$u"] = now
+                // update {}: these arrive on SDK threads, one per room.
+                _typing.update { it + (roomId to others) }
             }
         })
         model.start()
@@ -740,12 +858,26 @@ object Matrix {
             org.fluxchat.companion.agents.Runtime.noteAll(
                 roomRuntimes, roomId, msgs, agents,
             ) { id -> list.harnessOf(id).runtimeFooter }
-            val r = Runs.roomRuns(roomId, msgs, agents, list::harnessOf, isDm, now)
+            // Thread runs already on show, or with a record still open: they
+            // keep reporting until they end (agents.rs: "already tracked, so
+            // it gets its end") — a request that finished with no reply in
+            // its thread otherwise left its record "working" until it stalled.
+            val prev = _agentRooms.value[roomId]?.runs.orEmpty()
+            val tracked = HashSet<ViewKey>()
+            for ((k, run) in prev) if (k.threadRoot != null && run?.state?.live == true) tracked += k
+            if (historyLoaded) for (rec in runHistory) {
+                if (rec.room != roomId || rec.ended != null) continue
+                rec.key.removePrefix("$roomId::").takeIf { it != rec.key }?.let { tracked += ViewKey(roomId, it) }
+            }
+            val r = Runs.roomRuns(roomId, msgs, agents, list::harnessOf, isDm, now, tracked)
             // A Working run the agent fell silent on is over (agents.rs `stalled`):
             // drop it, so a 👀 Hermes left behind stops holding the room's headline
             // and history's re-opening of a settled record.
+            val stalledKeys = HashSet<ViewKey>()
             val runs = r.runs.filter { (key, run) ->
-                run == null || !Runs.stalled(run, signOfLife(roomId, run.agent, msgs, key.threadRoot, run.since), now)
+                val stalled = run != null && Runs.stalled(run, signOfLife(roomId, run.agent, msgs, key.threadRoot, run.since), now)
+                if (stalled) stalledKeys += key
+                !stalled
             }
             out[roomId] = AgentRoom(
                 roomId = roomId,
@@ -759,7 +891,7 @@ object Matrix {
                 avatar = meta.avatar,
                 unread = meta.unread,
             )
-            recordRuns(roomId, msgs, runs, now)
+            recordRuns(roomId, msgs, runs, prev, stalledKeys, now)
         }
         _agentRooms.value = out
     }
@@ -767,9 +899,29 @@ object Matrix {
     // --- Run history ---
 
     /** Record what this recompute saw (the desktop's record_run per view). */
-    private fun recordRuns(roomId: String, msgs: List<Msg>, runs: Map<ViewKey, RunInfo?>, now: Long) {
+    private fun recordRuns(
+        roomId: String,
+        msgs: List<Msg>,
+        runs: Map<ViewKey, RunInfo?>,
+        /** The runs of the last look. */
+        prev: Map<ViewKey, RunInfo?>,
+        stalledKeys: Set<ViewKey>,
+        now: Long,
+    ) {
         if (!historyLoaded) return
         var changed = false
+        // A run that was live and is simply no longer reported (a prompt
+        // answered or withdrawn, a working reaction taken back with no verdict)
+        // has ended: its record closes now instead of sitting open for good
+        // (agents.rs `refresh_agent_state` → `close_run_record`). Stalled runs
+        // are the sweep's. And only while the message that dated the run is
+        // still loaded: a timeline refilling after a sync gap reports nothing
+        // for a moment, which is not an ending.
+        for ((key, old) in prev) {
+            if (old == null || !old.state.live || runs[key] != null || key in stalledKeys) continue
+            if (msgs.none { !it.isLocal && it.ts == old.since }) continue
+            if (History.close(runHistory, key, old.since, now)) changed = true
+        }
         for ((key, run) in runs) {
             val rec = run ?: continue
             // The request behind the run: the thread's root, or the room's
@@ -814,8 +966,11 @@ object Matrix {
 
     /** The agent's latest sign of life in [roomId] (the desktop's `last_sign_of_life`):
      *  their own messages for [root]'s view (null: unthreaded), never local echoes. */
-    private fun signOfLife(roomId: String, agent: String, msgs: List<Msg>, root: String? = null, since: Long = 0): Long {
-        val typingNow = _typing.value[roomId]?.contains(agent) == true
+    fun signOfLife(roomId: String, agent: String, msgs: List<Msg>, root: String? = null, since: Long = 0): Long {
+        // Typing counts for a minute after it was last reported: a missed
+        // typing-stop must not keep a dead run alive (agents.rs TYPING_ALIVE_MS).
+        val typingNow = _typing.value[roomId]?.contains(agent) == true &&
+            System.currentTimeMillis() - (typingAt["$roomId|$agent"] ?: 0L) < TYPING_ALIVE_MS
         val lastMsg = msgs.filter {
             !it.isLocal && it.sender == agent && it.threadRoot == root && it.ts >= since
         }.maxOfOrNull { it.ts } ?: 0L
@@ -828,13 +983,32 @@ object Matrix {
             delay(60_000)
             val now = System.currentTimeMillis()
             val changed = synchronized(recomputeLock) {
-                if (!historyLoaded) false else History.settleStalled(runHistory, { rec ->
-                    val msgs = roomTimeline(rec.room)?.messages?.value.orEmpty()
-                    val root = rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key }
-                    signOfLife(rec.room, rec.agent, msgs, root, rec.started)
-                }, now)
+                if (!historyLoaded) false else {
+                    val stalled = History.settleStalled(runHistory, { rec ->
+                        val msgs = roomTimeline(rec.room)?.messages?.value.orEmpty()
+                        val root = rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key }
+                        signOfLife(rec.room, rec.agent, msgs, root, rec.started)
+                    }, now)
+                    // "Needs you" records nothing is waiting behind any more:
+                    // answered while the app wasn't running, or left open by
+                    // builds that never closed them.
+                    val answered = History.closeAnswered(runHistory, { rec ->
+                        val room = _agentRooms.value[rec.room]
+                        if (room == null || roomTimeline(rec.room)?.messages?.value.isNullOrEmpty()) null // can't tell
+                        else {
+                            val root = rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key }
+                            val run = room.runs[ViewKey(rec.room, root)]
+                            run?.state == RunState.NeedsYou && run.since == rec.started
+                        }
+                    }, now)
+                    stalled || answered
+                }
             }
             if (changed) saveRunHistory()
+            // And the live view: nothing else looks again while the room is
+            // quiet, so a dead run kept the project's headline (and the
+            // ongoing notification) "Working" until something else happened.
+            recompute()
         }
     }
 
@@ -852,15 +1026,15 @@ object Matrix {
     suspend fun sendReaction(roomId: String, eventId: String, key: String): Boolean = io { sendReactionOnIo(roomId, eventId, key) }
 
     private suspend fun sendReactionOnIo(roomId: String, eventId: String, key: String): Boolean = runCatching {
-        room(roomId)!!.sendRaw("m.reaction", org.fluxchat.companion.push.ActionReceiver.reaction(eventId, key))
-    }.isSuccess
+        (room(roomId) ?: error("Not in $roomId")).sendRaw("m.reaction", org.fluxchat.companion.push.ActionReceiver.reaction(eventId, key))
+    }.onFailure { Diag.error("Sending a reaction to $roomId", it) }.isSuccess
 
     /** Send text to a room, or a thread in it. */
     suspend fun sendText(roomId: String, thread: String?, text: String, inReplyTo: String?): Boolean = io { sendTextOnIo(roomId, thread, text, inReplyTo) }
 
     private suspend fun sendTextOnIo(roomId: String, thread: String?, text: String, inReplyTo: String?): Boolean = runCatching {
-        room(roomId)!!.sendRaw("m.room.message", org.fluxchat.companion.push.ActionReceiver.text(text, thread, inReplyTo))
-    }.isSuccess
+        (room(roomId) ?: error("Not in $roomId")).sendRaw("m.room.message", org.fluxchat.companion.push.ActionReceiver.text(text, thread, inReplyTo))
+    }.onFailure { Diag.error("Sending a message to $roomId", it) }.isSuccess
 
     // --- The agent list (account data, shared with desktop fluxchat) ---
 
@@ -879,7 +1053,10 @@ object Matrix {
         // otherwise (a new login, or sync not having sent it).
         val stored = runCatching { c.accountData(AgentList.TYPE) }
             .onFailure { Diag.error("Reading the agent list from the store", it) }.getOrNull()
-        val json = stored ?: fetchAccountData(c, AgentList.TYPE)
+        // A fetch that failed says nothing: reading it as "no agents" closed
+        // every project's timeline, and an edit made then uploaded the
+        // emptied list over the account's.
+        val json = stored ?: (fetchAccountData(c, AgentList.TYPE) ?: return).json
         val list = AgentList.parse(json) ?: AgentList()
         if (list != _agentList.value) {
             _agentList.value = list
@@ -902,8 +1079,15 @@ object Matrix {
         // server otherwise; a failure there must never clear local pins.
         val stored = runCatching { c.accountData(PinStore.TYPE) }
             .onFailure { Diag.error("Reading the pinned sessions from the store", it) }.getOrNull()
-        val json = stored ?: fetchAccountData(c, PinStore.TYPE) ?: return
+        val json = stored ?: fetchAccountData(c, PinStore.TYPE)?.json ?: return
         val pins = PinStore.parse(json)
+        // The store only learns of our own write when sync echoes it; until
+        // then it still holds the list from before (which un-pinned what you
+        // had just pinned, for a moment — or for good, see setPinned).
+        pinsWritten?.let { (written, at) ->
+            if (stored != null && pins != written && System.currentTimeMillis() - at < PIN_ECHO_MS) return
+            pinsWritten = null
+        }
         if (pins != _pins.value) {
             _pins.value = pins
             Diag.note("pinned sessions${if (stored == null) " (from the server)" else ""}: ${pins.pins.size}")
@@ -916,26 +1100,37 @@ object Matrix {
     private suspend fun setPinnedOnIo(roomId: String, root: String, pinned: Boolean): Boolean {
         val c = client ?: return false
         val now = System.currentTimeMillis()
-        // Re-read the account's list first: another device may have pinned in
-        // the meantime and sync hasn't delivered it yet.
-        loadPinsOnIo()
-        val current = _pins.value.pins.filterNot { it.roomId == roomId && it.root == root }
+        // Build on the server's list, not the store's: another device may have
+        // pinned in the meantime — and the store doesn't hold our own last
+        // write until sync echoes it, so a second pin made quickly was built
+        // on the list from before the first and uploaded without it.
+        val base = fetchAccountData(c, PinStore.TYPE)?.let { f -> f.json?.let { PinStore.parse(it) } ?: PinStore.Pins() }
+            ?: _pins.value
+        val current = base.pins.filterNot { it.roomId == roomId && it.root == root }
         val next = PinStore.Pins(
             (if (pinned) listOf(Pin(roomId, root, now)) else emptyList()) + current
                 .sortedByDescending { it.pinnedAt },
         )
         return try {
             c.setAccountData(PinStore.TYPE, next.toJson())
+            pinsWritten = next to System.currentTimeMillis()
             _pins.value = next
             true
         } catch (e: Exception) {
+            Diag.error("Saving the pinned sessions", e)
             _error.value = "Couldn't save the pinned sessions: ${e.message}"
             false
         }
     }
 
-    /** One global account data event's content from the server (null: not set, or it failed). */
-    private suspend fun fetchAccountData(c: Client, type: String): String? = kotlinx.coroutines.withContext(Dispatchers.IO) {
+    /** Our last pin write and when, until sync has echoed it into the store. */
+    @Volatile private var pinsWritten: Pair<PinStore.Pins, Long>? = null
+
+    /** What the server answered for an account data event: its content, or null when it isn't set. */
+    private class Fetched(val json: String?)
+
+    /** One global account data event from the server; null when the request failed (which is not "not set"). */
+    private suspend fun fetchAccountData(c: Client, type: String): Fetched? = kotlinx.coroutines.withContext(Dispatchers.IO) {
         runCatching {
             val session = c.session()
             val base = session.homeserverUrl.trimEnd('/')
@@ -946,8 +1141,8 @@ object Matrix {
             conn.readTimeout = 10_000
             try {
                 when (conn.responseCode) {
-                    200 -> conn.inputStream.bufferedReader().readText()
-                    404 -> null
+                    200 -> Fetched(conn.inputStream.bufferedReader().readText())
+                    404 -> Fetched(null)
                     else -> throw java.io.IOException("HTTP ${conn.responseCode}")
                 }
             } finally {
@@ -1069,6 +1264,7 @@ object Matrix {
             _agentList.value = list
             true
         } catch (e: Exception) {
+            Diag.error("Saving the agent list", e)
             _error.value = "Couldn't save the agent list: ${e.message}"
             false
         }

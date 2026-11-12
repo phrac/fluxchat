@@ -36,8 +36,21 @@ object StoreHeal {
      */
     const val HEALTHY_RUN_MS = 60_000L
 
-    /** Debuggerd reports a native SIGSEGV as REASON_CRASH_NATIVE; SIGBUS arrives as REASON_SIGNALED (t_aa662dd8 field data). */
-    private val NATIVE_CRASH = setOf(ApplicationExitInfo.REASON_CRASH_NATIVE, ApplicationExitInfo.REASON_SIGNALED)
+
+    private const val SIGBUS = 7
+    private const val SIGSEGV = 11
+
+    /**
+     * Whether an exit was a native crash. REASON_SIGNALED alone is not one:
+     * on phones without low-memory-kill reporting every ordinary background
+     * kill arrives as REASON_SIGNALED with SIGKILL, and each one rebuilt the
+     * store (a full resync) — its `status` is the signal, so ask for a fault.
+     */
+    fun nativeCrash(reason: Int, status: Int): Boolean = when (reason) {
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> true
+        ApplicationExitInfo.REASON_SIGNALED -> status == SIGBUS || status == SIGSEGV
+        else -> false
+    }
 
     @Volatile private var pending = false
 
@@ -63,10 +76,18 @@ object StoreHeal {
         // Second source: dropbox keeps our native crashes even where
         // ApplicationExitInfo history is empty (t_aa662dd8 field device:
         // exit-info persisted nothing, dropbox had the SIGSEGVs).
-        val crashed = exits.any { it.reason in NATIVE_CRASH && it.timestamp > ack } ||
+        val crashed = exits.any { nativeCrash(it.reason, it.status) && it.timestamp > ack } ||
             nativeCrashInDropbox(context, ack)
         if (crashed) {
             pending = decide(true, p.getInt(KEY_HEALS, 0))
+            // Declined (healed too often in a row): this crash is still
+            // answered for. Left unacknowledged it stayed "newer than the
+            // ack" for ever, so the streak could never reset and no later
+            // poisoned store was ever healed.
+            if (!pending) {
+                val newest = (exits.maxOfOrNull { it.timestamp } ?: 0L).coerceAtLeast(System.currentTimeMillis())
+                p.edit().putLong(KEY_ACK, newest).apply()
+            }
         } else {
             pending = false
             // Exits arrive newest-first: a process' life is the gap from the
@@ -75,7 +96,7 @@ object StoreHeal {
             var provedHealthy = false
             for (i in exits.indices) {
                 val newer = exits[i]
-                if (newer.reason in NATIVE_CRASH || newer.timestamp <= ack) continue
+                if (nativeCrash(newer.reason, newer.status) || newer.timestamp <= ack) continue
                 val lifetimeOk = i + 1 >= exits.size || newer.timestamp - exits[i + 1].timestamp > HEALTHY_RUN_MS
                 if (lifetimeOk) { provedHealthy = true; break }
             }

@@ -56,15 +56,17 @@ import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.matrix.Session
 import org.fluxchat.companion.matrix.SessionList
 import org.fluxchat.companion.matrix.pinnedFirst
-import java.util.Calendar
 
 /** When a session was last active, as the list groups them. */
 internal fun bucket(ts: Long, now: Long): String {
-    val day = { t: Long -> Calendar.getInstance().apply { timeInMillis = t }.let { it.get(Calendar.YEAR) * 400 + it.get(Calendar.DAY_OF_YEAR) } }
+    // Calendar days apart. (Year × 400 + day-of-year put 36 "days" between
+    // 31 December and 1 January: all of December read "Older" through January.)
+    val zone = java.time.ZoneId.systemDefault()
+    val day = { t: Long -> java.time.Instant.ofEpochMilli(t).atZone(zone).toLocalDate().toEpochDay() }
     val days = day(now) - day(ts)
     return when {
-        days <= 0 -> "Today"
-        days == 1 -> "Yesterday"
+        days <= 0L -> "Today"
+        days == 1L -> "Yesterday"
         days < 7 -> "Previous 7 days"
         days < 30 -> "Previous 30 days"
         else -> "Older"
@@ -95,9 +97,10 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
     val now by rememberNow(60_000)
     val state = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val togglePin: (String) -> Unit = { root ->
         val on = !pins.isPinned(roomId, root)
-        scope.launch { Matrix.setPinned(roomId, root, on) }
+        scope.launch { setPinnedOrSay(context, roomId, root, on) }
     }
     val nearEnd by remember { derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 5 } }
     LaunchedEffect(nearEnd, sessions.size, query) {
@@ -244,7 +247,7 @@ private fun SessionRow(
                 }
             }
         }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+        DropdownMenu(expanded = menu && unlocked(), onDismissRequest = { menu = false }) {
             DropdownMenuItem(
                 text = { Text(if (pinned) "Unpin session" else "Pin session") },
                 leadingIcon = { Icon(Icons.Outlined.PushPin, null) },

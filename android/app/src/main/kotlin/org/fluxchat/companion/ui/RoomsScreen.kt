@@ -48,6 +48,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -99,7 +100,7 @@ fun RoomsScreen(go: (Screen) -> Unit) {
     val pins by Matrix.pins.collectAsState()
     val now by rememberNow()
     val scope = rememberCoroutineScope()
-    var refreshing by rememberSaveable { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
     var filter by rememberSaveable { mutableStateOf(RoomFilter.All) }
     var creating by rememberSaveable { mutableStateOf(false) }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -133,11 +134,16 @@ fun RoomsScreen(go: (Screen) -> Unit) {
             onRefresh = {
                 refreshing = true
                 scope.launch {
-                    Matrix.resumed()
-                    Matrix.loadAgentList()
-                    org.fluxchat.companion.Update.check(force = true)
-                    delay(800)
-                    refreshing = false
+                    // finally: leaving the screen mid-refresh cancels this, and
+                    // the spinner stayed (saved, so even after coming back).
+                    try {
+                        Matrix.resumed()
+                        Matrix.loadAgentList()
+                        org.fluxchat.companion.Update.check(force = true)
+                        delay(800)
+                    } finally {
+                        refreshing = false
+                    }
                 }
             },
             modifier = Modifier.fillMaxSize().padding(top = pad.calculateTopPadding()),
@@ -229,13 +235,21 @@ internal fun CreateProjectFlow(
     create: suspend (String, org.fluxchat.companion.matrix.AgentList) -> String? = Matrix::createProject,
 ) {
     val scope = rememberCoroutineScope()
-    NewProjectDialog(agents = list.agents.size, onDismiss = onDismiss) { name ->
+    var busy by remember { mutableStateOf(false) }
+    NewProjectDialog(agents = list.agents.size, busy = busy, onDismiss = onDismiss) { name ->
+        busy = true
         scope.launch {
-            val roomId = create(name, list)
-            if (roomId != null) {
-                onCreated()
-                // Straight in: the first message can be sent immediately.
-                go(Screen.Room(roomId))
+            // finally: a creation that failed left the dialog busy for good —
+            // Create and Cancel disabled, Back ignored, under the error.
+            try {
+                val roomId = create(name, list)
+                if (roomId != null) {
+                    onCreated()
+                    // Straight in: the first message can be sent immediately.
+                    go(Screen.Room(roomId))
+                }
+            } finally {
+                busy = false
             }
         }
     }
@@ -243,10 +257,12 @@ internal fun CreateProjectFlow(
 
 /** Name a new project; the app invites every agent (the list's count is the promise). */
 @Composable
-private fun NewProjectDialog(agents: Int, onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+private fun NewProjectDialog(agents: Int, busy: Boolean, onDismiss: () -> Unit, onCreate: (String) -> Unit) {
     var name by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
     val error by Matrix.error.collectAsState()
+    // An error from somewhere else (a failed pin, an hour ago) isn't this dialog's.
+    LaunchedEffect(Unit) { Matrix.clearError() }
+    if (!unlocked()) return
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("New project") },
@@ -268,7 +284,7 @@ private fun NewProjectDialog(agents: Int, onDismiss: () -> Unit, onCreate: (Stri
         confirmButton = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                TextButton(onClick = { busy = true; onCreate(name.trim()) }, enabled = name.isNotBlank() && !busy) { Text("Create") }
+                TextButton(onClick = { onCreate(name.trim()) }, enabled = name.isNotBlank() && !busy) { Text("Create") }
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },

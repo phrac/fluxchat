@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -204,12 +205,14 @@ private fun MediaTab(items: List<Msg>, loading: Boolean, done: Boolean, error: S
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
+        // Month headings and the footer take the whole line (they were one
+        // 112 dp cell each, squeezed in beside the thumbnails).
         items(rows, key = { row ->
             when (row) {
                 is GalleryRow.Header -> "h:" + row.start
                 is GalleryRow.Item -> row.msg.id
             }
-        }) { row ->
+        }, span = { row -> if (row is GalleryRow.Header) GridItemSpan(maxLineSpan) else GridItemSpan(1) }) { row ->
             when (row) {
                 is GalleryRow.Header -> Text(
                     row.label, Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp),
@@ -220,7 +223,7 @@ private fun MediaTab(items: List<Msg>, loading: Boolean, done: Boolean, error: S
                 }
             }
         }
-        item(key = "footer") { GalleryFooter(loading, done, error, loadMore) }
+        item(key = "footer", span = { GridItemSpan(maxLineSpan) }) { GalleryFooter(loading, done, error, loadMore) }
     }
     val openAt = openId?.let { id -> images.indexOfFirst { it.id == id } } ?: -1
     if (openAt >= 0) GalleryViewer(images, openAt, { i -> images.getOrNull(i)?.let { openId = it.id } }, { openId = null }, jump)
@@ -304,6 +307,7 @@ private fun GalleryViewer(images: List<Msg>, index: Int, step: (Int) -> Unit, cl
         offset = if (scale == 1f) androidx.compose.ui.geometry.Offset.Zero else offset + pan
     }
     LaunchedEffect(m) { scale = 1f; offset = androidx.compose.ui.geometry.Offset.Zero }
+    if (!unlocked()) return
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             full?.let {

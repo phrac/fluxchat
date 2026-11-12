@@ -284,4 +284,67 @@ class HistoryTest {
         assertEquals("1h 20m", rec.copy(ended = 4_800_000).duration(now))
         assertEquals("2m", rec.copy(ended = null, started = 0).duration(120_000))
     }
+
+    @Test
+    fun aRunThatIsSimplyGoneGetsAnEnd() {
+        // history.rs `close_run_record`: a prompt answered, a working reaction taken back.
+        val h = ArrayList<RunRecord>()
+        val started = now - 90_000
+        assertTrue(History.record(h, thread, run(RunState.NeedsYou, started), "Ship it", "ship it", now))
+        assertFalse("another run's start", History.close(h, thread, started + 1, now))
+        assertTrue(History.close(h, thread, started, now + 500))
+        assertEquals("done", h[0].state)
+        assertEquals(now + 500, h[0].ended)
+        assertFalse("already closed", History.close(h, thread, started, now + 900))
+    }
+
+    @Test
+    fun aStalledRunThatFinishesAfterAllTakesItsOutcome() {
+        // Silent for more than two hours, then ✅ with a cost: no longer "stalled".
+        val h = ArrayList<RunRecord>()
+        val started = now - 90_000
+        assertTrue(History.record(h, thread, run(RunState.Working, started), "Ship it", "ship it", now))
+        val later = now + History.STALE_RUN_MS + 1
+        assertTrue(History.settleStalled(h, { 0L }, later))
+        assertTrue(History.record(h, thread, run(RunState.Done, started, steps = 9, cost = 0.4), "Ship it", "ship it", later + 60_000))
+        assertEquals("done", h[0].state)
+        assertEquals(0.4, h[0].costUsd!!, 1e-9)
+        assertEquals(later + 60_000, h[0].ended)
+    }
+
+    @Test
+    fun oneBadRecordDoesNotTakeTheRestWithIt() {
+        val good = """{"key":"k1","room":"r","agent":"a","title":"t","state":"done","started":1,"ended":2,"steps":0}"""
+        val bad = """{"key":"k2","room":"r","agent":"a","title":"t","state":"done","started":1,"ended":"soon","steps":0}"""
+        val open = """{"key":"k3","room":"r","agent":"a","title":"t","state":"working","started":3,"ended":null,"steps":0,"cost_usd":null}"""
+        val h = History.decode("[$good,$bad,$open]".toByteArray())
+        assertEquals(listOf("k1", "k3"), h.map { it.key })
+        assertNull(h[1].ended)
+        assertNull(h[1].costUsd)
+    }
+
+    @Test
+    fun aCostThatIsNotANumberIsLeftOutOfTheFile() {
+        val h = listOf(RunRecord("k", room, agent, "t", "done", now, costUsd = Double.POSITIVE_INFINITY))
+        val back = History.decode(History.encode(h))
+        assertEquals(1, back.size)
+        assertNull(back[0].costUsd)
+    }
+
+    @Test
+    fun aNeedsYouRecordNothingWaitsBehindIsClosed() {
+        val h = ArrayList<RunRecord>()
+        val other = ViewKey(room, "\$b")
+        assertTrue(History.record(h, thread, run(RunState.NeedsYou, now - 5000), "Ship it", "ship it", now))
+        assertTrue(History.record(h, other, run(RunState.NeedsYou, now - 4000), "Deploy", "deploy", now))
+        assertTrue(History.record(h, ViewKey(room, "\$c"), run(RunState.Working, now - 3000), "Build", "build", now))
+        // Can't tell (the project isn't loaded): nothing closes.
+        assertFalse(History.closeAnswered(h, { null }, now + 1000))
+        // The first is still waiting, the second was answered; a working run isn't this function's.
+        assertTrue(History.closeAnswered(h, { it.key == History.keyOf(thread) }, now + 1000))
+        assertNull(h[0].ended)
+        assertEquals("done", h[1].state)
+        assertEquals(now + 1000, h[1].ended)
+        assertEquals("working", h[2].state)
+    }
 }
