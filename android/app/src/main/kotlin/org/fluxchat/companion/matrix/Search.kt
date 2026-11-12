@@ -62,15 +62,42 @@ class ServerSearch(private val service: SearchService) : AutoCloseable {
         })
     }
 
-    /** Run a query (results stream in as diffs; a new query clears the old). */
+    private val _query = MutableStateFlow<String?>(null)
+
+    /** The query [hits] are the answer to (null before the first). */
+    val query: StateFlow<String?> = _query
+
+    /**
+     * Run a query (results stream in as diffs; a new query clears the old).
+     * Asking for what is already there changes nothing: the service keeps its
+     * results live, and setting the same query again emptied the list first —
+     * coming back to the search screen lost the place you had scrolled to.
+     */
     suspend fun search(query: String) = withContext(Dispatchers.IO) {
-        runCatching { service.setQuery(query) }
-            .onFailure { Diag.error("Searching sessions for \"$query\"", it) }
+        if (query == _query.value) return@withContext
+        // In between (and after a call that didn't finish) the hits are nobody's.
+        _query.value = null
+        try {
+            service.setQuery(query)
+            _query.value = query
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // The box changed again before this one settled: not an error.
+            throw e
+        } catch (e: Exception) {
+            Diag.error("Searching sessions for \"$query\"", e)
+        }
     }
 
     /** The next page of hits. */
     suspend fun more() = withContext(Dispatchers.IO) {
-        if (!_endReached.value) runCatching { service.paginate() }.onFailure { Diag.error("Loading more search results", it) }
+        if (_endReached.value) return@withContext
+        try {
+            service.paginate()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Diag.error("Loading more search results", e)
+        }
     }
 
     private fun apply(updates: List<SearchServiceResultsUpdate>) = synchronized(raw) {
