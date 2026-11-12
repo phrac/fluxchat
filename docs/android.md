@@ -36,8 +36,8 @@ The chips at the top filter to **Needs you** or **Running**. Pull down to refres
 
 ## Start a session from anywhere
 
-A small **New session** sheet opens over whatever you're doing: pick the agent room (it starts on the one you last asked something in), type or speak the request, **Send**. It closes once sent, and the live run notification takes over. The ↗ button opens the room instead. Open the sheet from:
-- **the home-screen widget** (*fluxchat → New session*): a text field (*Ask fbhermes…*, its room under it) and a mic. When you add it, pick its room: one of your agent rooms, or *the room I last used*; add one per room if you like, and long-press it to change its room. Widgets can't take typing themselves, so a tap opens the sheet with the keyboard up, and the mic opens it listening;
+A small **New session** sheet opens over whatever you're doing: pick the agent room (it starts on the one you last asked something in), type or speak the request, **Send**. It closes once the server has the message (*Sent to …*; with no connection it says *Sending to …* and the message goes out when there is one), and the live run notification takes over. What you've typed isn't lost when the sheet closes — a tap beside it, Back — it's a draft of that room, there again the next time the sheet opens for it. The ↗ button opens the room instead, with what you've typed in its message box. Open the sheet from:
+- **the home-screen widget** (*fluxchat → New session*): a text field (*Ask fbhermes…*, its room under it) and a mic. When you add it, pick its room: one of your agent rooms, or *the project I last used*; add one per room if you like, and long-press it to change its room. Widgets can't take typing themselves, so a tap opens the sheet with the keyboard up, and the mic opens it listening;
 - **the Quick Settings tile** (edit your Quick Settings and drag *New session* in);
 - **a long-press on the app icon**: a *New session in …* shortcut for each of your top agent rooms.
 
@@ -72,7 +72,7 @@ DMs, and rooms where the agent answers in the conversation itself, stay a chat.
 - **While the agent works**, you choose what a new message does, as on the desktop: **Send**, **Steer** (read after its next step) or **Queue** (the next task).
 - **Attachments:** the paperclip beside the message box sends a **photo or video** (Android's photo picker, no storage permission) or **any file**. **Take photo** and **Take video** open your camera app straight away — shoot, accept, and it sits in the composer like a picked photo. Photos ship in the orientation you took them: the camera's rotation hint is baked into the image itself, so your agent always sees an upright photo. The file waits above the box with a preview; what you type goes with it as its caption, in one message. In a thread it goes to the thread; from a room's sessions it starts a new session.
 - **Files the agent (or anyone) sends** show as a card: name, size, type (and a video's thumbnail). Tap it to open it in an app that handles that type; the download button saves it where you choose. Files are downloaded (and decrypted) the first time you open or save them.
-- **Share from other apps:** pick fluxchat in Android's share sheet (a screenshot, a PDF, a link, some text), then the agent room to send it to. The room opens with the file attached and the text in the message box, for you to add to and send. In a room shown as sessions, that starts a new session.
+- **Share from other apps:** pick fluxchat in Android's share sheet (a screenshot, a PDF, a link, some text), then the agent room to send it to. The room opens with the file attached and the text in the message box, for you to add to and send. In a room shown as sessions, that starts a new session. A large file shows a progress card (with **Cancel**) while it's copied in; one that can't be read says so instead of opening the app with nothing to send. Backing out of *Send to…* drops the share.
 - **`/` commands**: type `/` for the agent's commands as you type. They go out the way its harness takes them (`!stop` for Hermes).
 - **The ⋮ menu** has the agent's quick commands: Status, Usage, Context, Model, New session.
 - **Threads follow you.** Send a request from a room. When the agent starts on it in a thread, the thread opens.
@@ -105,11 +105,13 @@ Your homeserver then pushes to the distributor through a Matrix push gateway: nt
 - **Other agent messages** (answers, finished runs). Step logs don't notify.
 - **Messages that mention you.**
 
+Nothing notifies for what's in front of you: not for the session you have open, nor — apart from an approval or question waiting inside a session — for the project whose screen you're on. Opening a session or project takes its notifications down, and when everything has been read on another device the message notifications go too (ones still waiting on an answer stay until they're answered). A message whose keys haven't reached the phone yet still notifies — *New message from …*, opening the session — and gets its text and buttons once it can be read.
+
 Every agent notification has **Reply**, which answers in the thread the message is in. If an answer can't be sent (no signal), the notification comes back with its buttons, marked **Not sent**, so you can try again. While the app is running (a push wakes it), a prompt's notification also goes away once it's answered anywhere: on the desktop, in the app, or from the notification.
 
-Hermes approvals sent without the [agent protocol](agent-protocol.md) only become prompts when Hermes adds its reactions, a moment after the message arrives. The buttons appear when the app sees those reactions. With the [Hermes patches](../integrations/hermes) applied, the prompt carries its choices and the buttons are there at once.
+Hermes approvals sent without the [agent protocol](agent-protocol.md) only become prompts when Hermes adds its reactions, a moment after the message arrives. The buttons appear when the app sees those reactions, however late that is (a push the phone held back while dozing, a slow start). With the [Hermes patches](../integrations/hermes) applied, the prompt carries its choices and the buttons are there at once.
 
-Without push, you only hear from agents while the app is open.
+Without push, you only hear from agents while the app is open. Signing out unregisters the phone but remembers that you want push: signing in again turns it back on. If Android itself is blocking fluxchat's notifications, Settings says so under the push switch, with a button to allow them.
 
 ## App lock
 

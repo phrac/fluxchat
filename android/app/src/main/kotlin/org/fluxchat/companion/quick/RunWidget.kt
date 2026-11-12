@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.view.View
 import android.widget.RemoteViews
+import org.fluxchat.companion.Diag
 import org.fluxchat.companion.MainActivity
 import org.fluxchat.companion.R
 import org.fluxchat.companion.push.ActionReceiver
@@ -66,8 +67,17 @@ object RunWidgetData {
                     stop = text(o, "x"),
                 )
             }
-        }.getOrDefault(emptyList())
+        }.getOrElse {
+            // An unreadable snapshot draws as "no runs": say why, once per snapshot.
+            if (unreadable != raw) {
+                unreadable = raw
+                Diag.error("Reading the run widget's saved rows", it)
+            }
+            emptyList()
+        }
     }
+
+    @Volatile private var unreadable: String? = null
 
     /** Absent or JSONObject.NULL → null (optString would hand back "null" for NULL). */
     private fun text(o: JSONObject, key: String): String? =
@@ -129,7 +139,7 @@ class RunWidget : AppWidgetProvider() {
                         if (r.stop == null) {
                             setViewVisibility(R.id.widget_run_stop, View.GONE)
                         } else {
-                            setTextViewText(R.id.widget_run_stop, context.getString(R.string.widget_run_stop))
+                            setTextViewText(R.id.widget_run_stop_label, context.getString(R.string.widget_run_stop))
                             setOnClickPendingIntent(
                                 R.id.widget_run_stop,
                                 PendingIntent.getBroadcast(context, ("stop" + r.key).hashCode(), stopIntent(context, r), flags),

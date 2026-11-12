@@ -3,11 +3,12 @@ package org.fluxchat.companion.push
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
 import androidx.core.app.RemoteInput
+import kotlinx.coroutines.delay
 import org.fluxchat.companion.Diag
 import org.fluxchat.companion.matrix.Matrix
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Answers from a notification, without opening the app: a prompt's choice
@@ -25,9 +26,27 @@ class ActionReceiver : BroadcastReceiver() {
         val reply = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(Notifier.REPLY_KEY)?.toString()
         // A choice picked from the reply chips: answer as its button would.
         val picked = reply?.let { r -> intent.getStringArrayExtra(CHOICE_TITLES)?.indexOf(r.trim())?.takeIf { it >= 0 } }
-        val action = if (picked != null) intent.getStringExtra(CHOICE_ACTION) ?: return else intent.action ?: return
-        val value = if (picked != null) intent.getStringArrayExtra(CHOICE_KEYS)?.getOrNull(picked) ?: return else value0
+        val action = (if (picked != null) intent.getStringExtra(CHOICE_ACTION) else intent.action)
+            ?: return Diag.note("push: notification action on $event without an action")
+        val value = if (picked != null) {
+            intent.getStringArrayExtra(CHOICE_KEYS)?.getOrNull(picked) ?: return Diag.note("push: notification choice on $event without its key")
+        } else {
+            value0
+        }
         val pending = goAsync()
+        // A broadcast has about ten seconds. From a dead process on a slow
+        // network (restore the session, share keys, send) an answer can take
+        // longer, and a receiver that overruns is killed with the answer
+        // half-sent and nothing said. So the broadcast is handed back in
+        // time; the send carries on under a wake lock and reports as usual.
+        val finished = AtomicBoolean(false)
+        val finish = { if (finished.compareAndSet(false, true)) pending.finish() }
+        val app = context.applicationContext
+        val awake = Awake.hold(app, "answer")
+        val budget = Matrix.launch {
+            delay(BROADCAST_BUDGET_MS)
+            finish()
+        }
         Matrix.init(context)
         Matrix.launch {
             try {
@@ -42,9 +61,9 @@ class ActionReceiver : BroadcastReceiver() {
                         (reply.isNullOrBlank() || Matrix.sendText(room, thread, "Denied: $reply", inReplyTo = event))
                     else -> false
                 }
-                org.fluxchat.companion.Diag.note("notification action $action on $event: ${if (ok) "sent" else "failed"}")
+                Diag.note("notification action $action on $event: ${if (ok) "sent" else "failed"}")
                 if (!ok) {
-                    Notifier.failed(context, room, thread, event)
+                    Notifier.failed(app, room, thread, event)
                     return@launch
                 }
                 val text = when {
@@ -53,17 +72,22 @@ class ActionReceiver : BroadcastReceiver() {
                     action == REPLY -> "Sent: $reply"
                     else -> "Sent: $value"
                 }
-                Notifier.answered(context, event, text)
+                Notifier.answered(app, event, text)
             } catch (e: Exception) {
-                org.fluxchat.companion.Diag.error("Notification action failed", e)
-                Notifier.failed(context, room, thread, event)
+                Diag.error("Notification action failed", e)
+                Notifier.failed(app, room, thread, event)
             } finally {
-                pending.finish()
+                budget.cancel()
+                awake.release()
+                finish()
             }
         }
     }
 
     companion object {
+        /** How long an answer may hold the broadcast (the system's limit is ten seconds). */
+        private const val BROADCAST_BUDGET_MS = 8_000L
+
         const val REACT = "org.fluxchat.companion.REACT"
         const val SEND = "org.fluxchat.companion.SEND"
         const val REPLY = "org.fluxchat.companion.REPLY"

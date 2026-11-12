@@ -232,6 +232,8 @@ private fun Navigator(opened: MutableStateFlow<Screen?>) {
         else { direction.intValue = 1; stack[stack.size - 1] = it }
     }
     BackHandler(enabled = stack.size > 1) { back() }
+    // Which screen is on top, for the notifications (none for what you're looking at).
+    org.fluxchat.companion.push.Attention.Track(stack.last())
     AnimatedContent(
         targetState = stack.last(),
         transitionSpec = {
