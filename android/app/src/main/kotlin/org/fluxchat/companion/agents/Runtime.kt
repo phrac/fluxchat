@@ -6,9 +6,9 @@ import java.util.Locale
  * The agent's runtime info (the desktop's agents.rs `Runtime`): from the
  * agent protocol's fields (`Protocol::runtime` there) or Hermes's footer
  * (`/footer on`) — the last paragraph of a final answer, `model · 42% ·
- * ~/dir` (any of those, plus latency like `22s`, or `alias → served`). The
- * newest per room backfills a finished run record's model and cost, the
- * desktop's `record_run` pulling `agent_runtime` when the run ends.
+ * ~/dir` (any of those, plus latency like `22s`, or `alias → served`). A
+ * run's own ([ofRun]) backfills its finished record's model and cost, as
+ * the desktop's `record_run` pulls `agent_runtime` when the run ends.
  */
 data class Runtime(
     val model: String? = null,
@@ -87,23 +87,26 @@ data class Runtime(
         }
 
         /**
-         * Remember each room's newest runtime from [msgs] (the desktop's
-         * `take_footers_of`, minus stripping the footer from the body — the
-         * phone shows answers whole): the protocol's fields count for any
-         * agent; a footer only when the harness sets `runtime_footer`. A
-         * message at or after the stored timestamp replaces it. [footerOf]
-         * is the harness's runtime_footer per agent id.
+         * A run's own runtime info: the newest its [agent] reported in the
+         * run's view ([msgs]) at or after its start ([since]) — the
+         * protocol's fields, or a footer when the harness sets
+         * `runtime_footer` ([footer]); a later message of the same time
+         * wins (the desktop's `>=`). The desktop's `take_footers_of` keeps
+         * one per room, the newest from any agent in any session, and
+         * `record_run` backfills from that: a run that reported no cost,
+         * ending in a project where another session had just said $3.60,
+         * was recorded as costing $3.60 — a session total, which spend
+         * counts whole. `cost_usd` is per session, so only the run's own
+         * session may fill it in.
          */
-        fun noteAll(runtimes: MutableMap<String, Pair<Long, Runtime>>, roomId: String, msgs: List<Msg>, agents: List<String>, footerOf: (String) -> Boolean) {
+        fun ofRun(msgs: List<Msg>, agent: String, since: Long, footer: Boolean): Runtime? {
+            var best: Pair<Long, Runtime>? = null
             for (m in msgs) {
-                if (m.sender !in agents) continue
-                val protocol = m.agent
-                val fromProtocol = if (protocol != null) Runtime.ofProtocol(protocol) else null
-                val fromFooter = if (footerOf(m.sender)) splitFooter(m.body)?.second else null
-                val rt = fromProtocol ?: fromFooter ?: continue
-                val newer = runtimes[roomId].let { it == null || m.ts >= it.first }
-                if (newer) runtimes[roomId] = m.ts to rt
+                if (m.sender != agent || m.isLocal || m.ts < since) continue
+                val rt = m.agent?.let { ofProtocol(it) } ?: (if (footer) splitFooter(m.body)?.second else null) ?: continue
+                if (best == null || m.ts >= best.first) best = m.ts to rt
             }
+            return best?.second
         }
     }
 }

@@ -11,8 +11,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import org.fluxchat.companion.Diag
 import org.fluxchat.companion.MainActivity
 import org.fluxchat.companion.Notifications
@@ -35,9 +33,6 @@ import org.fluxchat.companion.ui.threadTitle
 object LiveRuns {
     const val NOTIFICATION_ID = 7301
 
-    /** A working run silent this long has stalled (desktop agents.rs `STALE_RUN_MS`). */
-    private const val STALE_RUN_MS = 2 * 60 * 60 * 1000L
-
     /** A live run, as the notification and the run widget show it. */
     internal data class Live(val key: ViewKey, val run: RunInfo, val agent: String, val title: String, val room: String)
 
@@ -49,7 +44,8 @@ object LiveRuns {
 
     fun start(context: Context) {
         val app = context.applicationContext
-        Matrix.agentRooms.onEach { update(app) }.launchIn(Matrix.scope)
+        // Supervised: a throw here used to end the ongoing notification for good (or the process).
+        Matrix.supervise("Keeping the live runs notification") { Matrix.agentRooms.collect { update(app) } }
     }
 
     private fun live(): List<Live> {
@@ -59,9 +55,9 @@ object LiveRuns {
                 if (run == null || !run.state.live) return@mapNotNull null
                 val agentId = run.agent.ifEmpty { room.agents.firstOrNull().orEmpty() }
                 // Hermes leaves its 👀 on requests it never finished (after a restart): a
-                // working run with no sign of life for a while isn't live (the desktop's STALE_RUN_MS).
-                val lastSign = msgs.filter { it.sender == agentId && (it.threadRoot == key.threadRoot || it.id == key.threadRoot) }.maxOfOrNull { it.ts } ?: 0L
-                if (run.state == RunState.Working && System.currentTimeMillis() - maxOf(run.since, lastSign) > STALE_RUN_MS) return@mapNotNull null
+                // working run with no sign of life for a while isn't live. Matrix.recompute
+                // already drops those by this same rule; this only covers the minute until it looks again.
+                if (!run.typing && Runs.stalled(run, Matrix.signOfLife(room.roomId, agentId, msgs, key.threadRoot, run.since), System.currentTimeMillis())) return@mapNotNull null
                 val agent = shortName(agentId, msgs.lastOrNull { it.sender == agentId }?.senderName)
                 val title = key.threadRoot?.let { r -> threadTitle(msgs.firstOrNull { it.id == r }, msgs.filter { it.threadRoot == r }) } ?: room.name
                 Live(key, run, agentId.ifEmpty { agent }, title, room.name)
@@ -111,14 +107,24 @@ object LiveRuns {
         if (!serviceUp) {
             // From the background Android may refuse a foreground service: the
             // notification still shows (and updates while the process lives).
+            // Asked again on every change (the app may be in front by then),
+            // but a refusal is said once, not once per step of the run.
             runCatching { ContextCompat.startForegroundService(context, Intent(context, RunService::class.java)) }
-                .onFailure { Diag.note("live runs: no foreground service (${it.javaClass.simpleName}), plain notification") }
+                .onFailure { refused("no foreground service (${it.javaClass.simpleName}), plain notification") }
         }
         runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, n) }
             .onFailure { if (notifyErrors++ < 3) Diag.error("Posting the live runs notification", it) }
     }
 
     private var notifyErrors = 0
+
+    private val quiet = Streak()
+
+    /** The service couldn't be had: one line per streak of refusals, ended by [serviceRunning]. */
+    internal fun refused(why: String, error: Throwable? = null) {
+        if (!quiet.starts("refused")) return
+        if (error != null) Diag.error("live runs: $why", error) else Diag.note("live runs: $why")
+    }
 
     /** What [RunService] shows for the instant it takes to stop when no run is left. */
     internal fun idle(context: Context): android.app.Notification =
@@ -133,6 +139,7 @@ object LiveRuns {
 
     internal fun serviceRunning(up: Boolean) {
         serviceUp = up
+        if (up && quiet.ends("refused")) Diag.note("live runs: foreground service running again")
     }
 
     private fun build(context: Context, runs: List<Live>): android.app.Notification {
@@ -217,7 +224,9 @@ class RunService : Service() {
         runCatching { ServiceCompat.startForeground(this, LiveRuns.NOTIFICATION_ID, n, type) }
             .onSuccess { LiveRuns.serviceRunning(live != null) }
             .onFailure {
-                Diag.error("Starting the live runs service", it)
+                // Also refused here on Android 15 once the day's six hours of
+                // data-sync service are used up — and then on every step.
+                LiveRuns.refused("the service couldn't go to the foreground, plain notification", it)
                 stopSelf()
             }
         if (live == null) {

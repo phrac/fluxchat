@@ -4,21 +4,24 @@ package org.fluxchat.companion.matrix
 
 import android.content.Context
 import org.fluxchat.companion.Diag
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import org.fluxchat.companion.agents.History
 import org.fluxchat.companion.agents.Harness
 import org.fluxchat.companion.agents.Harnesses
@@ -45,9 +48,12 @@ import org.matrix.rustcomponents.sdk.RoomListEntriesDynamicFilterKind
 import org.matrix.rustcomponents.sdk.RoomListEntriesWithDynamicAdaptersResult
 import org.matrix.rustcomponents.sdk.RoomListEntriesListener
 import org.matrix.rustcomponents.sdk.RoomListEntriesUpdate
+import org.matrix.rustcomponents.sdk.RoomListLoadingState
+import org.matrix.rustcomponents.sdk.RoomListLoadingStateListener
 import org.matrix.rustcomponents.sdk.RoomPreset
 import org.matrix.rustcomponents.sdk.RoomVisibility
 import org.matrix.rustcomponents.sdk.Session
+import org.matrix.rustcomponents.sdk.SlidingSyncVersion
 import org.matrix.rustcomponents.sdk.SlidingSyncVersionBuilder
 import org.matrix.rustcomponents.sdk.SqliteStoreBuilder
 import org.matrix.rustcomponents.sdk.SyncService
@@ -148,10 +154,74 @@ object Matrix {
     private val ACCOUNT_CACHE_DIRS = listOf("files", "uploads", "media-tmp")
     /** Own-message ↔ run-start match tolerance (echo vs server timestamps). */
     private const val REQUEST_MATCH_SLACK_MS = 2_000L
+    /** A new sign-in waits this long to learn whether to ask for the recovery key ([RecoveryPrompt]). */
+    private const val RECOVERY_WAIT_MS = 15_000L
 
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** Marks a coroutine that may simply end when it throws (see [crashNote]). */
+    private object OneOff : kotlin.coroutines.AbstractCoroutineContextElement(OneOffKey)
+    private object OneOffKey : kotlin.coroutines.CoroutineContext.Key<OneOff>
+
+    /**
+     * What a throw in a background coroutine does. There was no handler, so
+     * any exception anywhere on [scope] killed the process (a malformed
+     * release tag did, at start). Three cases now, all recorded:
+     *
+     *  - A one-off task ([launch]: a send, a refresh, a retry) ends. It was
+     *    going to end anyway; the failure is in Diagnostics.
+     *  - A loop the app depends on never gets here: it runs through
+     *    [supervise], which reports the throw and starts the loop again.
+     *  - A coroutine put on [scope] bare (`launchIn(Matrix.scope)`) still
+     *    takes the process down, as before. That is deliberate: it may be a
+     *    collector, this handler can't start it again, and a collector that
+     *    is quietly gone is worse than a crash — prompts stop notifying,
+     *    runs stay "Working", and nothing says why. Move it to [supervise]
+     *    and it neither crashes nor stops.
+     *
+     * An [Error] (out of memory, a missing native library) is not something
+     * to carry on from, wherever it came from.
+     */
+    private val crashNote = CoroutineExceptionHandler { context, e ->
+        Diag.error("A background task failed", e)
+        if (endsTheProcess(e, oneOff = context[OneOffKey] != null)) {
+            Thread.currentThread().let { t -> (t.uncaughtExceptionHandler ?: Thread.getDefaultUncaughtExceptionHandler())?.uncaughtException(t, e) }
+        }
+    }
+
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashNote)
+
+    /** [scope] for work that may end when it throws: the same job and dispatcher, marked [OneOff]. */
+    private val tasks = CoroutineScope(scope.coroutineContext + OneOff)
+
+    /**
+     * A loop that must not stop (a collector, a poll): started again when it
+     * throws, each failure reported, with a growing pause ([keepRunning]).
+     * Cancel the returned job to end it. Use this, not `launchIn(scope)`,
+     * for anything long-lived.
+     */
+    fun supervise(what: String, block: suspend () -> Unit): Job =
+        tasks.launch { keepRunning(what, { msg, e -> Diag.error(msg, e) }, block = block) }
+
+    /**
+     * Work that must finish once begun (signing in, signing out, unlocking
+     * with the recovery key): on the app's scope, not the caller's. The
+     * screens start these from their own scope, which a rotation or a
+     * dark-mode switch cancels — half way through a sign-in that read as
+     * "sign-in failed: Job was cancelled", half way through a sign-out it
+     * left the session cleared but everything still running.
+     */
+    private suspend fun <T> toTheEnd(block: suspend CoroutineScope.() -> T): T = tasks.async {
+        try {
+            block()
+        } catch (e: Exception) {
+            // The caller may be gone by now, and nobody else would hear of it.
+            Diag.error("Finishing what a screen started", e)
+            throw e
+        }
+    }.await()
+
     private lateinit var appContext: Context
     private lateinit var vault: Vault
+    private lateinit var recoveryPrefs: RecoveryPrefs
     private val startLock = Mutex()
 
     @Volatile var client: Client? = null
@@ -184,36 +254,85 @@ object Matrix {
     private val _pins = MutableStateFlow(PinStore.Pins())
     /** Pinned sessions (account data, the same shape the desktop reads). */
     val pins: StateFlow<PinStore.Pins> = _pins
+    private val _recovery = MutableStateFlow(RecoveryStatus())
+    /**
+     * Whether past conversations are still locked on this phone, and whether
+     * you said "Not now" ([RecoveryPrompt]). `offer` is the Projects card;
+     * `needed` is when Settings should show the way back ([openRecovery]).
+     */
+    val recovery: StateFlow<RecoveryStatus> = _recovery
+    private val _loading = MutableStateFlow(true)
+    /**
+     * True until the agent list has been read and the rooms looked through
+     * once ([Loading]): before that an empty Projects list means "not loaded
+     * yet", not "no agents" or "no projects".
+     */
+    val loading: StateFlow<Boolean> = _loading
 
     private val roomsLock = Any()
     private val recomputeLock = Any()
     private val roomEntries = ArrayList<Room>()
     private val _rooms = MutableStateFlow<Map<String, Room>>(emptyMap())
-    /** Which of your agents are in each room (agent rooms only). */
-    private val agentMembers = HashMap<String, List<String>>()
+    /**
+     * Which of your agents are in each room (agent rooms only). Written
+     * under [recomputeLock]; concurrent because screens read it (and
+     * [roomMeta]) while a look through the rooms writes.
+     */
+    private val agentMembers = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
     /**
      * Per room checked: its member count then, and your agents in it (empty
      * too), for the agent IDs in [cachedFor]. The count is what makes an
      * entry stale: an agent invited after the room was first looked at never
      * made it a project until the app restarted.
      */
-    private val memberCache = HashMap<String, Pair<ULong, List<String>>>()
+    private val memberCache = java.util.concurrent.ConcurrentHashMap<String, Pair<ULong, List<String>>>()
     /** One pass over the rooms at a time (the room-list collector and createProject both ask). */
     private val refreshLock = Mutex()
     @Volatile private var cachedFor: List<String> = emptyList()
+    /**
+     * Counts sign-outs / failed starts ([stopAll]). A look through the rooms
+     * that was under way when one happened must not write its findings back
+     * afterwards: the last account's projects reappeared, signed out.
+     */
+    @Volatile private var epoch = 0
+    /** The agent list has been read once (the store had it, or the server answered). */
+    @Volatile private var agentListRead = false
+    /** The room list has delivered what it holds: its first entries, and the SDK calls it loaded. */
+    @Volatile private var roomEntriesSeen = false
+    @Volatile private var roomListLoaded = false
+    /** A look through the rooms has finished since both of the above. */
+    @Volatile private var looked = false
+    @Volatile private var loadingGaveUp = false
+    /** Bumped to make the room-list collector look again when nothing it watches changed. */
+    private val lookAgain = MutableStateFlow(0)
     /** Agent rooms' names, avatars and whether they're DMs. */
     private data class RoomMeta(val name: String, val isDm: Boolean, val avatar: String?, val unread: Int = 0)
-    private val roomMeta = HashMap<String, RoomMeta>()
-    /** Newest runtime info per room, ms + info (the desktop's agent_runs.runtime). */
-    private val roomRuntimes = HashMap<String, Pair<Long, org.fluxchat.companion.agents.Runtime>>()
+    private val roomMeta = java.util.concurrent.ConcurrentHashMap<String, RoomMeta>()
     private val timelines = HashMap<String, TimelineModel>()
+    /** Each open room timeline's "work out the runs again" loop; guarded by [timelines]. */
+    private val timelineJobs = HashMap<String, Job>()
     private val _agentRooms = MutableStateFlow<Map<String, AgentRoom>>(emptyMap())
     private val _typing = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     /** Who's typing in each agent room (user IDs, you left out). */
     val typing: StateFlow<Map<String, List<String>>> = _typing
-    private val typingHandles = HashMap<String, TaskHandle>()
+    private val typingHandles = java.util.concurrent.ConcurrentHashMap<String, TaskHandle>()
     /** When each "room|user" was last reported typing (see [TYPING_ALIVE_MS]). */
     private val typingAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /**
+     * When each "room|user" began the typing they're at now (agents.rs
+     * `typing_since`): the start of a typing run. Gone when they stop.
+     */
+    private val typingSince = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** When the runs on show ended, as recompute watched them (under [recomputeLock]). */
+    private val runWatch = org.fluxchat.companion.agents.RunWatch()
+    /** Since when sync has been running without a break, as recompute saw it (0: it isn't). Under [recomputeLock]. */
+    private var followingSince = 0L
+    /**
+     * Sync has to have run this long before a timeline counts as following
+     * the server: until then it may still be showing what was stored and
+     * catching up, and what changes then didn't happen just now.
+     */
+    private const val CAUGHT_UP_MS = 60_000L
     /** Runs this phone saw live (the desktop's run_history), kept encrypted. */
     private val runHistory = ArrayList<RunRecord>()
     private var historyLoaded = false
@@ -231,6 +350,7 @@ object Matrix {
         // process die of a native SDK crash? (StoreHeal)
         StoreHeal.bootStarted(appContext)
         vault = Vault(appContext)
+        recoveryPrefs = RecoveryPrefs(appContext)
         Harnesses.load(appContext)
     }
 
@@ -258,14 +378,14 @@ object Matrix {
             return false
         }
         return try {
-            val c = builder(saved.storePassphrase).homeserverUrl(saved.session.homeserverUrl).build()
+            val c = builder(saved.storePassphrase, savedSync(saved.session)).homeserverUrl(saved.session.homeserverUrl).build()
             c.restoreSession(saved.session)
             // A native SDK crash poisons the on-disk event cache, and every
             // later member lookup re-reads the poison (t_aa662dd8: the same
             // build that passed acceptance crashed all afternoon). Notice
             // that crash and rebuild the store before anyone touches it.
             val live = if (StoreHeal.healRequested()) rebuildStore(c, saved.session, saved.storePassphrase) else c
-            started(live)
+            started(live, fresh = false)
             true
         } catch (e: Exception) {
             Diag.error("Restoring the session failed", e)
@@ -282,12 +402,25 @@ object Matrix {
         }
     }
 
-    private fun builder(passphrase: String): ClientBuilder {
+    /**
+     * How a saved session's client learns its sync flavour: from the session,
+     * not the server. DISCOVER_NATIVE makes `build()` ask the server
+     * (`/versions`) before it returns — so every start, with a perfectly good
+     * saved session, waited on the network before anything could open, and
+     * with no network at all the build failed and the app said it "couldn't
+     * restore your session". The session records what sign-in discovered
+     * (and `restoreSession` applies it); only a session that somehow doesn't
+     * say NATIVE asks again.
+     */
+    private fun savedSync(session: Session): SlidingSyncVersionBuilder =
+        if (session.slidingSyncVersion == SlidingSyncVersion.NATIVE) SlidingSyncVersionBuilder.NATIVE else SlidingSyncVersionBuilder.DISCOVER_NATIVE
+
+    private fun builder(passphrase: String, sync: SlidingSyncVersionBuilder = SlidingSyncVersionBuilder.DISCOVER_NATIVE): ClientBuilder {
         val data = File(appContext.filesDir, "matrix").apply { mkdirs() }
         val cache = File(appContext.cacheDir, "matrix").apply { mkdirs() }
         return ClientBuilder()
             .sqliteStore(SqliteStoreBuilder(data.path, cache.path).passphrase(passphrase))
-            .slidingSyncVersionBuilder(SlidingSyncVersionBuilder.DISCOVER_NATIVE)
+            .slidingSyncVersionBuilder(sync)
             .threadsEnabled(true, false)
             .autoEnableCrossSigning(true)
             .setSessionDelegate(object : ClientSessionDelegate {
@@ -314,7 +447,7 @@ object Matrix {
         val clean = try {
             c.clearCaches(null)
             c.close()
-            val fresh = builder(passphrase).homeserverUrl(session.homeserverUrl).build()
+            val fresh = builder(passphrase, savedSync(session)).homeserverUrl(session.homeserverUrl).build()
             fresh.restoreSession(session)
             fresh
         } catch (e: Exception) {
@@ -322,7 +455,7 @@ object Matrix {
             // The old client may already be closed by a mid-heal failure;
             // only keep it if it still answers.
             if (c.uniffiIsDestroyed) {
-                runCatching { builder(passphrase).homeserverUrl(session.homeserverUrl).build().also { it.restoreSession(session) } }
+                runCatching { builder(passphrase, savedSync(session)).homeserverUrl(session.homeserverUrl).build().also { it.restoreSession(session) } }
                     .onFailure { Diag.error("Rebuild after failed heal", it) }
                     .getOrNull() ?: c
             } else c
@@ -331,7 +464,7 @@ object Matrix {
         return clean
     }
 
-    suspend fun login(homeserver: String, user: String, password: String) = io { loginOnIo(homeserver, user, password) }
+    suspend fun login(homeserver: String, user: String, password: String) = toTheEnd { loginOnIo(homeserver, user, password) }
 
     private suspend fun loginOnIo(homeserver: String, user: String, password: String) = startLock.withLock {
         _error.value = null
@@ -363,7 +496,10 @@ object Matrix {
         try {
             aside.drop()
             vault.save(c.session(), passphrase)
-            started(c)
+            // A new device: what an earlier sign-in answered about the
+            // recovery key ("Not now" included) doesn't apply to it.
+            recoveryPrefs.forget(c.userId())
+            started(c, fresh = true)
         } catch (e: Exception) {
             Diag.error("Starting after sign-in", e)
             stopAll(forget = false)
@@ -397,7 +533,17 @@ object Matrix {
         }
     }
 
-    private suspend fun started(c: Client) {
+    /**
+     * A client is signed in: get everything going. Runs inside [startLock],
+     * which every push and notification answer waits on — so nothing here
+     * may wait on the network for a saved session ([fresh] = false). That is
+     * why the recovery question is asked in the background ([checkRecovery])
+     * and the push registration runs outside the lock: with both awaited
+     * here, a bad connection held the splash screen up over a perfectly good
+     * session, and an "Approve" tapped on a notification at a cold start
+     * could run out of its broadcast's time before it was sent.
+     */
+    private suspend fun started(c: Client, fresh: Boolean) {
         client = c
         // Offline mode: a failed request (wifi handing over to mobile data)
         // parks the service until the server answers again, instead of ending
@@ -417,20 +563,71 @@ object Matrix {
         watchRooms(sync)
         startSearch(c)
         loadRunHistory()
-        jobs += scope.launch { sweepStalledRuns() }
-        jobs += scope.launch { pollAgentList() }
-        jobs += combine(_rooms, _agentList) { rooms, list -> rooms to list }
-            .debounce(300)
-            .onEach { (rooms, _) ->
-                // Sync delivers account data with the room list: the agent
-                // list may have just arrived (it isn't there at first start).
-                loadAgentList()
-                loadPins()
-                refreshAgentRooms(rooms, _agentList.value)
+        // On `tasks`: a keeper that cannot start is reported, not fatal.
+        jobs += SendQueue.keep(c, tasks)
+        // The loops everything else hangs off: supervised, so a throw in one
+        // is reported and the loop starts again instead of ending for good.
+        jobs += supervise("Sweeping stalled runs") { sweepStalledRuns() }
+        jobs += supervise("Checking the agent list") { pollAgentList() }
+        jobs += supervise("Watching the project list") {
+            combine(_rooms, _agentList, lookAgain) { rooms, _, _ -> rooms }
+                .debounce(300)
+                .collect { rooms ->
+                    // Sync delivers account data with the room list: the agent
+                    // list may have just arrived (it isn't there at first start).
+                    loadAgentListOnIo()
+                    kotlinx.coroutines.coroutineScope {
+                        // Beside the look, not before it: with no pins in the
+                        // store this asks the server, and on a bad connection
+                        // the projects waited behind that answer.
+                        launch { loadPinsOnIo() }
+                        refreshAgentRooms(rooms, _agentList.value)
+                    }
+                }
+        }
+        jobs += tasks.launch {
+            delay(Loading.GIVE_UP_MS)
+            if (_loading.value) {
+                Diag.note("still loading after ${Loading.GIVE_UP_MS / 1000} s (agent list read: $agentListRead, project list: ${roomEntriesSeen && roomListLoaded}, looked through: $looked): showing what there is")
+                loadingGaveUp = true
+                updateLoading()
             }
-            .launchIn(scope)
-        _auth.value = if (needsRecovery(c)) Auth.NeedsRecovery else Auth.Ready
-        org.fluxchat.companion.push.Push.registerIfReady(appContext)
+        }
+        val user = runCatching { c.userId() }.getOrNull().orEmpty()
+        val known = recoveryPrefs.status(user)
+        _recovery.value = known
+        if (fresh) {
+            // Nothing is on screen yet and the answer decides what comes next
+            // (the key prompt, or straight in), so a new sign-in waits for it
+            // — but not for ever: past the wait it goes in, and a late answer
+            // is treated like any other ([RecoveryPrompt.onAnswer]).
+            val check = askAboutRecovery(c)
+            withTimeoutOrNull(RECOVERY_WAIT_MS) { check.join() }
+                ?: Diag.note("recovery: no answer after ${RECOVERY_WAIT_MS / 1000} s, going in")
+            _auth.update { if (it == Auth.NeedsRecovery) it else Auth.Ready }
+        } else {
+            // A saved session opens at once, on what the last check found.
+            _auth.value = RecoveryPrompt.atRestore(known)
+            askAboutRecovery(c)
+        }
+        // Outside the lock (see above): a gateway probe and a request to the
+        // server, with timeouts of their own.
+        pushJob = tasks.launch {
+            try {
+                org.fluxchat.companion.push.Push.registerIfReady(appContext)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Diag.error("Renewing the push registration", e)
+            }
+        }
+    }
+
+    /** The push registration started by the last [started]; signing out stops it first. */
+    @Volatile private var pushJob: Job? = null
+
+    private fun updateLoading() {
+        _loading.value = Loading.still(agentListRead, roomEntriesSeen && roomListLoaded, looked, loadingGaveUp)
     }
 
     @Volatile private var syncRetry: Job? = null
@@ -439,12 +636,20 @@ object Matrix {
     /** Sync that ended in an error (not a network one: those go Offline) is started again, with backoff. */
     private fun onSyncState(state: SyncServiceState) {
         when (state) {
-            SyncServiceState.RUNNING -> syncBackoffMs = SYNC_RETRY_MIN_MS
+            SyncServiceState.RUNNING -> {
+                syncBackoffMs = SYNC_RETRY_MIN_MS
+                // Back online: sends waiting out a backoff go now instead of
+                // up to two minutes later (the keeper only knows its timers).
+                tasks.launch {
+                    runCatching { client?.enableAllSendQueues(true) }
+                        .onFailure { Diag.error("Resuming sends after reconnecting", it) }
+                }
+            }
             SyncServiceState.ERROR -> {
                 if (syncRetry?.isActive == true) return
                 val wait = syncBackoffMs
                 syncBackoffMs = (wait * 2).coerceAtMost(SYNC_RETRY_MAX_MS)
-                syncRetry = scope.launch {
+                syncRetry = tasks.launch {
                     delay(wait)
                     runCatching { syncService?.start() }.onFailure { Diag.error("Restarting sync", it) }
                 }
@@ -453,18 +658,70 @@ object Matrix {
         }
     }
 
-    private suspend fun needsRecovery(c: Client): Boolean = runCatching {
-        val enc = c.encryption()
-        enc.waitForE2eeInitializationTasks()
-        enc.verificationState() != VerificationState.VERIFIED &&
-            enc.recoveryState().let { it == RecoveryState.ENABLED || it == RecoveryState.INCOMPLETE }
-    }.getOrDefault(false)
+    /** The running recovery check, and whether the last one could tell ([resumed] asks again if not). */
+    @Volatile private var recoveryCheck: Job? = null
+    @Volatile private var recoveryKnown = false
+    @Volatile private var recoveryUnknownNoted = false
 
-    suspend fun recover(key: String): Boolean = io { recoverOnIo(key) }
+    /** Find out, in the background, whether this phone wants the recovery key. One check at a time. */
+    private fun askAboutRecovery(c: Client): Job {
+        recoveryCheck?.takeIf { it.isActive }?.let { return it }
+        return tasks.launch { checkRecovery(c) }.also { recoveryCheck = it }
+    }
+
+    /**
+     * Whether [c] wants the recovery key, once the SDK's end-to-end set-up
+     * has finished — network-bound, which is why nothing waits on it but a
+     * new sign-in. The answer goes through [RecoveryPrompt.onAnswer].
+     */
+    private suspend fun checkRecovery(c: Client) {
+        val needs = try {
+            val enc = c.encryption()
+            enc.waitForE2eeInitializationTasks()
+            val recoverable = when (enc.recoveryState()) {
+                RecoveryState.ENABLED, RecoveryState.INCOMPLETE -> true
+                RecoveryState.DISABLED -> false
+                // The SDK hasn't heard from the server (offline at start).
+                RecoveryState.UNKNOWN -> null
+            }
+            RecoveryPrompt.needs(enc.verificationState() == VerificationState.VERIFIED, recoverable)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Used to be read as "no": the prompt never came, without a word.
+            Diag.error("Checking whether this phone needs the recovery key", e)
+            null
+        }
+        // Signed out (or started over) while it ran: not this session's answer.
+        if (client !== c) return
+        recoveryKnown = needs != null
+        if (needs == null) {
+            // Asked again each time the app comes forward; said once.
+            if (!recoveryUnknownNoted) Diag.note("recovery: can't tell yet whether this phone needs the key (asking again when the app is next opened)")
+            recoveryUnknownNoted = true
+            return
+        }
+        val user = runCatching { c.userId() }.getOrNull().orEmpty()
+        recoveryPrefs.setNeeded(user, needs)
+        // In memory, not read back: the write to disk is still on its way.
+        val status = _recovery.value.copy(needed = needs)
+        _recovery.value = status
+        val before = _auth.value
+        _auth.update { RecoveryPrompt.onAnswer(it, needs, status.skipped) }
+        Diag.note("recovery: ${if (needs) "this phone needs the key" else "nothing to unlock"}${if (status.skipped) " (you said not now)" else ""}${if (_auth.value != before) " → ${_auth.value}" else ""}")
+    }
+
+    suspend fun recover(key: String): Boolean = toTheEnd { recoverOnIo(key) }
 
     private suspend fun recoverOnIo(key: String): Boolean = try {
-        client?.encryption()?.recover(key.trim())
+        val c = client ?: error("Not signed in")
+        c.encryption().recover(key.trim())
         Diag.note("recovery key accepted")
+        // Unlocked: nothing to offer any more, here or at the next start.
+        val user = runCatching { c.userId() }.getOrNull().orEmpty()
+        recoveryPrefs.setNeeded(user, false)
+        _recovery.value = _recovery.value.copy(needed = false)
+        recoveryByChoice = false
         _auth.value = Auth.Ready
         // Messages that failed to decrypt get retried by the SDK once keys arrive.
         true
@@ -474,14 +731,58 @@ object Matrix {
         false
     }
 
+    /**
+     * "Not now" on the recovery screen — remembered for this account until
+     * sign-out: it used to be forgotten with the process, so the prompt came
+     * back at every cold start. [openRecovery] is the way back.
+     */
     fun skipRecovery() {
+        val user = userId
+        if (user.isNotEmpty()) {
+            recoveryPrefs.setSkipped(user, true)
+            _recovery.value = _recovery.value.copy(skipped = true)
+        }
+        recoveryByChoice = false
+        // "That recovery key didn't work" is this screen's; left set, it
+        // turned up later in red on some other one.
+        _error.value = null
         _auth.value = Auth.Ready
     }
 
-    suspend fun logout() = io { logoutOnIo() }
+    /**
+     * Back to the recovery screen by choice (the Projects card, Settings):
+     * the only way the prompt appears over an app in use, because here it is
+     * asked for. Does nothing when there is nothing to unlock.
+     */
+    fun openRecovery() {
+        if (client == null || !_recovery.value.needed) return
+        _error.value = null
+        recoveryByChoice = true
+        _auth.update { if (it == Auth.Ready) Auth.NeedsRecovery else it }
+    }
+
+    /** The recovery screen is up because you opened it ([openRecovery]): Back leaves it, with nothing decided. */
+    @Volatile var recoveryByChoice = false
+        private set
+
+    /** Back from a recovery screen opened by choice: the app again, the offer still standing. */
+    fun leaveRecovery() {
+        if (!recoveryByChoice) return
+        recoveryByChoice = false
+        _error.value = null
+        _auth.update { if (it == Auth.NeedsRecovery) Auth.Ready else it }
+    }
+
+    suspend fun logout() = toTheEnd { logoutOnIo() }
 
     private suspend fun logoutOnIo() = startLock.withLock {
         val c = client ?: return@withLock
+        // A registration still on its way must not set the pusher again
+        // after this has removed it. (Not joined: its gateway probe can sit
+        // in a blocking read for seconds; cancelled, it stops before the
+        // request that sets the pusher.)
+        pushJob?.cancel()
+        pushJob = null
         org.fluxchat.companion.push.Push.unregister(appContext)
         runCatching { syncService?.stop() }.onFailure { Diag.error("Stopping sync", it) }
         runCatching { c.logout() }
@@ -503,14 +804,26 @@ object Matrix {
 
     /** Stop everything a client had running. [forget]: signing out — the saved run history goes too. */
     private fun stopAll(forget: Boolean) {
+        // First: a look through the rooms still under way sees this and
+        // writes nothing back (see [epoch]).
+        epoch++
         jobs.forEach { it.cancel() }
         jobs.clear()
+        recoveryCheck?.cancel()
+        recoveryCheck = null
+        recoveryKnown = false
+        recoveryUnknownNoted = false
+        recoveryByChoice = false
+        pushJob?.cancel()
+        pushJob = null
         handles.forEach { it.cancel() }
         handles.clear()
         releaseRoomList()
         synchronized(timelines) {
             timelines.values.forEach { it.close() }
             timelines.clear()
+            timelineJobs.values.forEach { it.cancel() }
+            timelineJobs.clear()
         }
         synchronized(galleries) {
             galleries.values.forEach { it.close() }
@@ -526,13 +839,14 @@ object Matrix {
         typingHandles.clear()
         _typing.value = emptyMap()
         typingAt.clear()
+        typingSince.clear()
         pinsWritten = null
         syncRetry?.cancel()
         syncRetry = null
         syncBackoffMs = SYNC_RETRY_MIN_MS
         synchronized(roomsLock) { roomEntries.clear() }
         _rooms.value = emptyMap()
-        agentMembers.clear()
+        synchronized(recomputeLock) { agentMembers.clear() }
         memberCache.clear()
         roomMeta.clear()
         _agentRooms.value = emptyMap()
@@ -541,7 +855,23 @@ object Matrix {
             historyLoaded = false
         }
         _runHistory.value = emptyList()
-        if (forget) HistoryStore.clear(appContext)
+        // The next client starts from "not loaded yet", and asks the server afresh.
+        agentListRead = false
+        agentListWritten = null
+        roomEntriesSeen = false
+        roomListLoaded = false
+        looked = false
+        loadingGaveUp = false
+        _loading.value = true
+        seedSaved = null
+        notSet.forget()
+        _recovery.value = RecoveryStatus()
+        if (forget) {
+            HistoryStore.clear(appContext)
+            // What was remembered for the account that is leaving.
+            AgentRoomSeed.clear(appContext)
+            recoveryPrefs.clear()
+        }
         client = null
         syncService = null
         notifications = null
@@ -549,15 +879,20 @@ object Matrix {
 
     /** Back in the foreground: sync again and look for agent list changes. */
     fun resumed() {
-        scope.launch {
+        tasks.launch {
             runCatching { syncService?.start() }.onFailure { Diag.error("Starting sync again", it) }
-            loadAgentList()
+            loadAgentListOnIo()
+            // Offline at start, the recovery question had no answer: ask again.
+            if (!recoveryKnown) client?.let { askAboutRecovery(it) }
         }
     }
 
     // --- Rooms ---
 
     private suspend fun watchRooms(sync: SyncService) {
+        // This list's, not a signed-out one's last word.
+        roomEntriesSeen = false
+        roomListLoaded = false
         val list = sync.roomListService().allRooms()
         val result = list.entriesWithDynamicAdapters(500u, object : RoomListEntriesListener {
             override fun onUpdate(roomEntriesUpdate: List<RoomListEntriesUpdate>) {
@@ -565,10 +900,45 @@ object Matrix {
                     for (u in roomEntriesUpdate) applyRoomUpdate(u)
                     _rooms.value = roomEntries.associateBy { it.id() }
                 }
+                // The first update is what the list holds (even when that is
+                // nothing): from here an empty list means no rooms.
+                if (!roomEntriesSeen) {
+                    roomEntriesSeen = true
+                    roomListSettled()
+                }
             }
         })
         result.controller().setFilter(RoomListEntriesDynamicFilterKind.All(listOf(RoomListEntriesDynamicFilterKind.Joined, RoomListEntriesDynamicFilterKind.NonSpace)))
         roomList = result
+        // Whether the list is the account's rooms yet, or still empty because
+        // nothing has come from the server (a new sign-in's first seconds):
+        // a saved session's list is loaded from the store straight away.
+        try {
+            val loading = list.loadingState(object : RoomListLoadingStateListener {
+                override fun onUpdate(state: RoomListLoadingState) {
+                    if (state is RoomListLoadingState.Loaded && !roomListLoaded) {
+                        roomListLoaded = true
+                        roomListSettled()
+                    }
+                }
+            })
+            handles += loading.stateStream
+            if (loading.state is RoomListLoadingState.Loaded && !roomListLoaded) {
+                roomListLoaded = true
+                roomListSettled()
+            }
+        } catch (e: Exception) {
+            // Without it the Projects screen would say "loading" until it
+            // gives up; say the list is loaded rather than wait on nothing.
+            Diag.error("Watching whether the project list has loaded", e)
+            roomListLoaded = true
+            roomListSettled()
+        }
+    }
+
+    /** The room list has something to say: have the collector look (again) even if the rooms didn't change. */
+    private fun roomListSettled() {
+        if (roomEntriesSeen && roomListLoaded) lookAgain.update { it + 1 }
     }
 
     /**
@@ -581,7 +951,7 @@ object Matrix {
         roomList = null
         val stream = result.entriesStream()
         stream.cancel()
-        scope.launch {
+        tasks.launch {
             while (!stream.isFinished()) delay(50)
             result.destroy()
             stream.destroy()
@@ -610,54 +980,132 @@ object Matrix {
 
     fun room(roomId: String): Room? = _rooms.value[roomId] ?: runCatching { client?.getRoom(roomId) }.getOrNull()
 
-    /** Find the rooms your agents are in and keep their timelines live. */
+    /**
+     * Find the rooms your agents are in and keep their timelines live.
+     *
+     * Finding them means reading each room's members, and the Projects list
+     * used to appear only after the last room had been read — on an account
+     * that is also in large rooms, a long look at an empty list on every
+     * start. So: what is already known goes up first (this process's last
+     * look, or at a start what the last process found, [AgentRoomSeed]),
+     * those rooms are confirmed first and the rest follow smallest first,
+     * and every room that turns out differently is published as it is found
+     * rather than at the end.
+     */
     private suspend fun refreshAgentRooms(rooms: Map<String, Room>, list: AgentList) = refreshLock.withLock {
+        val at = epoch
+        // Whether an empty result from this look means "no projects".
+        val settled = agentListRead && roomEntriesSeen && roomListLoaded
+        val user = userId
         val ids = list.agents.map { it.userId }
         if (ids != cachedFor) {
             memberCache.clear()
             cachedFor = ids
         }
         val before = agentMembers.keys.toSet()
+        // Nothing looked at yet by this process: start from what the last one found.
+        val known: Map<String, List<String>> =
+            if (before.isEmpty() && memberCache.isEmpty()) AgentRoomSeed.load(appContext, user, ids) else agentMembers.toMap()
         val found = HashMap<String, List<String>>()
-        for ((roomId, room) in rooms) {
-            val count = runCatching { room.activeMembersCount() }.getOrDefault(0UL)
-            // A failed read is not "no agents here": it's asked again next time.
-            val members = memberCache[roomId]?.takeIf { it.first == count }?.second
+        for ((roomId, agents) in known) {
+            val mine = ids.filter { it in agents }
+            if (roomId in rooms && mine.isNotEmpty()) found[roomId] = mine
+        }
+        // Up before anyone's members are read; each room below then corrects it.
+        if (found.keys != before) {
+            for (roomId in found.keys) rooms[roomId]?.let { noteMeta(roomId, it) }
+            if (!publishAgentRooms(at, rooms, found)) return@withLock
+        }
+        val counts = rooms.mapValues { (_, room) -> runCatching { room.activeMembersCount() }.getOrDefault(0UL) }
+        for (roomId in AgentRoomSeed.order(counts.map { it.key to it.value.toLong() }, found.keys.toSet())) {
+            // Signed out while looking: this look is over.
+            currentCoroutineContext().ensureActive()
+            if (epoch != at) return@withLock
+            val room = rooms[roomId] ?: continue
+            val count = counts[roomId] ?: 0UL
+            val cached = memberCache[roomId]
+            // A failed read is not "no agents here": it's never cached, so it's
+            // asked again next time, and until then what was known stands.
+            val members = cached?.takeIf { it.first == count }?.second
                 ?: agentsIn(room, ids)?.also { memberCache[roomId] = count to it }
-                ?: memberCache[roomId]?.second
+                ?: cached?.second
+                ?: found[roomId]
                 ?: emptyList()
+            val was = found[roomId].orEmpty()
             if (members.isNotEmpty()) {
                 found[roomId] = members
-                val info = runCatching { room.roomInfo() }.getOrNull()
-                roomMeta[roomId] = RoomMeta(
-                    info?.displayName ?: room.displayName() ?: roomId, info?.isDirect ?: false, info?.avatarUrl ?: room.avatarUrl(),
-                    (info?.numUnreadMessages ?: 0UL).toInt(),
-                )
+                noteMeta(roomId, room)
+            } else {
+                found.remove(roomId)
             }
+            if (members != was && !publishAgentRooms(at, rooms, found)) return@withLock
         }
-        synchronized(recomputeLock) {
-            agentMembers.clear()
-            agentMembers.putAll(found)
-        }
+        if (!publishAgentRooms(at, rooms, found)) return@withLock
         // A project you left keeps no pins: prune keeps the shared list honest.
-        val pruned = _pins.value.prune(found.keys)
-        if (pruned != _pins.value) _pins.value = pruned
-        if (found.keys != before) Diag.note("agent rooms: ${found.size} of ${rooms.size} rooms (${found.values.flatten().distinct().joinToString()})")
-        // Timelines: open new agent rooms', close the ones that aren't any more.
-        for (roomId in found.keys) {
-            if (synchronized(timelines) { roomId in timelines }) continue
-            val room = rooms[roomId] ?: continue
-            runCatching { openRoomTimeline(room) }.onFailure { Diag.error("Timeline for $roomId", it) }
+        // Only once the room list has loaded: before that "not in the list"
+        // was every project, and the pins blinked off at each start.
+        if (settled) {
+            val pruned = _pins.value.prune(found.keys)
+            if (pruned != _pins.value) _pins.value = pruned
         }
+        if (found.keys != before) Diag.note("agent rooms: ${found.size} of ${rooms.size} rooms (${found.values.flatten().distinct().joinToString()})")
         synchronized(timelines) {
             timelines.keys.filter { it !in found }.forEach {
                 timelines.remove(it)?.close()
+                timelineJobs.remove(it)?.cancel()
                 typingHandles.remove(it)?.cancel()
                 val gone = it
                 _typing.update { t -> t - gone }
             }
         }
+        // For the next start. Not from a look at a list that hasn't loaded:
+        // that one found nothing because there was nothing to look at.
+        if (settled && found != seedSaved) {
+            AgentRoomSeed.save(appContext, user, found)
+            seedSaved = found
+        }
+        if (settled && !looked) {
+            looked = true
+            updateLoading()
+        }
+    }
+
+    /** What [AgentRoomSeed] holds, as last written by this process (null: not yet). */
+    @Volatile private var seedSaved: Map<String, List<String>>? = null
+
+    /** A project's name, avatar, unread count and whether it's a DM, as the room has them now. */
+    private suspend fun noteMeta(roomId: String, room: Room) {
+        val info = runCatching { room.roomInfo() }.getOrNull()
+        roomMeta[roomId] = RoomMeta(
+            info?.displayName ?: room.displayName() ?: roomId, info?.isDirect ?: false, info?.avatarUrl ?: room.avatarUrl(),
+            (info?.numUnreadMessages ?: 0UL).toInt(),
+        )
+    }
+
+    /**
+     * Put [found] on show: the projects list, and a live timeline for each
+     * project that has none yet. False when the session this look began in
+     * ([at]) is gone — nothing was written, and the look should stop.
+     */
+    private suspend fun publishAgentRooms(at: Int, rooms: Map<String, Room>, found: Map<String, List<String>>): Boolean {
+        synchronized(recomputeLock) {
+            if (epoch != at) return false
+            agentMembers.keys.retainAll(found.keys)
+            agentMembers.putAll(found)
+        }
+        for (roomId in found.keys) {
+            if (synchronized(timelines) { roomId in timelines }) continue
+            val room = rooms[roomId] ?: continue
+            try {
+                openRoomTimeline(room, at)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Diag.error("Timeline for $roomId", e)
+            }
+        }
         recompute()
+        return true
     }
 
     /** Which of [agents] are in [room]; null when its members couldn't be read. */
@@ -686,6 +1134,9 @@ object Matrix {
                 }
             }
         }.onFailure {
+            // Cancelled (signing out) is not a failed read: reported as one,
+            // every room left in the look logged an error on the way out.
+            if (it is kotlinx.coroutines.CancellationException) throw it
             failed = true
             Diag.error("Reading members of ${room.id()}", it)
         }
@@ -693,7 +1144,8 @@ object Matrix {
         return agents.filter { it in present }
     }
 
-    private suspend fun openRoomTimeline(room: Room) {
+    /** [at]: the session ([epoch]) this is opened for; signed out since, it is closed again rather than kept. */
+    private suspend fun openRoomTimeline(room: Room, at: Int) {
         val timeline = room.timelineWithConfiguration(
             TimelineConfiguration(
                 focus = TimelineFocus.Live(hideThreadedEvents = false),
@@ -704,21 +1156,47 @@ object Matrix {
                 reportUtds = false,
             ),
         )
-        val model = TimelineModel(room.id(), null, timeline, scope)
-        synchronized(timelines) { timelines[room.id()] = model }
+        // [tasks]: the model's one coroutine is its refill, a one-off — a
+        // failed page of history must not take the process down.
+        val model = TimelineModel(room.id(), null, timeline, tasks)
         val roomId = room.id()
         val me = userId
-        typingHandles[roomId] = room.subscribeToTypingNotifications(object : TypingNotificationsListener {
+        val kept = synchronized(timelines) {
+            if (epoch != at) false else {
+                timelines[roomId] = model
+                // The loop that turns this room's messages into runs, prompts
+                // and notifications: supervised, because stopped it fails
+                // silently — everything just stays as it last was.
+                timelineJobs.put(roomId, supervise("Working out the runs in $roomId") { model.messages.debounce(150).collect { recompute() } })?.cancel()
+                true
+            }
+        }
+        if (!kept) return model.close()
+        typingHandles.put(roomId, room.subscribeToTypingNotifications(object : TypingNotificationsListener {
             override fun call(typingUserIds: List<String>) {
                 val now = System.currentTimeMillis()
                 val others = typingUserIds.filter { it != me }
-                for (u in others) typingAt["$roomId|$u"] = now
+                val before = _typing.value[roomId].orEmpty()
+                for (u in others) {
+                    typingAt["$roomId|$u"] = now
+                    // Since when: a server that repeats the notice while
+                    // they type must not restart the clock.
+                    if (u in before) typingSince.putIfAbsent("$roomId|$u", now) else typingSince["$roomId|$u"] = now
+                }
+                for (u in before) if (u !in others) typingSince.remove("$roomId|$u")
                 // update {}: these arrive on SDK threads, one per room.
                 _typing.update { it + (roomId to others) }
+                // An agent typing is a run for some harnesses (typing_means_working),
+                // and nothing else looks again until a message arrives.
+                if (before.toSet() != others.toSet()) scope.launch { recompute() }
             }
-        })
+        }))?.cancel()
+        // Signed out in between: stopAll has closed the model, and missed this.
+        if (epoch != at) {
+            typingHandles.remove(roomId)?.cancel()
+            return
+        }
         model.start()
-        model.messages.debounce(150).onEach { recompute() }.launchIn(scope).also { jobs += it }
         model.refill()
     }
 
@@ -746,7 +1224,7 @@ object Matrix {
                 reportUtds = false,
             ),
         )
-        val model = TimelineModel(roomId, root, timeline, scope)
+        val model = TimelineModel(roomId, root, timeline, tasks)
         model.start()
         model.refill()
         return model
@@ -827,7 +1305,7 @@ object Matrix {
         val search = runCatching { ServerSearch(c.searchService()) }
             .onFailure { Diag.error("Opening full-text search", it) }.getOrNull() ?: return
         serverSearch = search
-        scope.launch { search.start() }
+        tasks.launch { search.start() }
         // Index the stored history for search, in the background: without it
         // full-text only covers what sync delivered since the last session.
         runCatching { handles += c.runSearchBackfill(uniffi.matrix_sdk.SearchBackfillStrategy.BACKGROUND) }
@@ -839,7 +1317,13 @@ object Matrix {
         val room = room(roomId) ?: return null
         val list = runCatching { SessionList(roomId, room.threadListService()) }
             .onFailure { Diag.error("Opening the session list of $roomId", it) }.getOrNull() ?: return null
-        synchronized(sessionLists) { sessionLists[roomId] = list }
+        // Two askers at once (search and the sessions list) each made one,
+        // and the first was never closed: the one already there wins.
+        val kept = synchronized(sessionLists) { sessionLists.getOrPut(roomId) { list } }
+        if (kept !== list) {
+            list.close()
+            return kept
+        }
         list.start()
         return list
     }
@@ -847,22 +1331,22 @@ object Matrix {
     private fun recompute() = synchronized(recomputeLock) {
         val list = _agentList.value
         val now = System.currentTimeMillis()
+        // Whether the timelines are following the server (see CAUGHT_UP_MS):
+        // only then is "it was working a moment ago, it's done now" an end
+        // that happened now.
+        if (syncState != "running") followingSince = 0L else if (followingSince == 0L) followingSince = now
+        val following = followingSince != 0L && now - followingSince >= CAUGHT_UP_MS
         val out = HashMap<String, AgentRoom>()
         for ((roomId, agents) in agentMembers) {
             val meta = roomMeta[roomId] ?: RoomMeta(roomId, false, null)
             val (name, isDm) = meta.name to meta.isDm
             val msgs = roomTimeline(roomId)?.messages?.value.orEmpty()
-            // The desktop's take_agent_footers: remember the room's newest
-            // runtime info (protocol fields, or the footer when the harness
-            // says it comes) so finished runs get model / cost backfilled.
-            org.fluxchat.companion.agents.Runtime.noteAll(
-                roomRuntimes, roomId, msgs, agents,
-            ) { id -> list.harnessOf(id).runtimeFooter }
             // Thread runs already on show, or with a record still open: they
             // keep reporting until they end (agents.rs: "already tracked, so
             // it gets its end") — a request that finished with no reply in
             // its thread otherwise left its record "working" until it stalled.
-            val prev = _agentRooms.value[roomId]?.runs.orEmpty()
+            // (The requests' runs: a typing run is put on top below.)
+            val prev = _agentRooms.value[roomId]?.runs.orEmpty().filterValues { it?.typing != true }
             val tracked = HashSet<ViewKey>()
             for ((k, run) in prev) if (k.threadRoot != null && run?.state?.live == true) tracked += k
             if (historyLoaded) for (rec in runHistory) {
@@ -874,17 +1358,30 @@ object Matrix {
             // drop it, so a 👀 Hermes left behind stops holding the room's headline
             // and history's re-opening of a settled record.
             val stalledKeys = HashSet<ViewKey>()
-            val runs = r.runs.filter { (key, run) ->
+            val going = r.runs.filter { (key, run) ->
                 val stalled = run != null && Runs.stalled(run, signOfLife(roomId, run.agent, msgs, key.threadRoot, run.since), now)
                 if (stalled) stalledKeys += key
                 !stalled
             }
+            // Finished runs get the end this process watched, where it did.
+            val runs = runWatch.date(roomId, going, now, following)
+            // The agent typing, for harnesses that say "working" that way
+            // (agents.rs `live_run`): shown as the room's run while it has
+            // none going, never recorded (the desktop's isn't in `states`
+            // either). Typing is the room's, so any message of the agent's
+            // in it is its sign of life; with none for STALE_RUN_MS a
+            // typing notice nobody took back is dropped like any dead run.
+            val typing = Runs.typingRun(_typing.value[roomId].orEmpty(), agents, list::harnessOf) { typingSince["$roomId|$it"] }
+                ?.takeUnless { t ->
+                    val said = msgs.filter { it.sender == t.agent && !it.isLocal }.maxOfOrNull { it.ts } ?: 0L
+                    Runs.stalled(t, maxOf(said, typingAt["$roomId|${t.agent}"] ?: 0L), now)
+                }
             out[roomId] = AgentRoom(
                 roomId = roomId,
                 name = name,
                 isDm = isDm,
                 agents = agents,
-                runs = runs,
+                runs = Runs.withTyping(runs, roomId, typing),
                 prompts = r.prompts,
                 // Latest activity anywhere in the room: in agent rooms most of it is in session threads.
                 last = msgs.lastOrNull { it.isMessage },
@@ -920,10 +1417,15 @@ object Matrix {
         for ((key, old) in prev) {
             if (old == null || !old.state.live || runs[key] != null || key in stalledKeys) continue
             if (msgs.none { !it.isLocal && it.ts == old.since }) continue
-            if (History.close(runHistory, key, old.since, now)) changed = true
+            if (History.close(runHistory, key, old.since, now, old.runId)) changed = true
         }
+        // Records a finished run would end now (open, or stalled and coming
+        // back): only those need their run's runtime info looked up.
+        val ending = runHistory.filter { it.room == roomId && (it.ended == null || it.state == History.STALLED) }.mapTo(HashSet()) { it.key }
         for ((key, run) in runs) {
             val rec = run ?: continue
+            // The agent typing isn't a request: nothing to record.
+            if (rec.typing) continue
             // The request behind the run: the thread's root, or the room's
             // latest own message at the run's start (lone commands aren't tasks).
             // With slack: a local echo (`~txn`) gets re-timestamped with the
@@ -933,7 +1435,12 @@ object Matrix {
             val title = key.threadRoot?.let { root ->
                 threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.threadRoot == root })
             } ?: "Request in the room"
-            if (History.record(runHistory, key, rec, title, request?.body, now, runtime = roomRuntimes[roomId]?.second)) changed = true
+            // The end backfill of model / cost (the desktop's record_run
+            // pulling agent_runtime), from the run's own session only.
+            val runtime = if (rec.state.live || History.keyOf(key) !in ending) null else org.fluxchat.companion.agents.Runtime.ofRun(
+                Runs.viewMessages(msgs, key), rec.agent, rec.since, _agentList.value.harnessOf(rec.agent).runtimeFooter,
+            )
+            if (History.record(runHistory, key, rec, title, request?.body, now, runtime = runtime)) changed = true
         }
         if (changed) {
             Diag.note("run history: ${runHistory.size} records")
@@ -946,7 +1453,13 @@ object Matrix {
         synchronized(recomputeLock) {
             val bytes = HistoryStore.load(appContext)
             runHistory.clear()
-            if (bytes != null) runHistory.addAll(History.decode(bytes))
+            if (bytes != null) {
+                val read = History.decode(bytes)
+                // Bytes that decode to nothing are a file we can't read, not an
+                // empty history: said out loud (the next save replaces it).
+                if (read.isEmpty() && bytes.size > 2) Diag.error("Run history: ${bytes.size} bytes read, no record understood")
+                runHistory.addAll(read)
+            }
             // Older builds recorded lone commands (`!usage`) as runs; the
             // desktop drops them on load (load_run_history's retain).
             val pruned = History.pruneLoneCommands(runHistory)
@@ -998,7 +1511,9 @@ object Matrix {
                         else {
                             val root = rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key }
                             val run = room.runs[ViewKey(rec.room, root)]
-                            run?.state == RunState.NeedsYou && run.since == rec.started
+                            // The same run by its start — or by its protocol id, while
+                            // it's dated from its status message and the record from the request.
+                            run?.state == RunState.NeedsYou && (run.since == rec.started || (rec.runId != null && rec.runId == run.runId))
                         }
                     }, now)
                     stalled || answered
@@ -1040,12 +1555,16 @@ object Matrix {
 
     private suspend fun pollAgentList() {
         while (true) {
-            loadAgentList()
+            loadAgentListOnIo()
             delay(AGENT_LIST_POLL_MS)
         }
     }
 
-    suspend fun loadAgentList() = io { loadAgentListOnIo() }
+    /** Read the agent list now, asking the server even if it recently said there is none (pull to refresh, a push with no list yet). */
+    suspend fun loadAgentList() = io {
+        notSet.forget(AgentList.TYPE)
+        loadAgentListOnIo()
+    }
 
     private suspend fun loadAgentListOnIo() {
         val c = client ?: return
@@ -1056,8 +1575,22 @@ object Matrix {
         // A fetch that failed says nothing: reading it as "no agents" closed
         // every project's timeline, and an edit made then uploaded the
         // emptied list over the account's.
-        val json = stored ?: (fetchAccountData(c, AgentList.TYPE) ?: return).json
+        val json = stored ?: (fetchUnlessNotSet(c, AgentList.TYPE) ?: return).json
+        if (client !== c) return
         val list = AgentList.parse(json) ?: AgentList()
+        // The store only learns of our own write when sync echoes it (the
+        // pins' lesson, see loadPinsOnIo): until then it still holds the list
+        // from before, and reading that back un-did an agent you had just
+        // added — on screen, and for good if the next edit was built on it.
+        agentListWritten?.let { (written, at) ->
+            if (stored != null && list != written && System.currentTimeMillis() - at < PIN_ECHO_MS) return
+            agentListWritten = null
+        }
+        if (!agentListRead) {
+            // An answer, whatever it says: "no agents" can be told from "not read yet" now.
+            agentListRead = true
+            lookAgain.update { it + 1 }
+        }
         if (list != _agentList.value) {
             _agentList.value = list
             Diag.note("agent list${if (stored == null && json != null) " (from the server)" else ""}: ${list.agents.joinToString { it.userId + "/" + (it.harness ?: "default") }}")
@@ -1069,6 +1602,9 @@ object Matrix {
 
     @Volatile private var agentListMissingNoted = false
 
+    /** Our last agent list write and when, until sync has echoed it into the store (like [pinsWritten]). */
+    @Volatile private var agentListWritten: Pair<AgentList, Long>? = null
+
     // --- Pinned sessions (account data, shared with desktop fluxchat) ---
 
     suspend fun loadPins() = io { loadPinsOnIo() }
@@ -1079,7 +1615,8 @@ object Matrix {
         // server otherwise; a failure there must never clear local pins.
         val stored = runCatching { c.accountData(PinStore.TYPE) }
             .onFailure { Diag.error("Reading the pinned sessions from the store", it) }.getOrNull()
-        val json = stored ?: fetchAccountData(c, PinStore.TYPE)?.json ?: return
+        val json = stored ?: fetchUnlessNotSet(c, PinStore.TYPE)?.json ?: return
+        if (client !== c) return
         val pins = PinStore.parse(json)
         // The store only learns of our own write when sync echoes it; until
         // then it still holds the list from before (which un-pinned what you
@@ -1113,6 +1650,8 @@ object Matrix {
         )
         return try {
             c.setAccountData(PinStore.TYPE, next.toJson())
+            // It is set now, whatever the server said a minute ago.
+            notSet.wrote(PinStore.TYPE)
             pinsWritten = next to System.currentTimeMillis()
             _pins.value = next
             true
@@ -1128,6 +1667,20 @@ object Matrix {
 
     /** What the server answered for an account data event: its content, or null when it isn't set. */
     private class Fetched(val json: String?)
+
+    /** Account data the server recently said isn't set ([NotSetCache]). */
+    private val notSet = NotSetCache()
+
+    /**
+     * The server's copy, for when the store has none — unless the server
+     * said a moment ago that there is none. Not for [setPinnedOnIo], which
+     * must build on what the server holds right now.
+     */
+    private suspend fun fetchUnlessNotSet(c: Client, type: String): Fetched? {
+        if (notSet.notSet(type)) return Fetched(null)
+        val asked = notSet.asking()
+        return fetchAccountData(c, type)?.also { notSet.answered(type, it.json != null, asked) }
+    }
 
     /** One global account data event from the server; null when the request failed (which is not "not set"). */
     private suspend fun fetchAccountData(c: Client, type: String): Fetched? = kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -1161,10 +1714,10 @@ object Matrix {
      * that exists but nobody joined is left behind, so the invite retry is
      * possible without a duplicate project.
      */
-    suspend fun createProject(name: String, agentList: AgentList): String? = io {
-        val c = client ?: return@io null
+    suspend fun createProject(name: String, agentList: AgentList): String? = toTheEnd {
+        val c = client ?: return@toTheEnd null
         val trimmed = name.trim()
-        if (trimmed.isEmpty()) return@io null
+        if (trimmed.isEmpty()) return@toTheEnd null
         val me = runCatching { c.userId() }.getOrNull().orEmpty()
         val invites = org.fluxchat.companion.agents.Projects.inviteList(agentList.agents.map { it.userId }, emptyList(), me)
         try {
@@ -1184,15 +1737,34 @@ object Matrix {
             // Belt and braces: the create request already carries the
             // invites; a per-member invite covers a server that ignored the
             // field. A failure here is reported, not fatal — the room works.
+            // An agent the create request already invited (or that has
+            // accepted since) answers this with "already in the room": that
+            // is the plan working, and logging it as an error per agent
+            // pushed the lines worth reading out of Diagnostics.
+            var already = 0
             runCatching { room(roomId) }.getOrNull().let { r ->
-                if (r != null) for (id in invites) runCatching { r.inviteUserById(id) }
-                    .onFailure { Diag.error("Inviting $id into $roomId", it) }
+                if (r != null) for (id in invites) try {
+                    r.inviteUserById(id)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (alreadyInRoom(e.message)) already++ else Diag.error("Inviting $id into $roomId", e)
+                }
             }
             attachToSpace(roomId)
-            Diag.note("project created: $trimmed ($roomId), invited ${invites.joinToString().ifEmpty { "nobody" }}")
-            // Pull the room into the list now instead of waiting for the next sync.
-            loadAgentListOnIo()
-            _rooms.value[roomId]?.let { refreshAgentRooms(_rooms.value, _agentList.value) }
+            Diag.note("project created: $trimmed ($roomId), invited ${invites.joinToString().ifEmpty { "nobody" }}${if (already > 0) " ($already already there at the second ask)" else ""}")
+            // Pull the room into the list now instead of waiting for the next
+            // sync. The project exists by now: a failure here is reported,
+            // but must not read as "couldn't start your project" (a second
+            // try would make a second project).
+            try {
+                loadAgentListOnIo()
+                _rooms.value[roomId]?.let { refreshAgentRooms(_rooms.value, _agentList.value) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Diag.error("Listing the new project $roomId", e)
+            }
             roomId
         } catch (e: Exception) {
             Diag.error("Creating the project \"$trimmed\"", e)
@@ -1261,6 +1833,8 @@ object Matrix {
         val c = client ?: return false
         return try {
             c.setAccountData(AgentList.TYPE, list.toJson())
+            notSet.wrote(AgentList.TYPE)
+            agentListWritten = list to System.currentTimeMillis()
             _agentList.value = list
             true
         } catch (e: Exception) {
@@ -1308,7 +1882,8 @@ object Matrix {
         _error.value = null
     }
 
-    fun launch(block: suspend CoroutineScope.() -> Unit) = scope.launch(block = block)
+    /** A one-off task on the app's scope (a send, a refresh): a throw in it is recorded and ends it, nothing else ([crashNote]). */
+    fun launch(block: suspend CoroutineScope.() -> Unit) = tasks.launch(block = block)
 
     /**
      * SDK calls never run on the main thread: the SDK does network work on

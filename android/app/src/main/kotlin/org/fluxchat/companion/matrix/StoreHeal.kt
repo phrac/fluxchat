@@ -4,6 +4,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import org.fluxchat.companion.Diag
 
 /**
  * Self-heal for a poisoned local store. A native crash inside
@@ -25,6 +26,7 @@ object StoreHeal {
     private const val PREFS = "store-heal"
     private const val KEY_ACK = "acked_crash_ms"
     private const val KEY_HEALS = "heals"
+    private const val KEY_RAN = "ran_before"
 
     /** Healing twice in a poisoned streak means the crash isn't (only) the store. */
     const val MAX_HEALS = 2
@@ -73,13 +75,19 @@ object StoreHeal {
         val p = prefs(context)
         val ack = p.getLong(KEY_ACK, 0L)
         val exits = exits(context)
-        // Second source: dropbox keeps our native crashes even where
-        // ApplicationExitInfo history is empty (t_aa662dd8 field device:
-        // exit-info persisted nothing, dropbox had the SIGSEGVs).
-        val crashed = exits.any { nativeCrash(it.reason, it.status) && it.timestamp > ack } ||
-            nativeCrashInDropbox(context, ack)
+        // The exit history is the only source an app can read. There used to
+        // be a second one here, DropBoxManager (the t_aa662dd8 field device
+        // kept no exit history while dropbox had the SIGSEGVs) — but that
+        // reading was done from adb: `getNextEntry` needs READ_LOGS and
+        // PACKAGE_USAGE_STATS, which this app neither asks for nor could be
+        // granted, so the call threw SecurityException into a silent
+        // runCatching on every start and never once found a crash. Removed
+        // rather than kept as a line of noise; a phone that keeps no exit
+        // history is said so below instead.
+        val crashed = exits.any { nativeCrash(it.reason, it.status) && it.timestamp > ack }
         if (crashed) {
             pending = decide(true, p.getInt(KEY_HEALS, 0))
+            Diag.note("store heal: the last run died of a native crash — ${if (pending) "rebuilding the local store" else "not rebuilding again (healed $MAX_HEALS times in a row)"}")
             // Declined (healed too often in a row): this crash is still
             // answered for. Left unacknowledged it stayed "newer than the
             // ack" for ever, so the streak could never reset and no later
@@ -124,24 +132,12 @@ object StoreHeal {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList() // ApplicationExitInfo is API 30
         val am = context.getSystemService(android.app.ActivityManager::class.java) ?: return emptyList()
         return runCatching { am.getHistoricalProcessExitReasons(context.packageName, 0, 64) }
+            .onFailure { Diag.error("store heal: reading how the last run ended (a native crash would go unnoticed)", it) }
             .getOrDefault(emptyList())
+            // Nothing at all on a phone that has run the app before: this
+            // phone doesn't keep the history, and a poisoned store won't heal
+            // by itself here (the field case above). Worth a line in a report.
+            .also { if (it.isEmpty() && prefs(context).getBoolean(KEY_RAN, false)) Diag.note("store heal: this phone kept no exit history, so a native crash can't be noticed") }
+            .also { prefs(context).edit().putBoolean(KEY_RAN, true).apply() }
     }
-
-    /**
-     * Our native crashes in dropbox (data_app_native_crash@package@...),
-     * newer than [since]. Readable by the app itself via DropBoxManager.
-     */
-    private fun nativeCrashInDropbox(context: Context, since: Long): Boolean = runCatching {
-        val db = context.getSystemService(android.os.DropBoxManager::class.java) ?: return@runCatching false
-        var entry: android.os.DropBoxManager.Entry? =
-            db.getNextEntry("data_app_native_crash@${context.packageName}", since)
-        while (entry != null) {
-            val text = entry.getText(entry.flags) ?: ""
-            if ("signal 11" in text || "signal 7" in text) return@runCatching true
-            val next = db.getNextEntry("data_app_native_crash@${context.packageName}", entry.timeMillis + 1)
-            entry.close()
-            entry = next
-        }
-        false
-    }.getOrDefault(false)
 }

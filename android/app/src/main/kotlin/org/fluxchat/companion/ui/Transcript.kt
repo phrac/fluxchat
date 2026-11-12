@@ -77,6 +77,14 @@ fun TranscriptRow(
     onAnswer: (String) -> Unit,
     /** An approval you answered ("✅ Approve once"): folded to one line. */
     answered: String? = null,
+    /** Your answer to [prompt] / [question] while it's on its way or with the agent: the buttons wait. */
+    answer: PromptAnswer? = null,
+    questionAnswer: PromptAnswer? = null,
+    /** Retry / Delete / Cancel on this message while it hasn't gone out. */
+    onSendAction: (org.fluxchat.companion.agents.SendAction) -> Unit = {},
+    now: Long = m.ts,
+    /** Still sending because an earlier message in the project is parked. */
+    heldUp: Boolean = false,
 ) {
     if (!m.isMessage) {
         if (m.body.isNotEmpty()) {
@@ -118,12 +126,7 @@ fun TranscriptRow(
                 }
                 if (m.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (prompt.isNotEmpty()) PromptCard("Waiting for your answer") { ChoiceButtons(prompt, onReact) }
-            if (question != null) {
-                PromptCard(if (question.isEmpty()) "Answer below" else "Pick one, or answer below") {
-                    if (question.isNotEmpty()) ChoiceButtons(question, onAnswer)
-                }
-            }
+            Prompts(prompt, question, answer, questionAnswer, onReact, onAnswer)
             if (answered == null) Reactions(reactions, onReact)
         }
     } else {
@@ -153,6 +156,7 @@ fun TranscriptRow(
                     }
                 }
                 Box(Modifier.padding(horizontal = 4.dp)) { Meta(m, own) }
+                SendStatus(m, now, heldUp, onSendAction)
                 Reactions(reactions, onReact)
             }
         }

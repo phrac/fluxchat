@@ -98,6 +98,8 @@ fun RoomsScreen(go: (Screen) -> Unit) {
     val update by org.fluxchat.companion.Update.available.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val pins by Matrix.pins.collectAsState()
+    val loading by Matrix.loading.collectAsState()
+    val recovery by Matrix.recovery.collectAsState()
     val now by rememberNow()
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
@@ -115,15 +117,12 @@ fun RoomsScreen(go: (Screen) -> Unit) {
             LargeTopAppBar(
                 title = { Text("Projects") },
                 actions = {
-                    update?.let {
-                        // Subtle: a plain assist chip, no badge or colour shout.
-                        AssistChip(onClick = { org.fluxchat.companion.Update.openRelease(context) }, label = { Text("Update available") })
-                    }
-                    IconButton(onClick = { creating = true }) { Icon(Icons.Outlined.Add, "New project") }
-                    IconButton(onClick = { go(Screen.Search) }) { Icon(Icons.Outlined.Search, "Search sessions") }
-                    IconButton(onClick = { go(Screen.History) }) { Icon(Icons.Outlined.History, "Run history") }
-                    IconButton(onClick = { go(Screen.Agents) }) { Icon(Icons.Outlined.SmartToy, "Your agents") }
-                    IconButton(onClick = { go(Screen.Settings) }) { Icon(Icons.Outlined.Settings, "Settings") }
+                    ProjectsActions(
+                        update = update != null,
+                        onUpdate = { org.fluxchat.companion.Update.openRelease(context) },
+                        onNew = { creating = true },
+                        go = go,
+                    )
                 },
                 scrollBehavior = scroll,
             )
@@ -149,6 +148,10 @@ fun RoomsScreen(go: (Screen) -> Unit) {
             modifier = Modifier.fillMaxSize().padding(top = pad.calculateTopPadding()),
         ) {
             when {
+                // Not read yet is not "none": at a cold start "No agents yet"
+                // and then "No projects yet" flashed by, buttons and all,
+                // before the list arrived.
+                rooms.isEmpty() && loading -> LoadingProjects()
                 list.agents.isEmpty() -> Empty(
                     Icons.Outlined.SmartToy,
                     "No agents yet",
@@ -179,6 +182,8 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        // Offered, never forced on an app in use (RecoveryPrompt).
+                        if (recovery.offer) item(key = "recovery") { RecoveryCard() }
                         item {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 items(RoomFilter.entries) { f ->
@@ -305,6 +310,45 @@ private fun Empty(icon: ImageVector, title: String, body: String, action: String
     }
 }
 
+/** The agent list and the projects haven't been read yet: neither empty state is true so far. */
+@Composable
+private fun LoadingProjects() {
+    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+            Text("Loading your projects…", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+/**
+ * Past conversations are still locked on this phone and nobody has said
+ * "Not now": the way in, for when the answer came after the app had opened
+ * (it never pulls you out to the full-screen prompt then).
+ */
+@Composable
+private fun RecoveryCard() {
+    Card(
+        onClick = { Matrix.openRecovery() },
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Unlock your past conversations", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                Text(
+                    "Enter your recovery key to read what was said before this phone signed in.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+        }
+    }
+}
+
 @Composable
 internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier: Modifier, msgs: List<org.fluxchat.companion.agents.Msg> = Matrix.roomTimeline(room.roomId)?.messages?.value.orEmpty()) {
     val headline = room.headline
@@ -313,7 +357,7 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
         .mapNotNull { (k, r) ->
             // Live runs, plus recently finished ones: their `result` is the row's body.
             if (k.threadRoot != null && r != null &&
-                (r.state.live || now - r.since < FINISHED_ROW_WINDOW_MS)
+                (r.state.live || now - r.endedAt < FINISHED_ROW_WINDOW_MS)
             ) k to r else null
         }
         .sortedWith(compareBy({ it.second.rank().first }, { it.second.rank().second }))
@@ -359,7 +403,7 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
                     }
                 }
             }
-            if (roomRun != null && (roomRun.state.live || now - roomRun.since < 10 * 60 * 1000)) {
+            if (roomRun != null && (roomRun.state.live || now - roomRun.endedAt < 10 * 60 * 1000)) {
                 StatePill(roomRun.state, runLine(roomRun, now))
                 // The room's run is over: its one-line outcome is the row's body.
                 runResult(roomRun)?.let {

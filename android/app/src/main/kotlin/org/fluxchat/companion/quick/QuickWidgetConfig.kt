@@ -29,6 +29,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.fluxchat.companion.matrix.Matrix
@@ -36,7 +37,7 @@ import org.fluxchat.companion.ui.AGENT_ROOM_ORDER
 import org.fluxchat.companion.ui.Avatar
 import org.fluxchat.companion.ui.FluxTheme
 
-/** Which room a new widget starts sessions in (also on reconfiguring it). */
+/** Which project a new widget starts sessions in (also on reconfiguring it). */
 class QuickWidgetConfig : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,13 +61,13 @@ class QuickWidgetConfig : ComponentActivity() {
                     LazyColumn(Modifier.fillMaxSize().padding(pad)) {
                         item {
                             Row(
-                                Modifier.fillMaxWidth().clickable { pick(null) }.padding(horizontal = 16.dp, vertical = 12.dp),
+                                Modifier.fillMaxWidth().clickable(role = Role.Button) { pick(null) }.padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Icon(Icons.Outlined.History, null, Modifier.size(44.dp).padding(10.dp))
                                 Spacer(Modifier.width(14.dp))
                                 Column {
-                                    Text("The room I last used", style = MaterialTheme.typography.titleMedium)
+                                    Text("The project I last used", style = MaterialTheme.typography.titleMedium)
                                     Text("Follows wherever you last sent a request", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
@@ -76,7 +77,7 @@ class QuickWidgetConfig : ComponentActivity() {
                         }
                         items(ordered, key = { it.roomId }) { r ->
                             Row(
-                                Modifier.fillMaxWidth().clickable { pick(r.roomId) }.padding(horizontal = 16.dp, vertical = 10.dp),
+                                Modifier.fillMaxWidth().clickable(role = Role.Button) { pick(r.roomId) }.padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Avatar(r.roomId, r.name, r.avatar, 44.dp, room = !r.isDm)

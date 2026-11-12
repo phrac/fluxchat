@@ -3,8 +3,6 @@ package org.fluxchat.companion.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,9 +11,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -26,31 +27,35 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.BrokenImage
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -58,12 +63,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import org.fluxchat.companion.agents.FileKind
 import org.fluxchat.companion.agents.GalleryTab
 import org.fluxchat.companion.agents.Msg
@@ -92,7 +99,22 @@ fun GalleryScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () 
             // What this view already loaded is the seed; the server fills the rest.
             val loaded = Matrix.roomTimeline(roomId)?.messages?.value.orEmpty()
             val seed = if (root == null) loaded else loaded.filter { it.id == root || it.threadRoot == root }
-            view = Matrix.openGallery(roomId, root, seed)
+            // Opened on the app's scope, not this screen's. openGallery only
+            // caches a view (to be reused, and released at logout) once its
+            // timeline is open; leaving the screen before that cancelled it
+            // in between, with a started timeline nothing would ever close.
+            // Run to the end, an opening nobody waits for lands in the cache.
+            val opening = Matrix.scope.async { Matrix.openGallery(roomId, root, seed) }
+            view = try {
+                opening.await()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A throw here used to take the app down (nothing above catches it).
+                org.fluxchat.companion.Diag.error("Opening the gallery of ${root ?: roomId}", e)
+                failed = true
+                return@LaunchedEffect
+            }
             if (view == null) {
                 failed = true
                 org.fluxchat.companion.Diag.error("Opening the gallery of ${root ?: roomId}, no timeline", null)
@@ -139,8 +161,7 @@ fun GalleryScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () 
                 view == null -> Column(Modifier.fillMaxSize(), Arrangement.Center, Alignment.CenterHorizontally) {
                     if (failed) {
                         Text("Couldn't open the gallery.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Try again", Modifier.clickable { failed = false; attempt++ }.padding(12.dp),
-                            style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        TextButton(onClick = { failed = false; attempt++ }) { Text("Try again") }
                     } else CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
                 }
                 shown.isEmpty() && error == null -> Column(Modifier.fillMaxSize(), Arrangement.Center, Alignment.CenterHorizontally) {
@@ -176,11 +197,12 @@ private fun GalleryFooter(loading: Boolean, done: Boolean, error: String?, loadM
         // The detail went to Diag; SDK error text names its own machinery.
         error != null -> Text(
             "Couldn't load more. Tap to try again.",
-            Modifier.fillMaxWidth().clickable(onClick = loadMore).padding(12.dp),
+            // 48 dp to tap, whatever the text's height.
+            Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = loadMore).heightIn(min = 48.dp).wrapContentHeight().padding(horizontal = 12.dp),
             style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error,
         )
         loading -> Box(Modifier.fillMaxWidth().padding(16.dp), Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
-        !done -> Text("Load older", Modifier.fillMaxWidth().clickable(onClick = loadMore).padding(16.dp), style = MaterialTheme.typography.labelLarge)
+        !done -> Text("Load older", Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = loadMore).padding(16.dp), style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -269,22 +291,33 @@ private fun FilesTab(items: List<Msg>, loading: Boolean, done: Boolean, error: S
 @Composable
 private fun GalleryTile(m: Msg, open: () -> Unit) {
     val media = galleryMediaOf(m)
-    val state by produceState<Any?>(media?.let { Images.cached("thumb:" + it.source) }, m) {
-        if (value == null && media != null) value = Images.load(media, full = false) ?: false
+    var attempt by remember { mutableIntStateOf(0) }
+    val state by produceState<Any?>(media?.let { Images.cached("thumb:" + it.source) }, m, attempt) {
+        val cached = media?.let { Images.cached("thumb:" + it.source) }
+        value = cached
+        if (cached == null && media != null) value = Images.load(media, full = false) ?: false
     }
     val scheme = MaterialTheme.colorScheme
+    val image = galleryIsImage(m)
+    // An image whose thumbnail didn't load: the tap is another try (the
+    // tile was dead until it had scrolled away and back).
+    val retry = image && state == false
     Box(
         Modifier.fillMaxWidth().aspectRatio(1f).clip(MaterialTheme.shapes.medium)
             .background(scheme.surfaceContainerHighest)
             // Videos jump even without a thumbnail loaded, as on the desktop.
-            .clickable(enabled = state is ImageBitmap || !galleryIsImage(m), onClick = open),
+            .clickable(
+                enabled = state is ImageBitmap || !image || retry,
+                onClickLabel = if (retry) "try again" else if (image) "view" else "go to the message",
+                onClick = { if (retry) attempt++ else open() },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         when (val s = state) {
-            is ImageBitmap -> Image(s, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            is ImageBitmap -> Image(s, galleryLabel(m), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             false -> Icon(Icons.Outlined.BrokenImage, "Couldn't load the image", tint = scheme.onSurfaceVariant)
             else -> if (media == null)
-                Icon(Icons.Outlined.Description, null, tint = scheme.onSurfaceVariant)
+                Icon(Icons.Outlined.Description, galleryLabel(m), tint = scheme.onSurfaceVariant)
             else CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
         }
         if (m.media == null && m.file?.kind == FileKind.Video)
@@ -292,52 +325,74 @@ private fun GalleryTile(m: Msg, open: () -> Unit) {
     }
 }
 
-/** Full-screen image browse: ‹ › move through the gallery, ↩ goes to the message. */
+/** What a tile or the viewer shows, in words: a screen reader had nothing to say about either. */
+private fun galleryLabel(m: Msg): String {
+    val what = if (m.file?.kind == FileKind.Video) "Video" else "Image"
+    return m.file?.name?.let { "$what $it" } ?: "$what from ${shortName(m.sender, m.senderName)}"
+}
+
+/**
+ * Full-screen image browse: swipe (or ‹ ›) through the gallery, save, share,
+ * ↩ goes to the message. [index] is where the open image is in [images] now;
+ * [step] is told where a swipe has moved to.
+ */
 @Composable
 private fun GalleryViewer(images: List<Msg>, index: Int, step: (Int) -> Unit, close: () -> Unit, jump: (Msg) -> Unit) {
-    val m = images[index]
-    val media = galleryMediaOf(m) ?: return
-    val full by produceState<ImageBitmap?>(Images.cached("full:" + media.source), media) {
-        value = Images.load(media, full = true) ?: Images.load(media, full = false)
-    }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-    val transform = rememberTransformableState { _, zoom, pan, _ ->
-        scale = (scale * zoom).coerceIn(1f, 6f)
-        offset = if (scale == 1f) androidx.compose.ui.geometry.Offset.Zero else offset + pan
-    }
-    LaunchedEffect(m) { scale = 1f; offset = androidx.compose.ui.geometry.Offset.Zero }
-    if (!unlocked()) return
-    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
-            full?.let {
-                Image(
-                    it, null,
-                    Modifier.fillMaxSize().transformable(transform).graphicsLayer {
-                        scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y
-                    },
-                    contentScale = ContentScale.Fit,
-                )
-            } ?: CircularProgressIndicator(Modifier.align(Alignment.Center))
-            IconButton(
-                onClick = close, modifier = Modifier.safeDrawingPadding().padding(8.dp).align(Alignment.TopStart),
-                colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f), contentColor = Color.White),
-            ) { Icon(Icons.Default.Close, "Close") }
-            IconButton(
-                onClick = { jump(m); close() }, modifier = Modifier.safeDrawingPadding().padding(8.dp).align(Alignment.TopEnd),
-                colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.5f), contentColor = Color.White),
-            ) { Icon(Icons.Outlined.Chat, "Go to message") }
-            if (index > 0) NavButton("‹", Modifier.align(Alignment.CenterStart)) { step(index - 1) }
-            if (index < images.lastIndex) NavButton("›", Modifier.align(Alignment.CenterEnd)) { step(index + 1) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val pager = rememberPagerState(initialPage = index) { images.size }
+    // Zoomed in, a drag looks around the image; at rest it turns the page.
+    var zoomed by remember { mutableStateOf(false) }
+    val told by rememberUpdatedState(step)
+    // A swipe (or ‹ ›) came to rest on another image: that is the open one
+    // now, and it starts unzoomed — the page that said "zoomed" is gone.
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.settledPage }.collect {
+            zoomed = false
+            told(it)
         }
+    }
+    // The list grew above the open image (a live merge): follow it there.
+    LaunchedEffect(index) { if (index != pager.currentPage && !pager.isScrollInProgress) pager.scrollToPage(index) }
+    ViewerDialog(close) {
+        HorizontalPager(
+            pager, Modifier.fillMaxSize(), userScrollEnabled = !zoomed,
+            key = { images.getOrNull(it)?.id ?: it },
+        ) { page ->
+            val m = images.getOrNull(page)
+            val media = m?.let { galleryMediaOf(it) }
+            if (m != null && media != null) ViewerImage(media, galleryLabel(m)) { if (page == pager.currentPage) zoomed = it }
+        }
+        val m = images.getOrNull(pager.currentPage) ?: return@ViewerDialog
+        ViewerBar(close) {
+            val source = m.file?.source ?: m.media?.source
+            val busy = source?.let { fileBusy(it) } ?: false
+            // A file-sent image keeps its own name; a message image is named for what it is.
+            val file = m.file
+            ViewerButton(Icons.Outlined.Download, "Save the image", enabled = !busy) {
+                if (file != null) FileJobs.save(context, file) else m.media?.let { FileJobs.saveImage(context, it) }
+            }
+            ViewerButton(Icons.Outlined.Share, "Share the image", enabled = !busy) {
+                if (file != null) FileJobs.share(context, file) else m.media?.let { FileJobs.shareImage(context, it) }
+            }
+            ViewerButton(Icons.Outlined.Chat, "Go to message") { jump(m); close() }
+        }
+        if (pager.currentPage > 0)
+            NavButton(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Previous image", Modifier.align(Alignment.CenterStart)) {
+                scope.launch { pager.animateScrollToPage(pager.currentPage - 1) }
+            }
+        if (pager.currentPage < images.lastIndex)
+            NavButton(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Next image", Modifier.align(Alignment.CenterEnd)) {
+                scope.launch { pager.animateScrollToPage(pager.currentPage + 1) }
+            }
     }
 }
 
 @Composable
-private fun NavButton(label: String, modifier: Modifier, onClick: () -> Unit) {
+private fun NavButton(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
     Box(
         modifier.padding(8.dp).size(56.dp).clip(MaterialTheme.shapes.extraLarge)
-            .background(Color.Black.copy(alpha = 0.5f)).clickable(onClick = onClick),
+            .background(Color.Black.copy(alpha = 0.5f)).clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
-    ) { Text(label, color = Color.White, style = MaterialTheme.typography.headlineMedium) }
+    ) { Icon(icon, label, Modifier.size(32.dp), tint = Color.White) }
 }

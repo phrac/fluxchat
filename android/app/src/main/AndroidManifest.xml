@@ -7,6 +7,8 @@
     <!-- The live runs notification: a foreground service keeps sync going while agents work. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Held for the seconds between a push arriving and its notification going up (push/Awake.kt). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Speech input for prompts (Android 11+ hides other apps' activities otherwise). -->
     <queries>
@@ -42,10 +44,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Share a file, link or text from another app to an agent. -->
+        <!-- Share a file, link or text from another app to an agent. Turning the phone
+             doesn't restart it: that would start a large file's copy over. -->
         <activity
             android:name=".ShareActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:label="@string/app_name"
@@ -75,10 +79,12 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- A new session from anywhere: the quick prompt sheet, its widget, tile and shortcuts. -->
+        <!-- A new session from anywhere: the quick prompt sheet, its widget, tile and shortcuts.
+             Not restarted when the phone is turned: a send under way keeps its "Sending…". -->
         <activity
             android:name=".quick.QuickPromptActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:excludeFromRecents="true"
             android:label="@string/new_session"
             android:taskAffinity=""

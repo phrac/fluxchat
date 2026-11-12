@@ -6,10 +6,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -35,9 +38,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -56,9 +64,15 @@ import org.fluxchat.companion.matrix.Session
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit) {
+fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, @Suppress("UNUSED_PARAMETER") swap: (Screen) -> Unit) {
     val rooms by Matrix.agentRooms.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
+    // The box takes the keyboard when you arrive — once: coming back from a
+    // result, it is the results you came back for, not the keyboard over them.
+    var arrived by rememberSaveable { mutableStateOf(false) }
+    val box = remember { FocusRequester() }
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var all by rememberSaveable { mutableStateOf(false) }
     var loading by rememberSaveable { mutableStateOf(false) }
     var batches by remember { mutableIntStateOf(0) }
@@ -73,9 +87,18 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
     // still want them; `batches` re-gathers the snapshot as pages arrive.
     LaunchedEffect(rooms.keys.size) {
         loading = true
-        Matrix.sessionsEach(rooms.keys.toList())
-        all = true
-        loading = false
+        // A list that throws while opening must not take the app down with
+        // it (nothing above an effect catches), nor leave "Loading…" up.
+        try {
+            Matrix.sessionsEach(rooms.keys.toList())
+            all = true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            org.fluxchat.companion.Diag.error("Opening the session lists to search", e)
+        } finally {
+            loading = false
+        }
     }
     LaunchedEffect(all, loading, batches) {
         while (all) {
@@ -97,8 +120,12 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
         l.itemsNow.map { roomId to it }
     }
     val trimmed = query.trim()
-    val matches = remember(trimmed, snapshot, hits, batches) {
-        SessionSearch.merge(trimmed, snapshot, hits) { Matrix.roomName(it) }
+    // The hits answer the query last asked: while the box is ahead of it
+    // (typing), the old query's hits are not this one's results.
+    val asked by (search?.query ?: remember { kotlinx.coroutines.flow.MutableStateFlow<String?>(null) }).collectAsState()
+    val current = if (asked == trimmed) hits else emptyList()
+    val matches = remember(trimmed, snapshot, current, batches) {
+        SessionSearch.merge(trimmed, snapshot, current) { Matrix.roomName(it) }
     }
     val scroll = TopAppBarDefaults.enterAlwaysScrollBehavior()
     Scaffold(
@@ -111,16 +138,32 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
             )
         },
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
+        // imePadding: edge to edge, the keyboard otherwise lies over the last results.
+        Column(Modifier.padding(pad).consumeWindowInsets(pad).fillMaxSize().imePadding()) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).focusRequester(box),
                 placeholder = { Text("What was the session about?") },
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                // Results are already there as you type: Search puts the keyboard away to show them.
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); focus.clearFocus() }),
             )
+            // Here, beside the field: its focus requester exists once this
+            // part of the screen has been composed, not before.
+            LaunchedEffect(Unit) {
+                if (!arrived) {
+                    arrived = true
+                    withFrameNanos { }
+                    try {
+                        box.requestFocus()
+                    } catch (e: IllegalStateException) {
+                        org.fluxchat.companion.Diag.error("Focusing the search box", e)
+                    }
+                }
+            }
             if (trimmed.isEmpty()) {
                 Text(
                     if (loading) "Loading your sessions…" else "Type what you remember from the session — any word in any reply matches.",
@@ -171,7 +214,12 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit)
                                 }
                             }
                         },
-                        modifier = Modifier.clickable { swap(Screen.Thread(m.roomId, m.root, eventOf(m))) },
+                        // go, not swap: Back from the session returns to these
+                        // results (swapped out, it went past them to Projects).
+                        modifier = Modifier.clickable {
+                            keyboard?.hide()
+                            go(Screen.Thread(m.roomId, m.root, eventOf(m)))
+                        },
                     )
                     HorizontalDivider()
                 }

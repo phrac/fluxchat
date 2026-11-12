@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.fluxchat.companion.Diag
 import org.fluxchat.companion.agents.RunState
 import org.fluxchat.companion.matrix.Matrix
 import org.matrix.rustcomponents.sdk.MediaSource
@@ -35,20 +36,35 @@ import org.matrix.rustcomponents.sdk.MediaSource
 private object Avatars {
     private const val THUMB_PX = 96UL
     private val cache = LruCache<String, ImageBitmap>(200)
-    private val failed = HashSet<String>()
+
+    /** When each picture last failed to load. Tried again after [RETRY_MS]: "failed"
+     * used to be for good, so one look at the app offline left initials until it was restarted. */
+    private val failed = HashMap<String, Long>()
+    private const val RETRY_MS = 60_000L
 
     fun cached(url: String): ImageBitmap? = cache.get(url)
 
     suspend fun load(url: String): ImageBitmap? {
         cache.get(url)?.let { return it }
-        if (url in failed) return null
+        val before = synchronized(failed) { failed[url] }
+        if (before != null && System.currentTimeMillis() - before < RETRY_MS) return null
         val client = Matrix.client ?: return null
         return withContext(Dispatchers.IO) {
-            runCatching {
+            try {
                 val bytes = MediaSource.fromUrl(url).use { client.getMediaThumbnail(it, THUMB_PX, THUMB_PX) }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-            }.getOrNull()
-        }.also { if (it != null) cache.put(url, it) else failed += url }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Scrolled away mid-download: not a failure to remember.
+                throw e
+            } catch (e: Throwable) {
+                // Once per picture: a list of them offline would fill the log.
+                if (before == null) Diag.error("Loading an avatar", e)
+                null
+            }
+        }.also {
+            if (it != null) cache.put(url, it)
+            synchronized(failed) { if (it != null) failed -= url else failed[url] = System.currentTimeMillis() }
+        }
     }
 }
 

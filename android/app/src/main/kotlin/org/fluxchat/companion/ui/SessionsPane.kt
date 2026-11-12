@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -28,6 +30,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -35,6 +38,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -85,10 +89,26 @@ private fun title(s: Session): String = threadTitle(
  */
 @Composable
 fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onNew: () -> Unit, modifier: Modifier = Modifier) {
-    val list by produceState<SessionList?>(null, roomId) { value = Matrix.sessions(roomId) }
+    // A list that wouldn't open (offline at the wrong moment) left the pane
+    // on its spinner for good: now it says so, and a tap asks again.
+    var attempt by remember { mutableIntStateOf(0) }
+    var failed by remember(roomId) { mutableStateOf(false) }
+    val list by produceState<SessionList?>(null, roomId, attempt) {
+        failed = false
+        value = try {
+            Matrix.sessions(roomId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            org.fluxchat.companion.Diag.error("Opening the sessions of $roomId", e)
+            null
+        }
+        failed = value == null
+    }
     val empty = remember { MutableStateFlow(emptyList<Session>()) }
     val sessions by (list?.items ?: empty).collectAsState()
-    val loading by (list?.loading ?: MutableStateFlow(true)).collectAsState()
+    val opening = remember { MutableStateFlow(true) }
+    val loading by (list?.loading ?: opening).collectAsState()
     val end by (list?.endReached ?: MutableStateFlow(false)).collectAsState()
     val rooms by Matrix.agentRooms.collectAsState()
     val runs: Map<ViewKey, RunInfo?> = rooms[roomId]?.runs.orEmpty()
@@ -118,7 +138,8 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
     val pinned = ordered.subList(0, split)
     val rest = ordered.subList(split, ordered.size)
 
-    Column(modifier.fillMaxSize().statusBarsPadding()) {
+    // imePadding: searching the sessions, the keyboard otherwise lies over the last of them.
+    Column(modifier.fillMaxSize().statusBarsPadding().imePadding()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Sessions", style = MaterialTheme.typography.titleLarge)
             Text(Matrix.roomName(roomId), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -174,14 +195,21 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
                     )
                 }
             }
-            if (loading) {
+            if (failed) {
+                item {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 16.dp)) {
+                        Text("Couldn't load the sessions.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        TextButton(onClick = { attempt++ }) { Text("Try again") }
+                    }
+                }
+            } else if (loading) {
                 item { Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) } }
             } else if (shown.isEmpty()) {
                 item {
                     Text(
                         when {
                             query.isNotBlank() -> "No sessions match."
-                            Matrix.isDm(roomId) -> "No threads here: in a DM the agent answers in the conversation itself. Start a fresh session with New session."
+                            Matrix.isDm(roomId) -> "No earlier sessions here: one to one, the agent answers in the conversation itself. New session starts a fresh one."
                             else -> "No sessions yet. Send the agent a request to start one."
                         },
                         style = MaterialTheme.typography.bodyMedium,
@@ -210,7 +238,14 @@ private fun SessionRow(
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 1.dp)
                 .background(if (selected) scheme.secondaryContainer else Color.Transparent, RoundedCornerShape(28.dp))
-                .combinedClickable(onClick = onClick, onLongClick = { menu = true })
+                .combinedClickable(
+                    onClick = onClick,
+                    // Said aloud by a screen reader: the menu was a long press nobody could know of.
+                    onLongClickLabel = if (pinned) "unpin" else "pin",
+                    onLongClick = { menu = true },
+                )
+                // A session with no second line was 44 dp of row: 48 to tap.
+                .heightIn(min = 48.dp)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

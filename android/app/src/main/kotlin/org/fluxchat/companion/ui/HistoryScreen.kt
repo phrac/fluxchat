@@ -7,9 +7,11 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -29,21 +31,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.Locale
 import org.fluxchat.companion.agents.History
 import org.fluxchat.companion.agents.RunRecord
 import org.fluxchat.companion.matrix.Matrix
+import org.matrix.rustcomponents.sdk.Membership
 
 /**
  * Run history across all your agent rooms: what was asked, how it ended, how
@@ -59,6 +67,14 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
     var now by rememberSaveable { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1_000) } }
     val matches = History.matching(history, query) { Matrix.roomName(it) }
+    // Runs outlive their projects here: a row whose project you have left
+    // (or that was removed) opened a screen with nothing to show.
+    val rooms by Matrix.agentRooms.collectAsState()
+    val recorded = remember(history) { history.mapTo(HashSet()) { it.room } }
+    val gone by produceState(emptySet<String>(), recorded, rooms.keys) {
+        value = withContext(Dispatchers.IO) { goneProjects(recorded, rooms.keys, ::joined) }
+    }
+    val keyboard = LocalSoftwareKeyboardController.current
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
@@ -70,7 +86,8 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
             )
         },
     ) { pad ->
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 24.dp)) {
+        // imePadding: edge to edge, the keyboard otherwise lies over the last rows of a search.
+        LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(top = pad.calculateTopPadding(), bottom = 24.dp)) {
             item {
                 OutlinedTextField(
                     query,
@@ -80,20 +97,27 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
                     placeholder = { Text("Search runs") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    // The rows filter as you type: Search puts the keyboard away to show them (it did nothing).
+                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
                 )
             }
             if (query.isBlank()) {
                 item { SpendSummary(history, now) }
             }
             items(matches, key = { "${it.key}@${it.started}" }, contentType = { "run" }) { r ->
+                val left = r.room in gone
                 ListItem(
                     headlineContent = {
-                        Text(r.title.ifBlank { "Run" }, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            r.title.ifBlank { "Run" }, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            color = if (left) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                        )
                     },
                     supportingContent = {
                         Column {
                             // day · time, then state · duration · cost · model
                             Text(dayLine(r.started) + " · " + r.state)
+                            if (left) Text("Its project is no longer on this phone", style = MaterialTheme.typography.bodySmall)
                             // How it ended, when the agent says (protocol `result`).
                             r.result?.trim()?.takeIf { it.isNotEmpty() }?.let {
                                 Text(it, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -112,7 +136,8 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
                         }
                     },
                     modifier = Modifier
-                        .clickable {
+                        // Nothing to open where the project is gone: the row is its record.
+                        .clickable(enabled = !left) {
                             val root = r.key.removePrefix(r.room + "::").takeIf { it != r.key }
                             go(if (root != null) Screen.Thread(r.room, root) else Screen.Room(r.room))
                         }
@@ -131,6 +156,21 @@ fun HistoryScreen(go: (Screen) -> Unit, back: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * The projects among [recorded] that can't be opened any more: not one of
+ * your agents' projects now, and not one you are still in ([joined]) either.
+ */
+internal fun goneProjects(recorded: Set<String>, live: Set<String>, joined: (String) -> Boolean): Set<String> =
+    recorded.filterTo(HashSet()) { it !in live && !joined(it) }
+
+/** Whether you are (still) in the project. A failed look counts as "yes": a row is only closed on what we know. */
+private fun joined(roomId: String): Boolean = try {
+    Matrix.room(roomId)?.let { it.membership() == Membership.JOINED } ?: false
+} catch (e: Exception) {
+    org.fluxchat.companion.Diag.error("Looking up the project of a recorded run", e)
+    true
 }
 
 /** Today and this week, per agent: what they spent. */

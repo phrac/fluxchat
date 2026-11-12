@@ -5,13 +5,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -21,6 +24,7 @@ import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.AlertDialog
@@ -52,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.fluxchat.companion.AppLock
@@ -146,7 +151,8 @@ fun AgentsScreen(back: () -> Unit) {
                 val current = Harnesses.get(a.harness).id
                 for (h in Harnesses.list()) {
                     Row(
-                        Modifier.fillMaxWidth().clickable {
+                        // selectable: a screen reader says which one is chosen (as a plain click it said nothing).
+                        Modifier.fillMaxWidth().selectable(selected = h.id == current, role = Role.RadioButton) {
                             save(list.agents.map { if (it.userId == a.userId) it.copy(harness = h.id) else it })
                             editing = null
                         }.padding(horizontal = 8.dp),
@@ -181,6 +187,7 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val list by Matrix.agentList.collectAsState()
     val lockOn by AppLock.enabled.collectAsState()
+    val recoveryPending = Matrix.recovery.collectAsState().value.needed
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
         topBar = {
@@ -234,11 +241,20 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
                     )
                 },
             )
+            // "Not now" on the recovery-key screen is remembered: this is the way back to it.
+            if (recoveryPending) {
+                ListItem(
+                    leadingContent = { Icon(Icons.Outlined.Key, null) },
+                    headlineContent = { Text("Enter recovery key") },
+                    supportingContent = { Text("Conversations from before you signed in on this phone stay unreadable until you do") },
+                    modifier = Modifier.clickable { Matrix.openRecovery() },
+                )
+            }
             Section("About")
             ListItem(
                 leadingContent = { Icon(Icons.Outlined.BugReport, null) },
                 headlineContent = { Text("Diagnostics") },
-                supportingContent = { Text("Sync, rooms, push and recent events, to copy into a bug report") },
+                supportingContent = { Text("Sync, projects, push and recent events, to copy into a bug report") },
                 modifier = Modifier.clickable { go(Screen.Diagnostics) },
             )
             ListItem(
@@ -252,6 +268,9 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
                 headlineContent = { Text("Sign out", color = MaterialTheme.colorScheme.error) },
                 modifier = Modifier.clickable { confirm = true },
             )
+            // The list ends under the system's navigation buttons (edge to
+            // edge): without this the last row could not be scrolled clear of them.
+            Spacer(Modifier.navigationBarsPadding().height(16.dp))
         }
     }
     if (confirm && unlocked()) {

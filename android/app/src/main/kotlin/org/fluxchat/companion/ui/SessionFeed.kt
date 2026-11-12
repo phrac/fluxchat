@@ -48,6 +48,7 @@ import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.RunState
 import org.fluxchat.companion.agents.Runs
+import org.fluxchat.companion.agents.SendAction
 import org.fluxchat.companion.agents.SendState
 import org.fluxchat.companion.agents.ViewKey
 import org.fluxchat.companion.matrix.Matrix
@@ -79,6 +80,8 @@ data class SessionCardInfo(
     val run: RunInfo?,
     val own: Boolean,
     val sendState: SendState = SendState.Sent,
+    /** The request itself while it hasn't gone out (a local echo): the card says so and offers Retry / Delete / Cancel. */
+    val unsent: Msg? = null,
 )
 
 /**
@@ -118,6 +121,7 @@ fun sessionCards(roomId: String, sessions: List<Session>, all: List<Msg>, runs: 
             run = runs[ViewKey(roomId, root)],
             own = msg?.isOwn ?: false,
             sendState = msg?.sendState ?: SendState.Sent,
+            unsent = msg?.takeIf { it.isLocal && it.sendState != SendState.Sent },
         )
     }
 
@@ -160,6 +164,10 @@ fun SessionFeed(
     runs: Map<ViewKey, RunInfo?>,
     list: SessionList?,
     now: Long,
+    /** Retry / Delete / Cancel on a request (by its card's root) that hasn't gone out. */
+    onSendAction: (String, SendAction) -> Unit = { _, _ -> },
+    /** The earliest parked send in the project, if any: requests sent after it wait for it. */
+    blocker: Msg? = null,
     onOpen: (String) -> Unit,
 ) {
     val empty = remember { MutableStateFlow(emptyList<Session>()) }
@@ -203,7 +211,12 @@ fun SessionFeed(
             var j = i
             while (j < rest.size && bucket(rest[j].lastTs, now) == b) j++
             for (c in rest.subList(i, j)) {
-                item(key = c.root) { SessionCard(c, now, Modifier.animateItem(), pinned = false, onTogglePin = { togglePin(c.root) }) { openCard(c.root) } }
+                item(key = c.root) {
+                    SessionCard(
+                        c, now, Modifier.animateItem(), pinned = false, onTogglePin = { togglePin(c.root) },
+                        onSendAction = { onSendAction(c.root, it) }, heldUp = heldUpBy(blocker, c.unsent),
+                    ) { openCard(c.root) }
+                }
             }
             // reverseLayout: the heading goes after its cards to sit above them.
             item(key = "h:$b") {
@@ -243,8 +256,28 @@ fun SessionFeed(
     }
 }
 
+/**
+ * Whether [m], still on its way out, is waiting for [blocker]: the send queue
+ * goes in order, and a send that failed for good holds up the ones after it
+ * until it's retried or deleted.
+ */
+fun heldUpBy(blocker: Msg?, m: Msg?): Boolean =
+    blocker != null && m != null && m.id != blocker.id && m.isLocal && m.sendState == SendState.Sending && m.ts >= blocker.ts
+
+/** The earliest send in a project that failed for good ([Msg.sendParked]), if any. */
+fun sendBlocker(roomMsgs: List<Msg>): Msg? = roomMsgs.filter { it.sendParked }.minByOrNull { it.ts }
+
 @Composable
-fun SessionCard(c: SessionCardInfo, now: Long, modifier: Modifier = Modifier, pinned: Boolean = false, onTogglePin: () -> Unit = {}, onClick: () -> Unit) {
+fun SessionCard(
+    c: SessionCardInfo,
+    now: Long,
+    modifier: Modifier = Modifier,
+    pinned: Boolean = false,
+    onTogglePin: () -> Unit = {},
+    onSendAction: (SendAction) -> Unit = {},
+    heldUp: Boolean = false,
+    onClick: () -> Unit,
+) {
     val scheme = MaterialTheme.colorScheme
     val run = c.run
     val live = run != null && run.state.live
@@ -281,8 +314,11 @@ fun SessionCard(c: SessionCardInfo, now: Long, modifier: Modifier = Modifier, pi
             }
             when {
                 live -> StatePill(run.state, runLine(run, now))
+                // Stuck or failed: say which, with what can be done about it.
+                c.unsent != null && (c.unsent.sendState == SendState.Failed || heldUp || c.unsent.sendActions(now).isNotEmpty()) ->
+                    SendStatusRow(sendStatusText(c.unsent, heldUp), failed = c.unsent.sendState == SendState.Failed, c.unsent.sendActions(now), onSendAction)
                 c.sendState == SendState.Sending -> Waiting("Sending…")
-                c.sendState == SendState.Failed -> Text("Failed to send", style = MaterialTheme.typography.labelMedium, color = scheme.error)
+                c.sendState == SendState.Failed -> Text("Not sent", style = MaterialTheme.typography.labelMedium, color = scheme.error)
                 run == null && c.own && c.replies == 0 ->
                     Waiting(if (now - c.lastTs < PENDING_WINDOW_MS) "Waiting for the agent" else "No reply")
                 else -> {}
