@@ -3,10 +3,12 @@ package org.fluxchat.companion.push
 import android.app.Activity
 import android.content.Context
 import android.os.Build
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.fluxchat.companion.Diag
 import org.fluxchat.companion.matrix.Matrix
@@ -27,10 +29,12 @@ import java.util.Locale
  * [FluxPushService].
  */
 object Push {
-    private const val TAG = "fluxchat-push"
     private const val PREFS = "push"
     private const val FALLBACK_GATEWAY = "https://matrix.gateway.unifiedpush.org/_matrix/push/v1/notify"
     private const val GATEWAY_PATH = "/_matrix/push/v1/notify"
+    private const val MESSAGE = "fluxchat agents"
+    /** A distributor that hasn't answered a registration by now isn't going to by itself. */
+    private const val REGISTER_WAIT_MS = 30_000L
 
     sealed interface Status {
         data object Off : Status
@@ -44,7 +48,69 @@ object Push {
     private val _status = MutableStateFlow<Status>(Status.Off)
     val status: StateFlow<Status> = _status
 
+    /**
+     * What is saved about push. Two different things live here: what *you*
+     * chose ([enabled], through which [distributor]) and what is currently
+     * registered ([endpoint], the pusher on the server). Signing out ends
+     * the registration, not the choice.
+     */
+    internal data class Saved(
+        val enabled: Boolean = false,
+        val distributor: String? = null,
+        val endpoint: String? = null,
+        /** The endpoint the server's pusher points at. */
+        val pushedEndpoint: String? = null,
+        val gateway: String? = null,
+    ) {
+        /**
+         * Signed out: the pusher and the endpoint go, the choice stays, so
+         * the next sign-in registers again. It used to turn push off, and
+         * after signing back in nothing arrived until you found the switch.
+         */
+        fun signedOut() = copy(endpoint = null, pushedEndpoint = null, gateway = null)
+
+        /** You turned push off in Settings. */
+        fun turnedOff() = signedOut().copy(enabled = false)
+    }
+
+    /** What to do about push when a session starts. */
+    internal sealed interface Plan {
+        data object Off : Plan
+        data object NoDistributor : Plan
+        /** Several distributors and none of them the one chosen: Settings asks. */
+        data object Pick : Plan
+        /** Registered: check the connection, put the pusher back. */
+        data class Renew(val distributor: String) : Plan
+        /** Chosen but not registered (signed out and back in): register again. */
+        data class Reconnect(val distributor: String) : Plan
+    }
+
+    /** [acked]: the distributor UnifiedPush has a live registration with; [installed]: the ones on the phone. */
+    internal fun plan(saved: Saved, acked: String?, installed: List<String>): Plan = when {
+        !saved.enabled -> Plan.Off
+        acked != null -> Plan.Renew(acked)
+        installed.isEmpty() -> Plan.NoDistributor
+        saved.distributor != null && saved.distributor in installed -> Plan.Reconnect(saved.distributor)
+        installed.size == 1 -> Plan.Reconnect(installed.single())
+        else -> Plan.Pick
+    }
+
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    private fun load(context: Context): Saved = prefs(context).let { p ->
+        Saved(
+            p.getBoolean("enabled", false), p.getString("distributor", null), p.getString("endpoint", null),
+            p.getString("pushed_endpoint", null), p.getString("gateway", null),
+        )
+    }
+
+    private fun store(context: Context, s: Saved) {
+        val e = prefs(context).edit().putBoolean("enabled", s.enabled)
+        for ((key, value) in listOf("distributor" to s.distributor, "endpoint" to s.endpoint, "pushed_endpoint" to s.pushedEndpoint, "gateway" to s.gateway)) {
+            if (value != null) e.putString(key, value) else e.remove(key)
+        }
+        e.apply()
+    }
 
     fun distributors(context: Context): List<String> = UnifiedPush.getDistributors(context).filter { it != context.packageName }
 
@@ -58,8 +124,10 @@ object Push {
         UnifiedPush.tryUseCurrentOrDefaultDistributor(activity) { ok ->
             if (ok) {
                 Diag.note("push: enabled via the default distributor")
-                prefs(activity).edit().putBoolean("enabled", true).apply()
-                UnifiedPush.register(activity, messageForDistributor = "fluxchat agents")
+                val app = activity.applicationContext
+                store(app, load(app).copy(enabled = true, distributor = UnifiedPush.getSavedDistributor(app)))
+                UnifiedPush.register(app, messageForDistributor = MESSAGE)
+                expectEndpoint()
             } else {
                 Diag.note("push: enable refused — no distributor to pick")
                 _status.value = Status.NoDistributor
@@ -70,41 +138,83 @@ object Push {
     /** Use this distributor (a choice in Settings). */
     fun use(context: Context, distributor: String) {
         Diag.note("push: using distributor $distributor")
+        connect(context.applicationContext, distributor)
+    }
+
+    private fun connect(context: Context, distributor: String) {
         _status.value = Status.Registering
         UnifiedPush.saveDistributor(context, distributor)
-        prefs(context).edit().putBoolean("enabled", true).apply()
-        UnifiedPush.register(context, messageForDistributor = "fluxchat agents")
+        store(context, load(context).copy(enabled = true, distributor = distributor))
+        UnifiedPush.register(context, messageForDistributor = MESSAGE)
+        expectEndpoint()
+    }
+
+    @Volatile private var waiting: Job? = null
+
+    /**
+     * "Connecting…" must end. A distributor that was never opened, or that
+     * the system keeps from starting, answers nothing at all — the switch
+     * sat on "Connecting…" for good.
+     */
+    private fun expectEndpoint() {
+        waiting?.cancel()
+        waiting = Matrix.scope.launch {
+            delay(REGISTER_WAIT_MS)
+            if (_status.value == Status.Registering) failed("The push app didn't answer. Open it once, then turn push on again.")
+        }
     }
 
     /** After sign-in / on start: renew the registration, and the pusher if we have an endpoint. */
-    suspend fun registerIfReady(context: Context) {
-        val p = prefs(context)
-        if (!p.getBoolean("enabled", false)) {
-            _status.value = Status.Off
-            return
+    suspend fun registerIfReady(context: Context) = withContext<Unit>(Dispatchers.IO) {
+        val saved = load(context)
+        when (val plan = plan(saved, UnifiedPush.getAckDistributor(context), distributors(context))) {
+            Plan.Off -> _status.value = Status.Off
+            Plan.NoDistributor -> {
+                Diag.note("push: on, but no distributor app is installed")
+                _status.value = Status.NoDistributor
+            }
+            Plan.Pick -> {
+                Diag.note("push: on, but the distributor it used is gone — pick one in Settings")
+                _status.value = Status.Off
+            }
+            is Plan.Renew -> {
+                if (saved.distributor != plan.distributor) store(context, saved.copy(distributor = plan.distributor))
+                if (saved.endpoint == null) {
+                    Diag.note("push: waiting on an endpoint from ${plan.distributor}")
+                    _status.value = Status.Registering
+                    expectEndpoint()
+                } else {
+                    setPusher(context, saved.endpoint)
+                }
+                // Checks the connection; a new endpoint comes back through the service.
+                UnifiedPush.register(context, messageForDistributor = MESSAGE)
+            }
+            is Plan.Reconnect -> {
+                Diag.note("push: registering again with ${plan.distributor}")
+                connect(context, plan.distributor)
+            }
         }
-        val distributor = UnifiedPush.getAckDistributor(context)
-        if (distributor == null) {
-            Diag.note("push: enabled but no acknowledged distributor")
-            _status.value = if (distributors(context).isEmpty()) Status.NoDistributor else Status.Off
-            return
-        }
-        if (p.getString("endpoint", null) == null) Diag.note("push: waiting on an endpoint from $distributor")
-        p.getString("endpoint", null)?.let { setPusher(context, it) }
-        // Checks the connection; a new endpoint comes back through the service.
-        UnifiedPush.register(context, messageForDistributor = "fluxchat agents")
     }
 
     /** The distributor gave us an endpoint (new or changed). */
-    suspend fun newEndpoint(context: Context, endpoint: String) {
-        prefs(context).edit().putString("endpoint", endpoint).apply()
-        // No session yet: the pusher goes in when registerIfReady runs after sign-in.
-        if (!Matrix.ensureStarted()) Diag.note("push: endpoint saved, no session to set the pusher with")
-        else setPusher(context, endpoint)
+    suspend fun newEndpoint(context: Context, endpoint: String) = withContext<Unit>(Dispatchers.IO) {
+        waiting?.cancel()
+        val saved = load(context)
+        store(context, saved.copy(endpoint = endpoint, distributor = UnifiedPush.getAckDistributor(context) ?: saved.distributor))
+        when {
+            // Turned off while the registration was on its way: no pusher for it.
+            !saved.enabled -> Diag.note("push: an endpoint arrived with push turned off, not used")
+            // The distributor confirming the endpoint the pusher already has
+            // (every start asks it to): nothing to set a second time.
+            endpoint == saved.pushedEndpoint && _status.value is Status.On -> Unit
+            // No session yet: the pusher goes in when registerIfReady runs after sign-in.
+            !Matrix.ensureStarted() -> Diag.note("push: endpoint saved, no session to set the pusher with")
+            else -> setPusher(context, endpoint)
+        }
     }
 
     private suspend fun setPusher(context: Context, endpoint: String) {
-        val client = Matrix.client ?: return
+        val client = Matrix.client ?: return Diag.note("push: no session to set the pusher with")
         try {
             val gateway = gatewayFor(endpoint)
             client.setPusher(
@@ -116,54 +226,97 @@ object Push {
                 lang = Locale.getDefault().toLanguageTag(),
                 append = false,
             )
-            val old = prefs(context).getString("pushed_endpoint", null)
+            val old = load(context).pushedEndpoint
             if (old != null && old != endpoint) {
-                runCatching { client.deletePusher(PusherIdentifiers(old, context.packageName)) }
+                // Left behind, the server keeps pushing every event to an endpoint nobody reads.
+                try {
+                    client.deletePusher(PusherIdentifiers(old, context.packageName))
+                } catch (e: Exception) {
+                    Diag.error("Removing the pusher for the previous endpoint", e)
+                }
             }
-            prefs(context).edit().putString("pushed_endpoint", endpoint).putString("gateway", gateway).apply()
+            store(context, load(context).copy(pushedEndpoint = endpoint, gateway = gateway))
             _status.value = Status.On(UnifiedPush.getAckDistributor(context) ?: "?", gateway)
             Diag.note("pusher set: gateway $gateway")
         } catch (e: Exception) {
             Diag.error("Setting the pusher failed", e)
-            _status.value = Status.Failed("Couldn't register with your homeserver: ${e.message}")
+            _status.value = Status.Failed("Couldn't register with your server: ${e.message}")
         }
     }
 
     /** For Diagnostics: status, distributor, gateway, and the endpoint's host only (its path is a secret topic). */
     fun describe(context: Context): String {
-        val p = prefs(context)
-        val endpoint = p.getString("endpoint", null)?.let { runCatching { URL(it).host }.getOrNull() ?: "?" }
+        val s = load(context)
+        val endpoint = s.endpoint?.let { runCatching { URL(it).host }.getOrNull() ?: "?" }
         return listOf(
             "status ${_status.value}",
-            "enabled ${p.getBoolean("enabled", false)}",
-            "distributor ${UnifiedPush.getAckDistributor(context) ?: "none"} (installed: ${distributors(context).joinToString().ifEmpty { "none" }})",
+            "enabled ${s.enabled}",
+            "distributor ${UnifiedPush.getAckDistributor(context) ?: "none"} (chosen: ${s.distributor ?: "none"}; installed: ${distributors(context).joinToString().ifEmpty { "none" }})",
             "endpoint host ${endpoint ?: "none"}",
-            "gateway ${p.getString("gateway", null) ?: "none"}",
-            "pusher set ${p.getString("pushed_endpoint", null) != null}",
+            "gateway ${s.gateway ?: "none"}",
+            "pusher set ${s.pushedEndpoint != null}",
         ).joinToString(", ")
     }
 
     fun failed(reason: String) {
-        org.fluxchat.companion.Diag.error("push: $reason")
+        Diag.error("push: $reason")
         _status.value = Status.Failed(reason)
     }
 
-    /** The distributor dropped us (or we turned push off). */
-    suspend fun forget(context: Context) {
-        val p = prefs(context)
-        val endpoint = p.getString("pushed_endpoint", null)
+    /**
+     * The registration is over (the distributor dropped us, signing out,
+     * turning push off): the server's pusher and the saved endpoint go.
+     * Uses the session as it stands — it is called from inside sign-out,
+     * which must not be asked to start one.
+     */
+    suspend fun forget(context: Context) = withContext<Unit>(Dispatchers.IO) {
+        val saved = load(context)
+        val endpoint = saved.pushedEndpoint
         if (endpoint != null) {
-            runCatching { Matrix.client?.deletePusher(PusherIdentifiers(endpoint, context.packageName)) }
+            val client = Matrix.client
+            if (client == null) {
+                Diag.note("push: no session to remove the pusher with (the server drops it with the session)")
+            } else {
+                try {
+                    client.deletePusher(PusherIdentifiers(endpoint, context.packageName))
+                    Diag.note("pusher removed")
+                } catch (e: Exception) {
+                    Diag.error("Removing the pusher (the server may keep pushing to a dead endpoint)", e)
+                }
+            }
         }
-        p.edit().remove("endpoint").remove("pushed_endpoint").remove("gateway").apply()
+        store(context, load(context).signedOut())
         if (_status.value !is Status.Failed) _status.value = Status.Off
     }
 
-    /** Turn push off (Settings, sign out). */
+    /**
+     * Signing out (`Matrix.logout`): the pusher, the endpoint and the
+     * distributor's registration go; that you want push stays, and the next
+     * sign-in registers again ([Plan.Reconnect]).
+     */
     suspend fun unregister(context: Context) {
-        prefs(context).edit().putBoolean("enabled", false).apply()
+        drop(context)
+    }
+
+    /** You turned push off (Settings). */
+    suspend fun disable(context: Context) {
+        Diag.note("push: turned off")
+        // Off first (an endpoint arriving meanwhile is not used); the pusher's
+        // endpoint stays on record until `forget` has removed the pusher.
+        val saved = load(context)
+        store(context, saved.turnedOff().copy(pushedEndpoint = saved.pushedEndpoint))
+        drop(context)
+    }
+
+    private suspend fun drop(context: Context) = withContext<Unit>(Dispatchers.IO) {
+        waiting?.cancel()
         forget(context)
-        runCatching { UnifiedPush.unregister(context) }
+        // Removes the registration and, with none left, the connector's saved distributor.
+        try {
+            UnifiedPush.unregister(context)
+        } catch (e: Exception) {
+            Diag.error("Unregistering from the push distributor", e)
+        }
         _status.value = Status.Off
     }
 

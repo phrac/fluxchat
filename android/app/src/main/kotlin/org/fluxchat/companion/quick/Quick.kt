@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.onEach
 import org.fluxchat.companion.Diag
 import org.fluxchat.companion.R
+import org.fluxchat.companion.matrix.Auth
 import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.ui.AGENT_ROOM_ORDER
 import org.fluxchat.companion.ui.shortName
@@ -37,6 +38,7 @@ object Quick {
     private const val MAX_SHORTCUTS = 4
     const val EXTRA_ROOM = "room"
     const val EXTRA_VOICE = "voice"
+    private const val DRAFT = "draft:"
 
     /** The room a quick prompt goes to by default: the last one you sent a request in. */
     fun room(context: Context): String? = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_ROOM, null)
@@ -58,6 +60,27 @@ object Quick {
 
     fun forgetWidget(context: Context, widgetId: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove("widget:$widgetId").apply()
+    }
+
+    /**
+     * What you had typed into the quick prompt for [roomId] and didn't send:
+     * a tap beside the sheet closes it, and used to throw the prompt away.
+     */
+    fun draft(context: Context, roomId: String): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("$DRAFT$roomId", null).orEmpty()
+
+    fun saveDraft(context: Context, roomId: String, text: String) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString("$DRAFT$roomId", null).orEmpty() == text) return
+        prefs.edit().apply { if (text.isBlank()) remove("$DRAFT$roomId") else putString("$DRAFT$roomId", text) }.apply()
+    }
+
+    /** Drafts are the account's words: they go when it signs out. */
+    internal fun clearDrafts(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val drafts = prefs.all.keys.filter { it.startsWith(DRAFT) }
+        if (drafts.isEmpty()) return
+        prefs.edit().apply { drafts.forEach { remove(it) } }.apply()
     }
 
     /**
@@ -91,6 +114,15 @@ object Quick {
     @OptIn(kotlinx.coroutines.FlowPreview::class)
     fun start(context: Context) {
         val app = context.applicationContext
+        // Signing out takes the drafts along (a session that was there and now
+        // isn't — not the app starting up with none).
+        var was: Auth? = null
+        Matrix.auth
+            .onEach { now ->
+                if (now == Auth.SignedOut && was != null && was != Auth.Starting && was != Auth.SignedOut) clearDrafts(app)
+                was = now
+            }
+            .launchIn(Matrix.scope)
         Matrix.agentRooms
             .map { rooms ->
                 rooms.values.sortedWith(AGENT_ROOM_ORDER).map { r ->
@@ -168,14 +200,26 @@ class QuickWidget : AppWidgetProvider() {
 
 /** The Quick Settings tile: a new session from anywhere. */
 class QuickTile : TileService() {
-    @SuppressLint("StartActivityAndCollapseDeprecated")
     override fun onClick() {
+        // From the lock screen's quick settings the sheet would open behind
+        // the keyguard: the shade closed and nothing seemed to happen. Ask
+        // for the phone's unlock first (not the app lock: quick entry isn't
+        // gated by that).
+        if (isLocked) unlockAndRun { open() } else open()
+    }
+
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    private fun open() {
         val intent = Quick.intent(this)
-        if (Build.VERSION.SDK_INT >= 34) {
-            startActivityAndCollapse(PendingIntent.getActivity(this, 3, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        } else {
-            @Suppress("DEPRECATION")
-            startActivityAndCollapse(intent)
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startActivityAndCollapse(PendingIntent.getActivity(this, 3, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+            } else {
+                @Suppress("DEPRECATION")
+                startActivityAndCollapse(intent)
+            }
+        } catch (e: Exception) {
+            Diag.error("Opening the quick prompt from the tile", e)
         }
     }
 }

@@ -18,6 +18,10 @@ class App : Application() {
         Notifications.createChannels(this)
         Matrix.launch { Matrix.ensureStarted() }
         Matrix.launch { org.fluxchat.companion.Update.check() }
+        // Nothing shared survives the process (the inbox is in memory): files
+        // copied in for an earlier share are leftovers now.
+        Matrix.launch { org.fluxchat.companion.ui.ShareInbox.sweep(this@App) }
+        org.fluxchat.companion.push.Attention.start(this)
         org.fluxchat.companion.push.PromptWatcher.start(this)
         org.fluxchat.companion.push.LiveRuns.start(this)
         org.fluxchat.companion.quick.Quick.start(this)

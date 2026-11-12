@@ -111,14 +111,24 @@ object LiveRuns {
         if (!serviceUp) {
             // From the background Android may refuse a foreground service: the
             // notification still shows (and updates while the process lives).
+            // Asked again on every change (the app may be in front by then),
+            // but a refusal is said once, not once per step of the run.
             runCatching { ContextCompat.startForegroundService(context, Intent(context, RunService::class.java)) }
-                .onFailure { Diag.note("live runs: no foreground service (${it.javaClass.simpleName}), plain notification") }
+                .onFailure { refused("no foreground service (${it.javaClass.simpleName}), plain notification") }
         }
         runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, n) }
             .onFailure { if (notifyErrors++ < 3) Diag.error("Posting the live runs notification", it) }
     }
 
     private var notifyErrors = 0
+
+    private val quiet = Streak()
+
+    /** The service couldn't be had: one line per streak of refusals, ended by [serviceRunning]. */
+    internal fun refused(why: String, error: Throwable? = null) {
+        if (!quiet.starts("refused")) return
+        if (error != null) Diag.error("live runs: $why", error) else Diag.note("live runs: $why")
+    }
 
     /** What [RunService] shows for the instant it takes to stop when no run is left. */
     internal fun idle(context: Context): android.app.Notification =
@@ -133,6 +143,7 @@ object LiveRuns {
 
     internal fun serviceRunning(up: Boolean) {
         serviceUp = up
+        if (up && quiet.ends("refused")) Diag.note("live runs: foreground service running again")
     }
 
     private fun build(context: Context, runs: List<Live>): android.app.Notification {
@@ -217,7 +228,9 @@ class RunService : Service() {
         runCatching { ServiceCompat.startForeground(this, LiveRuns.NOTIFICATION_ID, n, type) }
             .onSuccess { LiveRuns.serviceRunning(live != null) }
             .onFailure {
-                Diag.error("Starting the live runs service", it)
+                // Also refused here on Android 15 once the day's six hours of
+                // data-sync service are used up — and then on every step.
+                LiveRuns.refused("the service couldn't go to the foreground, plain notification", it)
                 stopSelf()
             }
         if (live == null) {

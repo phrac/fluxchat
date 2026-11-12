@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -62,6 +63,18 @@ class MainActivity : FragmentActivity() {
         applySecure()
     }
 
+    // On screen or not, for the notifications: none for the session in front
+    // of you, and opening one takes its notifications down.
+    override fun onStart() {
+        super.onStart()
+        org.fluxchat.companion.push.Attention.visible.value = true
+    }
+
+    override fun onStop() {
+        org.fluxchat.companion.push.Attention.visible.value = false
+        super.onStop()
+    }
+
     /** With the lock on, content stays out of screenshots and recents. */
     private fun applySecure() {
         if (AppLock.enabled.value) {
@@ -80,13 +93,23 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun screenOf(intent: Intent?): Screen? {
+        // Reopened from the recents list, Android hands back the intent the
+        // task was first started with: a notification tapped days ago would
+        // open its session again instead of where you left off.
+        if (intent == null || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return null
         // ShareActivity has put what was shared in ShareInbox. Taken once: the
         // intent stays the task's, and a recreated app would open the picker again.
-        if (intent?.getBooleanExtra(EXTRA_SHARE, false) == true) {
+        if (intent.getBooleanExtra(EXTRA_SHARE, false)) {
             intent.removeExtra(EXTRA_SHARE)
-            return if (ShareInbox.pending.value != null) Screen.Share else null
+            if (ShareInbox.pending.value != null) return Screen.Share
+            // ShareActivity only sends us here with something in the inbox;
+            // gone since (it was cancelled on the way), say so rather than
+            // just coming to the front.
+            Diag.note("share: nothing waiting when the app opened for it")
+            Toast.makeText(this, "That share is gone. Share it again.", Toast.LENGTH_LONG).show()
+            return null
         }
-        val room = intent?.getStringExtra(EXTRA_ROOM) ?: return null
+        val room = intent.getStringExtra(EXTRA_ROOM) ?: return null
         val thread = intent.getStringExtra(EXTRA_THREAD)
         return if (thread != null) Screen.Thread(room, thread) else Screen.Room(room)
     }
