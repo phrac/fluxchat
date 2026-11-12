@@ -360,7 +360,7 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
         .mapNotNull { (k, r) ->
             // Live runs, plus recently finished ones: their `result` is the row's body.
             if (k.threadRoot != null && r != null &&
-                (r.state.live || now - r.since < FINISHED_ROW_WINDOW_MS)
+                (r.state.live || now - r.endedAt < FINISHED_ROW_WINDOW_MS)
             ) k to r else null
         }
         .sortedWith(compareBy({ it.second.rank().first }, { it.second.rank().second }))
@@ -406,7 +406,7 @@ internal fun RoomCard(room: AgentRoom, now: Long, go: (Screen) -> Unit, modifier
                     }
                 }
             }
-            if (roomRun != null && (roomRun.state.live || now - roomRun.since < 10 * 60 * 1000)) {
+            if (roomRun != null && (roomRun.state.live || now - roomRun.endedAt < 10 * 60 * 1000)) {
                 StatePill(roomRun.state, runLine(roomRun, now))
                 // The room's run is over: its one-line outcome is the row's body.
                 runResult(roomRun)?.let {

@@ -35,9 +35,6 @@ import org.fluxchat.companion.ui.threadTitle
 object LiveRuns {
     const val NOTIFICATION_ID = 7301
 
-    /** A working run silent this long has stalled (desktop agents.rs `STALE_RUN_MS`). */
-    private const val STALE_RUN_MS = 2 * 60 * 60 * 1000L
-
     /** A live run, as the notification and the run widget show it. */
     internal data class Live(val key: ViewKey, val run: RunInfo, val agent: String, val title: String, val room: String)
 
@@ -59,9 +56,9 @@ object LiveRuns {
                 if (run == null || !run.state.live) return@mapNotNull null
                 val agentId = run.agent.ifEmpty { room.agents.firstOrNull().orEmpty() }
                 // Hermes leaves its 👀 on requests it never finished (after a restart): a
-                // working run with no sign of life for a while isn't live (the desktop's STALE_RUN_MS).
-                val lastSign = msgs.filter { it.sender == agentId && (it.threadRoot == key.threadRoot || it.id == key.threadRoot) }.maxOfOrNull { it.ts } ?: 0L
-                if (run.state == RunState.Working && System.currentTimeMillis() - maxOf(run.since, lastSign) > STALE_RUN_MS) return@mapNotNull null
+                // working run with no sign of life for a while isn't live. Matrix.recompute
+                // already drops those by this same rule; this only covers the minute until it looks again.
+                if (!run.typing && Runs.stalled(run, Matrix.signOfLife(room.roomId, agentId, msgs, key.threadRoot, run.since), System.currentTimeMillis())) return@mapNotNull null
                 val agent = shortName(agentId, msgs.lastOrNull { it.sender == agentId }?.senderName)
                 val title = key.threadRoot?.let { r -> threadTitle(msgs.firstOrNull { it.id == r }, msgs.filter { it.threadRoot == r }) } ?: room.name
                 Live(key, run, agentId.ifEmpty { agent }, title, room.name)

@@ -87,7 +87,9 @@ object Harnesses {
     fun load(context: Context) {
         val files = context.assets.list("agents").orEmpty().filter { it.endsWith(".toml") }
         val loaded = files.mapNotNull { f ->
-            runCatching { Harness.parse(context.assets.open("agents/$f").bufferedReader().readText()) }.getOrNull()
+            // Said, not swallowed: an agent on a profile that didn't load is read as Hermes.
+            runCatching { Harness.parse(context.assets.open("agents/$f").bufferedReader().readText()) }
+                .onFailure { org.fluxchat.companion.Diag.error("Agent profile $f", it) }.getOrNull()
         }
         if (loaded.isNotEmpty()) all = loaded.associateBy { it.id }
     }
