@@ -157,6 +157,10 @@ fun RecoveryScreen() {
     var busy by remember { mutableStateOf(false) }
     val error by Matrix.error.collectAsState()
     val scope = rememberCoroutineScope()
+    // Opened by choice (the Projects card, Settings): Back is back to the
+    // app with nothing decided. As the first screen after signing in there
+    // is nowhere to go back to, and Back leaves the app as before.
+    androidx.activity.compose.BackHandler(enabled = Matrix.recoveryByChoice) { Matrix.leaveRecovery() }
     Form(
         "Unlock your past conversations",
         "Enter your recovery key to read your older conversations here and verify this phone. It's the key fluxchat gave you when you set up backups.",

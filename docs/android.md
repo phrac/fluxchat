@@ -6,7 +6,7 @@ The app is new and early. Build it from source (below); there's no store release
 
 ## Signing in
 
-Sign in with your Matrix account (a username, `@name`, or a full `@name:server`); the phone becomes a new session. If your account has key backup, the app asks for your **recovery key** next. That unlocks encrypted agent rooms and verifies the phone. You can skip it, but encrypted rooms then stay unreadable on the phone.
+Sign in with your Matrix account (a username, `@name`, or a full `@name:server`); the phone becomes a new session. If your account has key backup, the app asks for your **recovery key** next. That unlocks encrypted agent rooms and verifies the phone. You can skip it with **Not now** — the app remembers that until you sign out and doesn't ask again at every start — but encrypted rooms then stay unreadable on the phone. A phone that finds out later that it needs the key (it was offline when you opened it) never interrupts you for it: the Projects screen offers **Unlock your past conversations** at the top, and the next start opens on the question.
 
 Signing in never costs the phone what it already had: the keys of the previous sign-in are kept aside until the new one has gone through, and put back if it doesn't (a wrong password, no connection). If the app can't reopen your saved sign-in it says so and offers **Try again** — nothing is deleted — and **Sign in again** for when it never will.
 

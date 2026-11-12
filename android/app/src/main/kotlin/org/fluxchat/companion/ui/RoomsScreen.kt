@@ -98,6 +98,8 @@ fun RoomsScreen(go: (Screen) -> Unit) {
     val update by org.fluxchat.companion.Update.available.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val pins by Matrix.pins.collectAsState()
+    val loading by Matrix.loading.collectAsState()
+    val recovery by Matrix.recovery.collectAsState()
     val now by rememberNow()
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
@@ -149,6 +151,10 @@ fun RoomsScreen(go: (Screen) -> Unit) {
             modifier = Modifier.fillMaxSize().padding(top = pad.calculateTopPadding()),
         ) {
             when {
+                // Not read yet is not "none": at a cold start "No agents yet"
+                // and then "No projects yet" flashed by, buttons and all,
+                // before the list arrived.
+                rooms.isEmpty() && loading -> LoadingProjects()
                 list.agents.isEmpty() -> Empty(
                     Icons.Outlined.SmartToy,
                     "No agents yet",
@@ -179,6 +185,8 @@ fun RoomsScreen(go: (Screen) -> Unit) {
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        // Offered, never forced on an app in use (RecoveryPrompt).
+                        if (recovery.offer) item(key = "recovery") { RecoveryCard() }
                         item {
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 items(RoomFilter.entries) { f ->
@@ -301,6 +309,45 @@ private fun Empty(icon: ImageVector, title: String, body: String, action: String
             Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
             Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
             action?.let { Button(onClick = onAction) { Text(it) } }
+        }
+    }
+}
+
+/** The agent list and the projects haven't been read yet: neither empty state is true so far. */
+@Composable
+private fun LoadingProjects() {
+    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+            Text("Loading your projects…", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+/**
+ * Past conversations are still locked on this phone and nobody has said
+ * "Not now": the way in, for when the answer came after the app had opened
+ * (it never pulls you out to the full-screen prompt then).
+ */
+@Composable
+private fun RecoveryCard() {
+    Card(
+        onClick = { Matrix.openRecovery() },
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Unlock your past conversations", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                Text(
+                    "Enter your recovery key to read what was said before this phone signed in.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
         }
     }
 }
