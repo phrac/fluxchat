@@ -187,7 +187,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
             // list already drops it): a 👀 left behind showed "Working" with
             // Stop, and sent what you typed as `!steer` to an agent with no run.
             ?.takeUnless { Runs.stalled(it, Matrix.signOfLife(roomId, it.agent, msgs, root, it.since), now) }
-            ?: agentRoom?.runs?.get(key)
+            .let { own -> Runs.viewRun(agentRoom?.runs.orEmpty(), key, own) }
     }
     val agent = run?.agent?.takeIf { it.isNotEmpty() } ?: agents.firstOrNull()
     val harness = list.harnessOf(agent ?: "")
@@ -360,7 +360,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                     MessageList(model, msgs, root, agents, list, now, go, roomId, transcript, run, jumpTo)
                 }
             }
-            if (run != null && (run.state.live || now - run.since < 60_000)) {
+            if (run != null && (run.state.live || now - run.endedAt < 60_000)) {
                 RunCard(run, now, harness.stop.isNotEmpty() && run.state.live, onStop = { command(harness.stop) }, onOpen = null)
             } else if (threadRun != null && !cards) {
                 val rootMsg = all.firstOrNull { it.id == threadRun.first.threadRoot }

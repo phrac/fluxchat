@@ -41,24 +41,51 @@ class RuntimeTest {
     }
 
     @Test
-    fun newestRuntimeWinsPerRoomAndFooterNeedsTheHarnessFlag() {
+    fun aRunsRuntimeIsItsNewestAndAFooterNeedsTheHarnessFlag() {
         fun msg(id: String, sender: String, ts: Long, body: String, agent: Protocol? = null) =
             Msg(id, sender, sender, body, ts, isOwn = false, agent = agent)
-        val runtimes = HashMap<String, Pair<Long, Runtime>>()
         val msgs = listOf(
             msg("a", "@hermes:x", 1_000, "answer\n\nopus-5 · 42%"),
             msg("b", "@hermes:x", 2_000, "later", agent = Protocol(model = "glm-5")),
-            msg("c", "@me:x", 3_000, "footer\n\nsonnet-4 · 10%"), // not an agent: skipped
+            msg("c", "@me:x", 3_000, "footer\n\nsonnet-4 · 10%"), // not the agent: skipped
         )
-        Runtime.noteAll(runtimes, "!r:x", msgs, listOf("@hermes:x")) { true }
-        assertEquals(2_000L to Runtime(model = "glm-5"), runtimes["!r:x"]) // newest, protocol counted
+        assertEquals(Runtime(model = "glm-5"), Runtime.ofRun(msgs, "@hermes:x", 0, footer = true)) // newest, protocol counted
         // Footer off (harness without runtime_footer): only protocol fields count.
-        Runtime.noteAll(runtimes, "!r:x", msgs, listOf("@hermes:x")) { false }
-        assertEquals("glm-5", runtimes["!r:x"]!!.second.model)
-        Runtime.noteAll(runtimes, "!f:x", listOf(msg("d", "@hermes:x", 500, "hi\n\nsonnet-4 · 9%")), listOf("@hermes:x")) { false }
-        assertNull(runtimes["!f:x"])
-        // Equal timestamp replaces (the desktop's >=).
-        Runtime.noteAll(runtimes, "!r:x", listOf(msg("e", "@hermes:x", 2_000, "x\n\nopus-6 · 1%")), listOf("@hermes:x")) { true }
-        assertEquals("opus-6", runtimes["!r:x"]!!.second.model)
+        assertEquals("glm-5", Runtime.ofRun(msgs, "@hermes:x", 0, footer = false)!!.model)
+        assertNull(Runtime.ofRun(listOf(msg("d", "@hermes:x", 500, "hi\n\nsonnet-4 · 9%")), "@hermes:x", 0, footer = false))
+        // Equal timestamp: the later message replaces (the desktop's >=).
+        assertEquals("opus-6", Runtime.ofRun(msgs + msg("e", "@hermes:x", 2_000, "x\n\nopus-6 · 1%"), "@hermes:x", 0, footer = true)!!.model)
+    }
+
+    @Test
+    fun aRunsRuntimeIsItsOwnAgentsInItsOwnSessionSinceItStarted() {
+        // What the end backfill may use. The desktop's record_run takes the
+        // room's newest runtime info, whoever said it and in which session:
+        // a run that reported no cost, ending in a project where another
+        // session had just reported its $3.60 total, was recorded at $3.60 —
+        // and spend counts a session total whole.
+        fun msg(id: String, sender: String, ts: Long, root: String?, cost: Double? = null, model: String? = null) =
+            Msg(id, sender, sender, "x", ts, isOwn = false, threadRoot = root, agent = Protocol(model = model, costUsd = cost))
+        val room = "!r:x"
+        val all = listOf(
+            msg("old", "@hermes:x", 1_000, "mine", cost = 9.0),          // this session, before this run
+            msg("other", "@hermes:x", 6_000, "theirs", cost = 3.6),      // another session, newest in the room
+            msg("else", "@claude:x", 7_000, "mine", cost = 5.0),         // another agent, in this session
+            msg("own", "@hermes:x", 5_000, "mine", model = "opus-5"),    // this run's own
+        )
+        val view = Runs.viewMessages(all, ViewKey(room, "mine"))
+        val rt = Runtime.ofRun(view, "@hermes:x", since = 4_000, footer = true)!!
+        assertEquals("opus-5", rt.model)
+        assertNull("another session's total is not this run's cost", rt.costUsd)
+        // Nothing of its own since it started: nothing to backfill with.
+        assertNull(Runtime.ofRun(view, "@hermes:x", since = 5_500, footer = true))
+        // And the record it ends up as.
+        val h = ArrayList<RunRecord>()
+        val key = ViewKey(room, "mine")
+        History.record(h, key, RunInfo(RunState.Working, 4_000, agent = "@hermes:x"), "t", "t", 4_500)
+        History.record(h, key, RunInfo(RunState.Done, 4_000, agent = "@hermes:x"), "t", "t", 8_000, runtime = rt)
+        assertEquals("opus-5", h[0].model)
+        assertNull(h[0].costUsd)
+        assertEquals(0.0, History.spend(h, "@hermes:x", 0), 1e-9)
     }
 }

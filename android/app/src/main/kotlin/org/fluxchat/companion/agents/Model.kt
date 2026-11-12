@@ -82,7 +82,24 @@ data class RunInfo(
     val context: Float? = null,
     /** How the run ended, one line (protocol `result`), once it has. */
     val result: String? = null,
+    /**
+     * When a finished run ended (ms), where that can be told: the agent's
+     * latest message in the run's view at or after the request (its ✅ / ❌
+     * carries no time), or the moment this phone watched it finish
+     * ([RunWatch]). Null while it's live, and when nothing dates it.
+     */
+    val ended: Long? = null,
+    /** The protocol's run id (the request's event ID), when the agent describes the run itself. */
+    val runId: String? = null,
+    /**
+     * Not a request's run: the agent is typing, which is how its harness
+     * says it's working (agents.rs `live_run`). Shown, never recorded.
+     */
+    val typing: Boolean = false,
 ) {
+    /** What "finished a moment ago" counts from: the end, else (undated) the request. */
+    val endedAt: Long get() = ended ?: since
+
     /** For picking between two reports on one view: the livelier. */
     fun rank(): Pair<Int, Long> = Pair(
         when (state) {

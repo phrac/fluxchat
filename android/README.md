@@ -47,7 +47,7 @@ Screenshots of the main screens with sample data, light and dark (Roborazzi on R
 
 | Path | What |
 |---|---|
-| `agents/` | `Runs` (request state, prompts, questions, step logs, protocol runs: agents.rs), `Protocol`, `Harness` |
+| `agents/` | `Runs` (request state, prompts, questions, step logs, protocol runs, typing-as-working runs: agents.rs), `RunWatch` (when a run ended), `History` (history.rs), `Protocol`, `Harness` |
 | `matrix/` | `Matrix` (client, sync, agent list, agent rooms' live timelines), `TimelineModel` (SDK diffs → messages), `Vault` (session + store key under an Android Keystore key) |
 | `ui/` | Compose screens (Material 3, dynamic colour, light/dark): rooms, chat (room or thread), agents, settings |
 | `push/` | UnifiedPush (ntfy): registration and pusher, push handling, notifications with answer buttons, actions |

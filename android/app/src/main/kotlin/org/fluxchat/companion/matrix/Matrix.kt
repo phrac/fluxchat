@@ -204,8 +204,6 @@ object Matrix {
     /** Agent rooms' names, avatars and whether they're DMs. */
     private data class RoomMeta(val name: String, val isDm: Boolean, val avatar: String?, val unread: Int = 0)
     private val roomMeta = HashMap<String, RoomMeta>()
-    /** Newest runtime info per room, ms + info (the desktop's agent_runs.runtime). */
-    private val roomRuntimes = HashMap<String, Pair<Long, org.fluxchat.companion.agents.Runtime>>()
     private val timelines = HashMap<String, TimelineModel>()
     private val _agentRooms = MutableStateFlow<Map<String, AgentRoom>>(emptyMap())
     private val _typing = MutableStateFlow<Map<String, List<String>>>(emptyMap())
@@ -214,6 +212,21 @@ object Matrix {
     private val typingHandles = HashMap<String, TaskHandle>()
     /** When each "room|user" was last reported typing (see [TYPING_ALIVE_MS]). */
     private val typingAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /**
+     * When each "room|user" began the typing they're at now (agents.rs
+     * `typing_since`): the start of a typing run. Gone when they stop.
+     */
+    private val typingSince = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** When the runs on show ended, as recompute watched them (under [recomputeLock]). */
+    private val runWatch = org.fluxchat.companion.agents.RunWatch()
+    /** Since when sync has been running without a break, as recompute saw it (0: it isn't). Under [recomputeLock]. */
+    private var followingSince = 0L
+    /**
+     * Sync has to have run this long before a timeline counts as following
+     * the server: until then it may still be showing what was stored and
+     * catching up, and what changes then didn't happen just now.
+     */
+    private const val CAUGHT_UP_MS = 60_000L
     /** Runs this phone saw live (the desktop's run_history), kept encrypted. */
     private val runHistory = ArrayList<RunRecord>()
     private var historyLoaded = false
@@ -712,9 +725,19 @@ object Matrix {
             override fun call(typingUserIds: List<String>) {
                 val now = System.currentTimeMillis()
                 val others = typingUserIds.filter { it != me }
-                for (u in others) typingAt["$roomId|$u"] = now
+                val before = _typing.value[roomId].orEmpty()
+                for (u in others) {
+                    typingAt["$roomId|$u"] = now
+                    // Since when: a server that repeats the notice while
+                    // they type must not restart the clock.
+                    if (u in before) typingSince.putIfAbsent("$roomId|$u", now) else typingSince["$roomId|$u"] = now
+                }
+                for (u in before) if (u !in others) typingSince.remove("$roomId|$u")
                 // update {}: these arrive on SDK threads, one per room.
                 _typing.update { it + (roomId to others) }
+                // An agent typing is a run for some harnesses (typing_means_working),
+                // and nothing else looks again until a message arrives.
+                if (before.toSet() != others.toSet()) scope.launch { recompute() }
             }
         })
         model.start()
@@ -847,22 +870,22 @@ object Matrix {
     private fun recompute() = synchronized(recomputeLock) {
         val list = _agentList.value
         val now = System.currentTimeMillis()
+        // Whether the timelines are following the server (see CAUGHT_UP_MS):
+        // only then is "it was working a moment ago, it's done now" an end
+        // that happened now.
+        if (syncState != "running") followingSince = 0L else if (followingSince == 0L) followingSince = now
+        val following = followingSince != 0L && now - followingSince >= CAUGHT_UP_MS
         val out = HashMap<String, AgentRoom>()
         for ((roomId, agents) in agentMembers) {
             val meta = roomMeta[roomId] ?: RoomMeta(roomId, false, null)
             val (name, isDm) = meta.name to meta.isDm
             val msgs = roomTimeline(roomId)?.messages?.value.orEmpty()
-            // The desktop's take_agent_footers: remember the room's newest
-            // runtime info (protocol fields, or the footer when the harness
-            // says it comes) so finished runs get model / cost backfilled.
-            org.fluxchat.companion.agents.Runtime.noteAll(
-                roomRuntimes, roomId, msgs, agents,
-            ) { id -> list.harnessOf(id).runtimeFooter }
             // Thread runs already on show, or with a record still open: they
             // keep reporting until they end (agents.rs: "already tracked, so
             // it gets its end") — a request that finished with no reply in
             // its thread otherwise left its record "working" until it stalled.
-            val prev = _agentRooms.value[roomId]?.runs.orEmpty()
+            // (The requests' runs: a typing run is put on top below.)
+            val prev = _agentRooms.value[roomId]?.runs.orEmpty().filterValues { it?.typing != true }
             val tracked = HashSet<ViewKey>()
             for ((k, run) in prev) if (k.threadRoot != null && run?.state?.live == true) tracked += k
             if (historyLoaded) for (rec in runHistory) {
@@ -874,17 +897,30 @@ object Matrix {
             // drop it, so a 👀 Hermes left behind stops holding the room's headline
             // and history's re-opening of a settled record.
             val stalledKeys = HashSet<ViewKey>()
-            val runs = r.runs.filter { (key, run) ->
+            val going = r.runs.filter { (key, run) ->
                 val stalled = run != null && Runs.stalled(run, signOfLife(roomId, run.agent, msgs, key.threadRoot, run.since), now)
                 if (stalled) stalledKeys += key
                 !stalled
             }
+            // Finished runs get the end this process watched, where it did.
+            val runs = runWatch.date(roomId, going, now, following)
+            // The agent typing, for harnesses that say "working" that way
+            // (agents.rs `live_run`): shown as the room's run while it has
+            // none going, never recorded (the desktop's isn't in `states`
+            // either). Typing is the room's, so any message of the agent's
+            // in it is its sign of life; with none for STALE_RUN_MS a
+            // typing notice nobody took back is dropped like any dead run.
+            val typing = Runs.typingRun(_typing.value[roomId].orEmpty(), agents, list::harnessOf) { typingSince["$roomId|$it"] }
+                ?.takeUnless { t ->
+                    val said = msgs.filter { it.sender == t.agent && !it.isLocal }.maxOfOrNull { it.ts } ?: 0L
+                    Runs.stalled(t, maxOf(said, typingAt["$roomId|${t.agent}"] ?: 0L), now)
+                }
             out[roomId] = AgentRoom(
                 roomId = roomId,
                 name = name,
                 isDm = isDm,
                 agents = agents,
-                runs = runs,
+                runs = Runs.withTyping(runs, roomId, typing),
                 prompts = r.prompts,
                 // Latest activity anywhere in the room: in agent rooms most of it is in session threads.
                 last = msgs.lastOrNull { it.isMessage },
@@ -920,10 +956,15 @@ object Matrix {
         for ((key, old) in prev) {
             if (old == null || !old.state.live || runs[key] != null || key in stalledKeys) continue
             if (msgs.none { !it.isLocal && it.ts == old.since }) continue
-            if (History.close(runHistory, key, old.since, now)) changed = true
+            if (History.close(runHistory, key, old.since, now, old.runId)) changed = true
         }
+        // Records a finished run would end now (open, or stalled and coming
+        // back): only those need their run's runtime info looked up.
+        val ending = runHistory.filter { it.room == roomId && (it.ended == null || it.state == History.STALLED) }.mapTo(HashSet()) { it.key }
         for ((key, run) in runs) {
             val rec = run ?: continue
+            // The agent typing isn't a request: nothing to record.
+            if (rec.typing) continue
             // The request behind the run: the thread's root, or the room's
             // latest own message at the run's start (lone commands aren't tasks).
             // With slack: a local echo (`~txn`) gets re-timestamped with the
@@ -933,7 +974,12 @@ object Matrix {
             val title = key.threadRoot?.let { root ->
                 threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.threadRoot == root })
             } ?: "Request in the room"
-            if (History.record(runHistory, key, rec, title, request?.body, now, runtime = roomRuntimes[roomId]?.second)) changed = true
+            // The end backfill of model / cost (the desktop's record_run
+            // pulling agent_runtime), from the run's own session only.
+            val runtime = if (rec.state.live || History.keyOf(key) !in ending) null else org.fluxchat.companion.agents.Runtime.ofRun(
+                Runs.viewMessages(msgs, key), rec.agent, rec.since, _agentList.value.harnessOf(rec.agent).runtimeFooter,
+            )
+            if (History.record(runHistory, key, rec, title, request?.body, now, runtime = runtime)) changed = true
         }
         if (changed) {
             Diag.note("run history: ${runHistory.size} records")
@@ -998,7 +1044,9 @@ object Matrix {
                         else {
                             val root = rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key }
                             val run = room.runs[ViewKey(rec.room, root)]
-                            run?.state == RunState.NeedsYou && run.since == rec.started
+                            // The same run by its start — or by its protocol id, while
+                            // it's dated from its status message and the record from the request.
+                            run?.state == RunState.NeedsYou && (run.since == rec.started || (rec.runId != null && rec.runId == run.runId))
                         }
                     }, now)
                     stalled || answered

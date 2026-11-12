@@ -313,6 +313,94 @@ class HistoryTest {
     }
 
     @Test
+    fun aProtocolRunDatedFromItsStatusThenItsRequestIsOneRecord() {
+        // A cold start (or a timeline refilling after a sync gap) loads the
+        // newest page first: the agent's status message is there, the request
+        // it's about a page further back. The run is dated from the status
+        // message, then from the request — by its start alone, two records:
+        // the first stayed "working", then "stalled", and its session total
+        // was spent a second time.
+        val generic = Harness()
+        val key = ViewKey(room, "req")
+        val req = Msg("req", "@me:x", "me", "ship it", now - 60_000, isOwn = true, threadCount = 1)
+        fun status(cost: Double, state: String = "working") = Msg(
+            "s", agent, agent, "working", now - 55_000, isOwn = false, threadRoot = "req",
+            agent = Protocol(run = "req", state = state, costUsd = cost),
+        )
+        val h = ArrayList<RunRecord>()
+        val first = Runs.agentUpdates(room, listOf(status(1.0)), agent, generic, isDm = false, now = now).runs[key]!!
+        assertEquals("dated from the status message until the request loads", now - 55_000, first.since)
+        assertTrue(History.record(h, key, first, "Thread", null, now))
+        val second = Runs.agentUpdates(room, listOf(req, status(2.0)), agent, generic, isDm = false, now = now).runs[key]!!
+        assertEquals(req.ts, second.since)
+        assertTrue(History.record(h, key, second, "ship it", "ship it", now + 1_000))
+        assertEquals("the same run: one record, moved to its request", 1, h.size)
+        assertEquals(req.ts, h[0].started)
+        assertEquals("ship it", h[0].title)
+        assertEquals(2.0, h[0].costUsd!!, 1e-9)
+        // The run id is what says so, and it's still there after a restart.
+        val saved = History.decode(History.encode(h))
+        assertEquals("req", saved[0].runId)
+        // The timeline clears and refills: dated from the status message
+        // again for a moment. Still that record, and its start stays the request's.
+        assertFalse(History.record(saved, key, first.copy(costUsd = 2.0), "ship it", null, now + 2_000))
+        assertEquals(1, saved.size)
+        assertEquals(req.ts, saved[0].started)
+        val over = Runs.agentUpdates(room, listOf(req, status(2.5, "done")), agent, generic, isDm = false, now = now).runs[key]!!
+        assertTrue(History.record(saved, key, over, "ship it", "ship it", now + 3_000))
+        assertEquals("done", saved.single().state)
+        assertEquals("the session's total, once", 2.5, History.spend(saved, agent, 0), 1e-9)
+        // Another run in the same session is its own record.
+        assertTrue(History.record(saved, key, first.copy(runId = "again", since = now + 10_000), "ship it", null, now + 11_000))
+        assertEquals(2, saved.size)
+        // A run with no id is only ever itself by its start (as on the desktop).
+        val anon = ArrayList<RunRecord>()
+        History.record(anon, key, first.copy(runId = null), "t", null, now)
+        History.record(anon, key, second.copy(runId = null), "t", null, now)
+        assertEquals(2, anon.size)
+        // A prompt of that run answered while it's dated from the status
+        // message: the record (dated from the request) closes all the same.
+        val asked = ArrayList<RunRecord>()
+        History.record(asked, key, second.copy(state = RunState.NeedsYou), "ship it", "ship it", now)
+        assertFalse(History.close(asked, key, first.since, now + 500))
+        assertTrue(History.close(asked, key, first.since, now + 500, runId = "req"))
+        assertEquals(now + 500, asked[0].ended)
+    }
+
+    @Test
+    fun aRunEndedWhenItEndedNotWhenThePhoneNoticed() {
+        // The phone is often not running: a 3-minute run it noticed ten
+        // hours later was recorded as ending then, and read "10h".
+        val now = 100 * 3_600_000L
+        val started = now - 10 * 3_600_000L
+        val ended = started + 180_000
+        val h = ArrayList<RunRecord>()
+        History.record(h, thread, run(RunState.Working, started), "x", "x", started + 5_000)
+        assertTrue(History.record(h, thread, run(RunState.Done, started).copy(ended = ended), "x", "x", now))
+        assertEquals(ended, h[0].ended)
+        assertEquals("3m", h[0].duration(now))
+        // Nothing dates it: when it was noticed, as before (and as the desktop).
+        val undated = ArrayList<RunRecord>()
+        History.record(undated, thread, run(RunState.Working, started), "x", "x", started + 5_000)
+        History.record(undated, thread, run(RunState.Done, started), "x", "x", now)
+        assertEquals(now, undated[0].ended)
+        // Never after it was noticed, never before it started (clocks differ).
+        for ((claimed, kept) in listOf(now + 99_000 to now, started - 5_000 to started)) {
+            val odd = ArrayList<RunRecord>()
+            History.record(odd, thread, run(RunState.Working, started), "x", "x", started + 5_000)
+            History.record(odd, thread, run(RunState.Done, started).copy(ended = claimed), "x", "x", now)
+            assertEquals(kept, odd[0].ended)
+        }
+        // A stalled record whose run finished after all takes the run's end too.
+        val late = ArrayList<RunRecord>()
+        History.record(late, thread, run(RunState.Working, started), "x", "x", started + 5_000)
+        assertTrue(History.settleStalled(late, { 0L }, now))
+        assertEquals(started, late[0].ended)
+        History.record(late, thread, run(RunState.Done, started).copy(ended = ended), "x", "x", now + 1_000)
+        assertEquals("done" to ended, late[0].state to late[0].ended)
+    }
+
+    @Test
     fun oneBadRecordDoesNotTakeTheRestWithIt() {
         val good = """{"key":"k1","room":"r","agent":"a","title":"t","state":"done","started":1,"ended":2,"steps":0}"""
         val bad = """{"key":"k2","room":"r","agent":"a","title":"t","state":"done","started":1,"ended":"soon","steps":0}"""

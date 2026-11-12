@@ -29,6 +29,12 @@ data class RunRecord(
     val request: String? = null,
     /** How the run ended, one line (protocol `result`), once it has. */
     val result: String? = null,
+    /**
+     * The protocol's run id (the request's event ID), for runs the agent
+     * describes itself: what says a run dated from its status message and
+     * one dated from its request are the same run.
+     */
+    val runId: String? = null,
 ) {
     /** "4s" / "4m" / "1h 20m" — start to end (or to now while going), like the desktop's `duration`. */
     fun duration(now: Long): String {
@@ -96,20 +102,39 @@ object History {
         title: String,
         requestBody: String?,
         now: Long,
-        /** The room's newest runtime info (footer or protocol), for the end backfill. */
+        /**
+         * The run's own runtime info for the end backfill
+         * ([Runtime.ofRun]): what its agent last said in its view since it
+         * started — not the room's newest, which may be another session's.
+         */
         runtime: Runtime? = null,
     ): Boolean {
         val key = keyOf(view)
         val live = run.state.live
         val label = stateLabel(run.state)
-        val i = history.indexOfFirst { it.key == key && it.started == run.since }
+        var i = history.indexOfFirst { it.key == key && it.started == run.since }
+        // One record per protocol run. Until its request is loaded (a cold
+        // start, a timeline refilling page by page) a run is dated from its
+        // status message, and a page later from the request: by its start
+        // alone that was a second record, and the first stayed "working",
+        // then "stalled", with a session-total spend counted whole. The run
+        // id says they're one; the record keeps the earliest start, which is
+        // the request's.
+        var moved = false
+        if (i < 0 && !run.runId.isNullOrEmpty()) {
+            i = history.indexOfLast { it.key == key && it.runId == run.runId }
+            if (i >= 0 && run.since < history[i].started) {
+                history[i] = history[i].copy(started = run.since)
+                moved = true
+            }
+        }
         return if (i < 0) {
             if (!live) return false
             if (requestBody != null && isLoneCommand(requestBody)) return false
             history += RunRecord(
                 key, view.roomId, run.agent, title, label, run.since,
                 steps = run.steps, costUsd = run.costUsd, request = requestBody,
-                result = run.result,
+                result = run.result, runId = run.runId,
             )
             val extra = history.size - HISTORY_LIMIT
             if (extra > 0) history.subList(0, extra).clear()
@@ -120,7 +145,7 @@ object History {
             // behind must not flip the record working↔stalled) — but a run
             // that outlasted the silence and then finished is no longer
             // "stalled": it takes its real outcome, cost and end.
-            if (rec.state == STALLED && live) return false
+            if (rec.state == STALLED && live) return moved
             val reopened = rec.state == STALLED
             val cost = run.costUsd?.let { c -> rec.costUsd?.let { maxOf(it, c) } ?: c } ?: rec.costUsd
             val model = run.model ?: rec.model
@@ -138,15 +163,20 @@ object History {
                 model = modelFinal,
                 // The final edit's `result` (nothing else overwrites it).
                 result = rec.result ?: run.result,
-                ended = if (ending) now else rec.ended,
+                // When it ended, not when this phone noticed (it may not
+                // have been running: a 3-minute run read "10h") — where the
+                // run can say ([RunInfo.ended]); never before it started.
+                ended = if (ending) (run.ended ?: now).coerceAtMost(now).coerceAtLeast(rec.started) else rec.ended,
                 // A thread's title arrives with its first replies; keep the placeholder till then.
                 title = if (rec.title == "Thread" && title != "Thread") title else rec.title,
+                runId = rec.runId ?: run.runId,
             )
             history[i] = updated
             // Only the fields that can actually move count as a change (the desktop's tuple compare).
-            updated.state != rec.state || updated.steps != rec.steps ||
+            moved || updated.state != rec.state || updated.steps != rec.steps ||
                 updated.costUsd != rec.costUsd || updated.model != rec.model ||
-                updated.result != rec.result || updated.ended != rec.ended
+                updated.result != rec.result || updated.ended != rec.ended ||
+                updated.runId != rec.runId
         }
     }
 
@@ -154,11 +184,15 @@ object History {
      * End the record of a run that stopped being reported without a final
      * state — a prompt that was answered or withdrawn, a working reaction
      * taken back with nothing put in its place (the desktop's
-     * `close_run_record`). Returns whether a record was closed.
+     * `close_run_record`). [runId]: the run's protocol id, when it has one —
+     * its record may be dated from the request while the run was last seen
+     * dated from its status message. Returns whether a record was closed.
      */
-    fun close(history: MutableList<RunRecord>, view: ViewKey, started: Long, now: Long): Boolean {
+    fun close(history: MutableList<RunRecord>, view: ViewKey, started: Long, now: Long, runId: String? = null): Boolean {
         val key = keyOf(view)
-        val i = history.indexOfFirst { it.key == key && it.started == started && it.ended == null }
+        val i = history.indexOfFirst {
+            it.key == key && it.ended == null && (it.started == started || (!runId.isNullOrEmpty() && it.runId == runId))
+        }
         if (i < 0) return false
         history[i] = history[i].copy(state = stateLabel(RunState.Done), ended = now)
         return true
@@ -268,6 +302,7 @@ object History {
             if (r.costUsd != null && r.costUsd.isFinite()) o.put("cost_usd", r.costUsd)
             if (r.request != null) o.put("request", r.request)
             if (r.result != null) o.put("result", r.result)
+            if (r.runId != null) o.put("run", r.runId)
             arr.put(o)
         }
         return arr.toString().toByteArray(Charsets.UTF_8)
@@ -296,6 +331,7 @@ object History {
                     costUsd = if (o.has("cost_usd") && !o.isNull("cost_usd")) o.getDouble("cost_usd") else null,
                     request = o.optString("request").ifEmpty { null },
                     result = o.optString("result").ifEmpty { null },
+                    runId = o.optString("run").ifEmpty { null },
                 )
             }
         }
