@@ -417,6 +417,7 @@ object Matrix {
         watchRooms(sync)
         startSearch(c)
         loadRunHistory()
+        jobs += SendQueue.keep(c, scope)
         jobs += scope.launch { sweepStalledRuns() }
         jobs += scope.launch { pollAgentList() }
         jobs += combine(_rooms, _agentList) { rooms, list -> rooms to list }

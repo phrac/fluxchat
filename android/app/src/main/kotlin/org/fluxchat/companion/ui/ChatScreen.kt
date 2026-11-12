@@ -14,7 +14,6 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.PhotoCamera
-import kotlin.concurrent.thread
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.ViewAgenda
 import androidx.compose.material.icons.automirrored.outlined.Chat
@@ -90,7 +89,6 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -109,6 +107,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -118,6 +117,7 @@ import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.RunState
 import org.fluxchat.companion.agents.Runs
+import org.fluxchat.companion.agents.SendAction
 import org.fluxchat.companion.agents.ViewKey
 import org.fluxchat.companion.matrix.AgentList
 import org.fluxchat.companion.matrix.Matrix
@@ -125,6 +125,20 @@ import org.fluxchat.companion.matrix.TimelineModel
 
 /** How long after you send a request its thread opens by itself when the agent starts on it. */
 private const val FOLLOW_WINDOW_MS = 3 * 60 * 1000L
+/** A run counts as started by a request sent at most this long before the run's own timestamp. */
+private const val FOLLOW_SLACK_MS = 5_000L
+
+/**
+ * The session to open by itself: one the agent has started on for a request
+ * sent from this screen at [sentAt] (0: none was), not followed yet, while
+ * that's recent. Null: nothing to follow.
+ */
+internal fun followTarget(runs: Map<ViewKey, RunInfo?>, sentAt: Long, followed: Set<String>, now: Long): String? {
+    if (sentAt == 0L || now - sentAt >= FOLLOW_WINDOW_MS) return null
+    return runs.entries.firstOrNull { (k, r) ->
+        k.threadRoot != null && r != null && r.state.live && r.since >= sentAt - FOLLOW_SLACK_MS && k.threadRoot !in followed
+    }?.key?.threadRoot
+}
 
 /** A room's timeline, or a thread's (`root`): messages, the run, the composer. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -134,10 +148,16 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     // Threads (and rooms that aren't kept open) get their own timeline while on screen.
     var openFailed by remember(roomId, root) { mutableStateOf(false) }
     val own by produceState<TimelineModel?>(null, roomId, root) {
-        if (shared == null) {
+        // (the state outlives a change of keys: never the previous view's, closed, timeline)
+        value = null
+        if (shared != null) return@produceState
+        // Opened on the app's scope and handed over: opened in this one, a
+        // screen left while the open was in flight dropped the timeline that
+        // then arrived without closing it — its listener ran until sign-out.
+        val opening = Matrix.scope.async {
             // Null (a project you've left, opened from Run history) or a throw
             // used to mean a spinner for ever, or a crash.
-            val m = try {
+            try {
                 if (root != null) Matrix.openThread(roomId, root) else Matrix.openLive(roomId)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -145,13 +165,20 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 org.fluxchat.companion.Diag.error("Opening ${root ?: roomId}", e)
                 null
             }
-            if (m == null) openFailed = true
-            value = m
         }
+        val m = try {
+            opening.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Matrix.launch { opening.await()?.close() }
+            throw e
+        }
+        if (m == null) openFailed = true
+        value = m
+        // Closed by the producer that opened it (not by an effect keyed on
+        // `own`, which needs one more composition to exist — the screen could
+        // go in between — and not whatever `own` is by then).
+        awaitDispose { m?.close() }
     }
-    // Close the timeline this effect was for (not whatever `own` is by then).
-    val opened = own
-    DisposableEffect(opened) { onDispose { opened?.close() } }
     val model = shared ?: own
 
     val empty = remember { MutableStateFlow(emptyList<Msg>()) }
@@ -207,15 +234,17 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     // Follow: a request sent from here whose thread the agent has started on.
     var sentAt by rememberSaveable { mutableStateOf(0L) }
     var followed by rememberSaveable { mutableStateOf(setOf<String>()) }
+    // The composer has something in it (text, an attachment, a shot being taken).
+    var composing by remember { mutableStateOf(false) }
     LaunchedEffect(agentRoom?.runs) {
-        if (root != null || sentAt == 0L) return@LaunchedEffect
-        val target = agentRoom?.runs?.entries?.firstOrNull { (k, r) ->
-            k.threadRoot != null && r != null && r.state.live && r.since >= sentAt - 5_000 && k.threadRoot !in followed
-        }?.key?.threadRoot
-        if (target != null && System.currentTimeMillis() - sentAt < FOLLOW_WINDOW_MS) {
-            followed = followed + target
-            go(Screen.Thread(roomId, target))
-        }
+        if (root != null) return@LaunchedEffect
+        val target = followTarget(agentRoom?.runs.orEmpty(), sentAt, followed, System.currentTimeMillis()) ?: return@LaunchedEffect
+        // Decided once per session, either way: not opened now, it doesn't
+        // jump at you later when you clear the box.
+        followed = followed + target
+        // Typing the next request: being pulled into the session the last
+        // one started took the keyboard and the half-written text with it.
+        if (!composing) go(Screen.Thread(roomId, target))
     }
 
     // Read only while it's actually being looked at: with sync kept alive in
@@ -229,7 +258,20 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     val context = LocalContext.current
     // Sends outlive the screen (the app's scope, not this composition's):
     // leaving right after Send cancelled an upload and deleted its file.
-    val sendRaw: (String) -> Unit = { text -> Matrix.launch { send(model, roomId, root, text) } }
+    val app = context.applicationContext
+    val sendRaw: (String) -> Unit = { text ->
+        Matrix.launch {
+            if (!send(model, roomId, root, text)) say(app, "Couldn't send “${text.take(40)}”. Check your connection.")
+        }
+    }
+    // What the composer sent and nothing would take: back to it (see [Unsent]).
+    val unsent by Unsent.all.collectAsState()
+    // Sends that haven't gone out, and what's to be done about them.
+    val onSendAction: (String, SendAction) -> Unit = { id, action -> Matrix.launch { sendAction(app, model, roomId, id, action) } }
+    // The send queue goes in order: a send that failed for good holds up
+    // everything sent after it in the project, sessions included.
+    val blocker = remember(all, roomAll) { sendBlocker(if (root == null) all else roomAll.ifEmpty { all }) }
+    val answers by Answers.all.collectAsState()
     val command: (String) -> Unit = { name ->
         val c = harness.command(name)
         sendRaw(if (harness.mentionCommands && agent != null && !Matrix.isDm(roomId)) "$agent $c" else c)
@@ -346,7 +388,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
         Column(Modifier.fillMaxSize().padding(top = pad.calculateTopPadding()).imePadding().navigationBarsPadding()) {
             Box(Modifier.weight(1f)) {
                 if (cards) {
-                    SessionFeed(roomId, all, agents, agentRoom?.runs.orEmpty(), sessionList, now) { r -> go(Screen.Thread(roomId, r)) }
+                    SessionFeed(roomId, all, agents, agentRoom?.runs.orEmpty(), sessionList, now, onSendAction, blocker) { r -> go(Screen.Thread(roomId, r)) }
                 } else if (model == null) {
                     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                         if (openFailed) Text(
@@ -357,7 +399,17 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 } else {
                     // A session (a thread, or a DM with the agent) reads as a transcript.
                     val transcript = agents.isNotEmpty() && (root != null || Matrix.isDm(roomId))
-                    MessageList(model, msgs, root, agents, list, now, go, roomId, transcript, run, jumpTo)
+                    MessageList(model, msgs, root, agents, list, now, go, roomId, transcript, run, jumpTo, onSendAction, blocker, answers)
+                }
+            }
+            // The parked send is somewhere else (another session, or the
+            // project's own timeline): from here there'd be only messages
+            // that never leave "sending", and no reason why.
+            val elsewhere = blocker?.takeIf { b -> if (cards) b.threadRoot != null else msgs.none { it.id == b.id } }
+            if (elsewhere != null) {
+                HeldUpCard(inSession = elsewhere.threadRoot != null) {
+                    val there = elsewhere.threadRoot?.let { Screen.Thread(roomId, it) } ?: Screen.Room(roomId)
+                    if (root == null) go(there) else swap(there)
                 }
             }
             if (run != null && (run.state.live || now - run.since < 60_000)) {
@@ -376,14 +428,31 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 shareFor = roomId,
                 onAttach = { a, caption ->
                     if (root == null) sentAt = System.currentTimeMillis()
-                    model?.let { m -> Matrix.launch { sendAttachment(context.applicationContext, m, a, caption) } }
+                    Matrix.launch {
+                        if (model != null && sendAttachment(app, model, a, caption)) {
+                            // The upload has its own copy: a camera shot's (or a shared file's) staged one can go.
+                            Uploads.release(app, a)
+                        } else {
+                            if (model == null) say(app, "Couldn't send ${a.name}")
+                            Unsent.add(key, Unsent.Item(caption, BusyMode.Send, a))
+                        }
+                    }
                 },
                 onSend = { text, mode ->
                     val out = Runs.outgoing(harness, text, run?.state == RunState.Working, mode, agent?.takeIf { !Matrix.isDm(roomId) })
                     if (root == null) sentAt = System.currentTimeMillis()
                     org.fluxchat.companion.quick.Quick.remember(context, roomId)
-                    sendRaw(out)
+                    Matrix.launch {
+                        if (!send(model, roomId, root, out)) {
+                            // As typed (not `out`): it goes through here again.
+                            Unsent.add(key, Unsent.Item(text, mode))
+                            say(app, "Couldn't send your message. It's kept by the message box: check your connection and send it again.")
+                        }
+                    }
                 },
+                onDrafting = { composing = it },
+                unsent = unsent[key]?.firstOrNull(),
+                onUnsentTaken = { Unsent.remove(key, it) },
             )
         }
     } }
@@ -435,7 +504,13 @@ private fun MessageList(
     transcript: Boolean = false,
     run: RunInfo? = null,
     jumpTo: String? = null,
+    onSendAction: (String, SendAction) -> Unit = { _, _ -> },
+    /** The project's earliest parked send: what's still "sending" after it waits for it. */
+    blocker: Msg? = null,
+    answers: Map<String, Answers.Entry> = emptyMap(),
 ) {
+    val context = LocalContext.current
+    val me = remember { Matrix.userId }
     val state = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val atStart by model.atStart.collectAsState()
@@ -524,6 +599,7 @@ private fun MessageList(
         val isAgent = m.sender in agents
         val h = list.harnessOf(m.sender)
         val prompt = if (isAgent) Runs.openPrompt(msgs, i, h, now) else emptyList()
+        val question = if (isAgent) Runs.pendingQuestion(msgs, i, m.sender, h, now) else null
         TranscriptRow(
             m = m,
             prev = prev,
@@ -531,10 +607,15 @@ private fun MessageList(
             hiddenReactions = statusReaction,
             answered = if (isAgent && prompt.isEmpty()) Runs.answeredApproval(m, h, agents) else null,
             prompt = prompt,
-            question = if (isAgent) Runs.pendingQuestion(msgs, i, m.sender, h, now) else null,
+            question = question,
             live = m.id == liveSteps,
-            onReact = { key -> Matrix.launch { react(model, roomId, m.id, key) } },
-            onAnswer = { text -> Matrix.launch { send(model, roomId, root, text) } },
+            onReact = { key -> if (prompt.any { it.first == key }) answerPrompt(context, roomId, m.id, key) else Matrix.launch { react(model, roomId, m.id, key) } },
+            onAnswer = { text -> answerQuestion(context, model, roomId, root, m.id, text) },
+            answer = if (prompt.isEmpty()) null else promptAnswer(m, prompt, me, answers[m.id]),
+            questionAnswer = if (question == null) null else questionAnswer(msgs, i, answers[m.id], now),
+            onSendAction = { onSendAction(m.id, it) },
+            now = now,
+            heldUp = heldUpBy(blocker, m),
         )
     }
     Box(Modifier.fillMaxSize()) {
@@ -583,11 +664,15 @@ private fun MessageList(
                         inThread = root != null,
                         prompt = prompt,
                         question = question,
-                        onReact = { key -> Matrix.launch { react(model, roomId, m.id, key) } },
-                        onAnswer = { text -> Matrix.launch { send(model, roomId, root, text) } },
+                        onReact = { key -> if (prompt.any { it.first == key }) answerPrompt(context, roomId, m.id, key) else Matrix.launch { react(model, roomId, m.id, key) } },
+                        onAnswer = { text -> answerQuestion(context, model, roomId, root, m.id, text) },
                         onOpenThread = if (root == null && m.hasThread) ({ go(Screen.Thread(roomId, m.id)) }) else null,
                         threadRun = if (root == null) Matrix.agentRooms.value[roomId]?.runs?.get(ViewKey(roomId, m.id)) else null,
                         now = now,
+                        answer = if (prompt.isEmpty()) null else promptAnswer(m, prompt, me, answers[m.id]),
+                        questionAnswer = if (question == null) null else questionAnswer(msgs, i, answers[m.id], now),
+                        onSendAction = { onSendAction(m.id, it) },
+                        heldUp = heldUpBy(blocker, m),
                     )
                 }
             }
@@ -610,19 +695,39 @@ private fun MessageList(
  * Send text to the view: through its timeline (local echo, thread relation),
  * else straight to the room (in the thread).
  */
-private suspend fun send(model: TimelineModel?, roomId: String, root: String?, text: String) {
-    val viaTimeline = model?.let { m -> runCatching { m.send(text) }.onFailure { org.fluxchat.companion.Diag.error("Sending through the timeline in $roomId", it) }.isSuccess } ?: false
-    if (!viaTimeline && !Matrix.sendText(roomId, root, text, inReplyTo = null)) org.fluxchat.companion.Diag.error("Couldn't send to $roomId")
+private suspend fun send(model: TimelineModel?, roomId: String, root: String?, text: String): Boolean {
+    val viaTimeline = model != null && try {
+        model.send(text)
+        true
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        org.fluxchat.companion.Diag.error("Sending through the timeline in $roomId", e)
+        false
+    }
+    if (viaTimeline || Matrix.sendText(roomId, root, text, inReplyTo = null)) return true
+    // Neither took it: the caller says so (and keeps the text).
+    org.fluxchat.companion.Diag.error("Couldn't send to $roomId")
+    return false
 }
 
-/** Upload a picked file to the view (failures: a toast, and Diagnostics). */
-private suspend fun sendAttachment(context: android.content.Context, model: TimelineModel, a: Attachment, caption: String) {
-    runCatching { model.sendAttachment(context, a, caption) }.onFailure {
-        org.fluxchat.companion.Diag.error("Sending ${a.name} (${a.mime}) to ${model.roomId}", it)
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-            android.widget.Toast.makeText(context, "Couldn't send ${a.name}: ${it.message ?: it.javaClass.simpleName}", android.widget.Toast.LENGTH_LONG).show()
-        }
+/** A toast, from whatever thread a send ended on. */
+private suspend fun say(context: android.content.Context, text: String) {
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show()
     }
+}
+
+/** Upload a picked file to the view. False: it couldn't be handed over (said in a toast, and Diagnostics). */
+private suspend fun sendAttachment(context: android.content.Context, model: TimelineModel, a: Attachment, caption: String): Boolean = try {
+    model.sendAttachment(context, a, caption)
+    true
+} catch (e: kotlinx.coroutines.CancellationException) {
+    throw e
+} catch (e: Exception) {
+    org.fluxchat.companion.Diag.error("Sending ${a.name} (${a.mime}) to ${model.roomId}", e)
+    say(context, "Couldn't send ${a.name}: ${e.message ?: e.javaClass.simpleName}")
+    false
 }
 
 /**
@@ -634,9 +739,114 @@ private suspend fun react(model: TimelineModel, roomId: String, eventId: String,
     val tries = listOfNotNull(Matrix.roomTimeline(roomId), model).distinct()
     for (t in tries) {
         if (t.messages.value.none { it.id == eventId }) continue
-        if (runCatching { t.react(eventId, key) }.isSuccess) return
+        try {
+            t.react(eventId, key)
+            return
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            org.fluxchat.companion.Diag.error("Reacting $key to $eventId through the timeline", e)
+        }
     }
     if (!Matrix.sendReaction(roomId, eventId, key)) org.fluxchat.companion.Diag.error("Couldn't react $key to $eventId")
+}
+
+/**
+ * Answer an approval / picker: the choice's reaction, once. Sent straight to
+ * the server rather than toggled through the timeline: a toggle's second tap
+ * takes the answer back, its failure only shows up later in the send queue,
+ * and an approval shouldn't wait in that queue behind a message that's stuck.
+ * Until it's through the buttons take no taps ([Answers]); if it fails they
+ * come back, with a toast.
+ */
+private fun answerPrompt(context: android.content.Context, roomId: String, promptId: String, key: String) {
+    if (!Answers.begin(promptId, key, System.currentTimeMillis())) return
+    val app = context.applicationContext
+    Matrix.launch {
+        if (Matrix.sendReaction(roomId, promptId, key)) {
+            Answers.delivered(promptId, System.currentTimeMillis())
+        } else {
+            Answers.failed(promptId)
+            say(app, "Couldn't send your answer. Check your connection and tap it again.")
+        }
+    }
+}
+
+/** Answer a question with one of its choices: the text, once (see [questionAnswer]). */
+private fun answerQuestion(context: android.content.Context, model: TimelineModel?, roomId: String, root: String?, questionId: String, text: String) {
+    if (!Answers.begin(questionId, text, System.currentTimeMillis())) return
+    val app = context.applicationContext
+    Matrix.launch {
+        if (send(model, roomId, root, text)) {
+            Answers.queued(questionId, System.currentTimeMillis())
+        } else {
+            Answers.failed(questionId)
+            say(app, "Couldn't send your answer. Check your connection and tap it again.")
+        }
+    }
+}
+
+/** Sends being retried / deleted right now, by message: a second tap on the button waits. */
+private val sendActionsInFlight: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+
+/**
+ * Retry, delete or cancel a message that hasn't gone out ([id]: `~` + its
+ * transaction ID), through a timeline that holds its local echo — the view's
+ * own, or the project's (a session shows replies from both).
+ */
+private suspend fun sendAction(context: android.content.Context, model: TimelineModel?, roomId: String, id: String, action: SendAction) {
+    if (!id.startsWith("~") || !sendActionsInFlight.add(id)) return
+    try {
+        val txn = id.removePrefix("~")
+        val timelines = listOfNotNull(model, Matrix.roomTimeline(roomId)).distinct()
+        var done = false
+        var error: Exception? = null
+        for (t in timelines) {
+            try {
+                done = if (action == SendAction.Retry) t.retrySend(txn) else t.abortSend(txn)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = e
+            }
+            if (done) break
+        }
+        when {
+            // Un-parked, or it never was parked (the connection): either way
+            // the project's queue has to be on for it to go.
+            action == SendAction.Retry && (done || error == null) -> org.fluxchat.companion.matrix.SendQueue.resume(roomId)
+            done -> {}
+            error != null -> {
+                org.fluxchat.companion.Diag.error("${action.name} on $id in $roomId", error)
+                say(context, if (action == SendAction.Retry) "Couldn't try that again" else "Couldn't take that message back")
+            }
+            // Nothing left to abort, and it's gone from the list: it was removed meanwhile.
+            timelines.none { t -> t.messages.value.any { it.id == id } } -> {}
+            else -> say(context, "Too late: that message has been sent")
+        }
+    } finally {
+        sendActionsInFlight.remove(id)
+    }
+}
+
+/** Above the composer: what's "sending" here waits for a failed send that's on another screen. */
+@Composable
+private fun HeldUpCard(inSession: Boolean, onShow: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (inSession) "A message in another session wasn't sent. What you send here waits for it."
+                else "An earlier message in this project wasn't sent. What you send here waits for it.",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onShow) { Text("Show") }
+        }
+    }
 }
 
 @Composable
@@ -651,7 +861,7 @@ internal fun RunCard(run: RunInfo, now: Long, canStop: Boolean, onStop: () -> Un
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    label?.let { Text("In a thread: $it", style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    label?.let { Text("In a session: $it", style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                     StatePill(run.state, buildList {
                         add(run.state.label)
                         if (run.state.live) add(elapsed(run.since, now))
@@ -694,46 +904,80 @@ internal fun Composer(
     onAttach: (Attachment, String) -> Unit = { _, _ -> },
     /** The room whose composer this is: it takes what was shared to it. */
     shareFor: String? = null,
+    /** Whether there's something in the composer (text, an attachment, a shot being taken). */
+    onDrafting: (Boolean) -> Unit = {},
+    /** Something sent from here that nothing would take ([Unsent]): it comes back, [onUnsentTaken] once it has. */
+    unsent: Unsent.Item? = null,
+    onUnsentTaken: (Unsent.Item) -> Unit = {},
     onSend: (String, BusyMode) -> Unit,
 ) {
     var text by rememberSaveable { mutableStateOf("") }
     var mode by rememberSaveable { mutableStateOf(BusyMode.Send) }
-    var attachment by remember { mutableStateOf<Attachment?>(null) }
+    // Saved with the screen: turning the phone (or coming back from the
+    // camera in the other orientation) recreates the activity, and what was
+    // attached — or the shot just taken — was gone.
+    var attachment by rememberSaveable(stateSaver = AttachmentSaver) { mutableStateOf<Attachment?>(null) }
     var attachMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val picked: (android.net.Uri?) -> Unit = { uri -> if (uri != null) attachment = Uploads.describe(context, uri) }
+    val app = context.applicationContext
+    // Put [a] on the composer; what it replaces is done with (a camera shot's staged file goes).
+    val attach: (Attachment?) -> Unit = { a ->
+        val old = attachment
+        attachment = a
+        if (old != null && old.uri != a?.uri) Matrix.launch { Uploads.release(app, old) }
+    }
+    val picked: (android.net.Uri?) -> Unit = { uri -> if (uri != null) attach(Uploads.describe(context, uri)) }
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia(), picked)
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument(), picked)
     // Direct capture: the system camera writes into a staging file we hand it
     // through the FileProvider (no CAMERA permission — their camera, not ours);
-    // a cancelled shot leaves nothing behind.
-    var shotUri by remember { mutableStateOf<android.net.Uri?>(null) }
-    var shotFile by remember { mutableStateOf<java.io.File?>(null) }
+    // a cancelled shot leaves nothing behind. The shot in progress is saved
+    // state too (as text): its result arrives in a recreated activity as
+    // often as not, and found nothing to put it in.
+    var shotUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var shotPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var shotTaken by rememberSaveable { mutableStateOf(false) }
     val finishShot: (Boolean) -> Unit = { ok ->
+        val f = shotPath?.let { java.io.File(it) }
+        if (ok && shotUri != null && f != null && f.length() > 0) {
+            shotTaken = true
+        } else {
+            shotUri = null
+            shotPath = null
+            f?.parentFile?.deleteRecursively()
+        }
+    }
+    // A shot that's been taken: upright first (the agents read pixels, not
+    // EXIF), then onto the composer. An effect of the saved state rather than
+    // a thread started by the result: recreated half-way, it runs again.
+    LaunchedEffect(shotTaken, shotPath) {
         val uri = shotUri
-        val f = shotFile
+        val path = shotPath
+        if (!shotTaken || uri == null || path == null) return@LaunchedEffect
+        val a = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            Uploads.normalizeImage(app, java.io.File(path))
+            Uploads.describe(app, android.net.Uri.parse(uri))
+        }
+        attach(a)
         shotUri = null
-        shotFile = null
-        if (ok && uri != null && f != null && f.length() > 0)
-            thread(name = "photo-normalize") {
-                // bake EXIF rotation in so the agents see upright photos
-                Uploads.normalizeImage(f)
-                attachment = Uploads.describe(context, uri)
-            }
-        else f?.parentFile?.deleteRecursively()
+        shotPath = null
+        shotTaken = false
     }
     val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture(), finishShot)
     val takeVideo = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo(), finishShot)
     val startShot: (Boolean) -> Unit = { video ->
-        val f = Uploads.stagingFile(context, if (video) "video.mp4" else "photo.jpg")
+        val f = Uploads.stagingFile(context, Uploads.shotName(video, java.time.LocalDateTime.now()))
         val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", f)
-        shotUri = uri
-        shotFile = f
-        runCatching { if (video) takeVideo.launchHopping(uri) else takePhoto.launchHopping(uri) }.onFailure {
+        shotUri = uri.toString()
+        shotPath = f.path
+        shotTaken = false
+        try {
+            if (video) takeVideo.launchHopping(uri) else takePhoto.launchHopping(uri)
+        } catch (e: Exception) {
             shotUri = null
-            shotFile = null
+            shotPath = null
             f.parentFile?.deleteRecursively()
-            org.fluxchat.companion.Diag.error("Opening the camera", it)
+            org.fluxchat.companion.Diag.error("Opening the camera", e)
             android.widget.Toast.makeText(context, "No camera app on this phone", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
@@ -743,11 +987,59 @@ internal fun Composer(
     LaunchedEffect(shareFor, shared) {
         if (shareFor != null && shared != null) ShareInbox.take(shareFor)?.let { s ->
             s.text?.let { t -> text = if (text.isBlank()) t else text + "\n" + t }
-            s.attachment?.let { attachment = it }
+            s.attachment?.let { attach(it) }
+        }
+    }
+    // An attachment that came back with the saved state may not be readable
+    // any more (a picked file's grant ends with the process): say so now, not
+    // as a failed send later.
+    LaunchedEffect(attachment?.uri) {
+        val a = attachment ?: return@LaunchedEffect
+        val readable = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                app.contentResolver.openAssetFileDescriptor(a.uri, "r")?.close() != null
+            } catch (e: Exception) {
+                org.fluxchat.companion.Diag.error("The attachment ${a.name} can't be read any more", e)
+                false
+            }
+        }
+        if (!readable && attachment?.uri == a.uri) {
+            attach(null)
+            android.widget.Toast.makeText(context, "${a.name} is no longer available. Attach it again.", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    val drafting = text.isNotBlank() || attachment != null || shotUri != null
+    val reportDrafting by rememberUpdatedState(onDrafting)
+    LaunchedEffect(drafting) { reportDrafting(drafting) }
+    // A failed hand-over comes back into an empty composer by itself;
+    // into a busy one it waits on a card (below) rather than being mixed in.
+    val takeUnsent by rememberUpdatedState(onUnsentTaken)
+    LaunchedEffect(unsent, drafting) {
+        if (unsent != null && !drafting) {
+            text = unsent.text
+            mode = unsent.mode
+            attach(unsent.attachment)
+            takeUnsent(unsent)
         }
     }
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        attachment?.let { a -> AttachmentCard(a) { attachment = null } }
+        if (unsent != null && drafting) {
+            UnsentCard(
+                unsent,
+                onSendAgain = {
+                    onUnsentTaken(unsent)
+                    if (unsent.attachment != null) onAttach(unsent.attachment, unsent.text) else onSend(unsent.text, unsent.mode)
+                },
+                onDiscard = {
+                    onUnsentTaken(unsent)
+                    unsent.attachment?.let { a -> Matrix.launch { Uploads.release(app, a) } }
+                },
+            )
+        }
+        if (shotTaken) {
+            Text("Getting your shot ready…", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
+        }
+        attachment?.let { a -> AttachmentCard(a) { attach(null) } }
         // Agent commands while typing "/name".
         if (text.startsWith("/") && !text.startsWith("//") && ' ' !in text) {
             val prefix = text.removePrefix("/")
@@ -844,6 +1136,35 @@ internal fun Composer(
                 modifier = Modifier.size(56.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(),
             ) { Icon(Icons.AutoMirrored.Filled.Send, "Send") }
+        }
+    }
+}
+
+/** The composer's pending attachment across the activity being recreated (see [org.fluxchat.companion.matrix.SavedAttachment]). */
+private val AttachmentSaver = androidx.compose.runtime.saveable.listSaver<Attachment?, String>(
+    save = { a -> a?.let { Uploads.saved(it) } ?: emptyList() },
+    restore = { Uploads.restored(it) },
+)
+
+/** Something sent from here that couldn't be handed over, while the composer has other things in it. */
+@Composable
+private fun UnsentCard(item: Unsent.Item, onSendAgain: () -> Unit, onDiscard: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.padding(start = 14.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Not sent", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    listOfNotNull(item.attachment?.name, item.text.takeIf { it.isNotBlank() }).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            TextButton(onClick = onSendAgain) { Text("Send again") }
+            IconButton(onClick = onDiscard) { Icon(Icons.Outlined.Close, "Discard") }
         }
     }
 }

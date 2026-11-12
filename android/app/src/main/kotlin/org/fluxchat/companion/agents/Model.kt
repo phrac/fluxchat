@@ -18,6 +18,28 @@ data class Reaction(val emoji: String, val users: List<String>)
 
 enum class SendState { Sent, Sending, Failed }
 
+/** What can be done about a message of yours that hasn't gone out. */
+enum class SendAction { Retry, Delete, Cancel }
+
+/**
+ * How long a message sits "sending" before Cancel is offered: every send is
+ * "sending" for a moment, and a button flashing under each one would only
+ * make the list jump.
+ */
+const val SLOW_SEND_MS = 5_000L
+
+/**
+ * What a row offers for a send in [state]: a failed one can be tried again or
+ * deleted, one stuck on its way out cancelled. Only while it's still a local
+ * echo ([local]) — once the server has it there is nothing left to abort.
+ */
+fun sendActions(state: SendState, local: Boolean, waitedMs: Long): List<SendAction> = when {
+    !local -> emptyList()
+    state == SendState.Failed -> listOf(SendAction.Retry, SendAction.Delete)
+    state == SendState.Sending && waitedMs >= SLOW_SEND_MS -> listOf(SendAction.Cancel)
+    else -> emptyList()
+}
+
 /**
  * One timeline event, as the agent logic and the UI need it (the desktop's
  * `MessageInfo`). [id] is the event ID, or `~` + transaction ID for a local
@@ -48,8 +70,25 @@ data class Msg(
     val media: Media? = null,
     /** A file, video or audio clip: a card to open or save. */
     val file: FileRef? = null,
+    /**
+     * A failed send the queue tries again by itself (the connection dropped).
+     * False on a failed one: it's parked — and holds up everything sent after
+     * it in the project — until it's retried or deleted.
+     */
+    val sendRetrying: Boolean = false,
+    /** Why a send was parked, in a few words, when the SDK says. */
+    val sendError: String? = null,
+    /**
+     * Your own reactions here (their keys) whose send failed for good: parked
+     * like a message, and holding up later sends the same way, but with no
+     * row of their own to retry or delete them from.
+     */
+    val parkedReactions: List<String> = emptyList(),
 ) {
     val isLocal: Boolean get() = id.startsWith("~")
+    /** A send of yours that failed for good and waits for Retry or Delete. */
+    val sendParked: Boolean get() = isLocal && sendState == SendState.Failed && !sendRetrying
+    fun sendActions(now: Long): List<SendAction> = sendActions(sendState, isLocal, now - ts)
     val hasThread: Boolean get() = threadCount > 0 || threadLatest != null
 }
 

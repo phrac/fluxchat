@@ -29,6 +29,7 @@ import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.Reaction
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.RunState
+import org.fluxchat.companion.agents.SendState
 import org.fluxchat.companion.agents.ViewKey
 import org.fluxchat.companion.matrix.AgentRoom
 import org.junit.Rule
@@ -211,6 +212,29 @@ class ScreenshotTest {
         }
     }
 
+    /** Messages that haven't gone out, and a prompt that's been answered. */
+    @Composable
+    private fun Unsent() {
+        val failed = msg("~f", me, 4, "Deploy the new build to production").copy(sendState = SendState.Failed, sendError = "your sign-in has expired")
+        val retrying = msg("~r", me, 3, "And tag the release").copy(sendState = SendState.Failed, sendRetrying = true)
+        val waiting = msg("~w", me, 2, "Then tell me how it went").copy(sendState = SendState.Sending)
+        val prompt = msg("p", hermes, 1, "⚠️ Dangerous command: `rm -rf build`\nAllow it?", "✅" to listOf(hermes), "❌" to listOf(hermes))
+        val choices = listOf("✅" to "Approve once", "❌" to "Deny")
+        Column {
+            MessageRow(failed, false, true, false, false, emptyList(), null, {}, {}, null, null, now)
+            MessageRow(retrying, true, true, false, false, emptyList(), null, {}, {}, null, null, now)
+            MessageRow(waiting, true, true, false, false, emptyList(), null, {}, {}, null, null, now, heldUp = true)
+            MessageRow(prompt, false, true, true, false, choices, null, {}, {}, null, null, now, answer = PromptAnswer("✅", AnswerPhase.Waiting))
+            TranscriptRow(prompt, null, true, { true }, choices, null, false, {}, {}, answer = PromptAnswer("❌", AnswerPhase.Sending))
+            TranscriptRow(failed, null, false, { false }, emptyList(), null, false, {}, {}, now = now)
+            Column(Modifier.padding(12.dp)) {
+                SessionCard(SessionCardInfo("~f", "Deploy the new build to production", null, null, 0, now - 4 * 60_000, null, own = true, sendState = SendState.Failed, unsent = failed), now) {}
+            }
+        }
+    }
+
+    @Test fun unsentLight() = shoot("unsent", false) { Unsent() }
+    @Test fun unsentDark() = shoot("unsent", true) { Unsent() }
     @Test fun turnLight() = shoot("turn", false) { FinishedTurn() }
     @Test fun turnDark() = shoot("turn", true) { FinishedTurn() }
     @Test fun answerLight() = shoot("answer", false) { FinalAnswer() }

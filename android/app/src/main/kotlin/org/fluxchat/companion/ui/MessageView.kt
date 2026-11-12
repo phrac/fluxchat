@@ -24,12 +24,16 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +48,7 @@ import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.RunState
 import org.fluxchat.companion.agents.Runs
+import org.fluxchat.companion.agents.SendAction
 import org.fluxchat.companion.agents.SendState
 import java.text.DateFormat
 import java.util.Calendar
@@ -100,6 +105,13 @@ fun MessageRow(
     onOpenThread: (() -> Unit)?,
     threadRun: RunInfo?,
     now: Long,
+    /** Your answer to [prompt] / [question] while it's on its way or with the agent: the buttons wait. */
+    answer: PromptAnswer? = null,
+    questionAnswer: PromptAnswer? = null,
+    /** Retry / Delete / Cancel on this message while it hasn't gone out. */
+    onSendAction: (SendAction) -> Unit = {},
+    /** Still sending because an earlier message in the project is parked ([Msg.sendParked]). */
+    heldUp: Boolean = false,
 ) {
     if (!m.isMessage) {
         if (m.body.isNotEmpty()) {
@@ -153,14 +165,8 @@ fun MessageRow(
                         }
                     }
                 }
-                if (prompt.isNotEmpty()) {
-                    PromptCard("Waiting for your answer") { ChoiceButtons(prompt, onReact) }
-                }
-                if (question != null) {
-                    PromptCard(if (question.isEmpty()) "Answer below" else "Pick one, or answer below") {
-                        if (question.isNotEmpty()) ChoiceButtons(question, onAnswer)
-                    }
-                }
+                SendStatus(m, now, heldUp, onSendAction)
+                Prompts(prompt, question, answer, questionAnswer, onReact, onAnswer)
                 val shown = m.reactions.filter { r -> prompt.none { it.first == r.emoji } }
                 if (shown.isNotEmpty()) {
                     FlowRow(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -214,7 +220,7 @@ private fun ThreadLink(m: Msg, run: RunInfo?, now: Long, open: () -> Unit) {
     ) {
         if (run != null) StateDot(run.state, 8.dp) else Icon(Icons.AutoMirrored.Outlined.Chat, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
         Spacer(Modifier.width(6.dp))
-        val count = if (m.threadCount > 0) "${m.threadCount} ${if (m.threadCount == 1) "reply" else "replies"}" else "Thread"
+        val count = if (m.threadCount > 0) "${m.threadCount} ${if (m.threadCount == 1) "reply" else "replies"}" else "Session"
         val status = run?.let { runLine(it, now) } ?: m.threadLatest?.lineSequence()?.firstOrNull()
         Text(
             listOfNotNull(count, status).joinToString(" · "),
@@ -287,16 +293,103 @@ internal fun PromptCard(title: String, content: @Composable () -> Unit) {
     }
 }
 
-/** Answer buttons: the first (approve / the first choice) filled, the rest outlined. */
+/**
+ * Answer buttons: the first (approve / the first choice) filled, the rest
+ * outlined. Once [answer] is given they all stop taking taps — the one picked
+ * stays lit, with a spinner while it's on its way.
+ */
 @Composable
-fun ChoiceButtons(choices: List<Pair<String, String>>, onPick: (String) -> Unit) {
+fun ChoiceButtons(choices: List<Pair<String, String>>, onPick: (String) -> Unit, answer: PromptAnswer? = null) {
+    val scheme = MaterialTheme.colorScheme
     Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
         choices.forEachIndexed { i, (key, label) ->
             val text = if (label == key) key else "$key  $label"
-            if (i == 0) {
-                Button(onClick = { onPick(key) }, modifier = Modifier.fillMaxWidth()) { Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+            val picked = answer?.key == key
+            val content: @Composable () -> Unit = {
+                if (picked && answer?.phase == AnswerPhase.Sending) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = scheme.onSecondaryContainer)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            if (picked || (i == 0 && answer == null)) {
+                Button(
+                    onClick = { onPick(key) }, enabled = answer == null, modifier = Modifier.fillMaxWidth(),
+                    // The picked one, disabled, still has to read as "this is what you said".
+                    colors = ButtonDefaults.buttonColors(disabledContainerColor = scheme.secondaryContainer, disabledContentColor = scheme.onSecondaryContainer),
+                ) { content() }
             } else {
-                OutlinedButton(onClick = { onPick(key) }, modifier = Modifier.fillMaxWidth()) { Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                OutlinedButton(onClick = { onPick(key) }, enabled = answer == null, modifier = Modifier.fillMaxWidth()) { content() }
+            }
+        }
+    }
+}
+
+/** How a prompt's card is headed once you've answered it. */
+private fun answeredTitle(answer: PromptAnswer): String = when (answer.phase) {
+    AnswerPhase.Sending -> "Sending your answer…"
+    AnswerPhase.Waiting -> "Answer sent. Waiting for the agent"
+}
+
+/** The cards under an agent's message that wants something from you: an approval's choices, a question's. */
+@Composable
+internal fun Prompts(
+    prompt: List<Pair<String, String>>,
+    question: List<Pair<String, String>>?,
+    answer: PromptAnswer?,
+    questionAnswer: PromptAnswer?,
+    onReact: (String) -> Unit,
+    onAnswer: (String) -> Unit,
+) {
+    if (prompt.isNotEmpty()) {
+        PromptCard(answer?.let(::answeredTitle) ?: "Waiting for your answer") { ChoiceButtons(prompt, onReact, answer) }
+    }
+    if (question != null) {
+        PromptCard(questionAnswer?.let(::answeredTitle) ?: if (question.isEmpty()) "Answer below" else "Pick one, or answer below") {
+            if (question.isNotEmpty()) ChoiceButtons(question, onAnswer, questionAnswer)
+        }
+    }
+}
+
+/** What a message of yours that hasn't gone out says under itself. */
+fun sendStatusText(m: Msg, heldUp: Boolean): String = when {
+    m.sendState == SendState.Sending && heldUp -> "Waiting for an earlier message that wasn't sent"
+    m.sendState == SendState.Sending -> "Still sending…"
+    m.sendRetrying -> "Not sent yet. Trying again by itself"
+    else -> "Not sent" + (m.sendError?.let { ": $it" } ?: "")
+}
+
+/**
+ * Under a message of yours that hasn't gone out: what happened, and Retry /
+ * Delete (failed) or Cancel (stuck). A failed send used to be a 12 dp icon
+ * beside the time, with nothing to do about it but restart the app.
+ */
+@Composable
+internal fun SendStatus(m: Msg, now: Long, heldUp: Boolean, onAction: (SendAction) -> Unit) {
+    if (!m.isLocal || m.sendState == SendState.Sent) return
+    val actions = m.sendActions(now)
+    if (actions.isEmpty() && !(m.sendState == SendState.Sending && heldUp)) return
+    SendStatusRow(sendStatusText(m, heldUp), failed = m.sendState == SendState.Failed, actions, onAction)
+}
+
+@Composable
+internal fun SendStatusRow(text: String, failed: Boolean, actions: List<SendAction>, onAction: (SendAction) -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+        Text(
+            text, style = MaterialTheme.typography.labelMedium, color = if (failed) scheme.error else scheme.onSurfaceVariant,
+            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).padding(start = 4.dp),
+        )
+        for (a in actions) {
+            TextButton(onClick = { onAction(a) }, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text(
+                    when (a) {
+                        SendAction.Retry -> "Retry"
+                        SendAction.Delete -> "Delete"
+                        SendAction.Cancel -> "Cancel"
+                    },
+                    color = if (a == SendAction.Delete) scheme.error else scheme.primary,
+                )
             }
         }
     }
