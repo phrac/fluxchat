@@ -72,6 +72,11 @@ object History {
         return cal.timeInMillis
     }
 
+    /** What a session is called until its first words arrive. */
+    const val UNTITLED = "Session"
+    /** Titles that are still waiting for the real one ("Thread": what older builds wrote). */
+    private val PLACEHOLDER_TITLES = setOf(UNTITLED, "Thread")
+
     /** `ViewKey` as a history key (the desktop's "thread::…"/room key equivalent). */
     fun keyOf(key: ViewKey): String = key.threadRoot?.let { "${key.roomId}::$it" } ?: key.roomId
 
@@ -168,7 +173,7 @@ object History {
                 // run can say ([RunInfo.ended]); never before it started.
                 ended = if (ending) (run.ended ?: now).coerceAtMost(now).coerceAtLeast(rec.started) else rec.ended,
                 // A thread's title arrives with its first replies; keep the placeholder till then.
-                title = if (rec.title == "Thread" && title != "Thread") title else rec.title,
+                title = if (rec.title in PLACEHOLDER_TITLES && title !in PLACEHOLDER_TITLES) title else rec.title,
                 runId = rec.runId ?: run.runId,
             )
             history[i] = updated

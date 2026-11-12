@@ -1,8 +1,6 @@
 package org.fluxchat.companion.push
 
 import android.content.Context
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.Runs
 import org.fluxchat.companion.agents.ViewKey
@@ -37,7 +35,7 @@ object PromptWatcher {
 
     fun start(context: Context) {
         val app = context.applicationContext
-        Matrix.agentRooms.onEach { rooms -> look(app, rooms) }.launchIn(Matrix.scope)
+        Matrix.supervise("Watching for prompts") { Matrix.agentRooms.collect { rooms -> look(app, rooms) } }
     }
 
     @Synchronized

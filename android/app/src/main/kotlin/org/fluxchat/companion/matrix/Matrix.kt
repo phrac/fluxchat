@@ -636,7 +636,15 @@ object Matrix {
     /** Sync that ended in an error (not a network one: those go Offline) is started again, with backoff. */
     private fun onSyncState(state: SyncServiceState) {
         when (state) {
-            SyncServiceState.RUNNING -> syncBackoffMs = SYNC_RETRY_MIN_MS
+            SyncServiceState.RUNNING -> {
+                syncBackoffMs = SYNC_RETRY_MIN_MS
+                // Back online: sends waiting out a backoff go now instead of
+                // up to two minutes later (the keeper only knows its timers).
+                tasks.launch {
+                    runCatching { client?.enableAllSendQueues(true) }
+                        .onFailure { Diag.error("Resuming sends after reconnecting", it) }
+                }
+            }
             SyncServiceState.ERROR -> {
                 if (syncRetry?.isActive == true) return
                 val wait = syncBackoffMs
@@ -831,6 +839,7 @@ object Matrix {
         typingHandles.clear()
         _typing.value = emptyMap()
         typingAt.clear()
+        typingSince.clear()
         pinsWritten = null
         syncRetry?.cancel()
         syncRetry = null
@@ -1308,7 +1317,13 @@ object Matrix {
         val room = room(roomId) ?: return null
         val list = runCatching { SessionList(roomId, room.threadListService()) }
             .onFailure { Diag.error("Opening the session list of $roomId", it) }.getOrNull() ?: return null
-        synchronized(sessionLists) { sessionLists[roomId] = list }
+        // Two askers at once (search and the sessions list) each made one,
+        // and the first was never closed: the one already there wins.
+        val kept = synchronized(sessionLists) { sessionLists.getOrPut(roomId) { list } }
+        if (kept !== list) {
+            list.close()
+            return kept
+        }
         list.start()
         return list
     }
@@ -1438,7 +1453,13 @@ object Matrix {
         synchronized(recomputeLock) {
             val bytes = HistoryStore.load(appContext)
             runHistory.clear()
-            if (bytes != null) runHistory.addAll(History.decode(bytes))
+            if (bytes != null) {
+                val read = History.decode(bytes)
+                // Bytes that decode to nothing are a file we can't read, not an
+                // empty history: said out loud (the next save replaces it).
+                if (read.isEmpty() && bytes.size > 2) Diag.error("Run history: ${bytes.size} bytes read, no record understood")
+                runHistory.addAll(read)
+            }
             // Older builds recorded lone commands (`!usage`) as runs; the
             // desktop drops them on load (load_run_history's retain).
             val pruned = History.pruneLoneCommands(runHistory)

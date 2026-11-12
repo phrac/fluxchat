@@ -118,7 +118,7 @@ fun threadTitle(root: Msg?, replies: List<Msg>): String {
     val meaningful = first != null && first.length > 1 && !first.startsWith("!") && !first.startsWith("/")
     if (meaningful) return first.take(120)
     return replies.lastOrNull { it.isMessage && Runs.progressSteps(it.body) == null }?.body?.lineSequence()?.firstOrNull()?.take(120)
-        ?: first ?: "Thread"
+        ?: first ?: org.fluxchat.companion.agents.History.UNTITLED
 }
 
 /** A sender's short name: display name, else the localpart. */

@@ -11,8 +11,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import org.fluxchat.companion.Diag
 import org.fluxchat.companion.MainActivity
 import org.fluxchat.companion.Notifications
@@ -46,7 +44,8 @@ object LiveRuns {
 
     fun start(context: Context) {
         val app = context.applicationContext
-        Matrix.agentRooms.onEach { update(app) }.launchIn(Matrix.scope)
+        // Supervised: a throw here used to end the ongoing notification for good (or the process).
+        Matrix.supervise("Keeping the live runs notification") { Matrix.agentRooms.collect { update(app) } }
     }
 
     private fun live(): List<Live> {

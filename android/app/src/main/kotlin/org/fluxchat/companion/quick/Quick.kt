@@ -14,7 +14,6 @@ import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.onEach
@@ -122,7 +121,7 @@ object Quick {
                 if (now == Auth.SignedOut && was != null && was != Auth.Starting && was != Auth.SignedOut) clearDrafts(app)
                 was = now
             }
-            .launchIn(Matrix.scope)
+            .let { flow -> Matrix.supervise("Keeping the quick entry points current") { flow.collect {} } }
         Matrix.agentRooms
             .map { rooms ->
                 rooms.values.sortedWith(AGENT_ROOM_ORDER).map { r ->
@@ -149,7 +148,7 @@ object Quick {
                 }.onFailure { Diag.error("Updating launcher shortcuts", it) }
                 QuickWidget.refresh(app)
             }
-            .launchIn(Matrix.scope)
+            .let { flow -> Matrix.supervise("Keeping the quick entry points current") { flow.collect {} } }
     }
 }
 

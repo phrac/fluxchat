@@ -6,8 +6,6 @@ import androidx.compose.runtime.DisposableEffect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import org.fluxchat.companion.AppLock
 import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.ui.Screen
@@ -61,9 +59,10 @@ object Attention {
     /** A session or project coming into view takes its notifications down. */
     fun start(context: Context) {
         val app = context.applicationContext
-        combine(top, visible, AppLock.locked) { screen, shown, locked -> screen.takeIf { shown && !locked } }
-            .distinctUntilChanged()
-            .onEach { screen -> if (screen != null) Notifier.cancelSeen(app, screen) }
-            .launchIn(Matrix.scope)
+        Matrix.supervise("Clearing notifications for what's on screen") {
+            combine(top, visible, AppLock.locked) { screen, shown, locked -> screen.takeIf { shown && !locked } }
+                .distinctUntilChanged()
+                .collect { screen -> if (screen != null) Notifier.cancelSeen(app, screen) }
+        }
     }
 }

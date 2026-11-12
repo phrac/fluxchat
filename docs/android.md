@@ -6,7 +6,7 @@ The app is new and early. Build it from source (below); there's no store release
 
 ## Signing in
 
-Sign in with your Matrix account (a username, `@name`, or a full `@name:server`); the phone becomes a new session. If your account has key backup, the app asks for your **recovery key** next. That unlocks encrypted agent rooms and verifies the phone. You can skip it with **Not now** — the app remembers that until you sign out and doesn't ask again at every start — but encrypted rooms then stay unreadable on the phone. A phone that finds out later that it needs the key (it was offline when you opened it) never interrupts you for it: the Projects screen offers **Unlock your past conversations** at the top, and the next start opens on the question.
+Sign in with your Matrix account (a username, `@name`, or a full `@name:server`); the phone becomes a new session. If your account has key backup, the app asks for your **recovery key** next. That unlocks encrypted agent rooms and verifies the phone. You can skip it with **Not now** — the app remembers that until you sign out and doesn't ask again at every start — but encrypted rooms then stay unreadable on the phone. A phone that finds out later that it needs the key (it was offline when you opened it) never interrupts you for it: the Projects screen offers **Unlock your past conversations** at the top, and the next start opens on the question. **Settings → Security → Enter recovery key** is always there while the key is still needed.
 
 Signing in never costs the phone what it already had: the keys of the previous sign-in are kept aside until the new one has gone through, and put back if it doesn't (a wrong password, no connection). If the app can't reopen your saved sign-in it says so and offers **Try again** — nothing is deleted — and **Sign in again** for when it never will.
 
@@ -14,9 +14,11 @@ The app reconnects by itself when the network changes (wifi to mobile data, a tu
 
 ## Your agents
 
-The app uses the same agent list as desktop fluxchat. It's saved to your account, so agents you marked on the desktop are already there. Manage them under **Agents** (the robot icon):
+The app uses the same agent list as desktop fluxchat. It's saved to your account, so agents you marked on the desktop are already there. On the Projects screen, **New project** and **Search** are buttons; **Run history**, **Your agents** and **Settings** are under the ⋮ menu. Manage your agents under **Your agents**:
 - **Add agent**: by Matrix ID.
 - Tap an agent to choose its harness (Hermes Agent, OpenClaw, Claude Code, Generic), or to remove it.
+
+An agent that shows it's working only by *typing* (the Claude Code, OpenClaw and Generic profiles) appears as **Working** while it types, as on the desktop.
 
 Changes apply on every device. The phone reads agents the same way the desktop does: same [harness profiles](agents.md#harness-profiles), same [agent protocol](agent-protocol.md).
 
@@ -64,8 +66,9 @@ DMs, and rooms where the agent answers in the conversation itself, stay a chat.
 ## A room or thread
 
 - **Sessions read as a transcript**, like Hermes's desktop app: in a thread, or a DM with an agent, your prompts are blocks on the right and the agent's answers run the full width as plain text, under its name once per turn. Its tool work is an activity block (*4 tool calls* and the latest step); tap it for every step. The one the agent is working on now spins and starts open; each terminal command is its own step. Hermes's timer heartbeat (*⏳ Working — 3 min*) is a single muted line. Once a turn is finished it becomes a card, faintly green when it succeeded and red when it failed (from the agent's ✅ / ❌ on your request): its work folds into one line (*Worked for 6m · 31 tool calls · 2 updates*; tap it for every step and note), so the answer stands on its own, with a line under it: *✓ Done · 6m · 31 tool calls · $0.34* and a copy button. The turn in progress, and any turn with an approval or question still waiting on you, stay open. Answers are set as a document: headings, lists, quotes, tables, and code blocks with their language and a copy button. An approval you've answered folds to one line (*✅ Approve once* and what it asked); tap it for the whole request. The agent's own 👀 / ✅ / ❌ reactions are left out, since the run card says the same.
-- **Messages** elsewhere appear as bubbles. Agents' step logs fold into one line ("6 steps · 🔧 Running tests"); tap to see every step. Long answers fold too. Images show inline; tap one for full screen, and pinch to zoom.
-- **Approvals and questions** appear as buttons under the message: Approve once / For this session / Always / Deny, or a question's numbered choices. A question can also be answered in your own words.
+- **Messages** elsewhere appear as bubbles. Agents' step logs fold into one line ("6 steps · 🔧 Running tests"); tap to see every step. Long answers fold too. Images show inline; tap one for full screen: pinch or double-tap to zoom, **Save** or **Share** it from the top bar, and in the gallery swipe to the next one. An image that didn't load says so; tap it to try again. Tables, nested lists and code blocks in an agent's answer are laid out as such.
+- **Approvals and questions** appear as buttons under the message: Approve once / For this session / Always / Deny, or a question's numbered choices. A question can also be answered in your own words. Once you tap, the buttons lock and the card says *Answer sent. Waiting for the agent* — a second tap can't take the answer back. An approval goes straight to the server, so it needs a connection: without one it says it couldn't be sent and the buttons come back.
+- **A message that didn't go out** says so under it, with **Retry** and **Delete** (and **Cancel** on one that has been sending for a while). The app retries by itself after a network failure; a message the server refused waits for you, and holds back the ones sent after it in that project — they say what they're waiting for, and a card above the message box takes you to the one in the way. If a message couldn't even be queued, its text comes back to the message box.
 - **The run card** above the message box shows the state, time so far, the latest step, and a progress bar.
   - **Stop** sends the harness's stop command.
   - In a room whose run is happening in a thread, the card names the thread; tap it to open the thread.
@@ -75,7 +78,8 @@ DMs, and rooms where the agent answers in the conversation itself, stay a chat.
 - **Share from other apps:** pick fluxchat in Android's share sheet (a screenshot, a PDF, a link, some text), then the agent room to send it to. The room opens with the file attached and the text in the message box, for you to add to and send. In a room shown as sessions, that starts a new session. A large file shows a progress card (with **Cancel**) while it's copied in; one that can't be read says so instead of opening the app with nothing to send. Backing out of *Send to…* drops the share.
 - **`/` commands**: type `/` for the agent's commands as you type. They go out the way its harness takes them (`!stop` for Hermes).
 - **The ⋮ menu** has the agent's quick commands: Status, Usage, Context, Model, New session.
-- **Threads follow you.** Send a request from a room. When the agent starts on it in a thread, the thread opens.
+- **Threads follow you.** Send a request from a room. When the agent starts on it in a thread, the thread opens — unless you're already typing the next one.
+- **Turning the phone** (or unfolding it) keeps your place: the screen you were on, what you'd typed, and an attachment or camera shot you hadn't sent yet.
 
 ## Sessions
 

@@ -234,6 +234,9 @@ private fun Navigator(opened: MutableStateFlow<Screen?>) {
     BackHandler(enabled = stack.size > 1) { back() }
     // Which screen is on top, for the notifications (none for what you're looking at).
     org.fluxchat.companion.push.Attention.Track(stack.last())
+    // The save picker's answers are taken here, whatever screen is showing
+    // (a file card that has scrolled away can't take its own).
+    SavesHere()
     AnimatedContent(
         targetState = stack.last(),
         transitionSpec = {

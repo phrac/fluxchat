@@ -333,7 +333,7 @@ fun ShareScreen(back: () -> Unit, swap: (Screen) -> Unit) {
                         Text(r.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val live = r.headline?.second?.takeIf { it.state.live }
                         Text(
-                            listOfNotNull(if (r.isDm) "Direct message" else "Project", live?.state?.label).joinToString(" · "),
+                            listOfNotNull(if (r.isDm) "Agent" else "Project", live?.state?.label).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall, color = live?.state?.color() ?: MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
