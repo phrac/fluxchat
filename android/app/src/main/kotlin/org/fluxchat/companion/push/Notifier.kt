@@ -76,8 +76,14 @@ object Notifier {
     private fun plain(body: String): String =
         body.lineSequence().filterNot { it.trimStart().startsWith("```") }.joinToString("\n").trim()
 
+    /** The latest notes shown, by event: a failed answer puts its prompt back (see [failed]). */
+    private val shown = object : LinkedHashMap<String, Note>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Note>?) = size > 40
+    }
+
     fun show(context: Context, note0: Note) {
         val note = note0.copy(body = plain(note0.body))
+        synchronized(shown) { shown[note.eventId] = note0 }
         val nm = NotificationManagerCompat.from(context)
         if (!nm.areNotificationsEnabled()) {
             org.fluxchat.companion.Diag.error("Notifications are turned off for the app")
@@ -134,7 +140,33 @@ object Notifier {
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setTimeoutAfter(4000)
+        synchronized(shown) { shown.remove(eventId) }
         runCatching { NotificationManagerCompat.from(context).notify(eventId, 0, b.build()) }
+            .onFailure { org.fluxchat.companion.Diag.error("Notification for $eventId", it) }
+    }
+
+    /**
+     * An answer from a notification didn't go out. The prompt comes back,
+     * buttons and all — it used to be replaced by a line that vanished after
+     * four seconds, and nothing showed it again: the agent waited with
+     * nothing on the phone. When this process no longer has the prompt (it
+     * was restarted since), a note that opens the session stands in.
+     */
+    fun failed(context: Context, roomId: String, threadRoot: String?, eventId: String) {
+        val note = synchronized(shown) { shown[eventId] }
+        if (note != null) {
+            show(context, note.copy(title = "Not sent · " + note.title.removePrefix("Not sent · ")))
+            return
+        }
+        val stand = Note(roomId, eventId, threadRoot, "", "Couldn't send your answer", "Open fluxchat to answer.", Note.Kind.Message)
+        val b = NotificationCompat.Builder(context, Notifications.PROMPTS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(stand.title)
+            .setContentText(stand.body)
+            .setContentIntent(openIntent(context, stand))
+            .setAutoCancel(true)
+        runCatching { NotificationManagerCompat.from(context).notify(eventId, 0, b.build()) }
+            .onFailure { org.fluxchat.companion.Diag.error("Notification for $eventId", it) }
     }
 
     fun cancel(context: Context, eventId: String) {

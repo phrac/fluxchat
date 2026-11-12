@@ -20,4 +20,11 @@ class UpdateTest {
         assertFalse(Update.isNewer("0.2.2.1", "0.2.2"))
         assertFalse(Update.isNewer("0.2.1", "0.2"))
     }
+
+    @Test
+    fun malformedTagsCompareInsteadOfThrowing() {
+        assertFalse(Update.isNewer("0.2.1", "0..1"))
+        Update.isNewer("0.2.1", "0.2.99999999999999999999999")
+        Update.isNewer("0.2.1", "")
+    }
 }

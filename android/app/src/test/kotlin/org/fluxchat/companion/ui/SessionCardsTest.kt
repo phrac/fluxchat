@@ -54,4 +54,16 @@ class SessionCardsTest {
     fun plainSummaryDropsMarkdownAndCode() {
         assertEquals("Title\n• one\nquote", plainSummary("# Title\n\n```sh\nrm -rf /\n```\n- one\n> quote"))
     }
+
+    @Test
+    fun yesterdayIsYesterdayAcrossNewYear() {
+        val zone = java.time.ZoneId.systemDefault()
+        fun at(y: Int, m: Int, d: Int) = java.time.LocalDate.of(y, m, d).atTime(12, 0).atZone(zone).toInstant().toEpochMilli()
+        val jan1 = at(2027, 1, 1)
+        assertEquals("Today", bucket(jan1, jan1))
+        assertEquals("Yesterday", bucket(at(2026, 12, 31), jan1))
+        assertEquals("Previous 7 days", bucket(at(2026, 12, 28), jan1))
+        assertEquals("Previous 30 days", bucket(at(2026, 12, 10), jan1))
+        assertEquals("Older", bucket(at(2026, 11, 1), jan1))
+    }
 }

@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import org.fluxchat.companion.launchHopping
 import org.fluxchat.companion.matrix.Attachment
 import org.fluxchat.companion.matrix.SessionList
@@ -94,10 +95,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -106,6 +109,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.fluxchat.companion.agents.BusyMode
@@ -128,8 +132,22 @@ private const val FOLLOW_WINDOW_MS = 3 * 60 * 1000L
 fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> Unit, swap: (Screen) -> Unit = go, jumpTo: String? = null) {
     val shared = remember(roomId, root) { if (root == null) Matrix.roomTimeline(roomId) else null }
     // Threads (and rooms that aren't kept open) get their own timeline while on screen.
+    var openFailed by remember(roomId, root) { mutableStateOf(false) }
     val own by produceState<TimelineModel?>(null, roomId, root) {
-        if (shared == null) value = if (root != null) Matrix.openThread(roomId, root) else Matrix.openLive(roomId)
+        if (shared == null) {
+            // Null (a project you've left, opened from Run history) or a throw
+            // used to mean a spinner for ever, or a crash.
+            val m = try {
+                if (root != null) Matrix.openThread(roomId, root) else Matrix.openLive(roomId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                org.fluxchat.companion.Diag.error("Opening ${root ?: roomId}", e)
+                null
+            }
+            if (m == null) openFailed = true
+            value = m
+        }
     }
     // Close the timeline this effect was for (not whatever `own` is by then).
     val opened = own
@@ -164,14 +182,20 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     }
     val run: RunInfo? = remember(all, agentRoom, now) {
         if (root == null) agentRoom?.runs?.get(key)
-        else Runs.roomRuns(roomId, msgs, agents, list::harnessOf, Matrix.isDm(roomId), now).runs[key] ?: agentRoom?.runs?.get(key)
+        else Runs.roomRuns(roomId, msgs, agents, list::harnessOf, Matrix.isDm(roomId), now).runs[key]
+            // A run the agent fell silent on is over here too (the project
+            // list already drops it): a 👀 left behind showed "Working" with
+            // Stop, and sent what you typed as `!steer` to an agent with no run.
+            ?.takeUnless { Runs.stalled(it, Matrix.signOfLife(roomId, it.agent, msgs, root, it.since), now) }
+            ?: agentRoom?.runs?.get(key)
     }
     val agent = run?.agent?.takeIf { it.isNotEmpty() } ?: agents.firstOrNull()
     val harness = list.harnessOf(agent ?: "")
     // A room where every request gets its own thread reads as its sessions,
     // a card each; the plain timeline is a tap away.
     val threaded = root == null && agent != null && !Matrix.isDm(roomId) && Runs.repliesInThreads(msgs, agent, harness, false)
-    var timelineView by rememberSaveable(roomId) { mutableStateOf(false) }
+    // Arriving at one message (the gallery's "go to message"): the timeline has it, the cards don't.
+    var timelineView by rememberSaveable(roomId) { mutableStateOf(jumpTo != null) }
     val cards = threaded && !timelineView
     val sessionList by produceState<SessionList?>(null, roomId, threaded) { if (threaded) value = Matrix.sessions(roomId) }
     // In a room: a run of yours going on in a thread (its card opens it).
@@ -194,13 +218,18 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
         }
     }
 
-    LaunchedEffect(msgs.size) { model?.markRead() }
+    // Read only while it's actually being looked at: with sync kept alive in
+    // the background, every new message was marked read from a locked phone.
+    val watching = LocalWindowInfo.current.isWindowFocused && unlocked()
+    LaunchedEffect(msgs.size, watching) { if (watching) model?.markRead() }
 
     val title = if (root == null) Matrix.roomName(roomId) else threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.id != root })
     var menu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val sendRaw: (String) -> Unit = { text -> scope.launch { send(model, roomId, root, text) } }
+    // Sends outlive the screen (the app's scope, not this composition's):
+    // leaving right after Send cancelled an upload and deleted its file.
+    val sendRaw: (String) -> Unit = { text -> Matrix.launch { send(model, roomId, root, text) } }
     val command: (String) -> Unit = { name ->
         val c = harness.command(name)
         sendRaw(if (harness.mentionCommands && agent != null && !Matrix.isDm(roomId)) "$agent $c" else c)
@@ -257,7 +286,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                         // Pin: keep this session on top of the list and its project on the Projects screen.
                         val pins by Matrix.pins.collectAsState()
                         val sessionPinned = pins.isPinned(roomId, root)
-                        IconButton(onClick = { scope.launch { Matrix.setPinned(roomId, root, !sessionPinned) } }) {
+                        IconButton(onClick = { scope.launch { setPinnedOrSay(context, roomId, root, !sessionPinned) } }) {
                             if (sessionPinned) Icon(Icons.Default.PushPin, "Unpin session")
                             else Icon(Icons.Outlined.PushPin, "Pin session")
                         }
@@ -279,7 +308,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                         var confirmLeave by remember { mutableStateOf(false) }
                         Box {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Agent commands") }
-                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, shape = MaterialTheme.shapes.medium) {
+                            DropdownMenu(expanded = menu && unlocked(), onDismissRequest = { menu = false }, shape = MaterialTheme.shapes.medium) {
                                 for (item in harness.menu) {
                                     DropdownMenuItem(text = { Text(item.label) }, onClick = { menu = false; command(item.command) })
                                 }
@@ -288,7 +317,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                                 }
                             }
                         }
-                        if (confirmLeave) {
+                        if (confirmLeave && unlocked()) {
                             AlertDialog(
                                 onDismissRequest = { confirmLeave = false },
                                 title = { Text("Leave this project?") },
@@ -296,7 +325,13 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                                 confirmButton = {
                                     TextButton(onClick = {
                                         confirmLeave = false
-                                        scope.launch { if (Matrix.leaveProject(roomId)) back() }
+                                        scope.launch {
+                                            if (Matrix.leaveProject(roomId)) back()
+                                            else {
+                                                Matrix.clearError()
+                                                android.widget.Toast.makeText(context, "Couldn't leave the project. Check your connection.", android.widget.Toast.LENGTH_LONG).show()
+                                            }
+                                        }
                                     }) { Text("Leave") }
                                 },
                                 dismissButton = { TextButton(onClick = { confirmLeave = false }) { Text("Cancel") } },
@@ -313,7 +348,12 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 if (cards) {
                     SessionFeed(roomId, all, agents, agentRoom?.runs.orEmpty(), sessionList, now) { r -> go(Screen.Thread(roomId, r)) }
                 } else if (model == null) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                        if (openFailed) Text(
+                            "Couldn't open this. It may no longer be on this phone.",
+                            style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ) else CircularProgressIndicator()
+                    }
                 } else {
                     // A session (a thread, or a DM with the agent) reads as a transcript.
                     val transcript = agents.isNotEmpty() && (root != null || Matrix.isDm(roomId))
@@ -336,7 +376,7 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 shareFor = roomId,
                 onAttach = { a, caption ->
                     if (root == null) sentAt = System.currentTimeMillis()
-                    model?.let { m -> scope.launch { sendAttachment(context, m, a, caption) } }
+                    model?.let { m -> Matrix.launch { sendAttachment(context.applicationContext, m, a, caption) } }
                 },
                 onSend = { text, mode ->
                     val out = Runs.outgoing(harness, text, run?.state == RunState.Working, mode, agent?.takeIf { !Matrix.isDm(roomId) })
@@ -348,23 +388,35 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
         }
     } }
 
+    // One screen, moved between the three layouts below rather than rebuilt
+    // in each: flipping to the timeline (or the phone unfolding) threw away
+    // what you had typed, the attachment and the scroll position.
+    val latest by rememberUpdatedState(content)
+    val screen = remember { movableContentOf<Boolean> { sessionsButton -> latest(sessionsButton) } }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= WIDE_LAYOUT
         when {
-            !hasSessions -> content(false)
+            !hasSessions -> screen(false)
             wide -> Row(Modifier.fillMaxSize()) {
                 PermanentDrawerSheet(Modifier.width(SESSIONS_WIDTH)) { SessionsPane(roomId, root, openSession, newSession) }
-                Box(Modifier.weight(1f)) { content(false) }
+                Box(Modifier.weight(1f)) { screen(false) }
             }
             else -> ModalNavigationDrawer(
                 drawerState = drawer,
                 // The left edge is Android's back gesture: the drawer opens from its button.
                 gesturesEnabled = drawer.isOpen,
                 drawerContent = { ModalDrawerSheet(drawerState = drawer) { SessionsPane(roomId, root, openSession, newSession) } },
-            ) { content(true) }
+            ) { screen(true) }
         }
     }
 }
+
+/** Pages that add no row before paging gives up until you scroll again. */
+private const val MAX_EMPTY_PAGES = 5
+/** How long a page's rows take to land in the list. */
+private const val PAGE_SETTLE_MS = 250L
+/** Pages a deep link pulls looking for its message before the list opens normally. */
+private const val MAX_JUMP_PAGES = 60
 
 /** Wider than this, sessions sit in a sidebar beside the chat (tablets, foldables, landscape). */
 private val WIDE_LAYOUT = 840.dp
@@ -390,10 +442,23 @@ private fun MessageList(
     var loading by remember { mutableStateOf(false) }
     val nearTop by remember { derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 4 } }
     val awayFromBottom by remember { derivedStateOf { state.firstVisibleItemIndex > 2 } }
-    LaunchedEffect(nearTop, msgs.size) {
-        if (nearTop && !atStart && !loading) {
-            loading = true
-            model.paginateBack()
+    val currentMsgs by rememberUpdatedState(msgs)
+    LaunchedEffect(nearTop, atStart) {
+        if (!nearTop || atStart) return@LaunchedEffect
+        loading = true
+        try {
+            // Keep paging while you sit at the top: a page of edits and
+            // reactions adds no row, and waiting for the row count to change
+            // read as the start of history. `finally`: scrolling away while a
+            // page was in flight left the spinner up and paging off for good.
+            var empty = 0
+            while (empty < MAX_EMPTY_PAGES) {
+                val before = currentMsgs.size
+                if (!model.paginateBack()) break
+                delay(PAGE_SETTLE_MS)
+                if (currentMsgs.size == before) empty++ else empty = 0
+            }
+        } finally {
             loading = false
         }
     }
@@ -434,14 +499,23 @@ private fun MessageList(
             is TranscriptEntry.Done -> msgs.getOrNull(e.answerIndex)?.id == id
         }
     }
-    LaunchedEffect(jumpTo, msgs.size, entries, atStart) {
+    var jumpPages by remember(jumpTo) { mutableStateOf(0) }
+    LaunchedEffect(jumpTo, msgs.size, entries, atStart, jumpPages) {
         if (jumpTo == null || jumped) return@LaunchedEffect
         val at = if (transcript) entries.indexOfFirst { hitInEntry(it, jumpTo) }
         else reversed.indexOfFirst { it.id == jumpTo }
         when {
             at >= 0 -> { state.scrollToItem(at); jumped = true }
-            !atStart -> model.paginateBack() // the hit isn't loaded yet: older pages
-            else -> jumped = true // everything loads and it's not here: open normally
+            // Everything loaded (or enough tried) and it's not here: open normally.
+            atStart || jumpPages >= MAX_JUMP_PAGES -> jumped = true
+            else -> {
+                // The hit isn't loaded yet: older pages. Counted, so a page
+                // that adds nothing (or fails) is followed by another instead
+                // of leaving the list never following the newest again.
+                model.paginateBack()
+                delay(PAGE_SETTLE_MS)
+                jumpPages++
+            }
         }
     }
     @Composable
@@ -459,8 +533,8 @@ private fun MessageList(
             prompt = prompt,
             question = if (isAgent) Runs.pendingQuestion(msgs, i, m.sender, h, now) else null,
             live = m.id == liveSteps,
-            onReact = { key -> scope.launch { react(model, roomId, m.id, key) } },
-            onAnswer = { text -> scope.launch { send(model, roomId, root, text) } },
+            onReact = { key -> Matrix.launch { react(model, roomId, m.id, key) } },
+            onAnswer = { text -> Matrix.launch { send(model, roomId, root, text) } },
         )
     }
     Box(Modifier.fillMaxSize()) {
@@ -509,8 +583,8 @@ private fun MessageList(
                         inThread = root != null,
                         prompt = prompt,
                         question = question,
-                        onReact = { key -> scope.launch { react(model, roomId, m.id, key) } },
-                        onAnswer = { text -> scope.launch { send(model, roomId, root, text) } },
+                        onReact = { key -> Matrix.launch { react(model, roomId, m.id, key) } },
+                        onAnswer = { text -> Matrix.launch { send(model, roomId, root, text) } },
                         onOpenThread = if (root == null && m.hasThread) ({ go(Screen.Thread(roomId, m.id)) }) else null,
                         threadRun = if (root == null) Matrix.agentRooms.value[roomId]?.runs?.get(ViewKey(roomId, m.id)) else null,
                         now = now,
@@ -701,7 +775,7 @@ internal fun Composer(
             if (canAttach) {
                 Box {
                     IconButton(onClick = { attachMenu = true }, modifier = Modifier.size(56.dp)) { Icon(Icons.Outlined.AttachFile, "Attach") }
-                    DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }, shape = MaterialTheme.shapes.medium) {
+                    DropdownMenu(expanded = attachMenu && unlocked(), onDismissRequest = { attachMenu = false }, shape = MaterialTheme.shapes.medium) {
                         DropdownMenuItem(
                             text = { Text("Take photo") },
                             leadingIcon = { Icon(Icons.Outlined.PhotoCamera, null) },

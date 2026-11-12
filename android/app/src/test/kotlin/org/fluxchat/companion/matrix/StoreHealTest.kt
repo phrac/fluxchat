@@ -25,4 +25,13 @@ class StoreHealTest {
         // job); from 0 the policy heals again.
         assertTrue(StoreHeal.decide(unackedNativeCrash = true, heals = 0))
     }
+
+    @Test fun `an ordinary kill is not a native crash`() {
+        val signaled = android.app.ApplicationExitInfo.REASON_SIGNALED
+        assertFalse("SIGKILL: the system reclaiming memory", StoreHeal.nativeCrash(signaled, 9))
+        assertTrue("SIGSEGV", StoreHeal.nativeCrash(signaled, 11))
+        assertTrue("SIGBUS", StoreHeal.nativeCrash(signaled, 7))
+        assertTrue(StoreHeal.nativeCrash(android.app.ApplicationExitInfo.REASON_CRASH_NATIVE, 0))
+        assertFalse(StoreHeal.nativeCrash(android.app.ApplicationExitInfo.REASON_LOW_MEMORY, 0))
+    }
 }

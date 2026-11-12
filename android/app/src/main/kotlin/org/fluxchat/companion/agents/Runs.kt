@@ -179,13 +179,47 @@ object Runs {
                 cp == 0xFE0F || cp == 0x200D || cp == 0x20E3 || cp in 0x1F3FB..0x1F3FF || cp in 0xE0020..0xE007F -> {}
                 cp in 0x1F1E6..0x1F1FF -> sawPictograph = true // regional indicators (flags)
                 cp >= 0x1F000 -> sawPictograph = true
-                cp in 0x2190..0x2BFF || cp in 0x3030..0x303D || cp in 0x3297..0x3299 || cp == 0x00A9 || cp == 0x00AE ->
-                    sawPictograph = true
+                isBmpEmoji(cp) -> sawPictograph = true
                 cp in '0'.code..'9'.code || cp == '#'.code || cp == '*'.code -> if (!s.contains('⃣')) return false
                 else -> return false
             }
         }
         return sawPictograph || s.contains('⃣')
+    }
+
+    /**
+     * The emoji below U+1F000 (Unicode `Emoji=Yes`), as inclusive ranges. The
+     * whole U+2190–2BFF block used to count, which made box drawing, maths
+     * and plain marks "emoji": an agent's file tree (`├── src`) or a
+     * `✓ done` list read as a step log — folded away, and no longer ending an
+     * open prompt. The desktop asks the `emojis` crate, which is this list.
+     */
+    private val BMP_EMOJI = intArrayOf(
+        0x00A9, 0x00A9, 0x00AE, 0x00AE, 0x203C, 0x203C, 0x2049, 0x2049, 0x2122, 0x2122, 0x2139, 0x2139,
+        0x2194, 0x2199, 0x21A9, 0x21AA, 0x231A, 0x231B, 0x2328, 0x2328, 0x23CF, 0x23CF, 0x23E9, 0x23F3,
+        0x23F8, 0x23FA, 0x24C2, 0x24C2, 0x25AA, 0x25AB, 0x25B6, 0x25B6, 0x25C0, 0x25C0, 0x25FB, 0x25FE,
+        0x2600, 0x2604, 0x260E, 0x260E, 0x2611, 0x2611, 0x2614, 0x2615, 0x2618, 0x2618, 0x261D, 0x261D,
+        0x2620, 0x2620, 0x2622, 0x2623, 0x2626, 0x2626, 0x262A, 0x262A, 0x262E, 0x262F, 0x2638, 0x263A,
+        0x2640, 0x2640, 0x2642, 0x2642, 0x2648, 0x2653, 0x265F, 0x2660, 0x2663, 0x2663, 0x2665, 0x2666,
+        0x2668, 0x2668, 0x267B, 0x267B, 0x267E, 0x267F, 0x2692, 0x2697, 0x2699, 0x2699, 0x269B, 0x269C,
+        0x26A0, 0x26A1, 0x26A7, 0x26A7, 0x26AA, 0x26AB, 0x26B0, 0x26B1, 0x26BD, 0x26BE, 0x26C4, 0x26C5,
+        0x26C8, 0x26C8, 0x26CE, 0x26CF, 0x26D1, 0x26D1, 0x26D3, 0x26D4, 0x26E9, 0x26EA, 0x26F0, 0x26F5,
+        0x26F7, 0x26FA, 0x26FD, 0x26FD, 0x2702, 0x2702, 0x2705, 0x2705, 0x2708, 0x270D, 0x270F, 0x270F,
+        0x2712, 0x2712, 0x2714, 0x2714, 0x2716, 0x2716, 0x271D, 0x271D, 0x2721, 0x2721, 0x2728, 0x2728,
+        0x2733, 0x2734, 0x2744, 0x2744, 0x2747, 0x2747, 0x274C, 0x274C, 0x274E, 0x274E, 0x2753, 0x2755,
+        0x2757, 0x2757, 0x2763, 0x2764, 0x2795, 0x2797, 0x27A1, 0x27A1, 0x27B0, 0x27B0, 0x27BF, 0x27BF,
+        0x2934, 0x2935, 0x2B05, 0x2B07, 0x2B1B, 0x2B1C, 0x2B50, 0x2B50, 0x2B55, 0x2B55, 0x3030, 0x3030,
+        0x303D, 0x303D, 0x3297, 0x3297, 0x3299, 0x3299,
+    )
+
+    private fun isBmpEmoji(cp: Int): Boolean {
+        var i = 0
+        while (i < BMP_EMOJI.size) {
+            if (cp < BMP_EMOJI[i]) return false
+            if (cp <= BMP_EMOJI[i + 1]) return true
+            i += 2
+        }
+        return false
     }
 
     /**
@@ -210,15 +244,34 @@ object Runs {
         return promptChoices(msg, now, h.approvals)
     }
 
-    /** Whether `agent` answers in threads here: as its last finished request went, else its habit. */
-    fun repliesInThreads(roomMsgs: List<Msg>, agent: String, h: Harness, isDm: Boolean): Boolean =
+    /**
+     * Whether `agent` answers in threads here: as its last finished request
+     * went, else its habit. [loaded]: thread roots with replies loaded — the
+     * SDK's thread summary can trail the replies themselves (agents.rs
+     * `has_thread`), and going by the summary alone put the next run on the
+     * room, then moved it to its thread: two records for one request.
+     */
+    fun repliesInThreads(roomMsgs: List<Msg>, agent: String, h: Harness, isDm: Boolean, loaded: Set<String> = emptySet()): Boolean =
         roomMsgs.asReversed().firstOrNull { it.isOwn && it.threadRoot == null && requestState(h, it, agent) == RunState.Done }
-            ?.hasThread ?: (h.replyInThread && !isDm)
+            ?.let { it.hasThread || it.id in loaded } ?: (h.replyInThread && !isDm)
 
     data class Result(val runs: Map<ViewKey, RunInfo?>, val prompts: List<String>)
 
-    /** What `agent`'s signals say about the runs in a room (all its loaded messages). */
-    fun agentUpdates(roomId: String, all: List<Msg>, agent: String, h: Harness, isDm: Boolean, now: Long): Result {
+    /**
+     * What `agent`'s signals say about the runs in a room (all its loaded
+     * messages). [tracked]: thread keys already shown as live runs — a
+     * request that stops counting as threaded (it ended with no reply in its
+     * thread) still reports on its key, so that run gets its end.
+     */
+    fun agentUpdates(
+        roomId: String,
+        all: List<Msg>,
+        agent: String,
+        h: Harness,
+        isDm: Boolean,
+        now: Long,
+        tracked: Set<ViewKey> = emptySet(),
+    ): Result {
         val updates = LinkedHashMap<ViewKey, RunInfo?>()
         val prompts = ArrayList<String>()
         val roomMsgs = viewMessages(all, ViewKey(roomId))
@@ -236,10 +289,14 @@ object Runs {
             return r.copy(step = steps.last(), steps = steps.size)
         }
 
-        fun settle(latest: RunInfo?, needsYou: Boolean): RunInfo? = when {
-            latest != null && needsYou -> latest.copy(state = RunState.NeedsYou)
-            latest == null && needsYou -> RunInfo(RunState.NeedsYou, now)
-            else -> latest
+        // [asked]: when the newest open prompt was posted (null: none open).
+        // A prompt with no request to hang on is dated from itself — dating it
+        // "now" made it a different run on every refresh: a new history record
+        // each time, and an elapsed time that kept starting over.
+        fun settle(latest: RunInfo?, asked: Long?): RunInfo? = when {
+            asked == null -> latest
+            latest != null -> latest.copy(state = RunState.NeedsYou)
+            else -> RunInfo(RunState.NeedsYou, asked)
         }
 
         // Threads with replies loaded: like the desktop's thread views.
@@ -251,24 +308,24 @@ object Runs {
             val latest = msgs.asReversed().firstNotNullOfOrNull { m ->
                 if (m.isOwn) requestState(h, m, agent)?.let { RunInfo(it, m.ts) } else null
             }
-            updates[key] = settle(latest, open.isNotEmpty())?.let { withStep(msgs, it) }
+            updates[key] = settle(latest, open.maxOfOrNull { it.ts })?.let { withStep(msgs, it) }
         }
 
         // The room: threaded requests whose replies aren't loaded go by the
         // root's reactions; the latest unthreaded one is the room's run.
-        val expectThread = repliesInThreads(roomMsgs, agent, h, isDm)
+        val expectThread = repliesInThreads(roomMsgs, agent, h, isDm, loaded)
         var latestUnthreaded: RunInfo? = null
         for (m in roomMsgs) {
             if (!m.isOwn) continue
             val state = requestState(h, m, agent) ?: continue
             val threaded = m.hasThread || m.id in loaded || (expectThread && state == RunState.Working)
             val tk = ViewKey(roomId, m.id)
-            if (m.id !in loaded && threaded) updates[tk] = RunInfo(state, m.ts)
+            if (m.id !in loaded && (threaded || tk in tracked)) updates[tk] = RunInfo(state, m.ts)
             if (!threaded) latestUnthreaded = RunInfo(state, m.ts)
         }
         val open = viewPrompts(roomMsgs)
         prompts += open.map { it.id }
-        updates[ViewKey(roomId)] = settle(latestUnthreaded, open.isNotEmpty())?.let { withStep(roomMsgs, it) }
+        updates[ViewKey(roomId)] = settle(latestUnthreaded, open.maxOfOrNull { it.ts })?.let { withStep(roomMsgs, it) }
 
         // The protocol wins: several runs on one view → the newest, or one waiting on you.
         val byKey = HashMap<ViewKey, RunInfo>()
@@ -335,11 +392,19 @@ object Runs {
     }
 
     /** Every agent's view of a room's runs, merged (the livelier wins per view). */
-    fun roomRuns(roomId: String, all: List<Msg>, agents: List<String>, harnessOf: (String) -> Harness, isDm: Boolean, now: Long): Result {
+    fun roomRuns(
+        roomId: String,
+        all: List<Msg>,
+        agents: List<String>,
+        harnessOf: (String) -> Harness,
+        isDm: Boolean,
+        now: Long,
+        tracked: Set<ViewKey> = emptySet(),
+    ): Result {
         val merged = LinkedHashMap<ViewKey, RunInfo?>()
         val prompts = ArrayList<String>()
         for (agent in agents) {
-            val r = agentUpdates(roomId, all, agent, harnessOf(agent), isDm, now)
+            val r = agentUpdates(roomId, all, agent, harnessOf(agent), isDm, now, tracked)
             prompts += r.prompts
             for ((k, run) in r.runs) {
                 val old = merged[k]

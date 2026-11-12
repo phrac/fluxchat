@@ -166,6 +166,8 @@ fun RecoveryScreen() {
             label = { Text("Recovery key") }, minLines = 2,
             leadingIcon = { Icon(Icons.Outlined.Key, null) },
             visualTransformation = PasswordVisualTransformation(),
+            // A secret: the keyboard shouldn't suggest it, or learn it.
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         )
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(

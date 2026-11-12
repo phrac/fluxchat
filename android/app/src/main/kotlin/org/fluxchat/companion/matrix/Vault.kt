@@ -24,13 +24,21 @@ class Vault(context: Context) {
 
     data class Saved(val session: Session, val storePassphrase: String)
 
+    /**
+     * The saved session; null only when nothing is saved. A session that is
+     * there but can't be read (the Keystore failing for a moment) *throws*:
+     * read as "signed out" it led to the sign-in form, and signing in
+     * replaces the store. Never creates a key — a key made here would
+     * replace the one the vault was written with.
+     */
     fun load(): Saved? {
         if (!file.exists()) return null
-        return runCatching {
+        return run {
             val bytes = file.readBytes()
             val iv = bytes.copyOfRange(0, IV_BYTES)
             val cipher = Cipher.getInstance(TRANSFORM)
-            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
+            val key = key(create = false) ?: throw IllegalStateException("the phone's keystore has no key for this app")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
             val o = JSONObject(String(cipher.doFinal(bytes.copyOfRange(IV_BYTES, bytes.size)), Charsets.UTF_8))
             val s = o.getJSONObject("session")
             Saved(
@@ -45,7 +53,7 @@ class Vault(context: Context) {
                 ),
                 o.getString("store_passphrase"),
             )
-        }.getOrNull()
+        }
     }
 
     fun save(session: Session, storePassphrase: String) {
@@ -59,7 +67,7 @@ class Vault(context: Context) {
             .put("sliding_sync", session.slidingSyncVersion.name)
         val plain = JSONObject().put("session", s).put("store_passphrase", storePassphrase).toString().toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance(TRANSFORM)
-        cipher.init(Cipher.ENCRYPT_MODE, key())
+        cipher.init(Cipher.ENCRYPT_MODE, key(create = true) ?: error("no keystore key"))
         val out = cipher.iv + cipher.doFinal(plain)
         val tmp = File(file.path + ".tmp")
         tmp.writeBytes(out)
@@ -70,9 +78,10 @@ class Vault(context: Context) {
         file.delete()
     }
 
-    private fun key(): SecretKey {
+    private fun key(create: Boolean): SecretKey? {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
+        if (!create) return null
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         gen.init(
             KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)

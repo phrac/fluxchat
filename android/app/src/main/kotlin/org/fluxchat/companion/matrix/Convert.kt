@@ -63,7 +63,10 @@ fun convert(ev: EventTimelineItem): Msg {
                     if (file != null) body = caption(k.content.msgType).orEmpty()
                     formatted = formattedBody(k.content.msgType)
                     edited = k.content.isEdited
-                    protocol = Protocol.fromEventJson(ev.lazyProvider.latestJson() ?: ev.lazyProvider.debugInfo().originalJson)
+                    // The latest edit first; an edit that left the fields out
+                    // doesn't erase them (core `agent_meta` falls back the same way).
+                    protocol = Protocol.fromEventJson(ev.lazyProvider.latestJson())
+                        ?: Protocol.fromEventJson(ev.lazyProvider.debugInfo().originalJson)
                 }
                 is MsgLikeKind.Sticker -> { isMessage = true; body = "[sticker] ${k.body}" }
                 is MsgLikeKind.Poll -> { isMessage = true; body = "[poll] ${k.question}" }

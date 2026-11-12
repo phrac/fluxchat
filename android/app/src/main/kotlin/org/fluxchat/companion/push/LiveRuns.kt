@@ -44,6 +44,8 @@ object LiveRuns {
     @Volatile private var last: String? = null
     @Volatile private var current: android.app.Notification? = null
     @Volatile private var serviceUp = false
+    /** Whether this process has looked yet: its first look takes down what the last process left. */
+    @Volatile private var looked = false
 
     fun start(context: Context) {
         val app = context.applicationContext
@@ -86,7 +88,12 @@ object LiveRuns {
         org.fluxchat.companion.quick.RunWidget.refresh(context)
         val runs = live()
         if (runs.isEmpty()) {
-            if (last != null) {
+            // Also on this process' first look: a notification the last
+            // process left up (its service refused, then it died, the run
+            // ended meanwhile) had nobody to take it down — "Working", with a
+            // running clock, until some other run started and ended.
+            if (last != null || !looked) {
+                looked = true
                 last = null
                 current = null
                 if (serviceUp) context.stopService(Intent(context, RunService::class.java))
@@ -97,6 +104,7 @@ object LiveRuns {
         // Only re-post when what it says changes (the timer runs by itself).
         val sig = runs.joinToString("|") { "${it.key}/${it.run.state}/${it.run.step}/${it.run.steps}/${it.run.progress}" }
         if (sig == last) return
+        looked = true
         last = sig
         val n = build(context, runs)
         current = n
@@ -107,7 +115,18 @@ object LiveRuns {
                 .onFailure { Diag.note("live runs: no foreground service (${it.javaClass.simpleName}), plain notification") }
         }
         runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, n) }
+            .onFailure { if (notifyErrors++ < 3) Diag.error("Posting the live runs notification", it) }
     }
+
+    private var notifyErrors = 0
+
+    /** What [RunService] shows for the instant it takes to stop when no run is left. */
+    internal fun idle(context: Context): android.app.Notification =
+        NotificationCompat.Builder(context, Notifications.LIVE)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("No agent runs")
+            .setSilent(true)
+            .build()
 
     /** The notification as it stands, for [RunService.startForeground]. */
     internal fun notification(context: Context): android.app.Notification? = current ?: live().takeIf { it.isNotEmpty() }?.let { build(context, it) }
@@ -189,18 +208,22 @@ class RunService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val n = LiveRuns.notification(this)
-        if (n == null) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        // Started with startForegroundService, so startForeground is owed
+        // even when the last run ended on the way here: stopping without it
+        // is a crash ("did not then call Service.startForeground()").
+        val live = LiveRuns.notification(this)
+        val n = live ?: LiveRuns.idle(this)
         val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
         runCatching { ServiceCompat.startForeground(this, LiveRuns.NOTIFICATION_ID, n, type) }
-            .onSuccess { LiveRuns.serviceRunning(true) }
+            .onSuccess { LiveRuns.serviceRunning(live != null) }
             .onFailure {
                 Diag.error("Starting the live runs service", it)
                 stopSelf()
             }
+        if (live == null) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
         return START_NOT_STICKY
     }
 

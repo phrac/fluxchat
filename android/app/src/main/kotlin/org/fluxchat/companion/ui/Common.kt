@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -20,6 +21,30 @@ import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.RunState
 import org.fluxchat.companion.agents.Runs
+
+/**
+ * Whether the app's content may show. Dialogs, sheets and menus draw in
+ * windows of their own, above the lock screen (an overlay inside the
+ * activity's window): a full-screen photo stayed up over "fluxchat is
+ * locked", and a "Leave this project?" could be answered from there. Each of
+ * them checks this.
+ */
+@Composable
+fun unlocked(): Boolean = !org.fluxchat.companion.AppLock.locked.collectAsState().value
+
+/** Pin or unpin a session, and say so when it didn't take: a failed pin used to do nothing you could see. */
+suspend fun setPinnedOrSay(context: android.content.Context, roomId: String, root: String, pinned: Boolean) {
+    if (org.fluxchat.companion.matrix.Matrix.setPinned(roomId, root, pinned)) return
+    // Said here, where it happened — not later in red in some other dialog.
+    org.fluxchat.companion.matrix.Matrix.clearError()
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        android.widget.Toast.makeText(
+            context,
+            if (pinned) "Couldn't pin the session. Check your connection." else "Couldn't unpin the session. Check your connection.",
+            android.widget.Toast.LENGTH_LONG,
+        ).show()
+    }
+}
 
 @Composable
 fun StateDot(state: RunState, size: Dp = 10.dp) {

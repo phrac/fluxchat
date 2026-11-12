@@ -91,8 +91,13 @@ object Update {
             val y = b.getOrNull(i)
             if (y == null) return false // current has more parts: current is newer
             if (x == null) return true  // latest has more parts
-            val c = if (x.all { it.isDigit() } && y.all { it.isDigit() }) {
-                x.toLong().compareTo(y.toLong())
+            // toLongOrNull: an empty part ("1..2") or one too long for a Long
+            // is compared as text — toLong() threw, in a collector with no
+            // handler, which is a crash at start for a malformed tag.
+            val xn = x.toLongOrNull()?.takeIf { x.all { it.isDigit() } }
+            val yn = y.toLongOrNull()?.takeIf { y.all { it.isDigit() } }
+            val c = if (xn != null && yn != null) {
+                xn.compareTo(yn)
             } else {
                 x.compareTo(y)
             }

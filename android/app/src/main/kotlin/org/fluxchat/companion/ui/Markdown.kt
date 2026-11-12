@@ -155,7 +155,7 @@ private fun CodeBlock(code: String, lang: String?, maxLines: Int, copy: Boolean 
     }
 }
 
-private sealed interface Block {
+internal sealed interface Block {
     /** Lines it takes, for folding long answers. */
     val lines: Int
 
@@ -175,7 +175,7 @@ private val RULE = Regex("^(-{3,}|\\*{3,}|_{3,})$")
 private val TABLE_SEPARATOR = Regex("^\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)*\\|?$")
 
 /** Markdown blocks, line by line (agents write simple Markdown; nothing exotic). */
-private fun parseBlocks(body: String): List<Block> {
+internal fun parseBlocks(body: String): List<Block> {
     val out = ArrayList<Block>()
     val lines = body.lines()
     val para = ArrayList<String>()
@@ -190,11 +190,28 @@ private fun parseBlocks(body: String): List<Block> {
         when {
             line.startsWith("```") -> {
                 flush()
-                val lang = line.removePrefix("```").trim().takeIf { it.isNotEmpty() }
-                val code = ArrayList<String>()
-                i++
-                while (i < lines.size && !lines[i].trim().startsWith("```")) code += lines[i++]
-                out += Block.Code(code.joinToString("\n").trimEnd(), lang)
+                val ticks = line.takeWhile { it == '`' }.length
+                val rest = line.drop(ticks).trim()
+                if (rest.endsWith("```") && rest.trim('`').isNotBlank()) {
+                    // ```cmd``` on one line is the whole block (it used to
+                    // open a fence that swallowed the rest of the message).
+                    out += Block.Code(rest.trimEnd('`').trim(), null)
+                } else {
+                    val lang = rest.takeIf { it.isNotEmpty() }
+                    // A fence inside a list item is indented with it: that
+                    // much comes off each line of the code.
+                    val indent = raw.length - raw.trimStart().length
+                    // Only a bare fence at least as long closes it: a
+                    // ```python inside a ````-block is part of the code.
+                    fun closes(l: String) = l.trim().let { t -> t.length >= ticks && t.all { it == '`' } }
+                    val code = ArrayList<String>()
+                    i++
+                    while (i < lines.size && !closes(lines[i])) {
+                        val l = lines[i++]
+                        code += if (l.take(indent).isBlank()) l.drop(indent) else l
+                    }
+                    out += Block.Code(code.joinToString("\n").trimEnd(), lang)
+                }
             }
             line.isEmpty() -> flush()
             HEADING.matches(line) -> {
@@ -229,6 +246,11 @@ private fun parseBlocks(body: String): List<Block> {
                         val marker = m.groupValues[2].let { if (it in setOf("-", "*", "+", "•")) "•" else it }
                         items += Block.Item(marker, m.groupValues[1].length / 2, m.groupValues[3])
                         i++
+                    } else if (lines[i].trim().startsWith("```")) {
+                        // A code block under an item: the fence is its own
+                        // block (as a "continuation line" it showed as text,
+                        // and YAML's `- name:` lines inside became bullets).
+                        break
                     } else if (lines[i].isNotBlank() && lines[i].startsWith(" ") && items.isNotEmpty()) {
                         // A wrapped item: its continuation line.
                         val last = items.removeAt(items.size - 1)
@@ -253,13 +275,17 @@ private fun table(rows: List<List<String>>): String {
     return rows.joinToString("\n") { r -> (0 until cols).joinToString("  ") { c -> (r.getOrNull(c) ?: "").padEnd(widths[c]) }.trimEnd() }
 }
 
-private val LINK = Regex("""\[([^\]]+)]\((https?://[^)\s]+)\)""")
-private val URL = Regex("""https?://[^\s<>()\[\]]+[^\s<>()\[\].,;:!?'"]""")
-private val INLINE = Regex("""`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s][^*]*)\*(?!\w)|~~([^~]+)~~""")
+// URLs may hold balanced parentheses (…/wiki/Foo_(bar)): the link used to end
+// at the first ")", opening the wrong page.
+private val LINK = Regex("""\[([^\]]+)]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)""")
+private val URL = Regex("""https?://(?:[^\s<>()\[\]]|\([^\s<>()\[\]]*\))*(?:[^\s<>()\[\].,;:!?'"]|\([^\s<>()\[\]]*\))""")
+// Italics close on a non-space, like they open: "*.kt and *.kts" is two globs,
+// not a phrase in italics with its stars eaten.
+private val INLINE = Regex("""`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\w)|~~([^~]+)~~""")
 
-private data class InlineColors(val code: Color, val link: TextLinkStyles)
+internal data class InlineColors(val code: Color, val link: TextLinkStyles)
 
-private fun inline(text: String, colors: InlineColors): AnnotatedString = buildAnnotatedString {
+internal fun inline(text: String, colors: InlineColors): AnnotatedString = buildAnnotatedString {
     text.lines().forEachIndexed { i, line ->
         if (i > 0) append('\n')
         spans(line, colors)

@@ -122,6 +122,8 @@ private fun Viewer(media: Media, close: () -> Unit) {
         scale = (scale * zoom).coerceIn(1f, 6f)
         offset = if (scale == 1f) androidx.compose.ui.geometry.Offset.Zero else offset + pan
     }
+    // Its own window, above the lock screen: not while the app is locked.
+    if (!unlocked()) return
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             full?.let {

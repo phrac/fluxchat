@@ -116,14 +116,19 @@ object History {
             true
         } else {
             val rec = history[i]
-            if (rec.state == STALLED) return false // settled stays settled (the desktop drops stalled states)
+            // Settled stays settled against another *live* sighting (a 👀 left
+            // behind must not flip the record working↔stalled) — but a run
+            // that outlasted the silence and then finished is no longer
+            // "stalled": it takes its real outcome, cost and end.
+            if (rec.state == STALLED && live) return false
+            val reopened = rec.state == STALLED
             val cost = run.costUsd?.let { c -> rec.costUsd?.let { maxOf(it, c) } ?: c } ?: rec.costUsd
             val model = run.model ?: rec.model
             // Ending with neither the run nor its record carrying model / cost
             // (older agents report no protocol fields on the last edit): the
             // room's runtime info backfills them (the desktop's record_run
             // pulling agent_runtime on the end transition).
-            val ending = !live && rec.ended == null
+            val ending = !live && (rec.ended == null || reopened)
             val costFinal = if (ending && cost == null) runtime?.costUsd else cost
             val modelFinal = if (ending) model ?: runtime?.model else model
             val updated = rec.copy(
@@ -133,7 +138,7 @@ object History {
                 model = modelFinal,
                 // The final edit's `result` (nothing else overwrites it).
                 result = rec.result ?: run.result,
-                ended = if (!live && rec.ended == null) now else rec.ended,
+                ended = if (ending) now else rec.ended,
                 // A thread's title arrives with its first replies; keep the placeholder till then.
                 title = if (rec.title == "Thread" && title != "Thread") title else rec.title,
             )
@@ -143,6 +148,37 @@ object History {
                 updated.costUsd != rec.costUsd || updated.model != rec.model ||
                 updated.result != rec.result || updated.ended != rec.ended
         }
+    }
+
+    /**
+     * End the record of a run that stopped being reported without a final
+     * state — a prompt that was answered or withdrawn, a working reaction
+     * taken back with nothing put in its place (the desktop's
+     * `close_run_record`). Returns whether a record was closed.
+     */
+    fun close(history: MutableList<RunRecord>, view: ViewKey, started: Long, now: Long): Boolean {
+        val key = keyOf(view)
+        val i = history.indexOfFirst { it.key == key && it.started == started && it.ended == null }
+        if (i < 0) return false
+        history[i] = history[i].copy(state = stateLabel(RunState.Done), ended = now)
+        return true
+    }
+
+    /**
+     * Close open "needs you" records nothing waits behind any more.
+     * [waiting]: whether the record's prompt is still open — null when that
+     * can't be told right now (its project isn't loaded), which closes nothing.
+     */
+    fun closeAnswered(history: MutableList<RunRecord>, waiting: (RunRecord) -> Boolean?, now: Long): Boolean {
+        var changed = false
+        for (i in history.indices) {
+            val rec = history[i]
+            if (rec.ended != null || rec.state != stateLabel(RunState.NeedsYou)) continue
+            if (waiting(rec) != false) continue
+            history[i] = rec.copy(state = stateLabel(RunState.Done), ended = now)
+            changed = true
+        }
+        return changed
     }
 
     /**
@@ -228,7 +264,8 @@ object History {
             if (r.ended != null) o.put("ended", r.ended)
             o.put("steps", r.steps)
             if (r.model != null) o.put("model", r.model)
-            if (r.costUsd != null) o.put("cost_usd", r.costUsd)
+            // put(Double) throws on NaN / Infinity, and one bad number would lose the file.
+            if (r.costUsd != null && r.costUsd.isFinite()) o.put("cost_usd", r.costUsd)
             if (r.request != null) o.put("request", r.request)
             if (r.result != null) o.put("result", r.result)
             arr.put(o)
@@ -238,12 +275,14 @@ object History {
 
     fun decode(bytes: ByteArray): MutableList<RunRecord> {
         val out = ArrayList<RunRecord>()
-        runCatching {
-            val arr = JSONArray(String(bytes, Charsets.UTF_8))
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
+        val arr = runCatching { JSONArray(String(bytes, Charsets.UTF_8)) }.getOrNull() ?: return out
+        for (i in 0 until arr.length()) {
+            // One record at a time: a single odd one must not take every
+            // record after it with it (and the next save would make that final).
+            runCatching {
+                val o = arr.optJSONObject(i) ?: return@runCatching
                 val key = o.optString("key")
-                if (key.isEmpty()) continue
+                if (key.isEmpty()) return@runCatching
                 out += RunRecord(
                     key = key,
                     room = o.optString("room"),
@@ -251,10 +290,10 @@ object History {
                     title = o.optString("title"),
                     state = o.optString("state"),
                     started = o.optLong("started"),
-                    ended = if (o.has("ended")) o.getLong("ended") else null,
+                    ended = if (o.has("ended") && !o.isNull("ended")) o.getLong("ended") else null,
                     steps = o.optInt("steps"),
                     model = o.optString("model").ifEmpty { null },
-                    costUsd = if (o.has("cost_usd")) o.getDouble("cost_usd") else null,
+                    costUsd = if (o.has("cost_usd") && !o.isNull("cost_usd")) o.getDouble("cost_usd") else null,
                     request = o.optString("request").ifEmpty { null },
                     result = o.optString("result").ifEmpty { null },
                 )

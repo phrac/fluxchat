@@ -8,6 +8,10 @@ The app is new and early. Build it from source (below); there's no store release
 
 Sign in with your Matrix account (a username, `@name`, or a full `@name:server`); the phone becomes a new session. If your account has key backup, the app asks for your **recovery key** next. That unlocks encrypted agent rooms and verifies the phone. You can skip it, but encrypted rooms then stay unreadable on the phone.
 
+Signing in never costs the phone what it already had: the keys of the previous sign-in are kept aside until the new one has gone through, and put back if it doesn't (a wrong password, no connection). If the app can't reopen your saved sign-in it says so and offers **Try again** — nothing is deleted — and **Sign in again** for when it never will.
+
+The app reconnects by itself when the network changes (wifi to mobile data, a tunnel); you don't need to reopen it.
+
 ## Your agents
 
 The app uses the same agent list as desktop fluxchat. It's saved to your account, so agents you marked on the desktop are already there. Manage them under **Agents** (the robot icon):
@@ -101,7 +105,7 @@ Your homeserver then pushes to the distributor through a Matrix push gateway: nt
 - **Other agent messages** (answers, finished runs). Step logs don't notify.
 - **Messages that mention you.**
 
-Every agent notification has **Reply**, which answers in the thread the message is in. While the app is running (a push wakes it), a prompt's notification also goes away once it's answered anywhere: on the desktop, in the app, or from the notification.
+Every agent notification has **Reply**, which answers in the thread the message is in. If an answer can't be sent (no signal), the notification comes back with its buttons, marked **Not sent**, so you can try again. While the app is running (a push wakes it), a prompt's notification also goes away once it's answered anywhere: on the desktop, in the app, or from the notification.
 
 Hermes approvals sent without the [agent protocol](agent-protocol.md) only become prompts when Hermes adds its reactions, a moment after the message arrives. The buttons appear when the app sees those reactions. With the [Hermes patches](../integrations/hermes) applied, the prompt carries its choices and the buttons are there at once.
 
@@ -109,7 +113,7 @@ Without push, you only hear from agents while the app is open.
 
 ## App lock
 
-**Settings → Security → Require unlock** asks for your fingerprint, face, or screen lock when you open the app. Leaving the app locks it again — the screen you left, draft and half-sent photo included, waits right behind the lock. Detours you start yourself — the camera, the photo and file pickers — come back without asking again. A cold start comes up locked; while it's on, the content also stays out of screenshots and the app switcher. Notification buttons (Approve, Deny, Reply) still work over the lock screen — answering an agent doesn't need the app open. The quick entry points are deliberately *not* locked: the home-screen widget, the Quick Settings tile, the app shortcuts and share-into-fluxchat only ever send what you type, they never read your history back.
+**Settings → Security → Require unlock** asks for your fingerprint, face, or screen lock when you open the app — the system prompt comes up by itself as soon as the app is in front (if you dismiss it, **Unlock** on the lock screen brings it back; Back leaves the app). Leaving the app locks it again — the screen you left, draft and half-sent photo included, waits right behind the lock. Detours you start yourself — the camera, the photo and file pickers — come back without asking again. A cold start comes up locked, and anything that was open on top — a full-screen photo, a menu, a confirmation — is hidden until you unlock; while it's on, the content also stays out of screenshots and the app switcher. Notification buttons (Approve, Deny, Reply) still work over the lock screen — answering an agent doesn't need the app open. The quick entry points are deliberately *not* locked: the home-screen widget, the Quick Settings tile, the app shortcuts and share-into-fluxchat only ever send what you type, they never read your history back.
 
 ## Diagnostics
 

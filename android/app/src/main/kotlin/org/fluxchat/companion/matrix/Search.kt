@@ -37,7 +37,8 @@ data class ReplyHit(
  * [SessionList] keeps the thread list.
  */
 class ServerSearch(private val service: SearchService) : AutoCloseable {
-    private val raw = ArrayList<ReplyHit>()
+    /** One entry per result the service holds — null for those we can't show: its diffs address them by index. */
+    private val raw = ArrayList<ReplyHit?>()
     private val _hits = MutableStateFlow<List<ReplyHit>>(emptyList())
     val hits: StateFlow<List<ReplyHit>> = _hits
     /** Read at composition time (the search screen re-gathers per keystroke). */
@@ -75,25 +76,23 @@ class ServerSearch(private val service: SearchService) : AutoCloseable {
     private fun apply(updates: List<SearchServiceResultsUpdate>) = synchronized(raw) {
         for (d in updates) {
             when (d) {
-                is SearchServiceResultsUpdate.Append -> raw.addAll(d.values.mapNotNull(::convert))
+                is SearchServiceResultsUpdate.Append -> raw.addAll(d.values.map(::convert))
                 is SearchServiceResultsUpdate.Clear -> raw.clear()
-                is SearchServiceResultsUpdate.PushFront -> convert(d.value)?.let { raw.add(0, it) }
-                is SearchServiceResultsUpdate.PushBack -> convert(d.value)?.let { raw.add(it) }
+                is SearchServiceResultsUpdate.PushFront -> raw.add(0, convert(d.value))
+                is SearchServiceResultsUpdate.PushBack -> raw.add(convert(d.value))
                 is SearchServiceResultsUpdate.PopFront -> if (raw.isNotEmpty()) raw.removeAt(0)
                 is SearchServiceResultsUpdate.PopBack -> if (raw.isNotEmpty()) raw.removeAt(raw.size - 1)
-                is SearchServiceResultsUpdate.Insert ->
-                    convert(d.value)?.let { raw.add(d.index.toInt().coerceAtMost(raw.size), it) }
-                is SearchServiceResultsUpdate.Set ->
-                    if (d.index.toInt() < raw.size) raw[d.index.toInt()] = convert(d.value) ?: raw[d.index.toInt()]
+                is SearchServiceResultsUpdate.Insert -> raw.add(d.index.toInt().coerceAtMost(raw.size), convert(d.value))
+                is SearchServiceResultsUpdate.Set -> if (d.index.toInt() < raw.size) raw[d.index.toInt()] = convert(d.value)
                 is SearchServiceResultsUpdate.Remove -> if (d.index.toInt() < raw.size) raw.removeAt(d.index.toInt())
                 is SearchServiceResultsUpdate.Truncate -> while (raw.size > d.length.toInt()) raw.removeAt(raw.size - 1)
                 is SearchServiceResultsUpdate.Reset -> {
                     raw.clear()
-                    raw.addAll(d.values.mapNotNull(::convert))
+                    raw.addAll(d.values.map(::convert))
                 }
             }
         }
-        _hits.value = raw.distinctBy { it.roomId to it.eventId }
+        _hits.value = raw.filterNotNull().distinctBy { it.roomId to it.eventId }
     }
 
     private fun convert(item: SearchServiceResult): ReplyHit? = runCatching {

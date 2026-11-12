@@ -75,16 +75,31 @@ class TimelineModel(
             }
         }
         val shown = items.filterNotNull()
-        _messages.value = shown
         // The SDK clears a live timeline when sync reports a gap; it fills
         // again only from new events, so fetch the history back.
-        if (diffs.any { it is TimelineDiff.Clear || it is TimelineDiff.Reset } && shown.size < REFILL_BELOW) {
+        val reset = diffs.any { it is TimelineDiff.Clear || it is TimelineDiff.Reset } && shown.size < REFILL_BELOW
+        // Until it's back, what was showing stays: the emptied list read as
+        // "no runs, no prompts" downstream — a waiting approval lost its
+        // notification for good and the live-runs service stopped.
+        if (reset && _messages.value.isNotEmpty()) held = true
+        if (!held) _messages.value = shown
+        if (reset) {
             org.fluxchat.companion.Diag.note("timeline $roomId reset ($before → ${items.size} items, [$kinds]): loading history again")
+            refillAgain = refilling
             refill()
         }
     }
 
     @Volatile private var refilling = false
+    /** A reset emptied the list: nothing is published until the refill settles. */
+    private var held = false
+    /** A reset arrived while a refill was running: run another when it ends. */
+    @Volatile private var refillAgain = false
+
+    private fun release() = synchronized(items) {
+        held = false
+        _messages.value = items.filterNotNull()
+    }
 
     /**
      * Back-paginate until there's a screenful again (or the start), with some
@@ -99,12 +114,19 @@ class TimelineModel(
         scope.launch {
             try {
                 repeat(REFILL_PAGES) {
-                    val msgs = _messages.value
+                    // What's loaded, not what's published: the list is held back during a refill.
+                    val msgs = synchronized(items) { items.filterNotNull() }
                     val own = msgs.count { it.threadRoot == null && it.isMessage }
                     if (msgs.size >= REFILL_BELOW && (threadRoot != null || own >= REFILL_TOP_LEVEL) || !paginateBack()) return@launch
                 }
             } finally {
                 refilling = false
+                if (refillAgain) {
+                    refillAgain = false
+                    refill()
+                } else {
+                    release()
+                }
             }
         }
     }
@@ -123,10 +145,14 @@ class TimelineModel(
 
     /** Load older messages. False once the start of the timeline is reached. */
     suspend fun paginateBack(events: Int = 40): Boolean = io {
-        val hitStart = runCatching { timeline.paginateBackwards(events.toUShort()) }.getOrDefault(false)
+        val hitStart = runCatching { timeline.paginateBackwards(events.toUShort()) }
+            .onFailure { if (pageErrors++ < 3) org.fluxchat.companion.Diag.error("Loading older messages in $roomId", it) }
+            .getOrDefault(false)
         if (hitStart) _atStart.value = true
         !hitStart
     }
+
+    private var pageErrors = 0
 
     /**
      * The gallery's paging: like [paginateBack] but a network failure throws
@@ -190,7 +216,10 @@ class TimelineModel(
 
     suspend fun markRead() = io {
         runCatching { timeline.markAsRead(ReceiptType.READ) }
+            .onFailure { if (readErrors++ < 3) org.fluxchat.companion.Diag.error("Marking $roomId read", it) }
     }
+
+    private var readErrors = 0
 
     override fun close() {
         handle?.cancel()

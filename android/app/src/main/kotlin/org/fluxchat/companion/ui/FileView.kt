@@ -71,7 +71,7 @@ fun FileCard(f: FileRef, modifier: Modifier = Modifier) {
             busy = true
             runCatching { Files.saveTo(context, Files.fetch(context, f), target) }
                 .onSuccess { Toast.makeText(context, "Saved ${f.name}", Toast.LENGTH_SHORT).show() }
-                .onFailure { fail("Save", it) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else fail("Save", it) }
             busy = false
         }
     }
@@ -82,7 +82,8 @@ fun FileCard(f: FileRef, modifier: Modifier = Modifier) {
                 .onSuccess { file ->
                     if (!Files.open(context, file, f.mime)) Toast.makeText(context, "No app here opens ${f.mime ?: "this file"}. Save it instead.", Toast.LENGTH_LONG).show()
                 }
-                .onFailure { fail("Open", it) }
+                // Scrolled away mid-download is not a failure to report.
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else fail("Open", it) }
             busy = false
         }
     }

@@ -110,7 +110,7 @@ fun AgentsScreen(back: () -> Unit) {
         }
     }
 
-    if (adding) {
+    if (adding && unlocked()) {
         var id by remember { mutableStateOf("") }
         val valid = USER_ID.matches(id) && list.agents.none { it.userId == id }
         AlertDialog(
@@ -128,7 +128,7 @@ fun AgentsScreen(back: () -> Unit) {
         )
     }
 
-    editing?.let { a ->
+    editing?.takeIf { unlocked() }?.let { a ->
         ModalBottomSheet(onDismissRequest = { editing = null }) {
             Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
                 ListItem(
@@ -254,7 +254,7 @@ fun SettingsScreen(go: (Screen) -> Unit, back: () -> Unit) {
             )
         }
     }
-    if (confirm) {
+    if (confirm && unlocked()) {
         AlertDialog(
             onDismissRequest = { confirm = false },
             title = { Text("Sign out of this phone?") },
