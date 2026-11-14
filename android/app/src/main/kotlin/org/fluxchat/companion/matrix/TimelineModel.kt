@@ -180,7 +180,12 @@ class TimelineModel(
     /** Load older messages. False once the start of the timeline is reached. */
     suspend fun paginateBack(events: Int = 40): Boolean = io {
         val hitStart = runCatching { timeline.paginateBackwards(events.toUShort()) }
-            .onFailure { if (pageErrors++ < 3) org.fluxchat.companion.Diag.error("Loading older messages in $roomId", it) }
+            .onFailure {
+                // Leaving the screen mid-page is not a failed page: counted as
+                // one, three of those used up the errors this timeline reports.
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                if (pageErrors++ < 3) org.fluxchat.companion.Diag.error("Loading older messages in $roomId", it)
+            }
             .getOrDefault(false)
         if (hitStart) _atStart.value = true
         !hitStart
@@ -270,7 +275,11 @@ class TimelineModel(
 
     suspend fun markRead() = io {
         runCatching { timeline.markAsRead(ReceiptType.READ) }
-            .onFailure { if (readErrors++ < 3) org.fluxchat.companion.Diag.error("Marking $roomId read", it) }
+            .onFailure {
+                // (the screen was left meanwhile: not an error, see paginateBack)
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                if (readErrors++ < 3) org.fluxchat.companion.Diag.error("Marking $roomId read", it)
+            }
     }
 
     private var readErrors = 0
