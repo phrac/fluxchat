@@ -826,20 +826,33 @@ impl FluxChat {
     }
 
     /// Dimmed full-window layer holding a palette near the top; clicking
-    /// outside sends `on_dismiss`.
+    /// outside sends `on_dismiss`. The keyboard is the palette's: ↑ / ↓
+    /// move its selection here (not through the key subscription, which
+    /// only hears what no widget took — and the composer underneath took
+    /// ↑ to edit your last message whenever it was empty).
     fn palette_layer<'a>(&self, card: Element<'a, Message>, on_dismiss: Message) -> Element<'a, Message> {
-        opaque(
-            mouse_area(
-                container(column![Space::new().height(90), opaque(card)])
-                    .width(Fill)
-                    .center_x(Fill)
-                    .height(Fill)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
-                        ..Default::default()
-                    }),
-            )
-            .on_press(on_dismiss),
+        ui::keep_keys(
+            opaque(
+                mouse_area(
+                    container(column![Space::new().height(90), opaque(card)])
+                        .width(Fill)
+                        .center_x(Fill)
+                        .height(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                            ..Default::default()
+                        }),
+                )
+                .on_press(on_dismiss),
+            ),
+            |key, modifiers| {
+                use iced::keyboard::{key::Named, Key};
+                match key {
+                    Key::Named(Named::ArrowUp) if !modifiers.alt() => Some(Message::SearchArrowUp),
+                    Key::Named(Named::ArrowDown) if !modifiers.alt() => Some(Message::SearchArrowDown),
+                    _ => None,
+                }
+            },
         )
     }
 
@@ -1099,7 +1112,9 @@ impl FluxChat {
         let mut layers: Vec<Element<Message>> = vec![base.into()];
         crate::view_gallery::set_lightbox_nav(crate::view_gallery::is_gallery_lightbox(self.modal.as_ref()));
         if self.modal.is_some() {
-            layers.push(
+            // A dialog has the keyboard: what its fields don't take must
+            // not reach the views behind it.
+            layers.push(ui::keep_keys(
                 opaque(
                     mouse_area(
                         center(opaque(self.view_modal_content()))
@@ -1112,7 +1127,8 @@ impl FluxChat {
                     )
                     .on_press(Message::CloseModal),
                 ),
-            );
+                |_, _| None,
+            ));
         }
         // Search overlay (command-palette style, shared with the switcher)
         if self.search_open {
@@ -3880,6 +3896,20 @@ pub(crate) mod bench {
 
     use crate::message::Message;
 
+    /// A press of `key`, no modifiers held.
+    pub(crate) fn key_press(key: iced::keyboard::key::Named) -> Event {
+        use iced::keyboard::{self, key::Named, Key};
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Named(key),
+            modified_key: Key::Named(key),
+            physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: (key == Named::Enter).then(|| "\r".into()),
+            repeat: false,
+        })
+    }
+
     pub(crate) struct Bench<'a> {
         root: Element<'a, Message>,
         tree: Tree,
@@ -4070,6 +4100,51 @@ mod view_tests {
         let chip = *bench.leaves().last().expect("a bar");
         assert!(chip.width > 100.0, "{chip:?}");
         assert!(chip.x + chip.width <= WIDTH, "{chip:?}");
+    }
+
+    #[tokio::test]
+    async fn arrows_in_the_switcher_move_its_selection_and_stay_there() {
+        use iced::keyboard::key::Named;
+        let mut app = app();
+        app.screen = Screen::Main;
+        app.rooms = vec![room("!a:x", "alpha"), room("!b:x", "beta")];
+        // A room with an empty composer: ↑ there means "edit my last message".
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![row("$1", "hello")]);
+        let _ = app.update(Message::ToggleQuickSwitcher);
+        app.window_size = (1200.0, 600.0);
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        let up = bench.send(super::bench::key_press(Named::ArrowUp));
+        assert!(matches!(up.as_slice(), [Message::SearchArrowUp]), "{up:?}");
+        let down = bench.send(super::bench::key_press(Named::ArrowDown));
+        assert!(matches!(down.as_slice(), [Message::SearchArrowDown]), "{down:?}");
+        // The same in the message search.
+        drop(bench);
+        let _ = app.update(Message::ToggleQuickSwitcher);
+        let _ = app.update(Message::ToggleSearch);
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        let up = bench.send(super::bench::key_press(Named::ArrowUp));
+        assert!(matches!(up.as_slice(), [Message::SearchArrowUp]), "{up:?}");
+    }
+
+    #[tokio::test]
+    async fn keys_pressed_in_a_dialog_do_not_reach_the_composer_behind_it() {
+        use iced::keyboard::key::Named;
+        let mut app = app();
+        app.screen = Screen::Main;
+        app.rooms = vec![room("!a:x", "alpha"), room("!b:x", "beta")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![row("$1", "hello")]);
+        app.input_text = "not ready to go".into();
+        app.input_content = iced::widget::text_editor::Content::with_text(&app.input_text);
+        // The forward dialog: its search field has nothing to do on Enter.
+        let _ = app.update(Message::ForwardMessage("hello".into(), String::new(), None));
+        app.window_size = (1200.0, 600.0);
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        for key in [Named::Enter, Named::ArrowUp, Named::PageUp] {
+            let out = bench.send(super::bench::key_press(key));
+            assert!(out.is_empty(), "{key:?} went through to the room: {out:?}");
+        }
     }
 
     #[tokio::test]

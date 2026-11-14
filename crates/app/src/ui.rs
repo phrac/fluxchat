@@ -501,6 +501,128 @@ pub fn toggle_row<'a>(
     .into()
 }
 
+/// Keeps the keyboard in the layer it wraps (a dialog, a palette): a key
+/// press that nothing in `content` took goes no further, after `on_key` had
+/// the chance to turn it into a message. iced hands an unclaimed key press
+/// on to the layers underneath, and every text editor there is asked about
+/// it, focused or not: Enter in a dialog field sent the draft waiting in
+/// the composer, and ↑ in the switcher started editing your last message
+/// instead of moving the selection.
+pub fn keep_keys<'a>(
+    content: impl Into<Element<'a, Message>>,
+    on_key: fn(&iced::keyboard::Key, iced::keyboard::Modifiers) -> Option<Message>,
+) -> Element<'a, Message> {
+    Element::new(KeepKeys { content: content.into(), on_key })
+}
+
+/// See [`keep_keys`]. Transparent: the same tree node as its content.
+struct KeepKeys<'a> {
+    content: Element<'a, Message>,
+    on_key: fn(&iced::keyboard::Key, iced::keyboard::Modifiers) -> Option<Message>,
+}
+
+impl iced::advanced::Widget<Message, Theme, iced::Renderer> for KeepKeys<'_> {
+    fn size(&self) -> iced::Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> iced::Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn tag(&self) -> iced::advanced::widget::tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> iced::advanced::widget::tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<iced::advanced::widget::Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut iced::advanced::widget::Tree) {
+        self.content.as_widget().diff(tree)
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &iced::advanced::layout::Limits,
+    ) -> iced::advanced::layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn draw(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &iced::advanced::renderer::Style,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::advanced::mouse::Cursor,
+        viewport: &iced::Rectangle,
+    ) {
+        self.content.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        self.content.as_widget_mut().operate(tree, layout, renderer, operation)
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        event: &iced::Event,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::advanced::mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, Message>,
+        viewport: &iced::Rectangle,
+    ) {
+        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+        if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+            if !shell.is_event_captured() {
+                if let Some(message) = (self.on_key)(key, *modifiers) {
+                    shell.publish(message);
+                }
+                shell.capture_event();
+            }
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::advanced::mouse::Cursor,
+        viewport: &iced::Rectangle,
+        renderer: &iced::Renderer,
+    ) -> iced::advanced::mouse::Interaction {
+        self.content.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &iced::Rectangle,
+        translation: Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
 /// Pick list style matching `input_style`.
 pub fn pick_list_style(_: &Theme, status: iced::widget::pick_list::Status) -> iced::widget::pick_list::Style {
     let c = theme::colors();
