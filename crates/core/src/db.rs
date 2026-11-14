@@ -95,7 +95,16 @@ impl AppDb {
     pub fn unlock_media_cache(&self, store_key: &[u8; 32]) -> anyhow::Result<()> {
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
-        let existing = self.get_setting(MEDIA_CIPHER_SETTING)
+        // "No cipher saved" must be the database's answer, not a failed read
+        // (locked by another instance compacting it, say): everything below
+        // that answer deletes the private data and makes a new cipher.
+        let saved: Option<String> = {
+            use rusqlite::OptionalExtension;
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.query_row("SELECT value FROM settings WHERE key = ?1", params![MEDIA_CIPHER_SETTING], |row| row.get(0))
+                .optional()?
+        };
+        let existing = saved
             .and_then(|b64| engine.decode(b64).ok())
             .and_then(|blob| StoreCipher::import_with_key(store_key, &blob).ok());
         let cipher = match existing {
@@ -346,6 +355,27 @@ mod tests {
         assert!(again.get_cached_media("mxc://a/b").is_none());
         again.forget_media_cache();
         assert!(again.get_setting(MEDIA_CIPHER_SETTING).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cipher_that_could_not_be_read_is_not_replaced() {
+        let (db, dir) = temp_db("unreadable");
+        db.unlock_media_cache(&[1; 32]).unwrap();
+        assert!(db.set_private("prompts", b"secret plan"));
+        db.cache_media("mxc://a/b", b"image");
+
+        // The read of the saved cipher fails (stood in for by a settings
+        // table that isn't there): that is not "there is none".
+        let again = AppDb::open(&dir.join("t.db")).unwrap();
+        again.conn.lock().unwrap().execute_batch("ALTER TABLE settings RENAME TO settings_away").unwrap();
+        assert!(again.unlock_media_cache(&[1; 32]).is_err());
+        again.conn.lock().unwrap().execute_batch("ALTER TABLE settings_away RENAME TO settings").unwrap();
+
+        // Readable again: same cipher, nothing was thrown away.
+        again.unlock_media_cache(&[1; 32]).unwrap();
+        assert_eq!(again.get_private("prompts").as_deref(), Some(&b"secret plan"[..]));
+        assert_eq!(again.get_cached_media("mxc://a/b").as_deref(), Some(&b"image"[..]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
