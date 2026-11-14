@@ -274,6 +274,9 @@ pub struct FluxChat {
     pub notices_open: bool,
     pub gifs_open: bool,
     pub audio_playing: Option<String>,      // event_id of currently playing audio
+    /// Which playback `audio_playing` is: every play and stop takes the next
+    /// number, so a download or a player that ends late is known as stale.
+    pub audio_token: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub voice_recording: bool,
     /// The mic is held down (push to talk), since when.
     pub ptt_held: Option<std::time::Instant>,
@@ -333,6 +336,8 @@ pub struct FluxChat {
     pub directory_server: String,                      // server to query ("" = own homeserver)
     pub directory_next_batch: Option<String>,
     pub directory_loading: bool,
+    /// The directory search the results on screen answer (older ones are dropped).
+    pub directory_request: u64,
     pub gif_query: String,
     pub gif_searched: bool, // true after a search has completed
     pub help_text: Option<String>,
@@ -480,6 +485,9 @@ pub struct FluxChat {
     pub url_previews: HashMap<String, fluxchat_core::UrlPreview>,
     pub url_preview_images: HashMap<String, iced::widget::image::Handle>, // og:image mxc/url -> handle
     pub url_previews_pending: std::collections::HashSet<String>, // URLs currently being fetched
+    /// URLs that came back without a preview, and when: they stay in
+    /// `url_previews_pending` (not asked for again) until Tick lets them go.
+    pub url_preview_misses: HashMap<String, std::time::Instant>,
 
     // Login form state
     pub login_homeserver: String,
@@ -780,8 +788,10 @@ impl FluxChat {
             directory_server: String::new(),
             directory_next_batch: None,
             directory_loading: false,
+            directory_request: 0,
             gifs_open: false,
             audio_playing: None,
+            audio_token: Default::default(),
             voice_recording: false,
             voice_record_start: None,
             voice_ready: None,
@@ -926,6 +936,7 @@ impl FluxChat {
             url_previews: HashMap::new(),
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),
+            url_preview_misses: HashMap::new(),
             create_room_name: String::new(),
             create_room_topic: String::new(),
             create_room_public: false,

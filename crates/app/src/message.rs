@@ -386,10 +386,12 @@ pub enum Message {
     DirectorySearch,
     DirectorySearchChanged(String),
     DirectoryServerChanged(String),
-    DirectoryResults(Vec<fluxchat_core::rooms::PublicRoomResult>, Option<String>), // results, next_batch
+    DirectoryResults(u64, Vec<fluxchat_core::rooms::PublicRoomResult>, Option<String>), // search it answers, results, next_batch
     DirectoryLoadMore,
     DirectoryJoinRoom(String), // room_id
     SetNick(String),                            // new display name
+    /// The display name change went through, or not: (the name to put back, error).
+    NickSet(Result<(), (Option<String>, String)>),
     SendDm(String, String),                     // user_id, body
 
     // --- File upload ---
@@ -510,7 +512,7 @@ pub enum Message {
     VideoEndOfStream,
     VideoClose,
     VideoThumbResolved(String, Vec<u8>, u32, u32), // thumb_key, png_data, width, height
-    AudioFinished,
+    AudioFinished(u64), // the playback that ended (`audio_token`)
     StartVoiceRecording,
     /// Mic pressed: start recording (push to talk), or stop a tapped one.
     MicPressed,
