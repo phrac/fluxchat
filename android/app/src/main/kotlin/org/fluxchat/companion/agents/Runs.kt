@@ -231,6 +231,25 @@ object Runs {
         else -> all.filter { it.id == root || it.threadRoot == root }
     }
 
+    /** Own-message ↔ run-start match tolerance (echo vs server timestamps). */
+    const val REQUEST_MATCH_SLACK_MS = 2_000L
+
+    /**
+     * The request behind the run that began at [since] in a view: your
+     * message sent then, else — a prompt with no request to hang on, a run
+     * dated from a status message — the thread's root. Not always the root:
+     * a session is one thread, so `!usage` asked in it was held against the
+     * session's first request, which is a task, and was recorded as a run
+     * of its own (lone commands aren't tasks, [History.isLoneCommand]).
+     * With slack: a local echo (`~txn`) gets re-timestamped with the
+     * server's origin_server_ts when the real event lands.
+     */
+    fun requestOf(all: List<Msg>, key: ViewKey, since: Long): Msg? =
+        viewMessages(all, key).asReversed()
+            .filter { it.isOwn && kotlin.math.abs(it.ts - since) <= REQUEST_MATCH_SLACK_MS }
+            .minByOrNull { kotlin.math.abs(it.ts - since) }
+            ?: key.threadRoot?.let { root -> all.firstOrNull { it.id == root } }
+
     /** Thread roots with replies loaded among `all`. */
     private fun loadedThreads(all: List<Msg>): Set<String> = all.mapNotNullTo(HashSet()) { it.threadRoot }
 
@@ -417,6 +436,41 @@ object Runs {
         return last
     }
 
+    /**
+     * How a run that is no longer its view's run ended, going by its own
+     * request: the agent's ✅ / ❌ on your message sent at [since] — for a
+     * run the agent describes itself, the message [runId] names, and its
+     * own final status first. Null while that still says it's going, or
+     * when the request isn't loaded. Ended at the agent's last word before
+     * the session's next request, else when that one was sent.
+     *
+     * A view reports one run, its newest request's ([agentUpdates]), so a
+     * run that a later request took the view from — queued behind it, or
+     * asked while this phone wasn't looking — is never reported finished.
+     * Only its own request still says so ([History.settlePast]).
+     */
+    fun pastRun(roomId: String, all: List<Msg>, key: ViewKey, agent: String, h: Harness, since: Long, runId: String? = null): RunInfo? {
+        val msgs = viewMessages(all, key)
+        if (!runId.isNullOrEmpty()) {
+            val described = protocolRuns(roomId, all, agent, h)
+            described.firstOrNull { it.second.runId == runId }?.let { (k, run) ->
+                if (k != key || run.state.live) return null
+                val next = described.filter { it.first == key && it.second.since > run.since }.minOfOrNull { it.second.since }
+                val said = lastWord(if (next == null) msgs else msgs.filter { it.ts < next }, agent, run.since)
+                return run.copy(ended = listOfNotNull(run.ended, said).maxOrNull())
+            }
+        }
+        val i = msgs.indices.filter { i ->
+            val m = msgs[i]
+            m.isOwn && !m.isLocal && !isStopCommand(m.body, h) &&
+                if (runId.isNullOrEmpty()) kotlin.math.abs(m.ts - since) <= REQUEST_MATCH_SLACK_MS else m.id == runId
+        }.minByOrNull { kotlin.math.abs(msgs[it].ts - since) } ?: return null
+        val state = requestState(h, msgs[i], agent)?.takeIf { !it.live } ?: return null
+        val next = msgs.drop(i + 1).firstOrNull { it.isOwn && !isStopCommand(it.body, h) && requestState(h, it, agent) != null }?.ts
+        val said = lastWord(if (next == null) msgs else msgs.filter { it.ts < next }, agent, since)
+        return RunInfo(state, since, agent = agent, ended = said ?: next?.takeIf { it >= since }, runId = runId?.ifEmpty { null })
+    }
+
     /** Runs the agent describes with the protocol, keyed by the view they're in. */
     fun protocolRuns(roomId: String, all: List<Msg>, agent: String, h: Harness): List<Pair<ViewKey, RunInfo>> {
         data class Latest(val msg: Msg, val p: Protocol)
@@ -487,16 +541,20 @@ object Runs {
 
     /**
      * The run an agent's typing stands for (agents.rs `note_agent_typing` +
-     * `live_run`): the first of your [agents] among those [typing] in a
-     * room, when its harness says typing means working — Working, dated
-     * from when it started typing ([since]: per agent, null = not known).
-     * Claude Code bridges, OpenClaw and generic agents signal work this way;
-     * without it they show no run, no Stop and no busy mode at all.
+     * `typing_run`): of your [agents] among those [typing] in a room whose
+     * harness says typing means working, the one typing longest — Working,
+     * dated from when it started typing ([since]: per agent, null = not
+     * known). Claude Code bridges, OpenClaw and generic agents signal work
+     * this way; without it they show no run, no Stop and no busy mode at
+     * all. Not simply the first one typing: beside a Hermes agent (whose
+     * typing is only typing) that was Hermes as often as not, and the
+     * bridge at work next to it showed no run.
      */
     fun typingRun(typing: List<String>, agents: Collection<String>, harnessOf: (String) -> Harness, since: (String) -> Long?): RunInfo? {
-        val agent = typing.firstOrNull { it in agents } ?: return null
-        if (!harnessOf(agent).typingMeansWorking) return null
-        return RunInfo(RunState.Working, since(agent) ?: return null, agent = agent, typing = true)
+        val (agent, at) = typing.filter { it in agents && harnessOf(it).typingMeansWorking }
+            .mapNotNull { a -> since(a)?.let { a to it } }
+            .minWithOrNull(compareBy({ it.second }, { it.first })) ?: return null
+        return RunInfo(RunState.Working, at, agent = agent, typing = true)
     }
 
     /**
@@ -612,6 +670,15 @@ class RunWatch {
     }
 
     private val seen = HashMap<ViewKey, Seen>()
+
+    /**
+     * Whether the run that began at [since] on [key] was live at a look
+     * no more than [WATCHING_MS] before [now], on a timeline following
+     * the server: if it's over at this look, it ended just now. Ask
+     * before [date], which forgets a run once its view shows another.
+     */
+    fun watching(key: ViewKey, since: Long, now: Long): Boolean =
+        seen[key]?.let { it.since == since && !it.finished && it.lastLive > 0 && now - it.lastLive <= WATCHING_MS } == true
 
     /**
      * Note one room's [runs] as of [now] and give them back with the
