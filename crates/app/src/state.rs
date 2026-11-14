@@ -488,6 +488,12 @@ pub struct FluxChat {
     pub login_error: Option<String>,
     pub login_submitting: bool,
     pub login_caps: Option<fluxchat_core::auth::LoginCapabilities>,
+    /// The SSO sign-in in flight: it waits for the browser to come back,
+    /// which it may never do, so a password sign-in may take its place.
+    pub login_sso: Option<iced::task::Handle>,
+    /// Counts changes of the homeserver field: a login-type lookup waiting
+    /// out its pause is dropped once a later change has moved this on.
+    pub login_lookup: Arc<std::sync::atomic::AtomicU64>,
 
     // Room list UI
     pub collapsed_sections: HashSet<String>,
@@ -895,6 +901,8 @@ impl FluxChat {
             login_error: None,
             login_submitting: false,
             login_caps: None,
+            login_sso: None,
+            login_lookup: Default::default(),
             collapsed_sections: HashSet::new(),
             search_query: String::new(),
             search_results: Vec::new(),
