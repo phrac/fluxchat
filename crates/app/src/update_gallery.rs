@@ -259,6 +259,11 @@ impl FluxChat {
         self.read_anchor_pending = None;
         let jump = if loaded {
             Task::done(Message::JumpToEvent(event_id))
+        } else if self.messages_by_room.contains_key(&key) && self.history_start.contains(&key) {
+            // The whole history is here and it isn't in it (deleted, or a
+            // link to an event of some other room): there's no page left to
+            // end the search, which stayed armed without a word.
+            self.update(Message::ShowError("Couldn't find that message in the room's history".into()))
         } else {
             self.pending_jump = Some((key.clone(), event_id));
             self.jump_search_pages = JUMP_SEARCH_PAGES;
@@ -478,6 +483,21 @@ mod tests {
         let _ = app.update(Message::PaginateSettled("!r:x".into(), Some(true)));
         assert!(app.pending_jump.is_none());
         assert!(app.help_text.as_deref().is_some_and(|t| t.contains("Couldn't find")));
+    }
+
+    #[tokio::test]
+    async fn a_jump_to_a_message_that_is_not_in_a_fully_loaded_room_says_so() {
+        let mut app = open_room(vec![]);
+        let _ = app.update(Message::CloseModal);
+        // Loaded back to the room's start already.
+        app.history_start.insert("!r:x".into());
+        let _ = app.update(Message::OpenMention("!r:x".into(), "$gone".into()));
+        assert!(app.pending_jump.is_none(), "nothing would ever end the search");
+        assert!(app.help_text.as_deref().is_some_and(|t| t.contains("Couldn't find")));
+        // What is loaded is still jumped to.
+        app.help_text = None;
+        let _ = app.update(Message::OpenMention("!r:x".into(), "$text".into()));
+        assert!(app.help_text.is_none());
     }
 
     #[tokio::test]
