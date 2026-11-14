@@ -858,6 +858,29 @@ mod tests {
         let _ = app.update(Message::InsertFormat("```\n", "\n```"));
         type_in(&mut app, "x");
         assert_eq!(app.input_text, "```\nx\n```");
+        // A block started on a fresh line opens there, not on the line before.
+        let mut app = crate::panes::flow_tests::app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        type_in(&mut app, "hi");
+        let _ = app.update(Message::InputAction(Action::Edit(Edit::Enter)));
+        let _ = app.update(Message::InsertFormat("```\n", "\n```"));
+        type_in(&mut app, "x");
+        assert_eq!(app.input_text, "hi\n```\nx\n```");
+    }
+
+    #[tokio::test]
+    async fn a_video_that_finished_loading_after_we_left_does_not_start() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![text("$video", "clip.mp4")]);
+        // Play was pressed in !a; the download ends with !b on screen.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        let path = std::env::temp_dir().join(format!("fluxchat-video-test-{}.mp4", std::process::id()));
+        std::fs::write(&path, b"video").unwrap();
+        let _ = app.update(Message::VideoReady("$video".into(), path.clone()));
+        assert!(app.video_player.is_none() && app.video_playing_event.is_none(), "no sound without a player to close");
+        assert!(!path.exists(), "its temp file goes too");
     }
 
     #[tokio::test]

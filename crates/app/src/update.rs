@@ -3291,7 +3291,7 @@ impl FluxChat {
                         let client = core.get_client().await.map_err(|e| e.to_string())?;
                         fluxchat_core::profile::set_display_name(&client, &name).await.map_err(|e| e.to_string())
                     },
-                    move |r| Message::NickSet(r.map_err(|e| (previous.clone(), e))),
+                    move |r| Message::NickSet(r.map_err(|e| (previous, e))),
                 );
             }
             Message::NickSet(result) => match result {
@@ -3591,6 +3591,10 @@ impl FluxChat {
             // --- Formatting ---
             Message::InsertFormat(prefix, suffix) => {
                 use iced::widget::text_editor::{Action, Motion};
+                // From the editor, not its mirror: that one drops trailing
+                // line breaks, and a code block started on a fresh line
+                // would open on the line before (where it isn't one).
+                self.input_text = self.input_content.text();
                 self.input_text.push_str(prefix);
                 self.input_text.push_str(suffix);
                 self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
@@ -3934,6 +3938,17 @@ impl FluxChat {
                 );
             }
             Message::VideoReady(event_id, path) => {
+                // Downloaded while we moved on: with its message in no view
+                // there would be no player to see or to close, only its sound.
+                let on_screen = self.pane_keys().map(str::to_string)
+                    .chain(self.selected_room_id.clone())
+                    .any(|key| self.messages_by_room.get(&key).is_some_and(|msgs| msgs.iter().any(|m| m.event_id == event_id)));
+                if !on_screen {
+                    if self.video_temp_path.as_ref() != Some(&path) {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    return Task::none();
+                }
                 match url::Url::from_file_path(&path) {
                     Ok(file_url) => {
                         match create_video_player(&file_url) {
@@ -4513,7 +4528,12 @@ impl FluxChat {
                         },
                         |r| match r {
                             Ok(_) => Message::Noop,
-                            Err(e) => Message::ShowError(format!("Renaming room failed: {e}")),
+                            // The new name above was ours alone: the list is
+                            // rebuilt so the room goes by its real one again.
+                            Err(e) => Message::Batch(vec![
+                                Message::ShowError(format!("Renaming room failed: {e}")),
+                                Message::RefreshRoomList,
+                            ]),
                         },
                     );
                 }
@@ -4533,7 +4553,10 @@ impl FluxChat {
                         },
                         |r| match r {
                             Ok(_) => Message::Noop,
-                            Err(e) => Message::ShowError(format!("Setting topic failed: {e}")),
+                            Err(e) => Message::Batch(vec![
+                                Message::ShowError(format!("Setting topic failed: {e}")),
+                                Message::RefreshRoomList,
+                            ]),
                         },
                     );
                 }
