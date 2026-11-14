@@ -74,7 +74,14 @@ pub async fn spawn_room_list_watcher<F>(
         // Use `new_filter_non_left` (everything we're still a member of) —
         // this is the natural "all rooms" set. The controller must be kept
         // alive for the lifetime of the stream.
-        let (stream, controller) = all_rooms.entries_with_dynamic_adapters(100);
+        //
+        // No page limit: the stream is only a "something changed" signal
+        // (the lists are rebuilt from the client), and a paged one drops
+        // every diff past its first page. With 100, a room outside the 100
+        // most recent that arrived (the tail of a first sync), was renamed,
+        // or was left from another device never woke this watcher: the
+        // sidebar stayed short or stale until some recent room changed.
+        let (stream, controller) = all_rooms.entries_with_dynamic_adapters(usize::MAX);
         controller.set_filter(Box::new(
             matrix_sdk_ui::room_list_service::filters::new_filter_non_left(),
         ));
