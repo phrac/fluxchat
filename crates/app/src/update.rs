@@ -6548,6 +6548,7 @@ impl FluxChat {
                 let core = self.core.clone();
                 let mxc_clone = mxc.clone();
                 let event_id = msg.event_id.clone();
+                let is_video = msg.is_video;
                 let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
                 tasks.push(Task::perform(
                     async move {
@@ -6565,13 +6566,19 @@ impl FluxChat {
                         }
                         let client = core.get_client().await.ok()?;
                         let _permit = MEDIA_FETCHES.acquire().await.ok()?;
-                        // Try event-based fetch first (handles encrypted media)
-                        let event_result = fluxchat_core::media::get_event_media_bytes(
-                            &client, &real_room, &event_id,
-                        ).await;
+                        // Try event-based fetch first (handles encrypted media).
+                        // A video's image is its thumbnail: the event's own
+                        // media is the video.
+                        let event_result = if is_video {
+                            video_thumbnail_bytes(&client, &real_room, &event_id).await
+                        } else {
+                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
+                                .ok()
+                                .map(|(bytes, _mime)| bytes)
+                        };
                         let data = match event_result {
-                            Ok((bytes, _mime)) => bytes,
-                            Err(_) => {
+                            Some(bytes) => bytes,
+                            None => {
                                 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
                                 use matrix_sdk::ruma::events::room::MediaSource;
                                 use matrix_sdk::ruma::MxcUri;
@@ -7472,15 +7479,45 @@ fn trim_url_end(mut url: &str) -> &str {
     }
 }
 
-/// Whether `data` starts like an image format we display.
+/// Whether `data` starts like an image format we display. The RIFF and
+/// `ftyp` containers hold video too (AVI, MP4): only their image kinds count,
+/// or a video stored where an image belongs is taken for one.
 fn looks_like_image(data: &[u8]) -> bool {
+    const FTYP_IMAGES: [&[u8]; 6] = [b"avif", b"avis", b"heic", b"heix", b"mif1", b"msf1"];
     data.len() > 100 && (
         data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
         data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
         data.starts_with(b"GIF") ||                     // GIF
-        data.starts_with(b"RIFF") ||                    // WebP
-        &data[4..8] == b"ftyp"                          // MP4/HEIF
+        (data.starts_with(b"RIFF") && &data[8..12] == b"WEBP") ||
+        (&data[4..8] == b"ftyp" && FTYP_IMAGES.contains(&&data[8..12])) // AVIF/HEIF
     )
+}
+
+/// Where a video message says its thumbnail is.
+fn video_thumbnail_source(
+    event: &matrix_sdk::ruma::events::AnySyncTimelineEvent,
+) -> Option<matrix_sdk::ruma::events::room::MediaSource> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent};
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) = event else {
+        return None;
+    };
+    let MessageType::Video(video) = &msg.content.msgtype else { return None };
+    video.info.as_ref()?.thumbnail_source.clone()
+}
+
+/// A video message's thumbnail, fetched through its event so an encrypted
+/// one decrypts. (`get_event_media_bytes` gives a message's own media: for a
+/// video the whole video, which used to stand in for the thumbnail — every
+/// video on screen downloaded in full, for a picture that couldn't draw.)
+async fn video_thumbnail_bytes(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Option<Vec<u8>> {
+    use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
+    let room = client.get_room(&matrix_sdk::ruma::RoomId::parse(room_id).ok()?)?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+    let event = room.event(&event_id, None).await.ok()?;
+    let source = video_thumbnail_source(&event.raw().deserialize().ok()?)?;
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    client.media().get_media_content(&request, false).await.ok()
 }
 
 /// A cached inline image, if present and plausibly an image (a failed fetch
@@ -7802,6 +7839,71 @@ mod media_tests {
         app.hidden_media_rooms.clear();
         assert_eq!(app.resolve_images("!hidden:x", &[pdf("$a")]).units(), 1);
         assert!(app.image_cache_pending.contains("pdf_preview:mxc://x/$a"));
+    }
+
+    fn event(content: serde_json::Value) -> matrix_sdk::ruma::events::AnySyncTimelineEvent {
+        serde_json::from_value(serde_json::json!({
+            "type": "m.room.message",
+            "event_id": "$e:x",
+            "sender": "@a:x",
+            "origin_server_ts": 1_700_000_000_000u64,
+            "content": content,
+        })).unwrap()
+    }
+
+    #[test]
+    fn a_videos_picture_is_its_thumbnail_not_the_video() {
+        use matrix_sdk::ruma::events::room::MediaSource;
+        let plain = video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4", "url": "mxc://x/video",
+            "info": { "thumbnail_url": "mxc://x/thumb" },
+        })));
+        assert!(matches!(plain, Some(MediaSource::Plain(uri)) if uri == "mxc://x/thumb"));
+        // In an encrypted room the thumbnail has keys of its own.
+        let encrypted = video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4",
+            "file": {
+                "url": "mxc://x/video", "v": "v2", "iv": "AAAAAAAAAAAAAAAAAAAAAA",
+                "hashes": { "sha256": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU" },
+                "key": { "kty": "oct", "key_ops": ["encrypt", "decrypt"], "alg": "A256CTR", "ext": true,
+                    "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+            },
+            "info": { "thumbnail_file": {
+                "url": "mxc://x/thumb", "v": "v2", "iv": "AAAAAAAAAAAAAAAAAAAAAA",
+                "hashes": { "sha256": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU" },
+                "key": { "kty": "oct", "key_ops": ["encrypt", "decrypt"], "alg": "A256CTR", "ext": true,
+                    "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+            } },
+        })));
+        assert!(matches!(encrypted, Some(MediaSource::Encrypted(file)) if file.url == "mxc://x/thumb"));
+        // None to fetch: its first frame is used instead.
+        assert!(video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4", "url": "mxc://x/video",
+        }))).is_none());
+        assert!(video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.image", "body": "cat.png", "url": "mxc://x/cat",
+            "info": { "thumbnail_url": "mxc://x/thumb" },
+        }))).is_none());
+    }
+
+    #[test]
+    fn video_files_are_not_taken_for_images() {
+        let with = |head: &[u8]| {
+            let mut data = head.to_vec();
+            data.resize(200, 0);
+            data
+        };
+        assert!(looks_like_image(&with(&[0x89, b'P', b'N', b'G'])));
+        assert!(looks_like_image(&with(&[0xFF, 0xD8, 0xFF, 0xE0])));
+        assert!(looks_like_image(&with(b"GIF89a")));
+        assert!(looks_like_image(&with(b"RIFF\x10\0\0\0WEBPVP8 ")));
+        assert!(looks_like_image(&with(b"\0\0\0\x1cftypavif")));
+        // What a video's thumbnail used to be stored as.
+        assert!(!looks_like_image(&with(b"\0\0\0\x18ftypisom")));
+        assert!(!looks_like_image(&with(b"\0\0\0\x14ftypqt  ")));
+        assert!(!looks_like_image(&with(b"RIFF\x10\0\0\0AVI LIST")));
+        assert!(!looks_like_image(&with(&[0x1A, 0x45, 0xDF, 0xA3])));
+        assert!(!looks_like_image(&[0x89, b'P', b'N', b'G']), "too short to be one");
     }
 
     #[test]
