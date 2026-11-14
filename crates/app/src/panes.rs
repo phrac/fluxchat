@@ -286,7 +286,11 @@ impl FluxChat {
                 windows.push(Window { grid, focus, follow_runs: w.follow_runs });
             }
         }
-        if windows.is_empty() {
+        // None of what it showed exists here: the layout is this device's,
+        // and another account has signed in (logging out leaves it saved).
+        // Its windows and splits, every pane asking for a room, are not a
+        // layout to bring back.
+        if windows.iter().all(|w| w.grid.iter().all(|(_, s)| s.key.is_none())) {
             return None;
         }
         self.active_window = saved.active.min(windows.len() - 1);
@@ -1773,6 +1777,30 @@ pub(crate) mod flow_tests {
         let _ = app.restore_layout();
         assert_eq!(app.window().focused_key(), Some("!b:x"));
         assert!(!app.window().follow_runs);
+    }
+
+    #[tokio::test]
+    async fn a_layout_whose_rooms_are_all_gone_is_not_restored() {
+        // Two windows, three panes.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let _ = app.update(Message::WindowNew);
+        let _ = app.update(Message::SelectRoom("!c:x".into()));
+        app.save_layout();
+        // Signed out; someone else signs in on this device.
+        app.windows = vec![Window::new(None)];
+        app.active_window = 0;
+        app.selected_room_id = None;
+        app.rooms = vec![fluxchat_core::RoomInfo { room_id: "!theirs:y".into(), ..Default::default() }];
+        assert!(app.restore_layout().is_none());
+        assert_eq!(app.windows.len(), 1);
+        assert_eq!(keys(&app), vec![None], "not the other account's splits, every pane empty");
+        // With one of its rooms still here, it comes back (the rest empty).
+        app.rooms.push(fluxchat_core::RoomInfo { room_id: "!b:x".into(), ..Default::default() });
+        assert!(app.restore_layout().is_some());
+        assert_eq!(app.windows.len(), 2);
+        assert_eq!(app.windows[0].grid.len(), 2);
     }
 
     #[tokio::test]
