@@ -10,6 +10,18 @@ use tokio::net::TcpListener;
 pub(crate) async fn serve(respond: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("a local port");
     let addr = listener.local_addr().expect("its address");
+    run(listener, respond);
+    format!("http://{addr}")
+}
+
+/// Start serving at `base`, a URL `nowhere` gave out: the server that
+/// couldn't be reached comes up.
+pub(crate) async fn serve_at(base: &str, respond: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static) {
+    let addr = base.strip_prefix("http://").expect("a URL from `nowhere`");
+    run(TcpListener::bind(addr).await.expect("the port is still free"), respond);
+}
+
+fn run(listener: TcpListener, respond: impl Fn(&str) -> Vec<u8> + Send + Sync + 'static) {
     let respond = std::sync::Arc::new(respond);
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = listener.accept().await {
@@ -30,7 +42,6 @@ pub(crate) async fn serve(respond: impl Fn(&str) -> Vec<u8> + Send + Sync + 'sta
             });
         }
     });
-    format!("http://{addr}")
 }
 
 /// A complete response with a JSON body.

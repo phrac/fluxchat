@@ -43,19 +43,45 @@ pub type AgentList = AgentListEventContent;
 /// store (a new sign-in) "not here" is not "none saved". Taken as that, the
 /// caller uploaded this device's list over the one the account already had.
 /// So when the store has nothing the server is asked, and only its "not
-/// found" is `None`; a request that fails is an error. (Requests retry on
-/// their own for a while, so offline this waits for the server.)
+/// found" is `None`; a request that fails is an error. Started offline, it
+/// keeps asking for a while (`GIVE_UP_AFTER`), so the list still loads once
+/// the server can be reached.
 pub async fn get(client: &Client) -> Result<Option<AgentList>, AppError> {
-    let stored = client.account().account_data::<AgentListEventContent>().await
-        .map_err(|e| AppError::Other(format!("{e}")))?;
-    let raw = match stored {
-        Some(raw) => Some(raw),
-        None => client.account().fetch_account_data_static::<AgentListEventContent>().await
-            .map_err(|e| AppError::Other(format!("{e}")))?,
-    };
-    match raw {
-        Some(raw) => raw.deserialize().map(Some).map_err(|e| AppError::Other(format!("{e}"))),
-        None => Ok(None),
+    get_within(client, FIRST_RETRY, GIVE_UP_AFTER).await
+}
+
+/// Wait before asking a server that couldn't be reached again; doubles up
+/// to `MAX_RETRY`.
+const FIRST_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+const MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long `get` keeps trying to reach the server.
+const GIVE_UP_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+async fn get_within(
+    client: &Client,
+    first_retry: std::time::Duration,
+    give_up_after: std::time::Duration,
+) -> Result<Option<AgentList>, AppError> {
+    let err = |e: &dyn std::fmt::Display| AppError::Other(format!("{e}"));
+    let stored = client.account().account_data::<AgentListEventContent>().await.map_err(|e| err(&e))?;
+    if let Some(raw) = stored {
+        return raw.deserialize().map(Some).map_err(|e| err(&e));
+    }
+    let started = std::time::Instant::now();
+    let mut delay = first_retry;
+    loop {
+        match client.account().fetch_account_data_static::<AgentListEventContent>().await {
+            Ok(Some(raw)) => return raw.deserialize().map(Some).map_err(|e| err(&e)),
+            Ok(None) => return Ok(None),
+            // The server answered, with an error of its own: asking again
+            // won't change that.
+            Err(e) if e.as_client_api_error().is_some() => return Err(err(&e)),
+            Err(e) if started.elapsed() + delay > give_up_after => return Err(err(&e)),
+            Err(_) => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_RETRY);
+            }
+        }
     }
 }
 
@@ -91,20 +117,16 @@ mod tests {
         assert!(empty.agents.is_empty());
     }
 
-    use crate::test_http::{json, nowhere, serve};
+    use crate::test_http::{json, nowhere, serve, serve_at};
     use matrix_sdk::authentication::{matrix::MatrixSession, SessionTokens};
     use matrix_sdk::ruma::{device_id, user_id};
     use matrix_sdk::SessionMeta;
+    use std::time::Duration;
 
     /// A signed-in client that hasn't synced (its store is empty), talking
     /// to the server at `base`.
     async fn client(base: &str) -> Client {
-        let client = Client::builder()
-            .homeserver_url(base)
-            .request_config(matrix_sdk::config::RequestConfig::new().disable_retry())
-            .build()
-            .await
-            .unwrap();
+        let client = Client::builder().homeserver_url(base).build().await.unwrap();
         client
             .restore_session(MatrixSession {
                 meta: SessionMeta { user_id: user_id!("@me:example.org").to_owned(), device_id: device_id!("DEV").to_owned() },
@@ -144,6 +166,23 @@ mod tests {
         assert_eq!(get(&client(&base).await).await.unwrap(), None);
         // A server that can't be reached hasn't said so: answering "none"
         // here is what made the caller upload its own list over the account's.
-        assert!(get(&client(&nowhere().await).await).await.is_err());
+        let offline = client(&nowhere().await).await;
+        assert!(get_within(&offline, Duration::from_millis(20), Duration::from_millis(100)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn started_offline_the_list_loads_once_the_server_answers() {
+        let base = nowhere().await;
+        let client = client(&base).await;
+        let up = {
+            let base = base.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                serve_at(&base, homeserver(Some(r#"{"agents":[{"user_id":"@hermes:example.org"}]}"#))).await;
+            }
+        };
+        let patient = get_within(&client, Duration::from_millis(50), Duration::from_secs(30));
+        let (list, ()) = tokio::join!(patient, up);
+        assert_eq!(list.unwrap().expect("the account's list").agents.len(), 1);
     }
 }
