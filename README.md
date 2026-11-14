@@ -114,6 +114,7 @@ Ideas and pull requests are welcome.
 ### Panes & windows
 - Split the main area side by side or stacked, as often as you like; put any room or thread in any pane — drag it from the room list onto a pane edge, middle-click / ⌘-click it, or right-click → Open to the right / below / in new window
 - Drag to resize and rearrange, zoom a pane to full size
+- Every pane has its own message box (an unsent draft stays in it) and loads older history as you scroll up
 - Multiple windows (layouts), listed in the status bar
 - tmux keys: Ctrl+B then `%` `"` `x` `z` `o` arrows `c` `n` `p` `0`–`9` `&`
 - Layout saved and restored on restart

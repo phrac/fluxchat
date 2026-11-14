@@ -82,6 +82,32 @@ impl Window {
             self.grid.restore();
         }
     }
+
+    /// The view keys this window draws: every pane's, or just the zoomed
+    /// pane's (the others are hidden behind it).
+    fn drawn_keys(&self) -> impl Iterator<Item = &str> {
+        let zoomed = self.grid.maximized();
+        self.grid.iter()
+            .filter(move |(p, _)| zoomed.is_none_or(|z| z == **p))
+            .filter_map(|(_, s)| s.key.as_deref())
+    }
+
+    /// Close `pane` (not a window's last one): what it showed, with focus
+    /// moved to its neighbour if it had it. A pane left alone isn't zoomed
+    /// (it would keep a title bar offering to restore nothing).
+    fn close_pane(&mut self, pane: pane_grid::Pane) -> Option<PaneSlot> {
+        if self.grid.len() <= 1 {
+            return None;
+        }
+        let (slot, sibling) = self.grid.close(pane)?;
+        if self.focus == pane {
+            self.focus = sibling;
+        }
+        if self.grid.len() == 1 {
+            self.grid.restore();
+        }
+        Some(slot)
+    }
 }
 
 /// Armed after Ctrl+B until the next key (read by text-editor key bindings,
@@ -107,9 +133,16 @@ enum SavedNode {
 struct SavedWindow {
     layout: SavedNode,
     focus: Option<String>,
+    /// The focused pane's place in reading order. The key alone can't say
+    /// which pane it was when it is empty or shows what another pane shows.
+    #[serde(default)]
+    focus_index: Option<usize>,
     /// The focused pane is zoomed (zoom always follows focus).
     #[serde(default)]
     zoomed: bool,
+    /// A "watch runs" window stays one across restarts.
+    #[serde(default)]
+    follow_runs: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -159,16 +192,26 @@ impl FluxChat {
         self.windows.iter().flat_map(|w| w.grid.iter().filter_map(|(_, s)| s.key.as_deref()))
     }
 
-    /// Whether `key` is on screen: in a pane of the active window.
+    /// Whether `key` is on screen: in a pane of the active window that is
+    /// drawn (with a pane zoomed, the others aren't).
     pub(crate) fn visible(&self, key: &str) -> bool {
-        self.window().pane_with(key).is_some()
+        self.window().drawn_keys().any(|k| k == key)
     }
 
     /// Whether any view of `room_id` (the room or one of its threads) is on screen.
     pub(crate) fn room_visible(&self, room_id: &str) -> bool {
-        self.window().grid.iter().any(|(_, s)| {
-            s.key.as_deref().is_some_and(|k| fluxchat_core::timeline::real_room_id(k) == room_id)
-        })
+        self.window().drawn_keys().any(|k| fluxchat_core::timeline::real_room_id(k) == room_id)
+    }
+
+    /// Make window `i` the active one. A pane press still waiting for its
+    /// release belonged to the window we're leaving (pane ids repeat across
+    /// windows: it would focus that id's pane here).
+    pub(crate) fn activate_window(&mut self, i: usize) {
+        if i != self.active_window {
+            self.active_window = i;
+            self.pending_pane_focus = None;
+            self.layout_dirty = true;
+        }
     }
 
     /// Esc with nothing else to dismiss, in a thread pane: back to its room
@@ -205,7 +248,9 @@ impl FluxChat {
             windows: self.windows.iter().map(|w| SavedWindow {
                 layout: save_node(&w.grid, w.grid.layout()),
                 focus: w.focused_key().map(str::to_string),
+                focus_index: layout_order(w.grid.layout()).iter().position(|p| *p == w.focus),
                 zoomed: w.grid.maximized().is_some(),
+                follow_runs: w.follow_runs,
             }).collect(),
             active: self.active_window,
         };
@@ -227,14 +272,18 @@ impl FluxChat {
         let mut windows = Vec::new();
         for w in saved.windows {
             let mut grid = pane_grid::State::with_configuration(to_config(w.layout, &keep));
-            let focus = w.focus.as_deref()
-                .and_then(|f| grid.iter().find(|(_, s)| s.key.as_deref() == Some(f)).map(|(p, _)| *p))
-                .or_else(|| layout_order(grid.layout()).first().copied());
+            // The pane that had focus: by its place (layouts saved before
+            // that was recorded: the first pane showing the focused view).
+            let order = layout_order(grid.layout());
+            let focus = w.focus_index.and_then(|i| order.get(i).copied())
+                .or_else(|| w.focus.as_deref()
+                    .and_then(|f| order.iter().copied().find(|p| grid.get(*p).is_some_and(|s| s.key.as_deref() == Some(f)))))
+                .or_else(|| order.first().copied());
             if let Some(focus) = focus {
                 if w.zoomed && grid.len() > 1 {
                     grid.maximize(focus);
                 }
-                windows.push(Window { grid, focus, follow_runs: false });
+                windows.push(Window { grid, focus, follow_runs: w.follow_runs });
             }
         }
         if windows.is_empty() {
@@ -305,7 +354,7 @@ impl FluxChat {
         }
         self.layout_dirty = true;
         if let Some((i, p)) = self.locate(key) {
-            self.active_window = i;
+            self.activate_window(i);
             let w = self.window_mut();
             w.focus = p;
             w.unzoom_for(p);
@@ -333,12 +382,21 @@ impl FluxChat {
                 return Task::none();
             }
             if let Some((i, p)) = self.locate(&key) {
-                if i != self.active_window {
-                    self.active_window = i;
-                    self.layout_dirty = true;
-                }
+                self.activate_window(i);
                 return self.focus_pane(p);
             }
+        }
+        // An empty focused pane is waiting for a view: "beside it" would
+        // leave the blank pane in focus with the view next to it. (A thread
+        // opened plainly still brings its room along, below.)
+        let focus_empty = self.window().focused_key().is_none();
+        let beside = match at {
+            Placement::Right | Placement::Below => true,
+            Placement::Auto | Placement::Follow => !key.starts_with("thread::"),
+            Placement::Here | Placement::NewWindow => false,
+        };
+        if focus_empty && beside {
+            return self.replace_focused(key);
         }
         match at {
             Placement::NewWindow => {
@@ -424,12 +482,7 @@ impl FluxChat {
                 .collect();
             for p in panes {
                 if w.grid.len() > 1 {
-                    if let Some((slot, sibling)) = w.grid.close(p) {
-                        if w.focus == p {
-                            w.focus = sibling;
-                        }
-                        gone.extend(slot.key);
-                    }
+                    gone.extend(w.close_pane(p).and_then(|slot| slot.key));
                 } else if let Some(slot) = w.grid.get_mut(p) {
                     gone.extend(slot.key.take());
                 }
@@ -441,6 +494,7 @@ impl FluxChat {
         self.layout_dirty = true;
         for k in &gone {
             self.pane_inputs.remove(k);
+            self.pane_fill.remove(k);
         }
         if self.selected_room_id.as_deref().is_some_and(of_room) {
             self.selected_room_id = None;
@@ -520,7 +574,13 @@ impl FluxChat {
                 Task::none()
             }
             Message::InView(key, inner) => {
-                let focus = match self.window().pane_with(&key) {
+                // The pane that was pressed, when it shows this view: with the
+                // same view in two panes, "a pane showing it" may be the other.
+                let w = self.window();
+                let pane = self.pending_pane_focus
+                    .filter(|p| w.grid.get(*p).is_some_and(|s| s.key.as_deref() == Some(key.as_str())))
+                    .or_else(|| w.pane_with(&key));
+                let focus = match pane {
                     Some(p) if self.selected_room_id.as_deref() != Some(key.as_str()) => {
                         self.pending_pane_focus = None;
                         self.focus_pane(p)
@@ -589,15 +649,12 @@ impl FluxChat {
                 let w = self.window_mut();
                 let pane = target.unwrap_or(w.focus);
                 if w.grid.len() > 1 {
-                    let closed = w.grid.close(pane);
-                    if let Some((slot, sibling)) = closed {
-                        if pane == w.focus {
-                            w.focus = sibling;
-                        }
+                    if let Some(slot) = w.close_pane(pane) {
                         self.layout_dirty = true;
-                        let release = self.release_view(slot.key);
+                        // Refocus first: release_view keeps whatever is the main view.
                         let refocus = self.focus_pane(self.window().focus);
-                        Task::batch([release, refocus])
+                        let release = self.release_view(slot.key);
+                        Task::batch([refocus, release])
                     } else {
                         Task::none()
                     }
@@ -637,7 +694,7 @@ impl FluxChat {
             }
             Message::WindowNew => {
                 self.windows.push(Window::new(None));
-                self.active_window = self.windows.len() - 1;
+                self.activate_window(self.windows.len() - 1);
                 self.layout_dirty = true;
                 // An empty window shows the welcome view (jump to room, …);
                 // focusing its pane keeps the draft of the view we're leaving.
@@ -646,8 +703,7 @@ impl FluxChat {
             }
             Message::WindowSelect(i) => {
                 if i < self.windows.len() && i != self.active_window {
-                    self.active_window = i;
-                    self.layout_dirty = true;
+                    self.activate_window(i);
                     let p = self.window().focus;
                     self.focus_pane(p)
                 } else {
@@ -668,6 +724,7 @@ impl FluxChat {
                 }
                 let closed = self.windows.remove(self.active_window);
                 self.active_window = self.active_window.min(self.windows.len() - 1);
+                self.pending_pane_focus = None;
                 self.layout_dirty = true;
                 // Refocus first: release_view keeps whatever is still the main view.
                 let p = self.window().focus;
@@ -694,6 +751,8 @@ impl FluxChat {
                 }
                 let Some(content) = self.pane_inputs.get_mut(&key) else { return Some(Task::none()) };
                 *content = iced::widget::text_editor::Content::new();
+                // The pane's composer held the view's draft: it's sent now.
+                self.drafts.remove(&key);
                 self.remember_prompt(&body);
                 if let Some(text) = self.agent_outgoing(&key, &body) {
                     body = text;
@@ -765,12 +824,11 @@ impl FluxChat {
             Some(k) if self.selected_room_id.as_deref() != Some(k.as_str()) => self.update(Message::SelectRoom(k)),
             Some(_) => Task::none(),
             None => {
-                // Keep the composer draft of the view we're leaving.
+                // Keep the composer draft of the view we're leaving (and show
+                // it in the pane the view stays in).
                 if let Some(prev) = self.selected_room_id.take() {
-                    let draft = std::mem::take(&mut self.input_text);
-                    if !draft.trim().is_empty() {
-                        self.drafts.insert(prev, draft);
-                    }
+                    self.stash_draft(prev.clone());
+                    self.show_draft_in_pane(&prev);
                     self.input_content = iced::widget::text_editor::Content::new();
                 }
                 Task::none()
@@ -778,15 +836,18 @@ impl FluxChat {
         }
     }
 
-    /// A pane stopped showing `key`: drop thread timelines nothing shows anymore.
+    /// A pane stopped showing `key`. If nothing shows it anymore, its pane
+    /// composer and paging state go, and a thread's timeline with them.
     pub(crate) fn release_view(&mut self, key: Option<String>) -> Task<Message> {
         match key {
-            Some(k) if k.starts_with("thread::")
-                && !self.shown_in_pane(&k)
-                && self.selected_room_id.as_deref() != Some(k.as_str()) =>
-            {
+            Some(k) if !self.shown_in_pane(&k) && self.selected_room_id.as_deref() != Some(k.as_str()) => {
                 self.pane_inputs.remove(&k);
-                self.close_thread_views(vec![k])
+                self.pane_fill.remove(&k);
+                if k.starts_with("thread::") {
+                    self.close_thread_views(vec![k])
+                } else {
+                    Task::none()
+                }
             }
             _ => Task::none(),
         }
@@ -1595,6 +1656,407 @@ pub(crate) mod flow_tests {
         // A later check finding nothing (repo downgraded, say) clears it.
         let _ = app.update(Message::UpdateChecked(Ok(None)));
         assert_eq!(app.update_available, None);
+    }
+
+    fn typed(app: &FluxChat, key: &str) -> Option<String> {
+        app.pane_inputs.get(key).map(|c| c.text().trim_end_matches('\n').to_string())
+    }
+
+    fn row(id: &str) -> fluxchat_core::MessageInfo {
+        fluxchat_core::MessageInfo { event_id: id.into(), body: "hi".into(), sender: "@u:x".into(), ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn a_room_left_in_a_side_pane_keeps_a_composer_with_its_draft() {
+        // a was opened as the main view: nothing ever gave it a pane composer.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        app.input_text = "half-written".into();
+        let pb = pane_of(&app, Some("!b:x"));
+        click(&mut app, pb, Message::PaneFocus(pb));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        assert_eq!(typed(&app, "!a:x").as_deref(), Some("half-written"), "a's pane shows what was being written");
+        assert_eq!(app.input_text, "", "b's composer starts with b's own draft");
+        // Back in a, the draft is in the main composer; b's pane has a composer too.
+        let pa = pane_of(&app, Some("!a:x"));
+        click(&mut app, pa, Message::PaneFocus(pa));
+        assert_eq!(app.input_text, "half-written");
+        assert_eq!(typed(&app, "!b:x").as_deref(), Some(""));
+        // A room picked into a fresh split leaves the first room a composer as well.
+        let mut app = super::flow_tests::app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        split_stacked_from_title_bar(&mut app);
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(app.pane_inputs.contains_key("!a:x"));
+        // A view that left the screen keeps no pane composer behind.
+        let _ = app.update(Message::SelectRoom("!c:x".into()));
+        assert!(!app.pane_inputs.contains_key("!b:x"));
+    }
+
+    #[tokio::test]
+    async fn sending_from_a_side_pane_sends_the_draft_once() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        app.input_text = "ship it".into();
+        let pb = pane_of(&app, Some("!b:x"));
+        click(&mut app, pb, Message::PaneFocus(pb));
+        let _ = app.update(Message::PaneSend("!a:x".into()));
+        assert_eq!(typed(&app, "!a:x").as_deref(), Some(""));
+        assert!(!app.drafts.contains_key("!a:x"), "or it would come back in a's composer");
+    }
+
+    #[tokio::test]
+    async fn opening_beside_an_empty_focused_pane_fills_it() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::WindowNew);
+        // Cmd+click / "Open to the right" in an empty window: the room, not
+        // a blank pane with the room beside it.
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        assert_eq!(keys(&app), vec![Some("!b:x".to_string())]);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        // The same for a plain open of a room (a run opened from the Runs dialog).
+        let _ = app.update(Message::WindowNew);
+        let _ = app.update(Message::OpenAt("!c:x".into(), Placement::Auto));
+        assert_eq!(keys(&app), vec![Some("!c:x".to_string())]);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!c:x"));
+        // A thread opened plainly still brings its room: room, thread beside it.
+        let _ = app.update(Message::WindowNew);
+        let _ = app.update(Message::OpenThread("!d:x".into(), "$t".into()));
+        assert_eq!(app.window().grid.len(), 2);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!d:x"));
+        // With a view in focus, "to the right" still splits.
+        let _ = app.update(Message::OpenAt("!e:x".into(), Placement::Right));
+        assert_eq!(app.window().grid.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_pane_left_alone_is_not_zoomed() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let _ = app.update(Message::PaneZoom);
+        assert!(app.window().grid.maximized().is_some());
+        // b's pane goes (the room was left) while a is zoomed.
+        let _ = app.update(Message::LeaveRoom("!b:x".into()));
+        assert_eq!(keys(&app), vec![Some("!a:x".to_string())]);
+        assert_eq!(app.window().grid.maximized(), None);
+    }
+
+    #[tokio::test]
+    async fn the_focused_pane_and_a_watch_window_come_back_with_the_layout() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        split_stacked_from_title_bar(&mut app);
+        // Focus on the empty pane: no key to find it by.
+        let empty = pane_of(&app, None);
+        click(&mut app, empty, Message::PaneFocus(empty));
+        assert_eq!(app.selected_room_id, None);
+        app.windows[0].follow_runs = true;
+        app.save_layout();
+        app.rooms = vec![fluxchat_core::RoomInfo { room_id: "!a:x".into(), ..Default::default() }];
+        app.windows = vec![Window::new(None)];
+        let _ = app.restore_layout();
+        assert_eq!(app.window().grid.len(), 2);
+        assert_eq!(app.window().focused_key(), None, "the empty pane has focus again");
+        assert_eq!(app.selected_room_id, None);
+        assert!(app.window().follow_runs);
+        // A layout saved before the place was recorded: found by its view.
+        let old = r#"{"windows":[{"layout":{"Split":{"vertical":true,"ratio":0.5,"a":{"Pane":"!a:x"},"b":{"Pane":"!b:x"}}},"focus":"!b:x"}],"active":0}"#;
+        let _ = app.core.db.set_setting(LAYOUT_KEY, old);
+        app.rooms = ["!a:x", "!b:x"].iter()
+            .map(|id| fluxchat_core::RoomInfo { room_id: id.to_string(), ..Default::default() })
+            .collect();
+        app.windows = vec![Window::new(None)];
+        let _ = app.restore_layout();
+        assert_eq!(app.window().focused_key(), Some("!b:x"));
+        assert!(!app.window().follow_runs);
+    }
+
+    #[tokio::test]
+    async fn an_action_in_the_second_copy_of_a_view_focuses_that_copy() {
+        // a in focus, b beside it and b again below it.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Below));
+        let copies: Vec<pane_grid::Pane> = app.window().grid.iter()
+            .filter(|(_, s)| s.key.as_deref() == Some("!b:x")).map(|(p, _)| *p).collect();
+        assert_eq!(copies.len(), 2);
+        for pressed in copies {
+            let pa = pane_of(&app, Some("!a:x"));
+            click(&mut app, pa, Message::PaneFocus(pa));
+            click(&mut app, pressed, in_view("!b:x", Message::StartReply("$e".into(), "u".into(), "hi".into())));
+            assert_eq!(app.window().focus, pressed, "the pane that was clicked, not the other copy");
+            assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_the_focused_thread_pane_lets_the_thread_go() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenThread("!a:x".into(), "$t".into()));
+        let t = fluxchat_core::timeline::thread_key("!a:x", "$t");
+        let pt = pane_of(&app, Some(t.as_str()));
+        click(&mut app, pt, Message::PaneFocus(pt));
+        app.messages_by_room.insert(t.clone(), vec![row("$t")]);
+        app.history_start.insert(t.clone());
+        // Ctrl+B x on the thread: its rows, composer and "start reached"
+        // go with it (it was still the main view when it was let go of).
+        let _ = app.update(Message::PaneClose(None));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+        assert!(!app.messages_by_room.contains_key(&t));
+        assert!(!app.pane_inputs.contains_key(&t));
+        assert!(!app.history_start.contains(&t));
+    }
+
+    #[tokio::test]
+    async fn what_a_zoomed_pane_hides_is_not_on_screen() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        assert!(app.visible("!b:x") && app.room_visible("!b:x"));
+        let _ = app.update(Message::PaneZoom);
+        assert!(app.visible("!a:x"));
+        assert!(!app.visible("!b:x") && !app.room_visible("!b:x"), "hidden behind the zoomed pane");
+        assert!(app.shown_in_pane("!b:x"), "still open");
+        let _ = app.update(Message::PaneZoom);
+        assert!(app.visible("!b:x"));
+    }
+
+    #[tokio::test]
+    async fn a_pane_press_does_not_carry_into_another_window() {
+        // Two windows of two panes each: their pane ids are the same.
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let _ = app.update(Message::WindowNew);
+        let _ = app.update(Message::SelectRoom("!c:x".into()));
+        let _ = app.update(Message::OpenAt("!d:x".into(), Placement::Right));
+        let _ = app.update(Message::WindowSelect(0));
+        // Pressed in b's pane; what the click does goes to window 1.
+        let pb = pane_of(&app, Some("!b:x"));
+        let _ = app.update(Message::PaneClicked(pb));
+        let _ = app.update(Message::SelectRoom("!c:x".into()));
+        let _ = app.update(Message::SidebarDragEnd);
+        assert_eq!(app.active_window, 1);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!c:x"), "not the pane with b's id over here");
+    }
+
+    /// The "mounted" flag of every message list in the app's widget tree,
+    /// after bringing `tree` up to date with the current view.
+    fn lists(app: &FluxChat, tree: &mut iced::advanced::widget::Tree) -> Vec<bool> {
+        let view = app.view();
+        tree.diff(&view);
+        let mut flags = Vec::new();
+        crate::list_probe::each_probe(tree, &mut |mounted| flags.push(*mounted));
+        flags
+    }
+
+    #[tokio::test]
+    async fn the_message_list_keeps_its_widget_state_when_the_layout_around_it_changes() {
+        // iced keeps widget state (the list's scroll position) by position in
+        // the view tree. Anything that shifted the list threw it away, and
+        // the view came up blank or at its oldest message.
+        let mut app = app();
+        app.screen = crate::state::Screen::Main;
+        app.rooms = ["!a:x", "!b:x"].iter()
+            .map(|id| fluxchat_core::RoomInfo { room_id: id.to_string(), name: id.to_string(), ..Default::default() })
+            .collect();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), (0..40).map(|i| row(&format!("$a{i}"))).collect());
+        app.messages_by_room.insert("!b:x".into(), (0..40).map(|i| row(&format!("$b{i}"))).collect());
+        let mut tree = iced::advanced::widget::Tree::new(app.view());
+        // (A new pane grid rebuilds its panes on its first diff: iced's
+        // `Memory::order` starts empty. Get that out of the way.)
+        let _ = lists(&app, &mut tree);
+        let mut seen = 0;
+        crate::list_probe::each_probe(&mut tree, &mut |mounted| { *mounted = true; seen += 1; });
+        assert_eq!(seen, 1, "one message list on screen");
+
+        // A split moves the room header into the pane's title bar...
+        let _ = app.update(Message::PaneSplit(Axis::Horizontal));
+        assert_eq!(lists(&app, &mut tree), vec![true]);
+        // ...and closing back to one pane moves it out again.
+        let empty = pane_of(&app, None);
+        let _ = app.update(Message::PaneClose(Some(empty)));
+        assert_eq!(lists(&app, &mut tree), vec![true]);
+        // Hiding and showing the room list.
+        let _ = app.update(Message::ToggleRoomList);
+        assert_eq!(lists(&app, &mut tree), vec![true]);
+        let _ = app.update(Message::ToggleRoomList);
+        assert_eq!(lists(&app, &mut tree), vec![true]);
+        // A topic being set.
+        app.rooms[0].topic = Some("now with a topic".into());
+        assert_eq!(lists(&app, &mut tree), vec![true]);
+        // Zooming a pane and back.
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let _ = lists(&app, &mut tree);
+        crate::list_probe::each_probe(&mut tree, &mut |mounted| *mounted = true);
+        let _ = app.update(Message::PaneZoom);
+        let _ = app.update(Message::PaneZoom);
+        assert_eq!(lists(&app, &mut tree), vec![true, true]);
+
+        // Moving focus to the other pane is different: the full view is now
+        // built in that pane, on new state. The list says so (`on_mount`)
+        // and `MessagesMounted` puts it back where the view was.
+        let pb = pane_of(&app, Some("!b:x"));
+        click(&mut app, pb, Message::PaneFocus(pb));
+        assert_eq!(lists(&app, &mut tree), vec![false, false]);
+    }
+
+    #[tokio::test]
+    async fn a_view_that_does_not_fill_loads_history_without_a_scroll() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_viewport_h = 300.0;
+        assert!(!app.messages_underfilled && !app.paginating);
+        let bounds = iced::Rectangle { x: 300.0, y: 40.0, width: 800.0, height: 900.0 };
+        // Still loading (placeholder rows fit as well): nothing to page yet.
+        let _ = app.update(Message::MessagesFit(bounds, 80.0));
+        assert!(app.messages_underfilled && !app.paginating);
+        // A few rows in a tall list: nothing to scroll, so no scroll event
+        // will ever come. The list says so itself.
+        app.messages_by_room.insert("!a:x".into(), vec![row("$1"), row("$2")]);
+        let _ = app.update(Message::MessagesFit(bounds, 120.0));
+        assert!(app.messages_underfilled && app.messages_at_bottom);
+        assert_eq!(app.messages_viewport_h, 900.0);
+        assert!(app.paginating, "older history is fetched");
+        // ...page after page while it still doesn't fill,
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(false)));
+        assert!(app.paginating);
+        // ...until the room's start.
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), Some(true)));
+        assert!(!app.paginating);
+        let _ = app.update(Message::MessagesFit(bounds, 180.0));
+        assert!(!app.paginating, "nothing older to fetch");
+
+        // Another view starts from scratch: it hasn't said it's short.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(!app.messages_underfilled);
+        app.messages_by_room.insert("!b:x".into(), vec![row("$b1")]);
+        // The allowance per view is finite (a long stretch it doesn't show).
+        app.underfill_pages = u8::MAX;
+        let _ = app.update(Message::MessagesFit(bounds, 120.0));
+        assert!(!app.paginating);
+        // A scroll-up over the short list still asks for more.
+        let _ = app.update(Message::TimelineWheelUpAtTop);
+        assert!(app.paginating);
+
+        // Offline: a page fails, is retried a few times, and then it stops.
+        // (The list reports again each time "Loading older messages…" comes
+        // and goes: that must not start the retries over, forever.)
+        let mut app = super::flow_tests::app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![row("$1")]);
+        let _ = app.update(Message::MessagesFit(bounds, 60.0));
+        assert!(app.paginating);
+        let mut budget = app.paginate_empty_budget;
+        while budget > 0 {
+            let _ = app.update(Message::PaginateSettled("!a:x".into(), None));
+            assert!(!app.paginating, "waits before the retry");
+            budget -= 1;
+            let _ = app.update(Message::PaginateRetry("!a:x".into(), budget));
+            assert!(app.paginating);
+        }
+        let _ = app.update(Message::PaginateSettled("!a:x".into(), None));
+        let _ = app.update(Message::MessagesFit(bounds, 40.0));
+        assert!(!app.paginating, "given up until asked");
+        // Back online: it picks up where it stopped.
+        let _ = app.update(Message::SyncReconnected);
+        assert!(app.paginating);
+    }
+
+    #[tokio::test]
+    async fn a_new_scrollable_is_put_back_where_the_view_was() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::MessagesMounted);
+        assert!(app.messages_remounted);
+        // A list that fits has nothing to put back.
+        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 800.0, height: 900.0 };
+        let _ = app.update(Message::MessagesFit(bounds, 100.0));
+        assert!(!app.messages_remounted);
+    }
+
+    #[tokio::test]
+    async fn history_loads_again_after_the_timeline_was_reset() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let update = |ids: &[&str]| Message::SyncEvent(SyncEvent::MessagesUpdated(
+            "!a:x".into(), ids.iter().map(|id| row(id)).collect(),
+        ));
+        let _ = app.update(update(&["$1", "$2", "$3"]));
+        app.history_start.insert("!a:x".into());
+        // New messages at the end: still loaded back to the start.
+        let _ = app.update(update(&["$1", "$2", "$3", "$4"]));
+        assert!(app.history_start.contains("!a:x"));
+        // A gap in sync: the timeline starts over with recent events only.
+        let _ = app.update(update(&["$8", "$9"]));
+        assert!(!app.history_start.contains("!a:x"), "or scrolling up would never load $1..$7 again");
+        let _ = app.update(Message::TimelineWheelUpAtTop);
+        assert!(app.paginating);
+    }
+
+    #[tokio::test]
+    async fn a_side_pane_loads_older_history_too() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        let flying = |app: &FluxChat, key: &str| app.pane_fill.get(key).is_some_and(|f| f.in_flight);
+        // Not before its first rows are in.
+        let _ = app.update(Message::PaneFit("!b:x".into()));
+        assert!(!flying(&app, "!b:x"));
+        for key in ["!a:x", "!b:x", "!z:x"] {
+            app.messages_by_room.insert(key.into(), vec![row("$1")]);
+        }
+        // b's list has room to spare: a page, one at a time.
+        let _ = app.update(Message::PaneFit("!b:x".into()));
+        assert!(flying(&app, "!b:x"));
+        assert_eq!(app.pane_fill["!b:x"].auto_pages, 1);
+        let _ = app.update(Message::PaneFit("!b:x".into()));
+        assert_eq!(app.pane_fill["!b:x"].auto_pages, 1, "not while one is on its way");
+        // The page showed nothing (hidden thread replies; still its one
+        // row): the next follows.
+        let _ = app.update(Message::PanePaged("!b:x".into(), 1, 2, Some(false)));
+        assert!(flying(&app, "!b:x"));
+        // Out of follow-ups: it waits for the list to change or a scroll.
+        let _ = app.update(Message::PanePaged("!b:x".into(), 1, 0, Some(false)));
+        assert!(!flying(&app, "!b:x"));
+        // A page that did show something isn't followed either: the list
+        // changed size, and says so itself if it still has room.
+        let _ = app.update(Message::PaneLoadOlder("!b:x".into()));
+        let _ = app.update(Message::PanePaged("!b:x".into(), 0, 5, Some(false)));
+        assert!(!flying(&app, "!b:x"));
+        // Filling by itself is capped; a scroll-up at the top is not.
+        app.pane_fill.get_mut("!b:x").unwrap().auto_pages = u8::MAX;
+        let _ = app.update(Message::PaneFit("!b:x".into()));
+        assert!(!flying(&app, "!b:x"));
+        let _ = app.update(Message::PaneLoadOlder("!b:x".into()));
+        assert!(flying(&app, "!b:x"));
+        // The room's start: nothing more to ask for.
+        let _ = app.update(Message::PanePaged("!b:x".into(), 0, 5, Some(true)));
+        assert!(app.history_start.contains("!b:x"));
+        let _ = app.update(Message::PaneLoadOlder("!b:x".into()));
+        assert!(!flying(&app, "!b:x"));
+
+        // The main view pages for itself, and a view in no pane isn't paged.
+        let _ = app.update(Message::PaneFit("!a:x".into()));
+        let _ = app.update(Message::PaneFit("!z:x".into()));
+        assert!(!flying(&app, "!a:x") && !flying(&app, "!z:x"));
+        // A pane already holding all the rows it shows asks for no more.
+        let _ = app.update(Message::OpenAt("!c:x".into(), Placement::Below));
+        app.messages_by_room.insert("!c:x".into(),
+            (0..crate::view_thread_pane::SIDE_PANE_ROWS).map(|i| row(&format!("${i}"))).collect());
+        let _ = app.update(Message::PaneLoadOlder("!c:x".into()));
+        assert!(!flying(&app, "!c:x"));
+        // Focused, a view gets a fresh allowance for its next time in a pane.
+        app.history_start.remove("!b:x");
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(!app.pane_fill.contains_key("!b:x"));
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use crate::ui::{self, Tone};
 use crate::view::thin_scrollbar;
 
 /// Most recent rows a room shows in a non-focused pane (not virtualized).
-const SIDE_PANE_ROWS: usize = 300;
+pub(crate) const SIDE_PANE_ROWS: usize = 300;
 /// Spaces bar width (see view_sidebar).
 const SPACES_BAR_WIDTH: f32 = 56.0;
 /// Gap between panes (pane_grid spacing).
@@ -62,8 +62,9 @@ impl FluxChat {
                 None if multiple => self.view_empty_pane(pane),
                 _ if focused => self.view_content(),
                 // Own tree node: never inherits the full view's widget
-                // state (its scroll offset would read upside down here).
-                Some(key) => crate::isolated::Isolated::new(self.view_pane_body(key)).into(),
+                // state (its scroll offset would read upside down here), nor
+                // another view's that this pane showed before.
+                Some(key) => crate::isolated::Isolated::new(key, self.view_pane_body(key)).into(),
                 None => self.view_empty_pane(pane),
             };
             let framed = container(body)
@@ -306,16 +307,27 @@ impl FluxChat {
                 if is_thread && rows.len() <= 1 {
                     list = list.push(ui::empty_state(crate::icons::SVG_THREAD, "No replies yet", Some("Start the thread below.".into())));
                 }
-                scrollable(list)
-                    .id(Self::pane_scroll_id(key))
-                    .height(Fill)
-                    .direction(iced::widget::scrollable::Direction::Vertical(
-                        iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
-                    ))
-                    // After `direction`, which replaces the scrollbar (anchor included).
-                    .anchor_bottom()
-                    .style(thin_scrollbar)
-                    .into()
+                // A pane pages too: while its list has room to spare, and
+                // on a scroll-up at its top (it showed "a few messages" and
+                // nothing more, whatever you did, until it was focused).
+                crate::list_probe::ListProbe::new(
+                    key,
+                    scrollable(list)
+                        .id(Self::pane_scroll_id(key))
+                        .height(Fill)
+                        .direction(iced::widget::scrollable::Direction::Vertical(
+                            iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4),
+                        ))
+                        // After `direction`, which replaces the scrollbar (anchor included).
+                        .anchor_bottom()
+                        .style(thin_scrollbar),
+                )
+                .on_fit({
+                    let k = key.to_string();
+                    move |_, _| Message::PaneFit(k.clone())
+                })
+                .on_wheel_up(Message::PaneLoadOlder(key.to_string()))
+                .into()
             }
         };
 

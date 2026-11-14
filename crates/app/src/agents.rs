@@ -39,6 +39,13 @@ const PROMPT_MAX_AGE_MS: u64 = 60 * 60 * 1000;
 const RUN_WINDOW_PANES: usize = 6;
 /// Finished runs this recent still show in the Runs dialog.
 const RECENT_RUN_MS: u64 = 6 * 60 * 60 * 1000;
+/// A run seen live this recently, and finished now, ended now (we watched
+/// it happen). Longer ago than that, its messages date the end.
+const WATCHING_MS: u64 = 2 * 60 * 1000;
+/// Sync has to have been running this long before "it just changed" means
+/// "it just happened": right after a start or a reconnect the timelines show
+/// what was stored (a run still working from last night) and then catch up.
+const CAUGHT_UP_MS: u64 = 60 * 1000;
 /// A "working" run with no sign of life this long isn't running: the agent
 /// most likely restarted without taking its working reaction back.
 const STALE_RUN_MS: u64 = 2 * 60 * 60 * 1000;
@@ -522,16 +529,42 @@ pub struct RunInfo {
     pub cost_usd: Option<f64>,
     /// How the run ended, one line (protocol `result`), once it has.
     pub result: Option<String>,
+    /// When a finished run ended (ms), as far as can be told: the agent's
+    /// last message of the run, or the moment we watched it finish. `since`
+    /// is when it was *asked*: measured from that, a run that worked for
+    /// seven hours was never "recently finished", and a record's end was
+    /// whenever this app next happened to look.
+    pub ended: Option<u64>,
+    /// The protocol's run id, when the agent gives one: the same run however
+    /// its start gets dated (see `record_run`).
+    pub run_id: Option<String>,
+    /// Inferred from the agent typing (harnesses with `typing_means_working`),
+    /// not from a request: shown, never recorded.
+    pub typing: bool,
+    /// When you stopped it (ms): your stop command, which the agent answered
+    /// (`stopped_at`). Its request still reads as working — Hermes leaves the
+    /// 👀 on a request it was told to stop — but the run is over.
+    pub stopped: Option<u64>,
 }
 
 impl RunInfo {
     pub(crate) fn new(state: RunState, since: u64) -> Self {
-        RunInfo { state, since, step: None, steps: 0, progress: None, agent: String::new(), cost_usd: None, result: None }
+        RunInfo {
+            state, since, step: None, steps: 0, progress: None, agent: String::new(), cost_usd: None, result: None,
+            ended: None, run_id: None, typing: false, stopped: None,
+        }
+    }
+
+    /// When a finished run ended, else when it was asked for.
+    pub(crate) fn ended_at(&self) -> u64 {
+        self.ended.unwrap_or(self.since).max(self.since)
     }
 
     /// For picking between two agents' reports on one key: the livelier.
     fn rank(&self) -> (u8, std::cmp::Reverse<u64>) {
         let r = match self.state {
+            // Stopped: over, whatever its request still says.
+            _ if self.stopped.is_some() => 4,
             RunState::NeedsYou => 0,
             RunState::Working => 1,
             RunState::Failed => 2,
@@ -567,6 +600,16 @@ pub struct AgentRuns {
     needs_you: std::collections::HashSet<String>,
     /// The latest runtime footer seen per room (timestamp, info).
     runtime: HashMap<String, (u64, Runtime)>,
+    /// The same per (view key, agent): what a run that ends may be filled in
+    /// from (`run_runtime`). The room's newest came from whichever agent and
+    /// session spoke last — a run that reported no cost, ending in a room
+    /// where another session had just said $3.60, was recorded at $3.60.
+    runtime_of: HashMap<(String, String), (u64, Runtime)>,
+    /// Runs seen live: their start, and when they were last seen live while
+    /// sync was following the server (for dating their end).
+    seen_live: HashMap<String, (u64, u64)>,
+    /// Since when sync has been running without a break (None: it isn't).
+    following_since: Option<u64>,
     /// Runs that just finished (were working / waiting, now done / failed),
     /// for `announce_finished`.
     finished: Vec<String>,
@@ -574,9 +617,10 @@ pub struct AgentRuns {
     pub(crate) watched: std::collections::HashSet<String>,
     /// Runs that just started, for "watch runs" windows to pick up.
     started: Vec<String>,
-    /// Rooms an agent is typing in: which agent, since when (ms) —
-    /// "working" for harnesses that signal work that way.
-    typing_since: HashMap<String, (String, u64)>,
+    /// Agents typing, per room: since when, and when it was last reported
+    /// (ms) — "working" for harnesses that signal work that way. Per agent:
+    /// one slot per room restarted the clock whenever a second agent typed.
+    typing_since: HashMap<String, HashMap<String, (u64, u64)>>,
     /// Per room, the agent you're talking to when there are several.
     pub(crate) target: HashMap<String, String>,
 }
@@ -595,6 +639,77 @@ impl AgentRuns {
             .map(|(k, _)| real_room_id(k).to_string())
             .collect();
     }
+}
+
+/// Whether `body` is harness `h`'s stop command and nothing else (`!stop`;
+/// with the agent's mention in front for harnesses that take it that way).
+fn is_stop_command(body: &str, h: &Harness) -> bool {
+    if h.stop.is_empty() {
+        return false;
+    }
+    let stop = h.command(&h.stop);
+    let mut words = body.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some(w), None, _) => w.eq_ignore_ascii_case(&stop),
+        (Some(at), Some(w), None) => h.mention_commands && at.starts_with('@') && w.eq_ignore_ascii_case(&stop),
+        _ => false,
+    }
+}
+
+/// When you stopped the run that began at `since` (ms), going by one
+/// session's messages in order (a thread's, or a room's unthreaded ones):
+/// your stop command after it, once the agent has answered — a status
+/// reaction on it, or anything it posted afterwards ("⚡ Stopped. You can
+/// continue this session.", which reads as a step line, so those count).
+/// Nothing else says such a run is over: Hermes leaves its 👀 on a request
+/// it was told to stop, and a working status bubble as it was, so the run
+/// showed as working until it counted as stalled two hours later.
+fn stopped_at<'a>(msgs: impl Iterator<Item = &'a MessageInfo>, me: &str, agent: &str, h: &Harness, since: u64) -> Option<u64> {
+    let mut asked: Option<u64> = None;
+    for m in msgs.filter(|m| m.row_kind == fluxchat_core::RowKind::Message) {
+        if m.sender == me && sent_ms(m) > since && is_stop_command(&m.body, h) {
+            if request_state(h, m, agent).is_some() {
+                return Some(sent_ms(m));
+            }
+            asked.get_or_insert(sent_ms(m));
+        } else if asked.is_some() && m.sender == agent && !m.event_id.starts_with('~') {
+            return asked;
+        }
+    }
+    None
+}
+
+/// Whether `m`, one of view `key`'s messages, belongs to the session run key
+/// `k` is about: the view's own (a room view: its unthreaded messages), or a
+/// thread seen from its room (the root and its replies).
+fn in_session(m: &MessageInfo, key: &str, k: &str) -> bool {
+    if k == key {
+        parse_thread_key(key).is_some() || m.thread_root.is_none()
+    } else {
+        parse_thread_key(k).is_some_and(|(_, root)| m.event_id == root || m.thread_root.as_deref() == Some(root))
+    }
+}
+
+/// The agent's last message of the stretch that starts at `since` (ms), in
+/// the messages given (never a local echo or a membership change): what
+/// dates a finished run's end. A message more than `STALE_RUN_MS` after the
+/// one before it isn't part of the run — by then it counted as dead — so a
+/// scheduled report hours later doesn't make an old run "just finished".
+fn last_word<'a>(msgs: impl Iterator<Item = &'a MessageInfo>, agent: &str, since: u64) -> Option<u64> {
+    let mut times: Vec<u64> = msgs
+        .filter(|m| m.sender == agent && !m.event_id.starts_with('~') && !m.is_system())
+        .map(sent_ms)
+        .filter(|t| *t >= since)
+        .collect();
+    times.sort_unstable();
+    let mut last = None;
+    for t in times {
+        if t - last.unwrap_or(since) > STALE_RUN_MS {
+            break;
+        }
+        last = Some(t);
+    }
+    last
 }
 
 impl FluxChat {
@@ -682,25 +797,47 @@ impl FluxChat {
 
     /// Track agents typing (a working signal for some harnesses).
     pub(crate) fn note_agent_typing(&mut self, room: &str, user_ids: &[String]) {
-        match user_ids.iter().find(|u| self.prefs.agents.contains(u)) {
-            Some(agent) => {
-                let entry = self.agent_runs.typing_since.entry(room.to_string()).or_insert_with(|| (agent.clone(), now_ms()));
-                if entry.0 != *agent {
-                    *entry = (agent.clone(), now_ms());
-                }
-            }
-            None => { self.agent_runs.typing_since.remove(room); }
+        let now = now_ms();
+        let agents: Vec<&String> = user_ids.iter().filter(|u| self.prefs.agents.contains(*u)).collect();
+        if agents.is_empty() {
+            self.agent_runs.typing_since.remove(room);
+            return;
         }
+        let typing = self.agent_runs.typing_since.entry(room.to_string()).or_default();
+        typing.retain(|a, _| agents.contains(&a));
+        for agent in agents {
+            typing.entry(agent.clone()).or_insert((now, now)).1 = now;
+        }
+    }
+
+    /// The run an agent typing in `room` stands for: Working since it began
+    /// typing, for harnesses that work that way (the one typing longest when
+    /// several do). Over like any working run once it has shown no sign of
+    /// life for `STALE_RUN_MS` — a typing-stop that never arrived used to
+    /// leave it running for good.
+    fn typing_run(&self, room: &str) -> Option<RunInfo> {
+        let (agent, since) = self.agent_runs.typing_since.get(room)?.iter()
+            .filter(|(a, _)| self.harness_of(a).typing_means_working)
+            .map(|(a, (since, _))| (a, *since))
+            .min_by(|x, y| (x.1, x.0).cmp(&(y.1, y.0)))?;
+        let run = RunInfo { agent: agent.clone(), typing: true, ..RunInfo::new(RunState::Working, since) };
+        (!self.stalled(room, &run)).then_some(run)
+    }
+
+    /// Typing runs in rooms with no live run of their own (they count as
+    /// running everywhere a run is listed, not only in the room's own view).
+    fn typing_runs(&self) -> Vec<(String, RunInfo)> {
+        self.agent_runs.typing_since.keys()
+            .filter(|room| !self.run_info(room).is_some_and(|r| matches!(r.state, RunState::Working | RunState::NeedsYou)))
+            .filter_map(|room| Some((room.clone(), self.typing_run(room)?)))
+            .collect()
     }
 
     /// The run going on behind a view, if any: its own working / waiting
     /// state, else — for harnesses that work that way — the agent typing.
     pub(crate) fn live_run(&self, key: &str) -> Option<RunInfo> {
         let own = self.run_info(key).filter(|r| matches!(r.state, RunState::Working | RunState::NeedsYou)).cloned();
-        own.or_else(|| {
-            let (agent, since) = self.agent_runs.typing_since.get(real_room_id(key))?;
-            self.harness_of(agent).typing_means_working.then(|| RunInfo { agent: agent.clone(), ..RunInfo::new(RunState::Working, *since) })
-        })
+        own.or_else(|| self.typing_run(real_room_id(key)))
     }
 
     /// Where the run behind a view stands: a thread key for a threaded
@@ -866,6 +1003,7 @@ impl FluxChat {
         // Runtime the agent reports through the protocol.
         for m in msgs.iter().filter(|m| m.sender == agent) {
             if let Some(rt) = Protocol::of(m).and_then(|p| p.runtime()) {
+                self.note_run_runtime(key, m, &rt);
                 let newer = self.agent_runs.runtime.get(&room).is_none_or(|(ts, _)| sent_ms(m) >= *ts);
                 if newer {
                     self.agent_runs.runtime.insert(room.clone(), (sent_ms(m), rt));
@@ -883,11 +1021,34 @@ impl FluxChat {
             if let Some(html) = m.formatted_body.as_mut() {
                 *html = strip_footer_html(html, &footer);
             }
+            self.note_run_runtime(key, m, &rt);
             let newer = self.agent_runs.runtime.get(&room).is_none_or(|(ts, _)| sent_ms(m) >= *ts);
             if newer {
                 self.agent_runs.runtime.insert(room.clone(), (sent_ms(m), rt));
             }
         }
+    }
+
+    /// Remember runtime info `rt` from message `m` (seen in view `key`) for
+    /// the view it belongs to — its thread's, even when read from the room.
+    fn note_run_runtime(&mut self, key: &str, m: &MessageInfo, rt: &Runtime) {
+        let view = match (&m.thread_root, parse_thread_key(key)) {
+            (Some(root), None) => thread_key(real_room_id(key), root),
+            _ => key.to_string(),
+        };
+        let at = sent_ms(m);
+        let slot = self.agent_runs.runtime_of.entry((view, m.sender.clone())).or_insert((at, rt.clone()));
+        if at >= slot.0 {
+            *slot = (at, rt.clone());
+        }
+    }
+
+    /// What `agent` last said about its runtime in view `key` at or after
+    /// `since` (ms): the info a run that started then may be filled in from.
+    pub(crate) fn run_runtime(&self, key: &str, agent: &str, since: u64) -> Option<Runtime> {
+        self.agent_runs.runtime_of.get(&(key.to_string(), agent.to_string()))
+            .filter(|(at, _)| *at >= since)
+            .map(|(_, rt)| rt.clone())
     }
 
     /// Runs as the agent describes them (agent protocol) in a view's
@@ -975,6 +1136,12 @@ impl FluxChat {
                 // The final edit carries it; the newest status message is
                 // that edit once the run ends.
                 result: p.result.clone(),
+                // No earlier than its newest status message (an edit keeps
+                // the time its message was first posted, so only a floor).
+                ended: matches!(state, RunState::Done | RunState::Failed).then(|| sent_ms(m)),
+                run_id: Some(run_id.clone()).filter(|id| !id.is_empty()),
+                typing: false,
+                stopped: None,
             }))
         }).collect()
     }
@@ -992,6 +1159,15 @@ impl FluxChat {
             return Vec::new();
         }
         let now = now_ms();
+        // Whether sync has been following the server for a while (see
+        // `CAUGHT_UP_MS`): only then is "finished since the last look" the
+        // same as "finished just now".
+        if !(self.sync_running && self.sync_status.is_none()) {
+            self.agent_runs.following_since = None;
+        } else if self.agent_runs.following_since.is_none() {
+            self.agent_runs.following_since = Some(now);
+        }
+        let following = self.agent_runs.following_since.is_some_and(|t| now.saturating_sub(t) >= CAUGHT_UP_MS);
         // Each agent's view of the runs here; for a key two report on, the
         // livelier wins.
         let mut merged: Vec<(String, Option<RunInfo>)> = Vec::new();
@@ -1024,11 +1200,44 @@ impl FluxChat {
                     self.end_stalled_run(&k, &r);
                     None
                 }
+                // You stopped it and the agent said so: not running, though
+                // its request still carries the working reaction.
+                Some(r) if r.stopped.is_some() => {
+                    self.end_stopped_run(&k, &r);
+                    self.agent_runs.watched.remove(&k);
+                    None
+                }
                 r => r,
             };
-            let was_live = self.agent_runs.states.get(&k)
-                .is_some_and(|r| matches!(r.state, RunState::Working | RunState::NeedsYou));
+            let old = self.agent_runs.states.get(&k).cloned();
+            let was_live = old.as_ref().is_some_and(|r| matches!(r.state, RunState::Working | RunState::NeedsYou));
             let over = run.as_ref().is_some_and(|r| matches!(r.state, RunState::Done | RunState::Failed));
+            // When it ended. Its messages only say "no earlier than" (and a
+            // status message edited to "done" keeps the time it was posted);
+            // "now" is only right when we were watching.
+            let mut run = run;
+            if let Some(r) = run.as_mut() {
+                let seen = self.agent_runs.seen_live.get(&k).filter(|(since, _)| *since == r.since).map(|(_, at)| *at);
+                if !over {
+                    if following {
+                        self.agent_runs.seen_live.insert(k.clone(), (r.since, now));
+                    }
+                } else if let Some(o) = old.as_ref().filter(|o| o.since == r.since) {
+                    r.ended = if was_live {
+                        match seen {
+                            Some(at) if following && now.saturating_sub(at) <= WATCHING_MS => Some(now),
+                            // Not watching closely enough to say: no earlier
+                            // than when it was last seen going.
+                            at => r.ended.max(at),
+                        }
+                    } else {
+                        // Finished at the last look too: what was said then stands.
+                        o.ended.max(r.ended)
+                    };
+                }
+            } else {
+                self.agent_runs.seen_live.remove(&k);
+            }
             if was_live && over {
                 self.agent_runs.finished.push(k.clone());
             }
@@ -1043,8 +1252,8 @@ impl FluxChat {
                 // A live run that's simply gone (a prompt answered, with no
                 // request reaction to say "done"): its record gets an end.
                 None => {
-                    if let Some(old) = self.agent_runs.states.get(&k).filter(|_| was_live).cloned() {
-                        self.close_run_record(&k, old.since);
+                    if let Some(old) = old.filter(|_| was_live) {
+                        self.close_run_record(&k, &old);
                     }
                 }
             }
@@ -1096,7 +1305,9 @@ impl FluxChat {
         let mut updates: Vec<(String, Option<RunInfo>)> = Vec::new();
         if parse_thread_key(key).is_some() {
             // A thread: its latest request (the root or a reply of yours).
-            let latest = msgs.iter().rev().filter(|m| m.sender == me)
+            // (A stop command is never one: answered with ✅ when nothing
+            // was running, it would stand in for the run it didn't stop.)
+            let latest = msgs.iter().rev().filter(|m| m.sender == me && !is_stop_command(&m.body, h))
                 .find_map(|m| request_state(h, m, &agent).map(|s| RunInfo::new(s, sent_ms(m))));
             // With no request to date it from (a harness without status
             // reactions), the run starts at its prompt: `now` made it a new
@@ -1120,7 +1331,7 @@ impl FluxChat {
                 .max();
             let open = |tk: &str| self.messages_by_room.contains_key(tk);
             let mut latest_unthreaded: Option<RunInfo> = None;
-            for m in msgs.iter().filter(|m| m.sender == me && m.thread_root.is_none()) {
+            for m in msgs.iter().filter(|m| m.sender == me && m.thread_root.is_none() && !is_stop_command(&m.body, h)) {
                 let Some(state) = request_state(h, m, &agent) else { continue };
                 // An agent that answers in threads: the run is the thread's
                 // from the start (its bar and Stop belong there).
@@ -1168,12 +1379,21 @@ impl FluxChat {
             };
             updates.push((key.to_string(), run.map(|mut r| { step_after(r.since, &mut r); r })));
         }
+        // A live run you stopped (see `stopped_at`), in its own session.
+        let stop = |k: &str, r: &mut RunInfo| {
+            if r.stopped.is_none() && matches!(r.state, RunState::Working | RunState::NeedsYou) {
+                r.stopped = stopped_at(msgs.iter().filter(|m| in_session(m, key, k)), &me, &agent, h, r.since);
+            }
+        };
         // Agent protocol: what the agent says about its runs wins. Several
         // runs in one view (requests in one thread): the newest, unless an
         // older one is waiting on you.
         let mut by_key: HashMap<String, RunInfo> = HashMap::new();
-        for (k, run) in self.protocol_runs(key, msgs, &agent, h) {
-            let ord = |r: &RunInfo| (r.state == RunState::NeedsYou, r.since);
+        for (k, mut run) in self.protocol_runs(key, msgs, &agent, h) {
+            // One you stopped never outranks the session's next run: its
+            // status can say `waiting` for good.
+            stop(&k, &mut run);
+            let ord = |r: &RunInfo| (r.stopped.is_none(), r.state == RunState::NeedsYou, r.since);
             if by_key.get(&k).is_none_or(|old| ord(&run) > ord(old)) {
                 by_key.insert(k, run);
             }
@@ -1181,6 +1401,17 @@ impl FluxChat {
         for (k, run) in by_key {
             updates.retain(|(u, _)| *u != k);
             updates.push((k, Some(run)));
+        }
+        for (k, run) in updates.iter_mut() {
+            if let Some(r) = run.as_mut() {
+                stop(k.as_str(), r);
+            }
+        }
+        // A finished run ended no earlier than the agent's last word in it.
+        for (k, run) in updates.iter_mut() {
+            let k = k.as_str();
+            let Some(r) = run.as_mut().filter(|r| matches!(r.state, RunState::Done | RunState::Failed)) else { continue };
+            r.ended = r.ended.max(last_word(msgs.iter().filter(|m| in_session(m, key, k)), &agent, r.since));
         }
         (updates, fresh)
     }
@@ -1194,8 +1425,11 @@ impl FluxChat {
     pub(crate) fn last_sign_of_life(&self, key: &str, run: &RunInfo) -> u64 {
         let now = now_ms();
         let room = real_room_id(key);
-        if self.agent_runs.typing_since.get(room)
-            .is_some_and(|(a, since)| (run.agent.is_empty() || *a == run.agent) && now.saturating_sub(*since) < TYPING_ALIVE_MS)
+        // Typing counts while it keeps being reported — by when it was last
+        // reported, not when it began (that made it a sign of life for the
+        // first minute of typing only).
+        if self.agent_runs.typing_since.get(room).is_some_and(|typing| typing.iter()
+            .any(|(a, (_, at))| (run.agent.is_empty() || *a == run.agent) && now.saturating_sub(*at) < TYPING_ALIVE_MS))
         {
             return now;
         }
@@ -1422,17 +1656,19 @@ impl FluxChat {
     /// recently finished (newest first).
     pub(crate) fn all_runs(&self) -> Vec<(String, RunInfo)> {
         let now = now_ms();
+        // "Recently finished" by when it finished, not when it was asked for.
         let mut runs: Vec<(String, RunInfo)> = self.agent_runs.states.iter()
-            .filter(|(_, r)| matches!(r.state, RunState::Working | RunState::NeedsYou) || now.saturating_sub(r.since) < RECENT_RUN_MS)
+            .filter(|(_, r)| matches!(r.state, RunState::Working | RunState::NeedsYou) || now.saturating_sub(r.ended_at()) < RECENT_RUN_MS)
             .map(|(k, r)| (k.clone(), r.clone()))
             .collect();
+        runs.extend(self.typing_runs());
         runs.sort_by_key(|(_, r)| {
-            let rank = match r.state {
-                RunState::NeedsYou => 0,
-                RunState::Working => 1,
-                _ => 2,
+            let (rank, at) = match r.state {
+                RunState::NeedsYou => (0, r.since),
+                RunState::Working => (1, r.since),
+                _ => (2, r.ended_at()),
             };
-            (rank, std::cmp::Reverse(r.since))
+            (rank, std::cmp::Reverse(at))
         });
         runs
     }
@@ -1450,7 +1686,7 @@ impl FluxChat {
             let mut w = crate::panes::Window::new(None);
             w.follow_runs = true;
             self.windows.push(w);
-            self.active_window = self.windows.len() - 1;
+            self.activate_window(self.windows.len() - 1);
             self.layout_dirty = true;
             let p = self.window().focus;
             return self.focus_pane(p);
@@ -1458,7 +1694,7 @@ impl FluxChat {
         let mut w = crate::panes::Window::new(Some(first));
         w.follow_runs = true;
         self.windows.push(w);
-        self.active_window = self.windows.len() - 1;
+        self.activate_window(self.windows.len() - 1);
         self.layout_dirty = true;
         let mut tasks = Vec::new();
         for key in live.iter().skip(1) {
@@ -1987,8 +2223,14 @@ impl FluxChat {
                 "working" => RunState::Working,
                 _ => RunState::Done,
             };
-            // Went quiet while working: say so, not "failed".
-            let label = if h.state == crate::history::STALLED { crate::history::STALLED } else { state.label() };
+            // Went quiet while working, or stopped by you: say so, not
+            // "failed" / "done".
+            let label = match h.state.as_str() {
+                crate::history::STALLED => crate::history::STALLED,
+                crate::history::STOPPED => crate::history::STOPPED,
+                _ => state.label(),
+            };
+            let state_color = if h.state == crate::history::STOPPED { colors.text_muted } else { state.color() };
             let when = format!("{} {}", crate::view_messages::local_day_label(h.started / 1000),
                 crate::view_messages::format_clock(crate::view::local_time_of_day(h.started / 1000), false, self.prefs.twelve_hour));
             let extras = [Some(h.duration(now)), h.model.clone(), h.cost.clone()].into_iter().flatten().collect::<Vec<_>>().join(" \u{00b7} ");
@@ -2001,7 +2243,7 @@ impl FluxChat {
                         .wrapping(iced::widget::text::Wrapping::None)).clip(true)),
                 container(row![
                     state_dot(state, 7.0),
-                    text(format!("{label} \u{00b7} {extras}")).font(self.sidebar_font()).size(11).color(state.color())
+                    text(format!("{label} \u{00b7} {extras}")).font(self.sidebar_font()).size(11).color(state_color)
                         .wrapping(iced::widget::text::Wrapping::None),
                     text(format!("{} \u{00b7} {when}", room_label(&h.key))).font(self.sidebar_font()).size(11).color(colors.text_dim)
                         .wrapping(iced::widget::text::Wrapping::None),
@@ -2043,11 +2285,12 @@ impl FluxChat {
 
     /// Live runs across rooms for the status bar: (working, waiting on you).
     pub(crate) fn live_run_counts(&self) -> (usize, usize) {
-        self.agent_runs.states.values().fold((0, 0), |(w, n), r| match r.state {
+        let (working, waiting) = self.agent_runs.states.values().fold((0, 0), |(w, n), r| match r.state {
             RunState::Working => (w + 1, n),
             RunState::NeedsYou => (w, n + 1),
             _ => (w, n),
-        })
+        });
+        (working + self.typing_runs().len(), waiting)
     }
 
     /// Which harness runs `agent`: a dropdown of the known profiles (built-in
@@ -2936,6 +3179,114 @@ mod tests {
         assert_eq!(app.run_state(&tk), Some(RunState::Failed));
     }
 
+    #[test]
+    fn a_stop_command_is_the_harness_stop_and_nothing_else() {
+        let h = hermes();
+        assert!(is_stop_command("!stop", &h) && is_stop_command("  !Stop\n", &h));
+        assert!(!is_stop_command("!stop the deploy too", &h), "a task that starts with it");
+        assert!(!is_stop_command("/stop", &h) && !is_stop_command("stop", &h) && !is_stop_command("", &h));
+        // With the agent's mention in front, for harnesses that take it so.
+        let claw = crate::harness::get("openclaw");
+        assert!(is_stop_command(&format!("@claw:x {}", claw.command(&claw.stop)), &claw));
+        assert!(!is_stop_command("@bot:x !stop", &h));
+        // No stop command, no stop.
+        assert!(!is_stop_command("/stop", &crate::harness::get("generic")));
+    }
+
+    #[tokio::test]
+    async fn a_run_you_stopped_is_over_though_its_request_still_says_working() {
+        // Hermes leaves its 👀 on a request it was told to stop (its adapter
+        // returns early on a cancelled turn), so the bar said "working · 32m"
+        // under "⚡ Stopped." (2026-11-14) until the stall sweep, two hours on.
+        let mut app = agent_app();
+        let now = now_ms();
+        let tk = thread_key("!r:x", "$ask");
+        let said = |id: &str, sender: &str, ago: u64, body: &str| MessageInfo {
+            body: body.into(), thread_root: Some("$ask".into()), ..msg(id, sender, now - ago)
+        };
+        let mut ask = msg("$ask", "@me:x", now - 32 * 60_000);
+        ask.reactions = vec![react(WORKING, &["@bot:x"])];
+        let step = said("$step", "@bot:x", 120_000, "\u{2699}\u{fe0f} process_manage: \"wait proc_94cd 180s\"");
+        let stop = said("$stop", "@me:x", 60_000, "!stop");
+        // Said, not answered yet: still running as far as anyone can tell.
+        let mut msgs = vec![ask, step, stop.clone()];
+        app.messages_by_room.insert(tk.clone(), msgs.clone());
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), Some(RunState::Working));
+        // The agent answers (a line that reads as a step: it still counts).
+        msgs.push(said("$stopped", "@bot:x", 58_000, "\u{26a1} Stopped. You can continue this session."));
+        app.messages_by_room.insert(tk.clone(), msgs.clone());
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), None);
+        assert!(app.live_run(&tk).is_none() && app.header_run("!r:x").is_none());
+        assert_eq!(app.live_run_counts(), (0, 0));
+        assert_eq!(app.run_history.len(), 1);
+        assert_eq!((app.run_history[0].state.as_str(), app.run_history[0].ended),
+            (crate::history::STOPPED, Some(sent_ms(&stop))));
+        // Said again: ✅ and "No active task to stop." A stop is never a
+        // request, so that ✅ doesn't make it a finished run of its own.
+        let mut again = said("$stop2", "@me:x", 50_000, "!stop");
+        again.reactions = vec![react(DONE, &["@bot:x"])];
+        msgs.push(again);
+        msgs.push(said("$none", "@bot:x", 49_000, "No active task to stop."));
+        app.messages_by_room.insert(tk.clone(), msgs.clone());
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_state(&tk), None);
+        assert_eq!(app.run_history.len(), 1);
+        assert_eq!(app.run_history[0].state, crate::history::STOPPED);
+        // The session goes on: the next request is a run of its own.
+        let mut next = said("$next", "@me:x", 10_000, "try it another way");
+        next.reactions = vec![react(WORKING, &["@bot:x"])];
+        msgs.push(next.clone());
+        app.messages_by_room.insert(tk.clone(), msgs);
+        app.refresh_agent_state(&tk);
+        assert_eq!(app.run_info(&tk).map(|r| (r.state, r.since)), Some((RunState::Working, sent_ms(&next))));
+    }
+
+    #[tokio::test]
+    async fn a_stop_ends_its_own_sessions_run_only_and_outranks_a_working_status() {
+        let mut app = agent_app();
+        let now = now_ms();
+        let request = |id: &str, ago: u64| {
+            let mut m = msg(id, "@me:x", now - ago);
+            m.reactions = vec![react(WORKING, &["@bot:x"])];
+            m.thread_count = Some(2);
+            m
+        };
+        let said = |id: &str, sender: &str, ago: u64, body: &str, root: Option<&str>| MessageInfo {
+            body: body.into(), thread_root: root.map(str::to_string), ..msg(id, sender, now - ago)
+        };
+        // Two sessions going, seen from the room. The first one's status
+        // bubble says `working` and always will: the gateway doesn't settle
+        // a turn it was told to stop.
+        let mut bubble = said("$bubble", "@bot:x", 500_000, "\u{1f4bb} terminal: make", Some("$a"));
+        bubble.agent = Some(serde_json::json!({"v": 1, "run": "$a", "state": "working", "steps": 4}));
+        let (ta, tb) = (thread_key("!r:x", "$a"), thread_key("!r:x", "$b"));
+        let mut msgs = vec![request("$a", 600_000), request("$b", 550_000), bubble];
+        app.messages_by_room.insert("!r:x".into(), msgs.clone());
+        app.refresh_agent_state("!r:x");
+        assert_eq!((app.run_state(&ta), app.run_state(&tb)), (Some(RunState::Working), Some(RunState::Working)));
+        // Stopped in the first session.
+        msgs.push(said("$stop", "@me:x", 60_000, "!stop", Some("$a")));
+        msgs.push(said("$stopped", "@bot:x", 59_000, "\u{26a1} Stopped. You can continue this session.", Some("$a")));
+        app.messages_by_room.insert("!r:x".into(), msgs.clone());
+        app.refresh_agent_state("!r:x");
+        assert_eq!((app.run_state(&ta), app.run_state(&tb)), (None, Some(RunState::Working)));
+        assert_eq!(app.live_run_counts(), (1, 0));
+        let state_of = |app: &FluxChat, key: &str| app.run_history.iter().find(|r| r.key == key).map(|r| r.state.clone());
+        assert_eq!(state_of(&app, &ta).as_deref(), Some(crate::history::STOPPED));
+        // A stop said in the room itself is no session's: the other run goes on.
+        let mut stray = said("$stray", "@me:x", 30_000, "!stop", None);
+        stray.reactions = vec![react(DONE, &["@bot:x"])];
+        msgs.push(stray);
+        msgs.push(said("$none", "@bot:x", 29_000, "No active task to stop.", None));
+        app.messages_by_room.insert("!r:x".into(), msgs);
+        app.refresh_agent_state("!r:x");
+        assert_eq!(app.run_state(&tb), Some(RunState::Working));
+        assert_eq!(app.run_state("!r:x"), None, "and the stop isn't the room's run");
+        assert_eq!(state_of(&app, &tb).as_deref(), Some("working"));
+    }
+
     #[tokio::test]
     async fn the_single_delivery_settle_still_closes_a_run() {
         // Regression for the normal path: the settle edit on the bubble
@@ -3044,5 +3395,151 @@ mod tests {
         assert_eq!(agent_command(&hermes(), "hello"), None);
         assert!(completions(&hermes(), "/st").iter().any(|(n, _)| *n == "/stop"));
         assert_eq!(completions(&hermes(), "/status").iter().filter(|(n, _)| *n == "/status").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_agent_typing_is_a_run_wherever_runs_are_listed() {
+        let mut app = agent_app();
+        app.prefs.agents.push("@claw:x".into());
+        app.prefs.agent_harness.insert("@bot:x".into(), "openclaw".into());
+        app.prefs.agent_harness.insert("@claw:x".into(), "openclaw".into());
+        app.rooms = vec![fluxchat_core::RoomInfo { room_id: "!r:x".into(), name: "r".into(), ..Default::default() }];
+        assert_eq!(app.live_run_counts(), (0, 0));
+        app.note_agent_typing("!r:x", &["@bot:x".to_string()]);
+        // The status bar and the Runs dialog, not only the room's own bar.
+        assert_eq!(app.live_run_counts(), (1, 0));
+        let runs = app.all_runs();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].0 == "!r:x" && runs[0].1.typing && runs[0].1.agent == "@bot:x");
+        // A second agent starting to type doesn't restart the first one's clock.
+        let since = app.live_run("!r:x").unwrap().since;
+        app.agent_runs.typing_since.get_mut("!r:x").unwrap().get_mut("@bot:x").unwrap().0 = since - 5000;
+        app.note_agent_typing("!r:x", &["@bot:x".to_string(), "@claw:x".to_string()]);
+        let run = app.live_run("!r:x").unwrap();
+        assert_eq!((run.agent.as_str(), run.since), ("@bot:x", since - 5000));
+        // Never history: it isn't a request.
+        assert!(app.run_history.is_empty());
+        // A typing-stop that never arrives doesn't run for ever: silent for
+        // hours, it is over like any other working run.
+        let long_ago = now_ms() - STALE_RUN_MS - 60_000;
+        for slot in app.agent_runs.typing_since.get_mut("!r:x").unwrap().values_mut() {
+            *slot = (long_ago, long_ago);
+        }
+        assert!(app.live_run("!r:x").is_none());
+        assert_eq!(app.live_run_counts(), (0, 0));
+        app.note_agent_typing("!r:x", &[]);
+        assert!(app.all_runs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn typing_is_a_sign_of_life_while_it_keeps_being_reported() {
+        let mut app = agent_app();
+        let now = now_ms();
+        let run = RunInfo { agent: "@bot:x".into(), ..RunInfo::new(RunState::Working, now - 3 * 60 * 60 * 1000) };
+        // Typing that began long ago but was reported a moment ago still counts…
+        app.agent_runs.typing_since.entry("!r:x".into()).or_default().insert("@bot:x".into(), (now - 10 * 60 * 1000, now - 1000));
+        assert!(now.saturating_sub(app.last_sign_of_life("!r:x", &run)) < 5000);
+        // …and one last reported minutes ago doesn't.
+        app.agent_runs.typing_since.get_mut("!r:x").unwrap().insert("@bot:x".into(), (now - 10 * 60 * 1000, now - 5 * 60 * 1000));
+        assert_eq!(app.last_sign_of_life("!r:x", &run), run.since);
+    }
+
+    #[tokio::test]
+    async fn a_finished_run_ended_at_the_agents_last_word_not_when_it_was_asked_for() {
+        let mut app = agent_app();
+        app.rooms = vec![fluxchat_core::RoomInfo { room_id: "!r:x".into(), name: "r".into(), is_direct: true, ..Default::default() }];
+        let now = now_ms();
+        // Asked seven hours ago, worked on all along (a word every hour),
+        // answered ten minutes ago.
+        let hour = 60 * 60 * 1000;
+        let mut ask = msg("$ask", "@me:x", now - 7 * hour);
+        ask.reactions = vec![react(DONE, &["@bot:x"])];
+        let answer = msg("$answer", "@bot:x", now - 10 * 60 * 1000);
+        let answered = sent_ms(&answer);
+        let mut msgs = vec![ask];
+        msgs.extend((1..7).rev().map(|h| msg(&format!("$step{h}"), "@bot:x", now - h * hour)));
+        msgs.push(answer);
+        app.messages_by_room.insert("!r:x".into(), msgs);
+        app.refresh_agent_state("!r:x");
+        let run = app.run_info("!r:x").unwrap();
+        assert_eq!((run.state, run.ended), (RunState::Done, Some(answered)));
+        // Still "recently finished": by its end, not by when it was asked.
+        assert_eq!(app.all_runs().len(), 1);
+        // A report the agent posts a day later isn't that run's end.
+        let mut ask = msg("$ask", "@me:x", now - 30 * 60 * 60 * 1000);
+        ask.reactions = vec![react(DONE, &["@bot:x"])];
+        let answer = msg("$answer", "@bot:x", now - 29 * 60 * 60 * 1000);
+        let was = sent_ms(&answer);
+        app.messages_by_room.insert("!r:x".into(), vec![ask, answer, msg("$later", "@bot:x", now - 60_000)]);
+        app.refresh_agent_state("!r:x");
+        assert_eq!(app.run_info("!r:x").unwrap().ended, Some(was));
+        assert!(app.all_runs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_watched_to_its_end_ended_then_and_one_caught_up_on_did_not() {
+        let now = now_ms();
+        let ask = |reaction: &str| {
+            let mut m = msg("$ask", "@me:x", now - 20 * 60 * 1000);
+            m.reactions = vec![react(reaction, &["@bot:x"])];
+            m
+        };
+        let reply = msg("$reply", "@bot:x", now - 15 * 60 * 1000);
+        let setup = |following: bool| {
+            let mut app = agent_app();
+            app.rooms = vec![fluxchat_core::RoomInfo { room_id: "!r:x".into(), name: "r".into(), is_direct: true, ..Default::default() }];
+            app.sync_running = following;
+            if following {
+                app.agent_runs.following_since = Some(now - 10 * 60 * 1000);
+            }
+            app.messages_by_room.insert("!r:x".into(), vec![ask(WORKING), reply.clone()]);
+            app.refresh_agent_state("!r:x");
+            assert_eq!(app.run_state("!r:x"), Some(RunState::Working));
+            app.messages_by_room.insert("!r:x".into(), vec![ask(DONE), reply.clone()]);
+            app.refresh_agent_state("!r:x");
+            app
+        };
+        // Sync was following: the ✅ arrived as it happened.
+        let app = setup(true);
+        let ended = app.run_info("!r:x").unwrap().ended.unwrap();
+        assert!(ended >= now, "ended when we saw it end");
+        assert!(app.run_history[0].ended.unwrap() >= now);
+        // Just started (or reconnected): the timeline showed last night's
+        // state and then caught up. The messages date it, not the catching up.
+        let app = setup(false);
+        assert_eq!(app.run_info("!r:x").unwrap().ended, Some(sent_ms(&reply)));
+        assert_eq!(app.run_history[0].ended, Some(sent_ms(&reply)));
+        // And what was worked out stays put on later looks.
+        let mut app = setup(true);
+        let ended = app.run_info("!r:x").unwrap().ended;
+        app.refresh_agent_state("!r:x");
+        assert_eq!(app.run_info("!r:x").unwrap().ended, ended);
+    }
+
+    #[tokio::test]
+    async fn a_finished_run_is_filled_in_from_its_own_session_only() {
+        let mut app = agent_app();
+        app.prefs.agent_harness.insert("@bot:x".into(), "generic".into());
+        let now = now_ms();
+        // Two sessions in one room. The other one just reported its model and
+        // running total; ours reports nothing.
+        let ours = thread_key("!r:x", "$ours");
+        let mut other = MessageInfo { thread_root: Some("$other".into()), ..msg("$status", "@bot:x", now - 1000) };
+        other.agent = Some(serde_json::json!({"run": "$other", "state": "working", "model": "opus-5", "cost_usd": 3.6}));
+        let mut room = vec![msg("$other", "@me:x", now - 60_000), msg("$ours", "@me:x", now - 50_000), other];
+        app.take_agent_footers("!r:x", &mut room);
+        app.messages_by_room.insert("!r:x".into(), room);
+        let working = RunInfo { agent: "@bot:x".into(), ..RunInfo::new(RunState::Working, now - 50_000) };
+        app.record_run(&ours, &working);
+        app.record_run(&ours, &RunInfo { state: RunState::Done, ..working.clone() });
+        let rec = &app.run_history[0];
+        assert_eq!((rec.model.as_deref(), rec.cost_usd), (None, None), "not the other session's $3.60");
+        // Its own session's word does fill it in.
+        let theirs = thread_key("!r:x", "$other");
+        let working = RunInfo { agent: "@bot:x".into(), ..RunInfo::new(RunState::Working, now - 60_000) };
+        app.record_run(&theirs, &working);
+        app.record_run(&theirs, &RunInfo { state: RunState::Done, ..working.clone() });
+        let rec = app.run_history.iter().find(|r| r.key == theirs).unwrap();
+        assert_eq!((rec.model.as_deref(), rec.cost_usd), (Some("opus-5"), Some(3.6)));
     }
 }

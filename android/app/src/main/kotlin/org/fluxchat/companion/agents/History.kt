@@ -16,7 +16,7 @@ data class RunRecord(
     val room: String,
     val agent: String,
     val title: String,
-    /** "working" / "needs you" / "done" / "failed" / "stalled". */
+    /** "working" / "needs you" / "done" / "failed" / "stalled" / "stopped". */
     val state: String,
     /** ms since the epoch. */
     val started: Long,
@@ -52,6 +52,8 @@ object History {
     const val HISTORY_LIMIT = 500
     /** History state of a run that went quiet while working. */
     const val STALLED = "stalled"
+    /** History state of a run you stopped (the agent answered your stop command). */
+    const val STOPPED = "stopped"
     /** A working run silent this long has stalled (agents.rs STALE_RUN_MS). */
     const val STALE_RUN_MS = 2 * 60 * 60 * 1000L
 
@@ -150,7 +152,8 @@ object History {
             // behind must not flip the record working↔stalled) — but a run
             // that outlasted the silence and then finished is no longer
             // "stalled": it takes its real outcome, cost and end.
-            if (rec.state == STALLED && live) return moved
+            // (Stopped likewise: its 👀 stays on the request for good.)
+            if ((rec.state == STALLED || rec.state == STOPPED) && live) return moved
             val reopened = rec.state == STALLED
             val cost = run.costUsd?.let { c -> rec.costUsd?.let { maxOf(it, c) } ?: c } ?: rec.costUsd
             val model = run.model ?: rec.model
@@ -200,6 +203,21 @@ object History {
         }
         if (i < 0) return false
         history[i] = history[i].copy(state = stateLabel(RunState.Done), ended = now)
+        return true
+    }
+
+    /**
+     * Close the record of a run you stopped (`stopped`): ended when you said
+     * so, [at] (the desktop's `end_stopped_run`). Returns whether a record
+     * was closed.
+     */
+    fun stop(history: MutableList<RunRecord>, view: ViewKey, started: Long, at: Long, runId: String? = null): Boolean {
+        val key = keyOf(view)
+        val i = history.indexOfFirst {
+            it.key == key && it.ended == null && (it.started == started || (!runId.isNullOrEmpty() && it.runId == runId))
+        }
+        if (i < 0) return false
+        history[i] = history[i].copy(state = STOPPED, ended = at.coerceAtLeast(history[i].started))
         return true
     }
 

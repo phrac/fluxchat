@@ -56,7 +56,7 @@ Messages appear in IRC-style columns: **time | name | message**.
 - Messages that mention you, @room, or one of your keywords have a soft red background.
 - **Hover a message** for actions: react, copy, reply, reply in thread, forward, pin, edit/delete (yours) or report (others').
 - **Right-click a message** for: copy link, copy event ID, view source.
-- Scroll up to load older history. **PageUp/PageDown** scroll from the message box; **Ctrl+End** jumps to the bottom.
+- Scroll up to load older history. A room that shows fewer messages than fit on screen loads older ones by itself until it fills (or reaches its start); scrolling up over it asks for more. **PageUp/PageDown** scroll from the message box; **Ctrl+End** jumps to the bottom.
 - Click an image to view it large; click it again (or press Esc) to close.
 
 ## Sidebars

@@ -163,6 +163,16 @@ impl PaletteAction {
     }
 }
 
+/// Older history being loaded for a view in a side pane.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PaneFill {
+    /// A page is on its way.
+    pub in_flight: bool,
+    /// Pages fetched because the pane's list didn't fill it (capped: a long
+    /// stretch of events the pane doesn't show can't page forever).
+    pub auto_pages: u8,
+}
+
 /// Resizable panels (each has a drag divider).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeTarget {
@@ -647,6 +657,11 @@ pub struct FluxChat {
     pub messages_underfilled: bool,
     /// Pages fetched so far to fill the current view (`MAX_UNDERFILL_PAGES`).
     pub underfill_pages: u8,
+    /// The main list's scrollable is a new one (see `Message::MessagesMounted`):
+    /// its first report says where it starts, not where the user went.
+    pub messages_remounted: bool,
+    /// History loading for views in side panes, by view key.
+    pub pane_fill: HashMap<String, PaneFill>,
     /// Views whose history has been loaded back to the room's start.
     pub history_start: std::collections::HashSet<String>,
 
@@ -967,6 +982,8 @@ impl FluxChat {
             paginate_empty_budget: 0,
             messages_underfilled: false,
             underfill_pages: 0,
+            messages_remounted: false,
+            pane_fill: HashMap::new(),
             history_start: std::collections::HashSet::new(),
             gif_frames_cache: crate::anim::FramesCache::new(crate::anim::FRAMES_CACHE_BYTES),
             gif_results: Vec::new(),

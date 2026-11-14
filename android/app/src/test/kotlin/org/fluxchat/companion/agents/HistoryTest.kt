@@ -117,6 +117,22 @@ class HistoryTest {
     }
 
     @Test
+    fun aStoppedRunEndsWhenYouSaidSoAndStaysStopped() {
+        // history.rs `end_stopped_run`.
+        val h = ArrayList<RunRecord>()
+        val started = now - 32 * 60_000
+        History.record(h, thread, run(RunState.Working, started), "Fix the scan", "fix the scan", now)
+        assertTrue(History.stop(h, thread, started, now - 60_000))
+        assertEquals(History.STOPPED, h[0].state)
+        assertEquals(now - 60_000, h[0].ended)
+        assertFalse("already closed", History.stop(h, thread, started, now))
+        // The 👀 Hermes leaves on the request doesn't reopen it.
+        assertFalse(History.record(h, thread, run(RunState.Working, started), "Fix the scan", "fix the scan", now))
+        assertEquals(History.STOPPED, h[0].state)
+        assertEquals(1, h.size)
+    }
+
+    @Test
     fun historyIsCappedAtTheLimitDroppingTheOldest() {
         val h = ArrayList<RunRecord>()
         for (i in 0..History.HISTORY_LIMIT) {

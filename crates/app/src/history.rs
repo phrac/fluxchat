@@ -18,6 +18,8 @@ const HISTORY_KEY: &str = "agent_run_history";
 const HISTORY_LIMIT: usize = 500;
 /// History state of a run that went quiet while working (`stalled`).
 pub(crate) const STALLED: &str = "stalled";
+/// History state of a run you stopped (the agent answered your stop command).
+pub(crate) const STOPPED: &str = "stopped";
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RunRecord {
@@ -42,6 +44,10 @@ pub struct RunRecord {
     /// status edit). Absent for agents that don't report it.
     #[serde(default)]
     pub result: Option<String>,
+    /// The protocol's run id, when the agent gives one: one record per run,
+    /// however its start was first dated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
 }
 
 impl RunRecord {
@@ -54,6 +60,12 @@ impl RunRecord {
             _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
         }
     }
+}
+
+/// Whether record `r` (of the same key) is run `run`'s: by its start, or by
+/// the protocol's run id when its start was dated differently.
+fn same_run(r: &RunRecord, run: &RunInfo) -> bool {
+    r.started == run.since || (r.run.is_some() && r.run == run.run_id)
 }
 
 fn now_ms() -> u64 {
@@ -86,7 +98,21 @@ impl FluxChat {
     pub(crate) fn record_run(&mut self, key: &str, run: &RunInfo) {
         let live = matches!(run.state, RunState::Working | RunState::NeedsYou);
         let label = run.state.label().to_string();
-        let pos = self.run_history.iter().position(|r| r.key == key && r.started == run.since);
+        let pos = self.run_history.iter().position(|r| r.key == key && r.started == run.since)
+            // The same protocol run under another start: its status message
+            // loaded a page before its request did, so it was first dated
+            // from the status. Left as two records, the first stayed
+            // "working" until it stalled, and its session-total cost was
+            // counted as spend a second time.
+            .or_else(|| run.run_id.as_ref().and_then(|id| self.run_history.iter()
+                .position(|r| r.key == key && r.run.as_ref() == Some(id))));
+        if let Some(i) = pos.filter(|i| self.run_history[*i].started != run.since) {
+            // Its saved transcript is filed under the old start.
+            let moved = self.run_history[i].clone();
+            self.forget_run_texts(std::slice::from_ref(&moved));
+            self.run_history[i].started = moved.started.min(run.since);
+        }
+        let started = pos.map_or(run.since, |i| self.run_history[i].started);
         let changed = match pos {
             // A lone command (`!usage`, `!status`) gets the same reactions,
             // but it isn't a task.
@@ -106,6 +132,7 @@ impl FluxChat {
                     cost: run.cost_usd.map(crate::budgets::format_usd),
                     cost_usd: run.cost_usd,
                     result: run.result.clone(),
+                    run: run.run_id.clone(),
                 });
                 if self.run_history.len() > HISTORY_LIMIT {
                     let extra = self.run_history.len() - HISTORY_LIMIT;
@@ -116,7 +143,10 @@ impl FluxChat {
             }
             None => false,
             Some(i) => {
-                let runtime = self.agent_runtime(key).cloned();
+                // Only what this run's agent said in this run's own view since
+                // it started: the room's newest runtime may be another
+                // agent's, or another session's running total.
+                let runtime = self.run_runtime(key, &run.agent, started);
                 let fresh_title = key.starts_with("thread::").then(|| self.thread_title(key));
                 let rec = &mut self.run_history[i];
                 let was = (rec.state.clone(), rec.steps, rec.ended, rec.cost_usd, rec.result.clone());
@@ -131,10 +161,18 @@ impl FluxChat {
                     rec.cost_usd = Some(c);
                     rec.cost = Some(crate::budgets::format_usd(c));
                 }
+                if rec.run.is_none() {
+                    rec.run = run.run_id.clone();
+                }
                 if !live && rec.ended.is_none() {
-                    rec.ended = Some(now_ms());
+                    // When it ended, where that's known — "now" is only when
+                    // this app noticed, which can be hours later.
+                    let now = now_ms();
+                    rec.ended = Some(run.ended.unwrap_or(now).clamp(rec.started, now.max(rec.started)));
                     if let Some(rt) = runtime {
-                        rec.model = rt.model;
+                        if rt.model.is_some() {
+                            rec.model = rt.model;
+                        }
                         if rec.cost_usd.is_none() {
                             rec.cost_usd = rt.cost.as_deref().and_then(crate::budgets::parse_usd);
                             rec.cost = rt.cost;
@@ -152,7 +190,7 @@ impl FluxChat {
             self.save_run_history();
             self.check_budget(&run.agent);
             // Ended: keep its transcript searchable, loaded or not.
-            if self.run_history.iter().any(|r| r.key == key && r.started == run.since && r.ended.is_some()) {
+            if self.run_history.iter().any(|r| r.key == key && r.started == started && r.ended.is_some()) {
                 self.want_run_text(key);
             }
         }
@@ -193,9 +231,9 @@ impl FluxChat {
     /// (`stalled`): ended at its last sign of life.
     /// End the record of a run that stopped being reported without a final
     /// state (see `refresh_agent_state`).
-    pub(crate) fn close_run_record(&mut self, key: &str, started: u64) {
+    pub(crate) fn close_run_record(&mut self, key: &str, run: &RunInfo) {
         let Some(rec) = self.run_history.iter_mut()
-            .find(|r| r.key == key && r.started == started && r.ended.is_none())
+            .find(|r| r.key == key && r.ended.is_none() && same_run(r, run))
         else {
             return;
         };
@@ -204,8 +242,22 @@ impl FluxChat {
         self.save_run_history();
     }
 
+    /// Close the history entry of a run you stopped (`stopped`): ended when
+    /// you said so.
+    pub(crate) fn end_stopped_run(&mut self, key: &str, run: &RunInfo) {
+        let Some(at) = run.stopped else { return };
+        let Some(rec) = self.run_history.iter_mut().find(|r| r.key == key && r.ended.is_none() && same_run(r, run)) else {
+            return;
+        };
+        rec.state = STOPPED.to_string();
+        rec.ended = Some(at.max(rec.started));
+        self.save_run_history();
+        // Ended: keep its transcript searchable, loaded or not.
+        self.want_run_text(key);
+    }
+
     pub(crate) fn end_stalled_run(&mut self, key: &str, run: &RunInfo) {
-        let Some(i) = self.run_history.iter().position(|r| r.key == key && r.started == run.since && r.ended.is_none()) else {
+        let Some(i) = self.run_history.iter().position(|r| r.key == key && r.ended.is_none() && same_run(r, run)) else {
             return;
         };
         let last = self.last_sign_of_life(key, run);
@@ -350,5 +402,47 @@ mod tests {
         assert!(app.run_history.is_empty());
         app.record_run("thread::!r:x::$g", &working);
         assert_eq!(app.run_history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_protocol_run_dated_from_its_status_then_its_request_is_one_record() {
+        let mut app = crate::panes::flow_tests::app();
+        let now = now_ms();
+        let key = "thread::!r:x::$root";
+        // Its status message loaded a page before its request did…
+        let from_status = RunInfo {
+            agent: "@bot:x".into(), run_id: Some("$req".into()), cost_usd: Some(3.6),
+            ..RunInfo::new(RunState::Working, now - 30_000)
+        };
+        app.record_run(key, &from_status);
+        // …then the request: the same run, now dated from when it was asked.
+        let from_request = RunInfo { since: now - 90_000, ..from_status.clone() };
+        app.record_run(key, &from_request);
+        assert_eq!(app.run_history.len(), 1, "one run, one record");
+        assert_eq!(app.run_history[0].started, now - 90_000);
+        // It ends as that one record, and spend counts its total once.
+        app.record_run(key, &RunInfo { state: RunState::Done, ..from_request.clone() });
+        assert_eq!(app.run_history.len(), 1);
+        assert_eq!(app.run_history[0].state, "done");
+        assert_eq!(app.spent("@bot:x", 0), 3.6);
+        // Another run in the same session is another record.
+        app.record_run(key, &RunInfo { run_id: Some("$next".into()), ..RunInfo::new(RunState::Working, now - 5000) });
+        assert_eq!(app.run_history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_run_ended_when_it_ended_not_when_this_app_noticed() {
+        let mut app = crate::panes::flow_tests::app();
+        let started = now_ms() - 10 * 60 * 60 * 1000;
+        let working = RunInfo { agent: "@bot:x".into(), ..RunInfo::new(RunState::Working, started) };
+        app.record_run("thread::!r:x::$a", &working);
+        // Three minutes of work, noticed ten hours later.
+        app.record_run("thread::!r:x::$a", &RunInfo { state: RunState::Done, ended: Some(started + 180_000), ..working.clone() });
+        assert_eq!(app.run_history[0].ended, Some(started + 180_000));
+        assert_eq!(app.run_history[0].duration(now_ms()), "3m");
+        // An end before the start (clocks) or after now is clamped.
+        app.record_run("thread::!r:x::$b", &working);
+        app.record_run("thread::!r:x::$b", &RunInfo { state: RunState::Done, ended: Some(started - 5000), ..working.clone() });
+        assert_eq!(app.run_history[1].ended, Some(started));
     }
 }

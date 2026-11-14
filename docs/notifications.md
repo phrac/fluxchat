@@ -9,7 +9,7 @@ Settings → Notifications → *This device*:
 - **Show message preview**: include the message text.
 - **Play sound**.
 
-You're not notified about rooms on screen (in any pane of the current window, or one of their threads) while the window is focused. On Linux, clicking a notification opens its room.
+You're not notified about rooms on screen (in any pane of the current window, or one of their threads) while the window is focused. A pane hidden behind a zoomed pane isn't on screen. On Linux, clicking a notification opens its room.
 
 ## Account rules (all devices)
 

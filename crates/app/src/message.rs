@@ -666,6 +666,19 @@ pub enum Message {
 
     // --- Scroll ---
     MessagesScrolled(iced::widget::scrollable::Viewport),
+    /// The main message list's widget state is new (its pane changed, or the
+    /// layout around it): its scrollable starts over at the top.
+    MessagesMounted,
+    /// The main message list doesn't fill its viewport (iced's scrollable
+    /// reports nothing then): (list bounds, content height).
+    MessagesFit(iced::Rectangle, f32),
+    /// A side pane's list doesn't fill it: load older history for that view.
+    PaneFit(String),
+    /// A scroll-up at the top of a side pane's list: load older history.
+    PaneLoadOlder(String),
+    /// A side pane's page of history has landed: (view key, visible rows
+    /// before it, automatic pages left, Some(reached the start) or None on error).
+    PanePaged(String, usize, u8, Option<bool>),
     ScrollToBottom,
 
     // --- Calls/RTC ---
@@ -697,6 +710,8 @@ pub enum Message {
     Escape, // close modals/panels/completions
     Tick, // periodic refresh
     Noop,
+    /// `/logs`: show where the log file is and open its folder.
+    OpenLogs,
 }
 
 /// Successful login info.

@@ -1030,13 +1030,16 @@ impl FluxChat {
         let main_content = self.view_pane_grid();
 
         use crate::state::ResizeTarget;
-        let mut main_area = row![sidebar];
+        // Everything left of the panes is one child, so the pane grid keeps
+        // its place in the row (and with it its widget state: scroll
+        // positions, selections) when the room list is hidden or shown.
+        let mut left = row![sidebar];
         if !self.room_list_collapsed {
-            main_area = main_area
+            left = left
                 .push(container(room_list).width(Length::Fixed(self.sidebar_width)))
                 .push(self.resize_handle(ResizeTarget::RoomList));
         }
-        let mut main_area = main_area.push(main_content);
+        let mut main_area = row![left.height(Fill), main_content];
 
         // Pinned messages sidebar
         if self.pins_open && self.selected_room_id.is_some() {
@@ -2830,11 +2833,17 @@ impl FluxChat {
 
     pub(crate) fn view_content(&self) -> Element<'_, Message> {
         let mut content = column![].width(Fill).height(Fill);
+        // Everything above the message list is one child of `content`, so
+        // the list keeps its place (iced keeps widget state by position)
+        // whatever comes and goes up there. The header alone used to shift
+        // it on every split and on closing down to one pane: the list's
+        // scroll position was thrown away while we still believed in it.
+        let mut above = column![].spacing(0).width(Fill);
 
         // Room header: in a split the focused pane's title bar carries it.
         let in_title = self.window().grid.len() > 1;
         if let Some(room_id) = self.selected_room_id.as_deref().filter(|_| !in_title) {
-            content = content.push(
+            above = above.push(
                 container(self.view_room_header(room_id, None))
                     .width(Fill)
                     .style(|_: &Theme| container::Style {
@@ -2857,7 +2866,7 @@ impl FluxChat {
             if let Some(room) = self.rooms.iter().find(|r| r.room_id == *room_id) {
                 if let Some(topic) = &room.topic {
                     if !topic.is_empty() {
-                        content = content.push(
+                        above = above.push(
                             container(
                                 text(topic.as_str())
                                     .font(self.sidebar_font())
@@ -2880,10 +2889,7 @@ impl FluxChat {
                 }
             }
 
-            // Collect all optional panels into a single column so the content
-            // column always has the same number of children. This prevents Iced
-            // from losing the messages scrollable's scroll state when panels
-            // are toggled on/off.
+            // Optional panels go in the same column as the header and topic.
             let mut panels_col: iced::widget::Column<'_, Message> = column![].spacing(0);
 
             // Search is now rendered as a modal overlay (like quick switcher)
@@ -2903,8 +2909,7 @@ impl FluxChat {
                 ));
             }
 
-            // Always push the panels column — empty when no panels are open
-            content = content.push(panels_col.width(Fill));
+            content = content.push(above.push(panels_col.width(Fill)));
 
             set_scroll_room(room_id);
             let messages = self.messages_by_room.get(room_id);
@@ -2995,13 +3000,20 @@ impl FluxChat {
                 msg_col = msg_col.push(self.view_placeholder_rows(PLACEHOLDER_ROWS));
             }
 
+            // The probe reports what the scrollable doesn't: a list that
+            // doesn't fill its viewport, and a scrollable that is a new one.
             let msg_scrollable = mouse_area(
-                scrollable(container(msg_col).width(Fill))
-                    .id(messages_scrollable_id().clone())
-                    .width(Fill)
-                    .height(Fill)
-                    .on_scroll(Message::MessagesScrolled)
-                    .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
+                crate::list_probe::ListProbe::new(
+                    room_id.as_str(),
+                    scrollable(container(msg_col).width(Fill))
+                        .id(messages_scrollable_id().clone())
+                        .width(Fill)
+                        .height(Fill)
+                        .on_scroll(Message::MessagesScrolled)
+                        .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
+                )
+                .on_mount(Message::MessagesMounted)
+                .on_fit(Message::MessagesFit),
             )
             .on_exit(Message::HoverLeft(None));
 

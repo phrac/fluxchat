@@ -276,6 +276,72 @@ class RunsTest {
     }
 
     @Test
+    fun aStopCommandIsTheHarnessStopAndNothingElse() {
+        // agents.rs `a_stop_command_is_the_harness_stop_and_nothing_else`.
+        assertTrue(Runs.isStopCommand("!stop", hermes) && Runs.isStopCommand("  !Stop\n", hermes))
+        assertFalse("a task that starts with it", Runs.isStopCommand("!stop the deploy too", hermes))
+        assertFalse(Runs.isStopCommand("/stop", hermes) || Runs.isStopCommand("stop", hermes) || Runs.isStopCommand("", hermes))
+        val claw = Harness.parse(File("../../assets/agents/openclaw.toml").readText())
+        assertTrue(Runs.isStopCommand("@claw:x ${claw.command(claw.stop)}", claw))
+        assertFalse(Runs.isStopCommand("@bot:x !stop", hermes))
+        assertFalse("no stop command, no stop", Runs.isStopCommand("/stop", Harness()))
+    }
+
+    @Test
+    fun aRunYouStoppedIsOverThoughItsRequestStillSaysWorking() {
+        // agents.rs `a_run_you_stopped_is_over_though_its_request_still_says_working`:
+        // Hermes leaves its 👀 on a request it was told to stop, so the run
+        // read "Working" under "⚡ Stopped." until the stall sweep.
+        val key = ViewKey(room, "ask")
+        val ask = msg("ask", me, now - 32 * 60_000, "fix the library scan", working to listOf(agent), threadCount = 3)
+        val step = msg("step", agent, now - 120_000, "⚙️ process_manage: \"wait proc_94cd 180s\"", threadRoot = "ask")
+        val stop = msg("stop", me, now - 60_000, "!stop", threadRoot = "ask")
+        fun look(vararg more: Msg) = Runs.roomRuns(room, listOf(ask, step, stop) + more, listOf(agent), { hermes }, isDm = false, now = now)
+        // Said, not answered yet: still running as far as anyone can tell.
+        assertEquals(RunState.Working, look().runs[key]?.state)
+        assertTrue(look().stopped.isEmpty())
+        // The agent answers (a line that reads as a step: it still counts).
+        val stopped = msg("stopped", agent, now - 58_000, "⚡ Stopped. You can continue this session.", threadRoot = "ask")
+        val r = look(stopped)
+        assertNull(r.runs[key])
+        assertEquals(stop.ts, r.stopped[key]?.stopped)
+        assertEquals(ask.ts, r.stopped[key]?.since)
+        // Said again: ✅ and "No active task to stop." A stop is never a
+        // request, so that ✅ doesn't make it a finished run of its own.
+        val again = msg("stop2", me, now - 50_000, "!stop", done to listOf(agent), threadRoot = "ask")
+        val none = msg("none", agent, now - 49_000, "No active task to stop.", threadRoot = "ask")
+        assertNull(look(stopped, again, none).runs[key])
+        // The session goes on: the next request is a run of its own.
+        val next = msg("next", me, now - 10_000, "try it another way", working to listOf(agent), threadRoot = "ask")
+        val after = look(stopped, again, none, next)
+        assertEquals(RunState.Working, after.runs[key]?.state)
+        assertEquals(next.ts, after.runs[key]?.since)
+        assertTrue(after.stopped.isEmpty())
+    }
+
+    @Test
+    fun aStopEndsItsOwnSessionsRunOnlyAndOutranksAWorkingStatus() {
+        // agents.rs `a_stop_ends_its_own_sessions_runs_only_and_outranks_a_working_status`.
+        val a = msg("a", me, now - 600_000, "session a", working to listOf(agent), threadCount = 2)
+        val b = msg("b", me, now - 550_000, "session b", working to listOf(agent), threadCount = 2)
+        // a's status bubble says `working` and always will: the gateway
+        // doesn't settle a turn it was told to stop.
+        val bubble = msg("bubble", agent, now - 500_000, "💻 terminal: make", threadRoot = "a")
+            .copy(agent = Protocol(run = "a", state = "working", steps = 4))
+        val bReply = msg("rb", agent, now - 400_000, "on it", threadRoot = "b")
+        val stop = msg("stop", me, now - 60_000, "!stop", threadRoot = "a")
+        val stopped = msg("stopped", agent, now - 59_000, "⚡ Stopped. You can continue this session.", threadRoot = "a")
+        // A stop said in the room itself is no session's.
+        val stray = msg("stray", me, now - 30_000, "!stop", done to listOf(agent))
+        val none = msg("none", agent, now - 29_000, "No active task to stop.")
+        val r = Runs.roomRuns(room, listOf(a, b, bubble, bReply, stop, stopped, stray, none), listOf(agent), { hermes }, isDm = false, now = now)
+        assertNull(r.runs[ViewKey(room, "a")])
+        assertEquals(setOf(ViewKey(room, "a")), r.stopped.keys)
+        assertEquals(RunState.Working, r.runs[ViewKey(room, "b")]?.state)
+        assertNull("and the stop isn't the room's run", r.runs[ViewKey(room)])
+    }
+
+    @Test
     fun loadedRepliesSayAnAgentAnswersInThreads() {
         // The thread summary can trail the replies: the last finished request
         // has a reply loaded but no count yet.

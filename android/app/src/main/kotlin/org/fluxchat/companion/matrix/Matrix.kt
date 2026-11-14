@@ -1388,7 +1388,7 @@ object Matrix {
                 avatar = meta.avatar,
                 unread = meta.unread,
             )
-            recordRuns(roomId, msgs, runs, prev, stalledKeys, now)
+            recordRuns(roomId, msgs, runs, prev, stalledKeys, r.stopped, now)
         }
         _agentRooms.value = out
     }
@@ -1403,10 +1403,15 @@ object Matrix {
         /** The runs of the last look. */
         prev: Map<ViewKey, RunInfo?>,
         stalledKeys: Set<ViewKey>,
+        /** Runs you stopped (no longer in [runs]): their records end when you said so. */
+        stopped: Map<ViewKey, RunInfo>,
         now: Long,
     ) {
         if (!historyLoaded) return
         var changed = false
+        for ((key, run) in stopped) {
+            if (History.stop(runHistory, key, run.since, run.stopped ?: now, run.runId)) changed = true
+        }
         // A run that was live and is simply no longer reported (a prompt
         // answered or withdrawn, a working reaction taken back with no verdict)
         // has ended: its record closes now instead of sitting open for good
@@ -1415,7 +1420,7 @@ object Matrix {
         // still loaded: a timeline refilling after a sync gap reports nothing
         // for a moment, which is not an ending.
         for ((key, old) in prev) {
-            if (old == null || !old.state.live || runs[key] != null || key in stalledKeys) continue
+            if (old == null || !old.state.live || runs[key] != null || key in stalledKeys || key in stopped) continue
             if (msgs.none { !it.isLocal && it.ts == old.since }) continue
             if (History.close(runHistory, key, old.since, now, old.runId)) changed = true
         }

@@ -22,6 +22,21 @@ pub(crate) const MAX_EMPTY_PAGES: u8 = 5;
 const UNDERFILL_PAGE_EVENTS: u16 = 100;
 /// Pages fetched to fill a view (per room open) before waiting for a scroll.
 const MAX_UNDERFILL_PAGES: u8 = 30;
+/// Pages fetched to fill a side pane's list (until the view is focused again).
+const MAX_PANE_FILL_PAGES: u8 = 10;
+/// Distance from the end (px) within which the list counts as at the bottom.
+const NEAR_BOTTOM: f32 = 50.0;
+
+/// Whether a scrollable reporting `offset` (of `max_scroll`) is somewhere
+/// other than where we believe the view is: at the bottom, or at `last`.
+fn list_astray(at_bottom: bool, last: f32, offset: f32, max_scroll: f32) -> bool {
+    if at_bottom {
+        max_scroll - offset >= NEAR_BOTTOM
+    } else {
+        (offset - last.min(max_scroll)).abs() > 1.0
+    }
+}
+
 /// Wait before retrying a failed page while the view doesn't fill.
 const PAGINATE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 /// Wait after a page finishes before judging what it added.
@@ -640,6 +655,9 @@ impl FluxChat {
                 self.context_threads = None;
                 self.drafts.clear();
                 self.pane_inputs.clear();
+                self.pane_fill.clear();
+                self.messages_remounted = false;
+                self.messages_underfilled = false;
                 self.input_text.clear();
                 self.input_content = iced::widget::text_editor::Content::new();
                 self.reply_to = None;
@@ -647,6 +665,7 @@ impl FluxChat {
                 self.upload_pending = None;
                 self.windows = vec![crate::panes::Window::new(None)];
                 self.active_window = 0;
+                self.pending_pane_focus = None;
                 // A call in progress ends with the session: hang up, and take
                 // our membership out of the room while the token still works.
                 crate::update_call::set_call_on_exit(&self.core, None);
@@ -670,6 +689,8 @@ impl FluxChat {
                         if let Err(e) = fluxchat_core::auth::logout(&core).await {
                             tracing::warn!("Logout failed: {e}");
                         }
+                        // It names this account's rooms and devices.
+                        crate::logfile::clear();
                     },
                     |_| Message::Noop,
                 );
@@ -686,6 +707,13 @@ impl FluxChat {
                 // Just make sure the active room's subscription is in place.
                 tracing::info!("Sync reconnected");
                 self.subscribe_active_room();
+                // A short view that gave up loading history while offline.
+                if self.messages_underfilled {
+                    self.underfill_pages = 0;
+                    if let Some(room_id) = self.selected_room_id.clone().filter(|k| self.can_fill(Some(k))) {
+                        return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
+                    }
+                }
             }
             Message::InitialRoomsLoaded(rooms, spaces, invited, knocked, space_tree, space_descendants) => {
                 let mut mxc_uris: Vec<String> = spaces.iter()
@@ -943,6 +971,18 @@ impl FluxChat {
                         merged.retain(|m| !pending.contains(&m.event_id));
                     }
 
+                    // "Loaded back to the start" was said of the list we had. If
+                    // its oldest event is gone, the Timeline was reset (a gap in
+                    // sync) and holds recent events only: older history loads
+                    // again, instead of never (scrolling up did nothing).
+                    if self.history_start.contains(&room_id) {
+                        let oldest = self.messages_by_room.get(&room_id)
+                            .and_then(|old| old.iter().find(|m| !m.event_id.starts_with('~')));
+                        if oldest.is_some_and(|o| !merged.iter().any(|m| m.event_id == o.event_id)) {
+                            self.history_start.remove(&room_id);
+                        }
+                    }
+
                     // Compute thread reply counts once here instead of per-render
                     let mut tc: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
                     for m in &merged {
@@ -1034,7 +1074,9 @@ impl FluxChat {
                         // bottom, so it follows new messages while at the end
                         // and stays put while you read further up.
                         // Visible in a pane while the window is focused: read.
-                        if self.app_focused {
+                        // A pane of another window, or one hidden behind a
+                        // zoomed pane, isn't being looked at.
+                        if self.app_focused && self.visible(&room_id) {
                             let core = self.core.clone();
                             let key = room_id.clone();
                             let private = !self.prefs.send_read_receipts;
@@ -1122,14 +1164,10 @@ impl FluxChat {
                 };
                 // Keep unsent text per view so switching rooms doesn't lose
                 // (or misdirect) a half-written message.
+                let left = self.selected_room_id.clone().filter(|prev| *prev != room_id);
                 if self.selected_room_id.as_deref() != Some(room_id.as_str()) {
                     if let Some(prev) = self.selected_room_id.clone() {
-                        let draft = std::mem::take(&mut self.input_text);
-                        if draft.trim().is_empty() {
-                            self.drafts.remove(&prev);
-                        } else {
-                            self.drafts.insert(prev, draft);
-                        }
+                        self.stash_draft(prev);
                     }
                     // A jump still looking for its message belongs to the view
                     // it was started in; left armed, scrolling up in that room
@@ -1156,6 +1194,14 @@ impl FluxChat {
                 // showing is closed (nothing else shows it).
                 let replaced = self.focus_key_in_pane(&room_id);
                 let close_threads = self.release_view(replaced);
+                // The view we left may still be on screen as a side pane:
+                // its composer there shows what was being written.
+                if let Some(prev) = left {
+                    self.show_draft_in_pane(&prev);
+                }
+                // This view pages for itself now; as a side pane again it
+                // gets a fresh allowance.
+                self.pane_fill.remove(&room_id);
                 let join_requests = self.watch_join_requests(fluxchat_core::timeline::real_room_id(&room_id));
                 let _ = self.core.db.set_setting(LAST_ROOM_KEY, fluxchat_core::timeline::real_room_id(&room_id));
                 if room_changed {
@@ -1168,7 +1214,10 @@ impl FluxChat {
                 crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
                 self.last_scroll_offset = 0.0;
-                crate::view::set_timeline_at_top(None); // until the new view reports its scroll
+                // Until the new view reports (a scroll, or that it fits).
+                self.messages_underfilled = false;
+                self.underfill_pages = 0;
+                crate::view::set_timeline_at_top(None);
                 *self.virt_anchor.borrow_mut() = None;
                 // Mark as read (session-only, SDK handles server-side)
                 self.read_rooms.insert(room_id.clone());
@@ -1263,7 +1312,6 @@ impl FluxChat {
                     Some(msgs) => self.visible_rows(&room_id, msgs).iter().all(|m| m.is_system()),
                     None => true,
                 };
-                self.underfill_pages = 0;
                 let backfill = if nothing_visible {
                     self.start_back_pagination(room_id.clone(), MAX_EMPTY_PAGES)
                 } else {
@@ -1623,6 +1671,19 @@ impl FluxChat {
             }
             Message::SyncStatus(status) => {
                 self.sync_status = status;
+            }
+            Message::OpenLogs => {
+                self.help_text = Some(match crate::logfile::path() {
+                    Some(path) => {
+                        if let Some(dir) = path.parent() {
+                            if let Err(e) = open::that(dir) {
+                                tracing::warn!("Couldn't open {}: {e}", dir.display());
+                            }
+                        }
+                        format!("Log file: {} (the one before it, when it filled up, is beside it as fluxchat.log.1)", path.display())
+                    }
+                    None => "No log file: this system has no data folder to keep one in".into(),
+                });
             }
             Message::StartReply(event_id, sender, body) => {
                 self.reply_to = Some((event_id, sender, body));
@@ -4720,7 +4781,15 @@ impl FluxChat {
             Message::PaginateBack(room_id) => {
                 let core = self.core.clone();
                 let key = room_id.clone();
-                let events = if self.messages_underfilled { UNDERFILL_PAGE_EVENTS } else { PAGINATE_PAGE_EVENTS };
+                // Big pages while the view doesn't fill, and once a page has
+                // shown nothing: what's back there is a stretch of events the
+                // view hides (an agent's thread replies and edits), and small
+                // pages through it look like scrolling up does nothing.
+                let events = if self.messages_underfilled || self.paginate_empty_budget < MAX_EMPTY_PAGES {
+                    UNDERFILL_PAGE_EVENTS
+                } else {
+                    PAGINATE_PAGE_EVENTS
+                };
                 return Task::perform(
                     async move {
                         // get-or-create also rebuilds a Timeline whose watcher stopped.
@@ -4788,6 +4857,14 @@ impl FluxChat {
                             move |_| Message::PaginateRetry(key.clone(), budget),
                         );
                     }
+                    // Out of retries (offline, most likely): stop filling by
+                    // itself. The list reports again whenever its height
+                    // changes ("Loading older messages…" going away is one),
+                    // which would start the retries over, for as long as the
+                    // view is open. A scroll-up or a reconnect resumes it.
+                    None if selected && self.messages_underfilled => {
+                        self.underfill_pages = MAX_UNDERFILL_PAGES;
+                    }
                     None => {}
                 }
                 // Looking for a message further back (gallery "Jump to message").
@@ -4812,6 +4889,15 @@ impl FluxChat {
                 self.messages_viewport_h = viewport_h;
                 let max_scroll = (content_h - viewport_h).max(0.0);
                 let near_top = offset < PAGINATE_TOP_ZONE;
+                // A new scrollable's first report says where it starts (the
+                // top), not where the user went: taken as a scroll it emptied
+                // the view (rows are only built around where we believe it
+                // is) or sent it to the oldest loaded message. Put it back.
+                if std::mem::take(&mut self.messages_remounted)
+                    && list_astray(self.messages_at_bottom, self.last_scroll_offset, offset, max_scroll)
+                {
+                    return self.restore_scroll();
+                }
                 // The user scrolled up (programmatic corrections below record
                 // their target in last_scroll_offset first, so they never
                 // count). Content resizing alone must not load history, or
@@ -4825,7 +4911,7 @@ impl FluxChat {
                 // At the very top a further scroll up can't move the view (so
                 // no event here): the wheel listener takes over from there.
                 crate::view::set_timeline_at_top((offset < 1.0).then(|| viewport.bounds()));
-                let near_bottom = (max_scroll - offset) < 50.0;
+                let near_bottom = (max_scroll - offset) < NEAR_BOTTOM;
 
                 // Keep the row that was at the top of the viewport in place when
                 // content above it changes height: rows above got measured (they
@@ -4869,6 +4955,50 @@ impl FluxChat {
                     if let Some(room_id) = self.selected_room_id.clone() {
                         return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
                     }
+                }
+            }
+            Message::MessagesMounted => {
+                self.messages_remounted = true;
+                return self.restore_scroll();
+            }
+            Message::MessagesFit(bounds, _content_height) => {
+                // Everything loaded is on screen with room to spare, which the
+                // scrollable never reports: without this a short view could
+                // not load history at all (nothing to scroll, no scroll event).
+                self.messages_remounted = false;
+                self.messages_viewport_h = bounds.height;
+                self.messages_underfilled = true;
+                self.messages_at_bottom = true;
+                self.new_messages_below = false;
+                self.last_scroll_offset = 0.0;
+                // A scroll-up over it asks for more, as at the top of a full list.
+                crate::view::set_timeline_at_top(Some(bounds));
+                // Not before the view's first rows are in (the placeholder
+                // fits too): it reports again when they change its height.
+                let loaded = self.selected_room_id.clone().filter(|k| self.messages_by_room.contains_key(k));
+                if let Some(room_id) = loaded.filter(|_| self.can_fill(None)) {
+                    self.underfill_pages += 1;
+                    return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
+                }
+            }
+            Message::PaneFit(key) => {
+                return self.load_older_in_pane(key, true, MAX_EMPTY_PAGES);
+            }
+            Message::PaneLoadOlder(key) => {
+                return self.load_older_in_pane(key, false, MAX_EMPTY_PAGES);
+            }
+            Message::PanePaged(key, visible_before, budget, outcome) => {
+                self.pane_fill.entry(key.clone()).or_default().in_flight = false;
+                match outcome {
+                    Some(true) => {
+                        self.history_start.insert(key);
+                    }
+                    // Nothing it shows arrived (hidden thread replies, edits):
+                    // the list didn't change, so it won't ask again by itself.
+                    Some(false) if budget > 0 && self.visible_count(&key) <= visible_before => {
+                        return self.load_older_in_pane(key, false, budget - 1);
+                    }
+                    _ => {}
                 }
             }
             Message::ResizeStart(target) => {
@@ -5663,6 +5793,90 @@ impl FluxChat {
         self.update(Message::PaginateBack(key))
     }
 
+    /// Leaving view `prev`: keep what's typed in the main composer as its draft.
+    pub(crate) fn stash_draft(&mut self, prev: String) {
+        let draft = std::mem::take(&mut self.input_text);
+        if draft.trim().is_empty() {
+            self.drafts.remove(&prev);
+        } else {
+            self.drafts.insert(prev, draft);
+        }
+    }
+
+    /// View `key` stopped being the main view. If a pane still shows it, give
+    /// that pane its composer, holding the view's draft (a room first opened
+    /// as the main view had none, so its side pane came without a composer).
+    pub(crate) fn show_draft_in_pane(&mut self, key: &str) {
+        if !self.shown_in_pane(key) {
+            return;
+        }
+        let draft = self.drafts.get(key).map(String::as_str).unwrap_or("");
+        self.pane_inputs.insert(key.to_string(), iced::widget::text_editor::Content::with_text(draft));
+    }
+
+    /// Whether a view that doesn't fill may fetch another page by itself
+    /// (`key`: also only once its first rows are in).
+    fn can_fill(&self, key: Option<&str>) -> bool {
+        self.underfill_pages < MAX_UNDERFILL_PAGES
+            && key.is_none_or(|k| self.messages_by_room.contains_key(k))
+    }
+
+    /// Put the main list's scrollable where we believe the view is (after
+    /// its widget state was recreated).
+    fn restore_scroll(&self) -> Task<Message> {
+        let id = crate::view::messages_scrollable_id();
+        if self.messages_at_bottom {
+            iced::widget::operation::snap_to_end(id)
+        } else {
+            iced::widget::operation::scroll_to(
+                id,
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: self.last_scroll_offset },
+            )
+        }
+    }
+
+    /// Fetch a page of older history for a view in a side pane: its list has
+    /// room for more (`auto`, capped per view) or was scrolled up at its top.
+    /// `budget` is how many more pages may follow if this one shows nothing.
+    pub(crate) fn load_older_in_pane(&mut self, key: String, auto: bool, budget: u8) -> Task<Message> {
+        // The main view pages for itself; a pane only shows so many rows.
+        if self.selected_room_id.as_deref() == Some(key.as_str())
+            || self.history_start.contains(&key)
+            || !self.shown_in_pane(&key)
+            || !self.messages_by_room.contains_key(&key)
+        {
+            return Task::none();
+        }
+        let visible = self.visible_count(&key);
+        if visible >= crate::view_thread_pane::SIDE_PANE_ROWS {
+            return Task::none();
+        }
+        let fill = self.pane_fill.entry(key.clone()).or_default();
+        if fill.in_flight || (auto && fill.auto_pages >= MAX_PANE_FILL_PAGES) {
+            return Task::none();
+        }
+        fill.in_flight = true;
+        if auto {
+            fill.auto_pages += 1;
+        }
+        let core = self.core.clone();
+        let k = key.clone();
+        Task::perform(
+            async move {
+                use futures_util::FutureExt;
+                let client = core.get_client().await.ok()?;
+                let timeline = fluxchat_core::timeline::get_or_create_for_key(&client, &core.timelines, &k).boxed().await.ok()?;
+                let outcome = timeline.paginate_backwards(UNDERFILL_PAGE_EVENTS).await
+                    .map_err(|e| tracing::warn!("Back-pagination failed for pane {k}: {e}"))
+                    .ok();
+                // The page's rows reach us through the timeline watcher.
+                tokio::time::sleep(PAGINATE_SETTLE).await;
+                outcome
+            },
+            move |outcome| Message::PanePaged(key.clone(), visible, budget, outcome),
+        )
+    }
+
     /// Persist window size, panel widths and the pane layout if changed.
     fn flush_layout(&mut self) {
         if !self.layout_dirty {
@@ -5689,6 +5903,9 @@ impl FluxChat {
             self.members_by_room.remove(key);
             self.thread_counts.remove(key);
             self.forget_agent_view(key);
+            // Its Timeline goes too: the next one starts from what's cached.
+            self.history_start.remove(key);
+            self.pane_fill.remove(key);
         }
         let core = self.core.clone();
         Task::perform(
@@ -7288,6 +7505,28 @@ fn video_temp_path(event_id: &str, filename: &str) -> std::path::PathBuf {
         .filter(|e| VIDEO_EXTS.contains(&e.as_str()))
         .unwrap_or_else(|| "mp4".into());
     std::env::temp_dir().join(format!("fluxchat_video_{}.{ext}", safe_file_stem(event_id)))
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::list_astray;
+
+    #[test]
+    fn a_new_scrollable_at_the_top_is_astray_from_a_view_at_the_bottom() {
+        // 5000 px of rows, believed at the bottom; the new scrollable says 0.
+        assert!(list_astray(true, 4200.0, 0.0, 4200.0));
+        // Already put at the end (the room switch got there first): fine.
+        assert!(!list_astray(true, 0.0, 4200.0, 4200.0));
+        assert!(!list_astray(true, 0.0, 4170.0, 4200.0), "within reach of the bottom");
+    }
+
+    #[test]
+    fn a_view_scrolled_up_goes_back_to_its_offset() {
+        assert!(list_astray(false, 1300.0, 0.0, 4200.0));
+        assert!(!list_astray(false, 1300.0, 1300.4, 4200.0));
+        // The list got shorter than where we were: its end is as close as it gets.
+        assert!(!list_astray(false, 1300.0, 900.0, 900.0));
+    }
 }
 
 #[cfg(test)]

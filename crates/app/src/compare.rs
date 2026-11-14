@@ -239,7 +239,7 @@ impl FluxChat {
                 let Some(first) = threads.first().cloned() else { return Some(Task::none()) };
                 self.modal = None;
                 self.windows.push(crate::panes::Window::new(Some(first.clone())));
-                self.active_window = self.windows.len() - 1;
+                self.activate_window(self.windows.len() - 1);
                 self.layout_dirty = true;
                 let mut tasks = vec![self.ensure_pane_view(first)];
                 for key in threads.into_iter().skip(1) {

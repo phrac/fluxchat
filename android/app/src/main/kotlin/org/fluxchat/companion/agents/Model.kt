@@ -135,17 +135,25 @@ data class RunInfo(
      * says it's working (agents.rs `live_run`). Shown, never recorded.
      */
     val typing: Boolean = false,
+    /**
+     * When you stopped it (ms): your stop command, which the agent answered
+     * ([Runs.stoppedAt]). Its request still reads as working — Hermes leaves
+     * the 👀 on a request it was told to stop — but the run is over.
+     */
+    val stopped: Long? = null,
 ) {
     /** What "finished a moment ago" counts from: the end, else (undated) the request. */
     val endedAt: Long get() = ended ?: since
 
     /** For picking between two reports on one view: the livelier. */
     fun rank(): Pair<Int, Long> = Pair(
-        when (state) {
-            RunState.NeedsYou -> 0
-            RunState.Working -> 1
-            RunState.Failed -> 2
-            RunState.Done -> 3
+        when {
+            // Stopped: over, whatever its request still says.
+            stopped != null -> 4
+            state == RunState.NeedsYou -> 0
+            state == RunState.Working -> 1
+            state == RunState.Failed -> 2
+            else -> 3
         },
         -since,
     )

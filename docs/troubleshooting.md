@@ -2,7 +2,7 @@
 
 ## A room or thread looks empty
 
-fluxchat keeps loading older history until there's something to show. A room whose recent activity is all edits, reactions or thread replies may take a moment. If it stays empty, `/refresh` rebuilds the room's timeline.
+fluxchat keeps loading older history until the view is full. A room whose recent activity is all edits, reactions or thread replies (an agent's sessions, say) may take a moment: there can be hundreds of those between two messages the room shows. If it stops short, scroll up over the messages to load more, in the focused pane or any other. If it stays empty, `/refresh` rebuilds the room's timeline.
 
 ## A bot's answer isn't in the room
 
@@ -17,7 +17,7 @@ Presence comes from their homeserver. If their server doesn't share presence, or
 The explanation under the message says why: unknown device, changed keys, key never shared, sent before you joined, or no key backup.
 - Verify this session, and recover from your key backup (Settings → Security).
 - Messages encrypted to keys you never received can't be recovered.
-- **An agent's messages stop decrypting until its gateway is restarted**: the agent's client rotated its room key and this session wasn't given the new one, so it says "The key for this message was never shared with this session". fluxchat can only ask its own devices for keys, not the agent's, so the fix is on the sender's side: restarting the gateway makes it share a new key. If it keeps happening, the gateway's log around the time of the first locked message says which devices it shared the key with.
+- **An agent's messages stop decrypting until its gateway is restarted**: the agent's client rotated its room key and this session wasn't given the new one, so it says "The key for this message was never shared with this session". fluxchat can only ask its own devices for keys, not the agent's, so the fix is on the sender's side: restarting the gateway makes it share a new key. If it keeps happening, the gateway's log around the time of the first locked message says which devices it shared the key with — and fluxchat's own [log file](#logs) says why a key message that *was* sent couldn't be opened: look for `Failed to decrypt a non-pre-key message with all available sessions` (it lists the error for each secure channel it tried) and `Marking session to be unwedged`.
 
 ## "key backup not connected"
 
@@ -53,7 +53,9 @@ Your homeserver needs a LiveKit (MatrixRTC) server configured in its `.well-know
 
 ## Logs
 
-Run fluxchat from a terminal to see logs. `RUST_LOG` changes the detail level, for example:
+fluxchat keeps its warnings and errors in a log file, `logs/fluxchat.log` in the [data folder](#where-things-are-stored). **`/logs`** shows the path and opens the folder. When the file reaches 2 MB it becomes `fluxchat.log.1` and a new one starts, so there are never more than two. It names user, room and device IDs but not what messages say, only you can read it, and signing out empties it.
+
+Run from a terminal, fluxchat prints the same lines there. `RUST_LOG` changes the detail level (in the file too), for example:
 
 ```bash
 RUST_LOG=fluxchat=debug cargo run -p fluxchat
@@ -79,4 +81,4 @@ Dragging a file from your file manager into fluxchat works on macOS, Windows and
 | Linux | `~/.local/share/fluxchat/` |
 | Windows | `%APPDATA%\fluxchat\` |
 
-It contains `fluxchat.db` (settings, encrypted media cache), `matrix_store/` (encryption keys, sync state, message cache; encrypted) and `themes/`. The key to the encrypted parts and your sign-in are in the system credential store (service `fluxchat`), or in `secrets.json` in this folder when there is none (see [Encryption](encryption.md#data-on-this-computer)).
+It contains `fluxchat.db` (settings, encrypted media cache), `matrix_store/` (encryption keys, sync state, message cache; encrypted), `logs/` (see [Logs](#logs)) and `themes/`. The key to the encrypted parts and your sign-in are in the system credential store (service `fluxchat`), or in `secrets.json` in this folder when there is none (see [Encryption](encryption.md#data-on-this-computer)).
