@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,9 +86,11 @@ private fun Form(title: String, subtitle: String, content: @Composable () -> Uni
 
 @Composable
 fun LoginScreen() {
-    var homeserver by remember { mutableStateOf("") }
-    var advanced by remember { mutableStateOf(false) }
-    var user by remember { mutableStateOf("") }
+    // Saved: a turn of the phone emptied the form (and hid the server
+    // field again). Not the password — it isn't put into the saved state.
+    var homeserver by rememberSaveable { mutableStateOf("") }
+    var advanced by rememberSaveable { mutableStateOf(false) }
+    var user by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }

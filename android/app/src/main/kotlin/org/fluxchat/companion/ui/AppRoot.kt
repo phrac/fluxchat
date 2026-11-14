@@ -160,8 +160,9 @@ internal fun encodeScreen(s: Screen): String? = when (s) {
     Screen.Search -> "search"
     Screen.Settings -> "settings"
     Screen.Diagnostics -> "diagnostics"
-    // What was shared lives in memory only: nothing to come back to.
-    Screen.Share -> null
+    // What was shared lives in memory only: [decodeScreen] brings the screen
+    // back while it is still there (the phone was turned), not in a new process.
+    Screen.Share -> "share"
 }
 
 internal fun decodeScreen(text: String): Screen? {
@@ -177,8 +178,38 @@ internal fun decodeScreen(text: String): Screen? {
         "search" -> Screen.Search
         "settings" -> Screen.Settings
         "diagnostics" -> Screen.Diagnostics
+        "share" -> Screen.Share.takeIf { ShareInbox.pending.value != null }
         else -> null
     }
+}
+
+/**
+ * Put a screen asked for from outside (a notification, a share, the quick
+ * prompt) on show: Projects, a session's project under it, then the screen.
+ * Returns the screens whose saved state goes with them — everything that was
+ * open, the same screens opened again included (a notification's session
+ * opens at its newest answer, not where it was left), except the one that is
+ * already in front: that is not a new opening, it is the screen you are on.
+ * Forgotten like the rest, it stayed up but was never saved again — the next
+ * turn of the phone, or a look at its gallery and back, emptied its message
+ * box and lost its place, and a photo taken from it had nowhere to land.
+ */
+internal fun MutableList<Screen>.openFromOutside(s: Screen): List<Screen> {
+    val inFront = lastOrNull() == s
+    val left = filter { it != Screen.Rooms && !(inFront && it == s) }
+    removeAll { it != Screen.Rooms }
+    if (s is Screen.Thread) add(Screen.Room(s.roomId))
+    if (s != Screen.Rooms) add(s)
+    return left
+}
+
+/**
+ * Go forward to [s] — unless it is the screen already in front. A second tap
+ * on a row before the first had changed the screen put it on the stack
+ * twice, and Back then changed nothing.
+ */
+internal fun MutableList<Screen>.push(s: Screen) {
+    if (lastOrNull() != s) add(s)
 }
 
 /** Not in a room or event ID. */
@@ -205,19 +236,20 @@ private fun Navigator(opened: MutableStateFlow<Screen?>) {
     // the next opening of the same session came up at the old scroll
     // position — somewhere in its history instead of at the new answer.
     val forget: (Screen) -> Unit = { s -> if (s !in stack) holder.removeState(s.toString()) }
+    // The photo open full screen: kept here, above the screens, not by the
+    // message that showed it (see [ImageViewerHost]).
+    val viewer = rememberImageViewer()
     val open by opened.collectAsState()
     LaunchedEffect(open) {
         open?.let { s ->
-            val gone = stack.filter { it != Screen.Rooms }
-            stack.removeAll { it != Screen.Rooms }
-            gone.forEach(forget)
-            if (s is Screen.Thread) stack.add(Screen.Room(s.roomId))
+            // What was asked for is not behind a photo of something else.
+            viewer.viewing = null
             direction.intValue = 1
-            stack.add(s)
+            stack.openFromOutside(s).forEach { holder.removeState(it.toString()) }
             opened.value = null
         }
     }
-    val go: (Screen) -> Unit = { direction.intValue = 1; stack.add(it) }
+    val go: (Screen) -> Unit = { direction.intValue = 1; stack.push(it) }
     val back: () -> Unit = {
         if (stack.size > 1) {
             direction.intValue = -1
@@ -237,17 +269,19 @@ private fun Navigator(opened: MutableStateFlow<Screen?>) {
     // The save picker's answers are taken here, whatever screen is showing
     // (a file card that has scrolled away can't take its own).
     SavesHere()
-    AnimatedContent(
-        targetState = stack.last(),
-        transitionSpec = {
-            val d = direction.intValue
-            (slideInHorizontally(tween(300)) { w -> d * w / 4 } + fadeIn(tween(300))) togetherWith
-                (slideOutHorizontally(tween(300)) { w -> -d * w / 4 } + fadeOut(tween(200)))
-        },
-        label = "screens",
-    ) { s ->
-        // Screens keep their scroll position etc. when you come back to them.
-        holder.SaveableStateProvider(s.toString()) { Screen(s, go, back, swap) }
+    ImageViewerHost(viewer) {
+        AnimatedContent(
+            targetState = stack.last(),
+            transitionSpec = {
+                val d = direction.intValue
+                (slideInHorizontally(tween(300)) { w -> d * w / 4 } + fadeIn(tween(300))) togetherWith
+                    (slideOutHorizontally(tween(300)) { w -> -d * w / 4 } + fadeOut(tween(200)))
+            },
+            label = "screens",
+        ) { s ->
+            // Screens keep their scroll position etc. when you come back to them.
+            holder.SaveableStateProvider(s.toString()) { Screen(s, go, back, swap) }
+        }
     }
 }
 
