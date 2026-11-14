@@ -7427,20 +7427,28 @@ fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
     Some((png_buf, new_w, new_h))
 }
 
-/// Guess MIME type from file extension.
+/// Guess MIME type from file extension. The video types are the ones the
+/// player takes (`video_temp_path`): a `.mov` screen recording sent as a
+/// plain file gets a download card instead of the player.
 fn mime_from_extension(filename: &str) -> String {
-    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let ext = filename.rsplit_once('.').map(|(_, ext)| ext.to_lowercase()).unwrap_or_default();
     match ext.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
         "svg" => "image/svg+xml",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "ogv" => "video/ogg",
+        "avi" => "video/x-msvideo",
         "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
+        "ogg" | "oga" | "opus" => "audio/ogg",
         "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "flac" => "audio/flac",
         "pdf" => "application/pdf",
         "txt" => "text/plain",
         _ => "application/octet-stream",
@@ -8028,6 +8036,20 @@ mod media_tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "an error doesn't wait out the timeouts");
         assert!(!held_open(&path), "the pipeline was stopped: it kept the file, and its threads");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn videos_the_player_takes_are_sent_as_videos() {
+        for name in ["clip.mp4", "Screen Recording.MOV", "a.b.webm", "x.mkv", "x.m4v", "x.ogv", "x.avi"] {
+            assert!(mime_from_extension(name).starts_with("video/"), "{name}");
+            // The same list the player goes by for what it's handed.
+            let ext = name.rsplit_once('.').unwrap().1.to_ascii_lowercase();
+            assert_eq!(video_temp_path("$e", name).extension().unwrap().to_str(), Some(ext.as_str()));
+        }
+        assert_eq!(mime_from_extension("voice.m4a"), "audio/mp4");
+        assert_eq!(mime_from_extension("notes.txt"), "text/plain");
+        assert_eq!(mime_from_extension("archive.tar.zst"), "application/octet-stream");
+        assert_eq!(mime_from_extension("png"), "application/octet-stream", "a name, not an extension");
     }
 
     #[test]
