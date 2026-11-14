@@ -13,6 +13,11 @@ static CALL_ON_EXIT: Mutex<Option<(Arc<fluxchat_core::AppState>, String, tokio::
 
 /// Most of an error shown in the notice line.
 const FAILURE_NOTICE_CHARS: usize = 200;
+/// How long joining may take (a token from the homeserver, one from the
+/// call service, a state event). The call service is asked with no timeout
+/// of its own: one that accepts the connection and never answers left
+/// "Connecting…" up for good, with the call button dead.
+const JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Record (or clear) the call `leave_call_on_exit` leaves.
 pub(crate) fn set_call_on_exit(core: &Arc<fluxchat_core::AppState>, room_id: Option<&str>) {
@@ -112,7 +117,15 @@ impl FluxChat {
                 Some(Task::batch([snap, Task::perform(
                     async move {
                         let client = core.get_client().await.map_err(|_| "Not logged in".to_string())?;
-                        fluxchat_core::rtc::join_call(&client, &room_id).await.map_err(|e| e.to_string())
+                        match tokio::time::timeout(JOIN_TIMEOUT, fluxchat_core::rtc::join_call(&client, &room_id)).await {
+                            Ok(joined) => joined.map_err(|e| e.to_string()),
+                            Err(_) => {
+                                // How far it got is anyone's guess: don't
+                                // leave a membership behind.
+                                let _ = fluxchat_core::rtc::leave_call(&client, &room_id).await;
+                                Err("the server didn't answer in time".to_string())
+                            }
+                        }
                     },
                     Message::CallJoinResult,
                 )]))
