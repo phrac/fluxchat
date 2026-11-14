@@ -497,6 +497,9 @@ pub enum Message {
     JoinRequestsWatching(String, crate::state::TaskGuard),
     ToggleJoinRequests,
     RespondJoinRequest(String, fluxchat_core::room_admin::JoinResponse), // user_id
+    /// An answer to a join request didn't go through: room, the request
+    /// that was taken off the list (and where it was), error.
+    JoinRequestFailed(String, Option<(usize, Box<fluxchat_core::room_admin::JoinRequest>)>, String),
     KnockRoom(String, Option<String>), // room_id_or_alias, reason
     CancelKnock(String), // room_id
     SendLocation(String), // geo_uri (e.g. "geo:51.5074,-0.1278")

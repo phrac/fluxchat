@@ -230,8 +230,11 @@ impl FluxChat {
             }
             Message::RespondJoinRequest(user_id, response) => {
                 let Some((room_id, reqs)) = self.join_requests.as_mut() else { return Some(Task::none()) };
-                // Gone at once; the watcher re-sends the list if it fails.
-                reqs.requests.retain(|r| r.user_id != user_id);
+                // Gone at once. JoinRequestFailed puts it back if the answer
+                // doesn't go through: the watcher only reports changes, and
+                // a refused answer changes nothing.
+                let removed = reqs.requests.iter().position(|r| r.user_id == user_id)
+                    .map(|at| (at, Box::new(reqs.requests.remove(at))));
                 if reqs.requests.is_empty() {
                     self.join_requests_open = false;
                 }
@@ -239,16 +242,25 @@ impl FluxChat {
                 let core = self.core.clone();
                 Task::perform(
                     async move {
-                        match core.get_client().await {
+                        let err = match core.get_client().await {
                             Ok(client) => room_admin::respond_join_request(&client, &room_id, &user_id, response).await.err().map(|e| e.to_string()),
                             Err(e) => Some(e.to_string()),
-                        }
+                        };
+                        (room_id, err)
                     },
-                    |err| match err {
-                        Some(e) => Message::ShowError(format!("Couldn't answer the join request: {e}")),
+                    move |(room_id, err)| match err {
+                        Some(e) => Message::JoinRequestFailed(room_id, removed, e),
                         None => Message::Noop,
                     },
                 )
+            }
+            Message::JoinRequestFailed(room_id, removed, e) => {
+                if let (Some((watched, reqs)), Some((at, request))) = (self.join_requests.as_mut(), removed) {
+                    if *watched == room_id && !reqs.requests.iter().any(|r| r.user_id == request.user_id) {
+                        reqs.requests.insert(at.min(reqs.requests.len()), *request);
+                    }
+                }
+                self.update(Message::ShowError(format!("Couldn't answer the join request: {e}")))
             }
             Message::RoomAdvancedLoaded(room_id, result) => {
                 if self.room_settings_room().as_deref() == Some(room_id.as_str()) {
@@ -425,6 +437,32 @@ mod tests {
         // A late update from the old room is ignored.
         let _ = app.update(Message::JoinRequestsUpdated("!a:x".into(), requests(&["@w:x"])));
         assert!(app.join_requests.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_join_request_whose_answer_failed_comes_back() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let guard = crate::state::TaskGuard::new(&tokio::spawn(async {}));
+        let _ = app.update(Message::JoinRequestsWatching("!a:x".into(), guard));
+        let _ = app.update(Message::JoinRequestsUpdated("!a:x".into(), requests(&["@u:x", "@v:x"])));
+        let _ = app.update(Message::RespondJoinRequest("@u:x".into(), JoinResponse::Approve));
+        let pending = |app: &crate::state::FluxChat| -> Vec<String> {
+            app.join_requests.as_ref().unwrap().1.requests.iter().map(|r| r.user_id.clone()).collect()
+        };
+        assert_eq!(pending(&app), ["@v:x"]);
+        // Refused (or offline): nothing changed on the server, so the
+        // watcher has nothing to say; the row returns to where it was.
+        let taken = Some((0, Box::new(requests(&["@u:x"]).requests.remove(0))));
+        let _ = app.update(Message::JoinRequestFailed("!a:x".into(), taken.clone(), "not allowed".into()));
+        assert_eq!(pending(&app), ["@u:x", "@v:x"]);
+        assert!(app.help_text.as_deref().is_some_and(|t| t.contains("not allowed")));
+        // Not twice (the watcher got there first), and not into another room's list.
+        let _ = app.update(Message::JoinRequestFailed("!a:x".into(), taken, "again".into()));
+        let other = Some((0, Box::new(requests(&["@w:x"]).requests.remove(0))));
+        let _ = app.update(Message::JoinRequestFailed("!b:x".into(), other, "elsewhere".into()));
+        assert_eq!(pending(&app), ["@u:x", "@v:x"]);
     }
 
     #[tokio::test]

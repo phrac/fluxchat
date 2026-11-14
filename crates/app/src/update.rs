@@ -3783,7 +3783,10 @@ impl FluxChat {
                                             // Checked under the lock Stop takes the handle with.
                                             let mut playing = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner());
                                             if current.load(Ordering::SeqCst) == token {
-                                                *playing = Some(handle);
+                                                // (A preview of your own recording may be going.)
+                                                if let Some(previous) = playing.replace(handle) {
+                                                    previous.stop();
+                                                }
                                             } else {
                                                 handle.stop();
                                             }
@@ -4087,6 +4090,20 @@ impl FluxChat {
                 if let Some((ref bytes, _)) = self.voice_ready {
                     let bytes = bytes.clone();
                     std::thread::spawn(move || {
+                        // In-process first, the way received voice messages
+                        // play: the players below are on few machines (none
+                        // of them on a stock Mac), and without one the
+                        // button did nothing.
+                        if let Ok((pcm, channels)) = fluxchat_core::voice::decode_ogg_opus(&bytes) {
+                            if let Ok(handle) = fluxchat_core::voice::play_pcm(pcm, channels, 48000, Box::new(|| {})) {
+                                // A second click starts it over.
+                                let previous = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).replace(handle);
+                                if let Some(previous) = previous {
+                                    previous.stop();
+                                }
+                                return;
+                            }
+                        }
                         let path = std::env::temp_dir().join("fluxchat_voice_preview.ogg");
                         if std::fs::write(&path, &bytes).is_ok() {
                             #[cfg(target_os = "macos")]
@@ -5472,7 +5489,7 @@ impl FluxChat {
                 | Message::SetAliasPublished(..) | Message::ConfirmRoomUpgrade(_)
                 | Message::RoomUpgraded(..) | Message::JoinRequestsWatching(..)
                 | Message::JoinRequestsUpdated(..) | Message::ToggleJoinRequests
-                | Message::RespondJoinRequest(..)) => {
+                | Message::RespondJoinRequest(..) | Message::JoinRequestFailed(..)) => {
                 if let Some(task) = self.handle_room_admin_message(msg) {
                     return task;
                 }

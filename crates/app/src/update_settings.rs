@@ -151,12 +151,17 @@ impl FluxChat {
                 let core = self.core.clone();
                 Some(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::remove_avatar(&client).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::profile::remove_avatar(&client).await.map_err(|e| e.to_string())
                     },
-                    |result| match result {
-                        Some(()) => Message::SettingsLoadProfile,
-                        None => Message::Noop,
+                    // Reloaded either way: on failure the picture cleared
+                    // above is still the account's, and comes back.
+                    |result: Result<(), String>| match result {
+                        Ok(()) => Message::SettingsLoadProfile,
+                        Err(e) => Message::Batch(vec![
+                            Message::SettingsLoadProfile,
+                            Message::SettingsStatus(format!("Couldn't remove the avatar: {e}")),
+                        ]),
                     },
                 ))
             }
@@ -237,12 +242,15 @@ impl FluxChat {
                 let core = self.core.clone();
                 Some(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::remove_banner(&client).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::profile::remove_banner(&client).await.map_err(|e| e.to_string())
                     },
-                    |result| match result {
-                        Some(()) => Message::SettingsLoadProfile,
-                        None => Message::Noop,
+                    |result: Result<(), String>| match result {
+                        Ok(()) => Message::SettingsLoadProfile,
+                        Err(e) => Message::Batch(vec![
+                            Message::SettingsLoadProfile,
+                            Message::SettingsStatus(format!("Couldn't remove the banner: {e}")),
+                        ]),
                     },
                 ))
             }
