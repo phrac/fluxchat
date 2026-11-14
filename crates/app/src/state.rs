@@ -480,6 +480,8 @@ pub struct FluxChat {
     pub url_previews: HashMap<String, fluxchat_core::UrlPreview>,
     pub url_preview_images: HashMap<String, iced::widget::image::Handle>, // og:image mxc/url -> handle
     pub url_previews_pending: std::collections::HashSet<String>, // URLs currently being fetched
+    /// URLs the server had no preview for, and when it was asked.
+    pub url_preview_failed: HashMap<String, std::time::Instant>,
 
     // Login form state
     pub login_homeserver: String,
@@ -926,6 +928,7 @@ impl FluxChat {
             url_previews: HashMap::new(),
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),
+            url_preview_failed: HashMap::new(),
             create_room_name: String::new(),
             create_room_topic: String::new(),
             create_room_public: false,

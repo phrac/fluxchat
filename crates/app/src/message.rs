@@ -459,6 +459,8 @@ pub enum Message {
 
     // --- URL Previews ---
     UrlPreviewFetched(String, Option<fluxchat_core::UrlPreview>), // url, preview
+    /// The server has no preview for a URL (or couldn't be asked).
+    UrlPreviewFailed(String),
     UrlPreviewImageResolved(String, Vec<u8>), // image_url, bytes
 
     // --- Message hover ---
