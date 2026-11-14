@@ -224,7 +224,7 @@ private val StackSaver = listSaver<SnapshotStateList<Screen>, String>(
 )
 
 @Composable
-private fun Navigator(opened: MutableStateFlow<Screen?>) {
+internal fun Navigator(opened: MutableStateFlow<Screen?>) {
     // Saved: the stack was a plain `remember`, so turning the phone (or a
     // dark-mode switch, a font-size change, unfolding it) in a session
     // dropped you back on Projects.
