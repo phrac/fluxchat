@@ -115,7 +115,9 @@ impl FluxChat {
         let is_connected = self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
         let is_connecting = self.call_state == fluxchat_core::rtc::CallConnectionState::Connecting;
         let is_failed = matches!(self.call_state, fluxchat_core::rtc::CallConnectionState::Failed(_));
-        let selected_has_call = self.rooms_with_calls.contains(room_id);
+        // A thread view's call is its room's.
+        let call_room = fluxchat_core::timeline::real_room_id(room_id);
+        let selected_has_call = self.rooms_with_calls.contains(call_room);
 
         if is_connected {
             // In a call — show room name, participants, controls
@@ -236,7 +238,7 @@ impl FluxChat {
             }));
         } else if selected_has_call {
             // Room has an active call we can join
-            let rid = room_id.to_string();
+            let rid = call_room.to_string();
             panel = panel.push(container(
                 row![
                     iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
