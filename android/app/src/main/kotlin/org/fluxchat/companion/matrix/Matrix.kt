@@ -395,6 +395,10 @@ object Matrix {
             // that crash and rebuild the store before anyone touches it.
             val live = if (StoreHeal.healRequested()) rebuildStore(c, saved.session, saved.storePassphrase) else c
             started(live, fresh = false)
+            // Whatever an earlier try said ("couldn't restore your session")
+            // is over: left set, it stood in red under the agent list — and
+            // under the sign-in form after signing out — from then on.
+            _error.value = null
             true
         } catch (e: Exception) {
             Diag.error("Restoring the session failed", e)
@@ -808,6 +812,8 @@ object Matrix {
             .onFailure { Diag.error("Clearing notifications", it) }
         _agentList.value = AgentList()
         _pins.value = PinStore.Pins()
+        // The last session's failures are not the sign-in form's to show.
+        _error.value = null
         _auth.value = Auth.SignedOut
     }
 
@@ -1196,8 +1202,10 @@ object Matrix {
                 // update {}: these arrive on SDK threads, one per room.
                 _typing.update { it + (roomId to others) }
                 // An agent typing is a run for some harnesses (typing_means_working),
-                // and nothing else looks again until a message arrives.
-                if (before.toSet() != others.toSet()) scope.launch { recompute() }
+                // and nothing else looks again until a message arrives. (A
+                // one-off, so on [tasks]: bare on [scope], a throw in this
+                // look alone took the process down.)
+                if (before.toSet() != others.toSet()) tasks.launch { recompute() }
             }
         }))?.cancel()
         // Signed out in between: stopAll has closed the model, and missed this.
@@ -1880,6 +1888,9 @@ object Matrix {
             notSet.wrote(AgentList.TYPE)
             agentListWritten = list to System.currentTimeMillis()
             _agentList.value = list
+            // Saved: "couldn't save the agent list" from the try before no
+            // longer holds (the screen shows it for as long as it is set).
+            _error.value = null
             if (unread && !agentListRead) {
                 // The server answered above: what the account holds is known now.
                 agentListRead = true
