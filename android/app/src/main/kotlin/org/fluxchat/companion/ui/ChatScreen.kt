@@ -250,7 +250,10 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     // Read only while it's actually being looked at: with sync kept alive in
     // the background, every new message was marked read from a locked phone.
     val watching = LocalWindowInfo.current.isWindowFocused && unlocked()
-    LaunchedEffect(msgs.size, watching) { if (watching) model?.markRead() }
+    // (model: a session shows the project's copy of its replies before its
+    // own timeline has opened — as many messages after as before, so with
+    // the count alone as the key it was never marked read on opening.)
+    LaunchedEffect(model, msgs.size, watching) { if (watching) model?.markRead() }
 
     val title = if (root == null) Matrix.roomName(roomId) else threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.id != root })
     var menu by remember { mutableStateOf(false) }
@@ -328,7 +331,8 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                         // Pin: keep this session on top of the list and its project on the Projects screen.
                         val pins by Matrix.pins.collectAsState()
                         val sessionPinned = pins.isPinned(roomId, root)
-                        IconButton(onClick = { scope.launch { setPinnedOrSay(context, roomId, root, !sessionPinned) } }) {
+                        // (the app's scope: Back right after the tap cancelled the save half-way, without a word)
+                        IconButton(onClick = { Matrix.launch { setPinnedOrSay(app, roomId, root, !sessionPinned) } }) {
                             if (sessionPinned) Icon(Icons.Default.PushPin, "Unpin session")
                             else Icon(Icons.Outlined.PushPin, "Pin session")
                         }
@@ -425,7 +429,10 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
                 working = run?.state == RunState.Working,
                 placeholder = if (cards) "Start a new session" else null,
                 canAttach = model != null,
-                shareFor = roomId,
+                // The project's own message box only. A session's took what
+                // the quick prompt handed to its project — and was closed the
+                // next moment, when the project opened: the text was gone.
+                shareFor = roomId.takeIf { root == null },
                 onAttach = { a, caption ->
                     if (root == null) sentAt = System.currentTimeMillis()
                     Matrix.launch {
