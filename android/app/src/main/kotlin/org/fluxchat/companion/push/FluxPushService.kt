@@ -108,11 +108,18 @@ class FluxPushService : PushService() {
         // An agent companion: your agents, and people mentioning you.
         if (!isAgent && item.hasMention != true) return skip("push: $eventId from $sender, not an agent or a mention")
         val senderName = item.senderInfo.displayName ?: sender
-        val threadRoot = item.threadId ?: ev.threadRootEventId()
+        // An edit is about the message it replaces: that one has the
+        // notification, and takes the reactions and the replies.
+        val edit = if (content is MessageLikeEventContent.RoomMessage) PushPayload.edit(item.rawEvent) else null
+        val about = edit?.of ?: eventId
+        // This room's timeline, when it is loaded (a push alone doesn't load one).
+        val msgs = Matrix.roomTimeline(roomId)?.messages?.value.orEmpty()
+        // (An edit names the message it replaces, not the session that is in.)
+        val threadRoot = item.threadId ?: ev.threadRootEventId() ?: edit?.let { e -> msgs.firstOrNull { it.id == e.of }?.threadRoot }
         val note = when (content) {
             is MessageLikeEventContent.RoomMessage -> {
                 val msgType = content.messageType
-                val body = when (msgType) {
+                val body = edit?.body?.ifEmpty { null } ?: when (msgType) {
                     is MessageType.Text -> msgType.content.body
                     is MessageType.Notice -> msgType.content.body
                     is MessageType.Emote -> "* " + msgType.content.body
@@ -120,16 +127,14 @@ class FluxPushService : PushService() {
                     is MessageType.File -> "[file]"
                     else -> "[message]"
                 }
-                // The run's headline for the notification's subtext, when this room's
-                // timeline is loaded (a push alone doesn't load one).
-                val msgs = Matrix.roomTimeline(roomId)?.messages?.value.orEmpty()
+                // The run's headline for the notification's subtext.
                 val headline = threadRoot?.takeIf { msgs.isNotEmpty() }?.let { root ->
                     org.fluxchat.companion.ui.threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.threadRoot == root })
                 }
                 val full = Notifier.noteFor(
-                    roomId, eventId, threadRoot, sender, senderName,
+                    roomId, about, threadRoot, sender, senderName,
                     item.roomInfo.displayName, body, Protocol.fromEventJson(item.rawEvent), list.harnessOf(sender),
-                    System.currentTimeMillis(), ev.timestamp().toLong(), headline,
+                    System.currentTimeMillis(), ev.timestamp().toLong(), headline, fromAgent = isAgent,
                 )
                 if (full == null) {
                     // It turned out to be a step log: its stand-in shouldn't have been news.
@@ -149,16 +154,36 @@ class FluxPushService : PushService() {
             else -> return skip("push: $eventId is not a renderable message (${content?.javaClass?.simpleName ?: ev.content().javaClass.simpleName})")
         }
         quiet.ends("steps:$roomId")
+        if (edit == null) quiet.ends("edits:$roomId")
         val undecrypted = content is MessageLikeEventContent.RoomEncrypted
+        // Answered while its push was on the way: no longer a prompt, and not news.
+        if (PromptWatcher.settled(note)) {
+            if (again && Notifier.isShowing(applicationContext, eventId)) Notifier.cancel(applicationContext, eventId)
+            return skip("push: $about was answered before its push got here, not notified")
+        }
         if (again) {
             // Only over the stand-in: opened or swiped away meanwhile, it stays gone.
             if (!Notifier.isShowing(applicationContext, eventId)) return skip("push: $eventId decrypted, its notification was already dismissed")
             PromptWatcher.showPushed(applicationContext, note, quietly = note.kind == Note.Kind.Message)
             return Outcome.Notified
         }
+        if (edit != null) {
+            val showing = Notifier.isShowing(applicationContext, about)
+            when (editNews(asks = note.kind != Note.Kind.Message, fromAgent = isAgent, showing = showing, notified = Notifier.wasNotified(about))) {
+                // An answer written an edit at a time pushes one per edit: said once.
+                EditNews.None -> return skip("push: edits of messages that already pushed aren't notified ($eventId edits $about; said once while they keep coming)", streak = "edits:$roomId")
+                EditNews.Refresh -> {
+                    PromptWatcher.showPushed(applicationContext, note, quietly = true)
+                    return Outcome.Notified
+                }
+                EditNews.New -> {}
+            }
+        }
         // Not for what's on screen in front of you. A prompt still alerts
         // unless it is that very session you're looking at.
-        if (Attention.watching(roomId, threadRoot, eventId, needsAnswer = note.kind != Note.Kind.Message)) {
+        if (Attention.watching(roomId, threadRoot, about, needsAnswer = note.kind != Note.Kind.Message)) {
+            // Seen is as good as notified: its edits aren't news later either.
+            Notifier.markNotified(about)
             return skip("push: $eventId is on screen, not notified")
         }
         if (undecrypted) Diag.note("push: $eventId can't be decrypted yet, notifying without its text")

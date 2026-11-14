@@ -33,8 +33,11 @@ import org.fluxchat.companion.ui.threadTitle
 object LiveRuns {
     const val NOTIFICATION_ID = 7301
 
-    /** A live run, as the notification and the run widget show it. */
-    internal data class Live(val key: ViewKey, val run: RunInfo, val agent: String, val title: String, val room: String)
+    /**
+     * A live run, as the notification and the run widget show it. [agent] is
+     * who to address (Stop goes by it); [name] is what they're called.
+     */
+    internal data class Live(val key: ViewKey, val run: RunInfo, val agent: String, val title: String, val room: String, val name: String = shortName(agent, null))
 
     @Volatile private var last: String? = null
     @Volatile private var current: android.app.Notification? = null
@@ -58,24 +61,30 @@ object LiveRuns {
                 // working run with no sign of life for a while isn't live. Matrix.recompute
                 // already drops those by this same rule; this only covers the minute until it looks again.
                 if (!run.typing && Runs.stalled(run, Matrix.signOfLife(room.roomId, agentId, msgs, key.threadRoot, run.since), System.currentTimeMillis())) return@mapNotNull null
-                val agent = shortName(agentId, msgs.lastOrNull { it.sender == agentId }?.senderName)
+                val name = shortName(agentId, msgs.lastOrNull { it.sender == agentId }?.senderName)
                 val title = key.threadRoot?.let { r -> threadTitle(msgs.firstOrNull { it.id == r }, msgs.filter { it.threadRoot == r }) } ?: room.name
-                Live(key, run, agentId.ifEmpty { agent }, title, room.name)
+                Live(key, run, agentId, title, room.name, name)
             }
         }.sortedWith(compareBy({ it.run.rank().first }, { it.run.rank().second }))
     }
 
     /** Rows for the home-screen run widget: the same live() view as the notification. */
-    internal fun widgetRows(): List<org.fluxchat.companion.quick.RunWidgetRow> = live().map { l ->
-        org.fluxchat.companion.quick.RunWidgetRow(
-            key = l.key.toString(),
-            roomId = l.key.roomId,
-            threadRoot = l.key.threadRoot,
-            title = "${l.agent} · ${l.title}",
-            sub = Runs.stepLabel(l.run.step) ?: l.run.state.label,
-            stop = stopCommand(l),
-        )
-    }
+    internal fun widgetRows(): List<org.fluxchat.companion.quick.RunWidgetRow> = live().map { widgetRow(it, stopCommand(it)) }
+
+    /**
+     * A run as its widget row. Headed by the agent's name — it was their
+     * address ("@hermes:example.org · …"), which left no room in the row for
+     * the session. And a run waiting on you says so: with its last tool step
+     * in that place it read as still working.
+     */
+    internal fun widgetRow(l: Live, stop: String?) = org.fluxchat.companion.quick.RunWidgetRow(
+        key = l.key.toString(),
+        roomId = l.key.roomId,
+        threadRoot = l.key.threadRoot,
+        title = listOf(l.name, l.title).filter { it.isNotBlank() }.joinToString(" · "),
+        sub = if (l.run.state == RunState.NeedsYou) l.run.state.label else Runs.stepLabel(l.run.step) ?: l.run.state.label,
+        stop = stop,
+    )
 
     @Synchronized
     private fun update(context: Context) {
@@ -145,7 +154,7 @@ object LiveRuns {
     private fun build(context: Context, runs: List<Live>): android.app.Notification {
         val top = runs.first()
         val r = top.run
-        val agentName = shortName(top.agent, null)
+        val agentName = top.name
         val b = NotificationCompat.Builder(context, Notifications.LIVE)
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
@@ -236,9 +245,15 @@ class RunService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Android 15 caps data sync services at 6 hours a day. */
+    /**
+     * Android 15 caps data sync services at 6 hours a day. The runs are
+     * still going when it ends: the notification is left up as a plain one
+     * (kept current while the process lives) instead of going with the
+     * service — it only came back at the run's next step, if it had one.
+     */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        Diag.note("live runs: service timed out")
+        Diag.note("live runs: service timed out, the notification stays without it")
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
         stopSelf()
     }
 

@@ -51,26 +51,38 @@ object Notifier {
 
     private val quiet = Streak()
 
-    /** A choice as its button / reply chip reads: "✅ Approve once", "1 Deploy". */
-    fun choiceTitle(key: String, label: String) = (if (label == key) key else "$key $label").take(40)
+    /**
+     * A choice as its button / reply chip reads: "✅ Approve once", "1 Deploy".
+     * No space at its ends: a picked chip is matched back to its choice by
+     * these words ([ActionReceiver.pickedChoice]).
+     */
+    fun choiceTitle(key: String, label: String) = (if (label == key) key else "$key $label").take(40).trim()
 
     /**
-     * What an agent message should notify as, or null: step logs aren't news
-     * (unless they wait on you).
+     * A prompt's title. Project first: in the shade, which one waits matters
+     * most (a DM with the agent by its name collapses to one name).
+     */
+    fun needsYouTitle(roomName: String, senderName: String) =
+        if (senderName == roomName) "$roomName needs you" else "$roomName · $senderName needs you"
+
+    /**
+     * What a message should notify as, or null: step logs aren't news
+     * (unless they wait on you). [fromAgent]: one of your agents wrote it —
+     * step logs and "❓" questions are how agents write, and a person who
+     * mentions you with "👍 @you, merged" was read as logging a step: the
+     * mention never notified.
      */
     fun noteFor(
         roomId: String, eventId: String, threadRoot: String?, sender: String, senderName: String,
         roomName: String, body: String, protocol: Protocol?, harness: Harness, now: Long, ts: Long,
-        headline: String? = null,
+        headline: String? = null, fromAgent: Boolean = true,
     ): Note? {
         val name = if (senderName == roomName) senderName else "$senderName · $roomName"
         val waiting = protocol?.runState() == RunState.NeedsYou && protocol.choices.isNotEmpty()
         if (waiting) {
-            // Project first: in the shade, which room waits matters most (a DM
-            // with the agent by its name collapses to one name).
-            val title = if (senderName == roomName) "$roomName needs you" else "$roomName · $senderName needs you"
-            return Note(roomId, eventId, threadRoot, sender, title, body, Note.Kind.Prompt, protocol.choices.map { it.key to it.label }, headline = headline)
+            return Note(roomId, eventId, threadRoot, sender, needsYouTitle(roomName, senderName), body, Note.Kind.Prompt, protocol.choices.map { it.key to it.label }, headline = headline)
         }
+        if (!fromAgent) return Note(roomId, eventId, threadRoot, sender, name, body, Note.Kind.Message)
         if (Runs.progressSteps(body) != null) return null
         val asQuestion = Msg(eventId, sender, senderName, body, ts, isOwn = false)
         Runs.pendingQuestion(listOf(asQuestion), 0, sender, harness, now)?.let { choices ->
@@ -120,6 +132,21 @@ object Notifier {
     }
 
     fun wasPushed(eventId: String): Boolean = synchronized(pushed) { eventId in pushed }
+
+    /**
+     * Events that have had a notification (newest last, bounded), whatever
+     * became of it: an edit of one you've since opened or swiped away is not
+     * news a second time ([editNews]).
+     */
+    private val notified = LinkedHashSet<String>()
+
+    internal fun markNotified(eventId: String) = synchronized(notified) {
+        notified.remove(eventId)
+        notified.add(eventId)
+        while (notified.size > PUSHED_KEPT) notified.remove(notified.first())
+    }
+
+    fun wasNotified(eventId: String): Boolean = synchronized(notified) { eventId in notified }
 
     /** Its notification is gone (seen, read, answered): nothing left to give buttons to. */
     private fun forget(eventId: String) {
@@ -179,7 +206,10 @@ object Notifier {
                 .build(),
         )
         runCatching { nm.notify(note.eventId, 0, b.build()) }
-            .onSuccess { Diag.notificationShown(note.kind.name, note.eventId) }
+            .onSuccess {
+                markNotified(note.eventId)
+                Diag.notificationShown(note.kind.name, note.eventId)
+            }
             .onFailure { Diag.error("Notification for ${note.eventId}", it) }
     }
 
@@ -201,13 +231,14 @@ object Notifier {
      * buttons and all — it used to be replaced by a line that vanished after
      * four seconds, and nothing showed it again: the agent waited with
      * nothing on the phone. When this process no longer has the prompt (it
-     * was restarted since), a note that opens the session stands in.
+     * was restarted since), a note that opens the session stands in — false
+     * then: the prompt itself is not back.
      */
-    fun failed(context: Context, roomId: String, threadRoot: String?, eventId: String) {
+    fun failed(context: Context, roomId: String, threadRoot: String?, eventId: String): Boolean {
         val note = synchronized(shown) { shown[eventId] }
         if (note != null) {
             show(context, note.copy(title = "Not sent · " + note.title.removePrefix("Not sent · ")))
-            return
+            return true
         }
         val stand = Note(roomId, eventId, threadRoot, "", "Couldn't send your answer", "Open fluxchat to answer.", Note.Kind.Message)
         val b = NotificationCompat.Builder(context, Notifications.PROMPTS)
@@ -219,6 +250,7 @@ object Notifier {
             .addExtras(about(roomId, threadRoot, asks = true))
         runCatching { NotificationManagerCompat.from(context).notify(eventId, 0, b.build()) }
             .onFailure { Diag.error("Notification for $eventId", it) }
+        return false
     }
 
     fun cancel(context: Context, eventId: String) {
