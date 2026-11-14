@@ -5484,6 +5484,12 @@ impl FluxChat {
                 self.url_preview_failed.retain(|_, at| now.duration_since(*at) < URL_PREVIEW_RETRY_AFTER);
                 self.url_preview_failed.insert(url, now);
             }
+            Message::ShowMoreMembers => {
+                if let Some(key) = self.selected_room_id.clone() {
+                    let rows = self.member_rows_shown() + crate::view_members::MEMBER_ROWS_MORE;
+                    self.member_rows = Some((key, rows));
+                }
+            }
             Message::Noop => {}
         }
 

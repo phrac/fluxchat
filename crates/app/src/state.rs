@@ -525,6 +525,9 @@ pub struct FluxChat {
     pub drafts: HashMap<String, String>,
     /// Member list filter (name / user ID substring).
     pub member_filter: String,
+    /// The view whose member list was asked to show more, and how many rows
+    /// of each section it shows (other views show the first few).
+    pub member_rows: Option<(String, usize)>,
 
     // Settings modal state
     pub settings_devices: Vec<fluxchat_core::devices::DeviceInfo>,
@@ -917,6 +920,7 @@ impl FluxChat {
             max_upload_size: None,
             drafts: HashMap::new(),
             member_filter: String::new(),
+            member_rows: None,
             settings_devices: Vec::new(),
             settings_nick_input: String::new(),
             settings_status: None,
