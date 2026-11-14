@@ -13,6 +13,9 @@ pub fn generate_thumbnail(data: &[u8], max_w: u32, max_h: u32) -> Option<(Vec<u8
     Some((buf.into_inner(), w, h))
 }
 
+/// Most a small PDF page is enlarged for its preview.
+const PDF_MAX_SCALE: f32 = 4.0;
+
 /// Get original image dimensions without full decode.
 /// A PDF's first page as a PNG `width` px wide (pure-Rust rendering, no
 /// system libraries), with its size. None for anything it can't render —
@@ -28,11 +31,18 @@ pub fn pdf_preview(data: &[u8], width: u32) -> Option<(Vec<u8>, u32, u32)> {
         let pages = pdf.pages();
         let page = pages.first()?;
         let (w, h) = page.render_dimensions();
-        if w <= 0.0 || h <= 0.0 {
+        if !(w.is_finite() && h.is_finite()) || w <= 0.0 || h <= 0.0 {
             return None;
         }
-        // Scale to the width; very tall pages are capped at 3x it.
-        let scale = (width as f32 / w).min(width as f32 * 3.0 / h).clamp(0.05, 4.0);
+        // Scale to the width; very tall pages are capped at 3x it. Small
+        // pages are enlarged at most `PDF_MAX_SCALE` times; there is no
+        // smallest scale, because the page size is whatever the sender's
+        // file says: a floor let a few-hundred-byte PDF with a mile-wide
+        // page ask for a 65535 x 65535 pixmap (17 GB).
+        let scale = (width as f32 / w).min(width as f32 * 3.0 / h).min(PDF_MAX_SCALE);
+        if w * scale < 1.0 || h * scale < 1.0 {
+            return None;
+        }
         let cache = RenderCache::new();
         let pixmap = hayro::render(page, &cache, &InterpreterSettings::default(), &RenderSettings::default(),
             &PixmapSettings { x_scale: scale, y_scale: scale, bg_color: WHITE });
@@ -111,10 +121,16 @@ mod pdf_tests {
     /// A one-page PDF saying "Hello" in Helvetica (a standard font: not
     /// embedded, so it only draws with hayro's bundled fonts).
     fn hello_pdf() -> Vec<u8> {
+        hello_pdf_sized(200, 100)
+    }
+
+    /// The same page, `w` x `h` points.
+    fn hello_pdf_sized(w: u32, h: u32) -> Vec<u8> {
+        let page = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>");
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>",
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            page.as_str(),
             "<< /Length 41 >>\nstream\nBT /F1 36 Tf 20 35 Td (Hello) Tj ET\nendstream",
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
         ];
@@ -141,5 +157,19 @@ mod pdf_tests {
         let dark = img.pixels().filter(|p| p.0[0] < 128).count();
         assert!(dark > 200, "the text drew ({dark} dark pixels)");
         assert!(super::pdf_preview(b"not a pdf", 400).is_none());
+    }
+
+    #[test]
+    fn a_page_of_any_size_gets_a_preview_no_larger_than_asked() {
+        // The page size is the sender's claim; the pixmap must not follow it.
+        let (_, w, h) = super::pdf_preview(&hello_pdf_sized(2_000_000, 2_000_000), 400).expect("renders small");
+        assert!((399..=400).contains(&w) && (399..=400).contains(&h), "{w}x{h}");
+        let (_, w, h) = super::pdf_preview(&hello_pdf_sized(100_000, 2_000_000), 400).expect("renders small");
+        assert!(w <= 400 && (1199..=1200).contains(&h), "{w}x{h}");
+        // Nothing left to draw once it's scaled to fit.
+        assert!(super::pdf_preview(&hello_pdf_sized(1, 2_000_000), 400).is_none());
+        // Small pages still grow, up to the limit.
+        let (_, w, h) = super::pdf_preview(&hello_pdf_sized(20, 10), 400).expect("renders");
+        assert_eq!((w, h), (80, 40));
     }
 }

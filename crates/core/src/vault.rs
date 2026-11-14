@@ -102,15 +102,29 @@ fn read_file(data_dir: &Path) -> anyhow::Result<Option<Vault>> {
 /// Load the vault. `Ok(None)` only when there definitely is none. Blocking
 /// (the credential store may prompt): call from `spawn_blocking`.
 pub fn load(data_dir: &Path) -> anyhow::Result<Option<(Vault, Protection)>> {
-    let keyring_err = match entry().and_then(|e| e.get_password()) {
-        Ok(json) => return parse(&json).map(|v| Some((v, Protection::Keyring))),
-        Err(keyring::Error::NoEntry) => None,
-        Err(e) => Some(e),
-    };
-    match (read_file(data_dir)?, keyring_err) {
-        (Some(vault), _) => Ok(Some((vault, Protection::File))),
-        (None, None) => Ok(None),
-        (None, Some(e)) => Err(anyhow::anyhow!("couldn't read the saved session from the system keyring: {e}")),
+    pick(read_file(data_dir)?, || entry().and_then(|e| e.get_password()))
+}
+
+/// The saved vault, given the fallback file's and a way to ask the
+/// credential store.
+///
+/// The file wins. It only exists while the last save couldn't reach the
+/// credential store (a save that can removes it), so whatever the credential
+/// store holds then is an older session: one saved before the store went
+/// away, which `save` couldn't replace and `delete` couldn't remove. Its key
+/// doesn't open the current store, so restoring from it fails at every start
+/// until the user signs in again — and that replaces the store.
+fn pick(
+    file: Option<Vault>,
+    keyring: impl FnOnce() -> keyring::Result<String>,
+) -> anyhow::Result<Option<(Vault, Protection)>> {
+    if let Some(vault) = file {
+        return Ok(Some((vault, Protection::File)));
+    }
+    match keyring() {
+        Ok(json) => parse(&json).map(|v| Some((v, Protection::Keyring))),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("couldn't read the saved session from the system keyring: {e}")),
     }
 }
 
@@ -119,7 +133,13 @@ pub fn save(data_dir: &Path, vault: &Vault) -> anyhow::Result<Protection> {
     let json = serde_json::to_string(vault)?;
     match save_keyring(&json) {
         Ok(()) => {
-            let _ = std::fs::remove_file(fallback_path(data_dir));
+            match std::fs::remove_file(fallback_path(data_dir)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // `load` reads the file first: one that can't be removed
+                // must at least hold this session.
+                Err(_) => write_file(data_dir, &json)?,
+            }
             Ok(Protection::Keyring)
         }
         Err(e) => {
@@ -193,6 +213,26 @@ mod tests {
         // The old session row in fluxchat.db is a SavedSession.
         let legacy = r#"{"homeserver":"https://example.org","user_id":"@a:example.org","device_id":"DEV","access_token":"syt_secret","refresh_token":null}"#;
         assert_eq!(serde_json::from_str::<SavedSession>(legacy).unwrap(), session());
+    }
+
+    #[test]
+    fn the_fallback_file_wins_over_an_older_keyring_entry() {
+        // Signed in while the keyring worked, then again while it didn't
+        // (that one went to the file): the keyring still holds the first.
+        let stale = Vault::new(SavedSession { device_id: "OLD".into(), ..session() }).unwrap();
+        let current = Vault::new(session()).unwrap();
+        let stale_json = serde_json::to_string(&stale).unwrap();
+        let found = pick(Some(current.clone()), || Ok(stale_json.clone())).unwrap();
+        assert_eq!(found, Some((current.clone(), Protection::File)));
+        // The file is enough: a keyring that can't be read doesn't matter.
+        let found = pick(Some(current.clone()), || Err(keyring::Error::NoStorageAccess("locked".into()))).unwrap();
+        assert_eq!(found, Some((current, Protection::File)));
+
+        // No file: the keyring's, and its errors are never "no session".
+        assert_eq!(pick(None, || Ok(stale_json.clone())).unwrap(), Some((stale, Protection::Keyring)));
+        assert_eq!(pick(None, || Err(keyring::Error::NoEntry)).unwrap(), None);
+        assert!(pick(None, || Err(keyring::Error::NoStorageAccess("locked".into()))).is_err());
+        assert!(pick(None, || Ok("not json".into())).is_err());
     }
 
     #[test]
