@@ -460,8 +460,8 @@ object Runs {
                 return run.copy(ended = listOfNotNull(run.ended, said).maxOrNull())
             }
         }
-        val i = msgs.indices.filter { i ->
-            val m = msgs[i]
+        val i = msgs.indices.filter { at ->
+            val m = msgs[at]
             m.isOwn && !m.isLocal && !isStopCommand(m.body, h) &&
                 if (runId.isNullOrEmpty()) kotlin.math.abs(m.ts - since) <= REQUEST_MATCH_SLACK_MS else m.id == runId
         }.minByOrNull { kotlin.math.abs(msgs[it].ts - since) } ?: return null
