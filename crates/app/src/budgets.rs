@@ -140,6 +140,24 @@ impl FluxChat {
         total
     }
 
+    /// What one record's run itself cost: the increase of its session-total
+    /// `cost_usd` over the session's record before it (whole on a drop: a new
+    /// session) — the share of it `spent` counts. A History row showing the
+    /// running total said every follow-up in a long session had cost what
+    /// the whole session had.
+    pub(crate) fn run_cost(&self, rec: &crate::history::RunRecord) -> Option<f64> {
+        let cost = rec.cost_usd?;
+        let before = self.run_history.iter()
+            .filter(|r| r.agent == rec.agent && r.key == rec.key && r.started < rec.started)
+            .filter_map(|r| Some((r.started, r.cost_usd?)))
+            .max_by_key(|(started, _)| *started)
+            .map(|(_, c)| c);
+        Some(match before {
+            Some(p) if cost >= p => cost - p,
+            _ => cost,
+        })
+    }
+
     pub(crate) fn budget_status(&self, agent: &str) -> Option<Status> {
         let budget = *self.prefs.agent_budgets.get(agent)?;
         if budget.usd <= 0.0 {
@@ -349,6 +367,14 @@ mod tests {
         // Only runs in the period, but still as increases.
         assert!((app.spent("@bot:x", 2_500) - 0.40).abs() < 1e-9);
         assert_eq!(app.spent("@other:x", 0), 0.0);
+        // A row's cost is its run's share of that, not the session's total.
+        let costs: Vec<f64> = app.run_history.iter().map(|r| app.run_cost(r).unwrap()).collect();
+        for (cost, want) in costs.iter().zip([0.50, 0.20, 0.30, 0.10]) {
+            assert!((cost - want).abs() < 1e-9, "{costs:?}");
+        }
+        assert!((costs.iter().sum::<f64>() - app.spent("@bot:x", 0)).abs() < 1e-9);
+        app.run_history[0].cost_usd = None;
+        assert_eq!(app.run_cost(&app.run_history[0]), None);
     }
 
     #[tokio::test]
