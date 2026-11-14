@@ -64,13 +64,24 @@ struct JwtResponse {
     jwt: String,
 }
 
+/// How long the .well-known and LiveKit token requests may take. reqwest has
+/// no timeout of its own: a server that takes the connection and never
+/// answers left a call at "connecting" (and the startup check for call
+/// support pending) for good.
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+static HTTP: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().unwrap_or_default()
+});
+
 /// Get the LiveKit service URL from the homeserver's .well-known.
 pub async fn get_livekit_service_url(client: &matrix_sdk::Client) -> Result<String, AppError> {
     let user_id = client.user_id().ok_or(AppError::NotLoggedIn)?;
     let server = user_id.server_name().as_str();
     let well_known_url = format!("https://{server}/.well-known/matrix/client");
 
-    let resp: serde_json::Value = reqwest::get(&well_known_url)
+    let resp: serde_json::Value = HTTP.get(&well_known_url)
+        .send()
         .await
         .map_err(|e| AppError::Other(format!("Failed to fetch .well-known: {e}")))?
         .json()
@@ -132,8 +143,7 @@ pub async fn get_livekit_jwt(
         "device_id": device_id,
     });
 
-    let http = reqwest::Client::new();
-    let response = http
+    let response = HTTP
         .post(&url)
         .json(&body)
         .send()
@@ -156,6 +166,57 @@ pub async fn get_livekit_jwt(
         livekit_url: resp.url,
         jwt: resp.jwt,
     })
+}
+
+/// The devices with a live membership in one call member event, as
+/// (user ID, device ID).
+fn live_memberships(event: &serde_json::Value, now_ms: u64) -> Vec<(String, String)> {
+    let Some(content) = event.get("content") else { return Vec::new() };
+    // Whose membership it is: the sender's. The state key is `@user:server`
+    // in the older format but `_@user:server_DEVICE_m.call` in the per-device
+    // one, which can't be taken apart at `_` (user IDs contain them:
+    // `@first_last:server` came out as "@first") and is whatever its sender
+    // chose — a key naming someone else must not put *them* in the call.
+    let user = event.get("sender").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+        .or_else(|| event.get("state_key").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let origin_ts = event.get("origin_server_ts").and_then(|v| v.as_u64()).unwrap_or(0);
+    // `expires` (ms after the event) is the sender's number as well: a huge
+    // one must not wrap around into "expired long ago" (or, in a debug
+    // build, panic the task that scans every room for calls).
+    let live = |expires: u64| origin_ts.saturating_add(expires) > now_ms;
+
+    // Legacy format: a "memberships" array, each entry with its own expiry.
+    let memberships: Vec<CallMembership> = content
+        .get("m.memberships")
+        .or_else(|| content.get("memberships"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    if !memberships.is_empty() {
+        return memberships.into_iter()
+            // No expiry info — treat as active
+            .filter(|m| m.expires == 0 || origin_ts == 0 || live(m.expires))
+            .map(|m| (user.clone(), m.device_id))
+            .collect();
+    }
+    // Newer flat format: each state event IS a membership. Empty content
+    // means they left.
+    if content.get("application").is_none() && content.get("call_id").is_none() {
+        return Vec::new();
+    }
+    let expires = content.get("expires").and_then(|v| v.as_u64()).unwrap_or(0);
+    let active = if expires > 0 && origin_ts > 0 {
+        live(expires)
+    } else {
+        // No expiry info — check if content has active fields
+        content.get("application").is_some()
+    };
+    if !active {
+        return Vec::new();
+    }
+    let device = content.get("device_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    vec![(user, device)]
 }
 
 /// Read m.call.member state events to get current call participants.
@@ -189,8 +250,9 @@ pub async fn get_call_members(
         .await
         .unwrap_or_default());
 
-    // Parse all events and deduplicate by state_key, keeping the latest by origin_server_ts
-    let mut events_by_state_key: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+    // Parse all events and deduplicate by state_key, keeping the latest by
+    // origin_server_ts. Ordered, so the list doesn't reshuffle on every look.
+    let mut events_by_state_key: std::collections::BTreeMap<String, serde_json::Value> = std::collections::BTreeMap::new();
     for raw_event in raw_events {
         let json_bytes = match &raw_event {
             matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState::Sync(raw) => {
@@ -221,140 +283,30 @@ pub async fn get_call_members(
         }
     }
 
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
     for json in events_by_state_key.values() {
-        let sender = json
-            .get("state_key")
-            .or_else(|| json.get("sender"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let content = match json.get("content") {
-            Some(c) => c,
-            None => continue,
-        };
-
-        // Check both legacy "memberships" array and newer flat format
-        let memberships: Vec<CallMembership> = content
-            .get("m.memberships")
-            .or_else(|| content.get("memberships"))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        if !memberships.is_empty() {
-            // Legacy format: memberships array — filter expired memberships
-            let origin_ts = json.get("origin_server_ts").and_then(|v| v.as_u64()).unwrap_or(0);
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            let has_active = memberships.iter().any(|m| {
-                if m.expires > 0 && origin_ts > 0 {
-                    origin_ts + m.expires > now_ms
-                } else {
-                    // No expiry info — treat as active
-                    true
-                }
-            });
-
-            if !has_active {
-                continue; // All memberships expired
-            }
-
-            // Filter to only active memberships for participant list
-            let active_memberships: Vec<&CallMembership> = memberships.iter().filter(|m| {
-                if m.expires > 0 && origin_ts > 0 {
-                    origin_ts + m.expires > now_ms
-                } else {
-                    true
-                }
-            }).collect();
-
-            for membership in active_memberships {
-                let (display_name, avatar_url) =
-                    if let Ok(user_id) = matrix_sdk::ruma::UserId::parse(&sender) {
-                        if let Ok(Some(member)) = room.get_member_no_sync(&user_id).await {
-                            (
-                                member
-                                    .display_name()
-                                    .unwrap_or(user_id.localpart())
-                                    .to_string(),
-                                member.avatar_url().map(|u| u.to_string()),
-                            )
-                        } else {
-                            (sender.trim_start_matches('@').split(':').next().unwrap_or(&sender).to_string(), None)
-                        }
-                    } else {
-                        (sender.clone(), None)
-                    };
-
-                participants.push(CallParticipant {
-                    user_id: sender.clone(),
-                    device_id: membership.device_id.clone(),
-                    display_name,
-                    avatar_url,
-                    is_local: sender == my_user_id,
-                });
-            }
-            continue;
-        } else if content.get("application").is_some() || content.get("call_id").is_some() {
-            // Newer flat format: each state event IS a membership
-            // expires is a duration in ms from the event's origin_server_ts
-            let origin_ts = json.get("origin_server_ts").and_then(|v| v.as_u64()).unwrap_or(0);
-            let expires_ms = content.get("expires").and_then(|v| v.as_u64()).unwrap_or(0);
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let is_active = if expires_ms > 0 && origin_ts > 0 {
-                origin_ts + expires_ms > now_ms
-            } else {
-                // No expiry info — check if content has active fields
-                content.get("application").is_some()
+        for (user_id, device_id) in live_memberships(json, now_ms) {
+            let (display_name, avatar_url) = match matrix_sdk::ruma::UserId::parse(&user_id) {
+                Ok(uid) => match room.get_member_no_sync(&uid).await {
+                    Ok(Some(member)) => (
+                        member.display_name().unwrap_or(uid.localpart()).to_string(),
+                        member.avatar_url().map(|u| u.to_string()),
+                    ),
+                    _ => (uid.localpart().to_string(), None),
+                },
+                Err(_) => (user_id.clone(), None),
             };
-
-            if is_active {
-                let device_id = content.get("device_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                // Extract user_id from composite state key: _@user:server_deviceId_callType
-                let user_id_str = sender.split('_')
-                    .find(|s| s.starts_with('@'))
-                    .unwrap_or(&sender)
-                    .to_string();
-
-                let (display_name, avatar_url) =
-                    if let Ok(uid) = matrix_sdk::ruma::UserId::parse(&user_id_str) {
-                        if let Ok(Some(member)) = room.get_member_no_sync(&uid).await {
-                            (
-                                member.display_name().unwrap_or(uid.localpart()).to_string(),
-                                member.avatar_url().map(|u| u.to_string()),
-                            )
-                        } else {
-                            (user_id_str.trim_start_matches('@').split(':').next().unwrap_or(&user_id_str).to_string(), None)
-                        }
-                    } else {
-                        (user_id_str.clone(), None)
-                    };
-
-                participants.push(CallParticipant {
-                    user_id: user_id_str.clone(),
-                    device_id,
-                    display_name,
-                    avatar_url,
-                    is_local: user_id_str == my_user_id,
-                });
-                continue;
-            } else {
-                continue; // Expired membership
-            }
-        } else {
-            continue; // Empty content
+            participants.push(CallParticipant {
+                is_local: user_id == my_user_id,
+                user_id,
+                device_id,
+                display_name,
+                avatar_url,
+            });
         }
-
-        // Legacy memberships already handled above with expiry filtering
     }
 
     // Deduplicate by user_id
@@ -471,4 +423,87 @@ pub async fn join_call(client: &matrix_sdk::Client, room_id: &str) -> Result<Cal
 /// Full leave flow: remove state event.
 pub async fn leave_call(client: &matrix_sdk::Client, room_id: &str) -> Result<(), AppError> {
     remove_call_member_event(client, room_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::live_memberships;
+    use serde_json::json;
+
+    const NOW: u64 = 1_800_000_000_000;
+
+    fn pair(user: &str, device: &str) -> (String, String) {
+        (user.to_string(), device.to_string())
+    }
+
+    #[test]
+    fn a_per_device_membership_belongs_to_its_sender() {
+        // The user ID has underscores, like the state key around it.
+        let event = json!({
+            "type": "org.matrix.msc3401.call.member",
+            "state_key": "_@first_last:example.org_DEVICE_m.call",
+            "sender": "@first_last:example.org",
+            "origin_server_ts": NOW - 1_000,
+            "content": { "application": "m.call", "call_id": "", "device_id": "DEVICE", "expires": 14_400_000u64 },
+        });
+        assert_eq!(live_memberships(&event, NOW), vec![pair("@first_last:example.org", "DEVICE")]);
+
+        // A key that names someone else doesn't put them in the call.
+        let forged = json!({
+            "state_key": "_@victim:example.org_DEVICE_m.call",
+            "sender": "@mallory:example.org",
+            "origin_server_ts": NOW - 1_000,
+            "content": { "application": "m.call", "call_id": "", "device_id": "DEVICE", "expires": 14_400_000u64 },
+        });
+        assert_eq!(live_memberships(&forged, NOW), vec![pair("@mallory:example.org", "DEVICE")]);
+    }
+
+    #[test]
+    fn a_huge_expiry_does_not_wrap_around() {
+        let flat = json!({
+            "state_key": "_@a:x_D_m.call",
+            "sender": "@a:x",
+            "origin_server_ts": NOW - 1_000,
+            "content": { "application": "m.call", "call_id": "", "device_id": "D", "expires": u64::MAX },
+        });
+        assert_eq!(live_memberships(&flat, NOW), vec![pair("@a:x", "D")]);
+        let legacy = json!({
+            "state_key": "@a:x",
+            "sender": "@a:x",
+            "origin_server_ts": NOW - 1_000,
+            "content": { "memberships": [
+                { "application": "m.call", "call_id": "", "device_id": "D", "expires": u64::MAX },
+            ] },
+        });
+        assert_eq!(live_memberships(&legacy, NOW), vec![pair("@a:x", "D")]);
+    }
+
+    #[test]
+    fn expired_and_emptied_memberships_are_not_in_the_call() {
+        let membership = |device: &str, expires: u64| json!({
+            "application": "m.call", "call_id": "", "device_id": device, "expires": expires,
+        });
+        // Sent five hours ago: the 4 h one is over, the 6 h one isn't.
+        let legacy = json!({
+            "state_key": "@a:x",
+            "sender": "@a:x",
+            "origin_server_ts": NOW - 5 * 3_600_000,
+            "content": { "memberships": [membership("OLD", 4 * 3_600_000), membership("NEW", 6 * 3_600_000)] },
+        });
+        assert_eq!(live_memberships(&legacy, NOW), vec![pair("@a:x", "NEW")]);
+
+        let flat_expired = json!({
+            "state_key": "_@a:x_D_m.call",
+            "sender": "@a:x",
+            "origin_server_ts": NOW - 5 * 3_600_000,
+            "content": { "application": "m.call", "call_id": "", "device_id": "D", "expires": 4 * 3_600_000 },
+        });
+        assert!(live_memberships(&flat_expired, NOW).is_empty());
+
+        // Leaving empties the content.
+        for content in [json!({}), json!({ "memberships": [] })] {
+            let left = json!({ "state_key": "@a:x", "sender": "@a:x", "origin_server_ts": NOW, "content": content });
+            assert!(live_memberships(&left, NOW).is_empty());
+        }
+    }
 }
