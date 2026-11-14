@@ -433,6 +433,9 @@ mod session_tests {
         app.voice_ready = Some((vec![1, 2, 3], 1200));
         app.search_open = true;
         app.search_query = "what I looked for".into();
+        app.security_shown_recovery_key = Some("EsTc 5Wq4 xyzz".into());
+        app.settings_banner_data = Some(vec![1, 2, 3]);
+        app.settings_old_password = "hunter2".into();
         let video = std::env::temp_dir().join(format!("fluxchat-logout-test-{}.mp4", std::process::id()));
         std::fs::write(&video, b"decrypted").unwrap();
         app.video_temp_path = Some(video.clone());
@@ -446,6 +449,8 @@ mod session_tests {
         assert!(app.agent_rooms.is_empty());
         assert!(app.voice_ready.is_none(), "a recording waiting to be sent");
         assert!(!app.search_open && app.search_query.is_empty());
+        assert!(app.security_shown_recovery_key.is_none(), "shown on the Security tab to whoever signs in next");
+        assert!(app.settings_banner_data.is_none() && app.settings_old_password.is_empty());
         assert!(!video.exists(), "a playing video's decrypted temp file");
     }
 }
@@ -693,6 +698,44 @@ mod navigation_tests {
         );
         assert!(app.image_cache_pending.contains("mxc://x/cat"), "its images are fetched now, not at the next event");
         assert!(app.read_anchor_pending.is_none(), "nothing to wait for: the messages are here");
+    }
+
+    #[tokio::test]
+    async fn the_invite_and_forward_dialogs_open_without_the_last_ones_target_or_search() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        // Invite… on a space's menu, then closed without inviting anyone.
+        let _ = app.update(Message::ContextMenuAction("space_invite".into(), "!space:x".into()));
+        assert_eq!(app.invite_target_id.as_deref(), Some("!space:x"));
+        let _ = app.update(Message::CloseModal);
+        // The member list's Invite button: this room.
+        let _ = app.update(Message::OpenModal(crate::state::Modal::Invite));
+        assert!(app.invite_target_id.is_none(), "or the invite goes to the space");
+
+        // The forward dialog doesn't open filtered by the last one's search.
+        let _ = app.update(Message::ForwardSearchChanged("ops".into()));
+        let _ = app.update(Message::ForwardMessage("hello".into(), String::new(), None));
+        assert!(app.forward_search.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reply_in_the_same_second_as_the_last_message_is_still_new() {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let msg = |id: &str, sender: &str| MessageInfo {
+            event_id: id.into(), sender: sender.into(), body: "text".into(), timestamp: 1_700_000_000, ..Default::default()
+        };
+        let list = |msgs: Vec<MessageInfo>| Message::SyncEvent(crate::message::SyncEvent::MessagesUpdated("!a:x".into(), msgs));
+        let _ = app.update(list(vec![msg("$1", "@me:x")]));
+        // Reading further up when the bot answers, within the second.
+        app.messages_at_bottom = false;
+        let _ = app.update(list(vec![msg("$1", "@me:x"), msg("$2", "@bot:x")]));
+        assert!(app.new_messages_below, "timestamps are whole seconds");
+        // The same list again (the watcher re-sends it on every change) is not news.
+        app.new_messages_below = false;
+        let _ = app.update(list(vec![msg("$1", "@me:x"), msg("$2", "@bot:x")]));
+        assert!(!app.new_messages_below);
     }
 }
 
@@ -1202,13 +1245,42 @@ impl FluxChat {
                 self.search_done = false;
                 self.highlight_event_id = None;
                 self.login_password.clear();
-                // The microphone and what it recorded, and a playing video's
-                // decrypted temp file, don't outlive the session either.
+                // Settings keeps what it showed and what was typed into it:
+                // the recovery key stayed on the Security tab for whoever
+                // signed in next, the banner ready to be saved to their
+                // profile, the last account's sessions listed.
+                self.security_shown_recovery_key = None;
+                self.security_recovery_key_input.clear();
+                self.security_reset_password.clear();
+                self.security_reset_confirm = false;
+                self.security_resetting = false;
+                self.security_state = None;
+                self.settings_signout_password.clear();
+                self.settings_signout_device = None;
+                self.settings_old_password.clear();
+                self.settings_new_password.clear();
+                self.settings_confirm_password.clear();
+                self.settings_devices.clear();
+                self.settings_status = None;
+                self.settings_avatar_data = None;
+                self.settings_avatar_handle = None;
+                self.settings_banner_data = None;
+                self.settings_banner_handle = None;
+                self.settings_banner_dimensions = None;
+                self.help_text = None;
+                self.context_menu = None;
+                self.quick_switcher_open = false;
+                self.pending_export = None;
+                // The microphone and what it recorded, and what was playing
+                // (a video's decrypted temp file), don't outlive the session.
                 self.mic_test = None;
                 self.voice_ready = None;
                 self.ptt_held = None;
                 let _ = self.update(Message::CancelVoiceRecording);
                 let _ = self.update(Message::VideoClose);
+                if self.audio_playing.is_some() {
+                    let _ = self.update(Message::StopAudio);
+                }
                 // A call in progress ends with the session: hang up, and take
                 // our membership out of the room while the token still works.
                 crate::update_call::set_call_on_exit(&self.core, None);
@@ -1424,9 +1496,17 @@ impl FluxChat {
                     // Detect truly new messages for notifications
                     // Detect new messages by comparing against the last seen timestamp
                     let last_ts = self.last_seen_timestamp.get(&room_id).copied().unwrap_or(0);
+                    // Timestamps are whole seconds: one sent in the same
+                    // second as the newest we had (a bot answering at once)
+                    // is new too, if it wasn't in the list before (or taken
+                    // out of it by a delete the timeline hasn't shown yet).
+                    let had = |m: &fluxchat_core::MessageInfo| {
+                        self.messages_by_room.get(&room_id).is_some_and(|old| old.iter().any(|o| o.event_id == m.event_id))
+                            || self.pending_redactions.get(&room_id).is_some_and(|gone| gone.contains(&m.event_id))
+                    };
                     let brand_new: Vec<&fluxchat_core::MessageInfo> = new_messages.iter()
                         .filter(|m| last_ts > 0
-                            && m.timestamp > last_ts
+                            && (m.timestamp > last_ts || (m.timestamp == last_ts && !had(m)))
                             && !m.event_id.starts_with("~")
                             && m.sender != self.user_id)
                         .collect();
@@ -2453,6 +2533,8 @@ impl FluxChat {
                 }
             }
             Message::ForwardMessage(body, formatted, sender) => {
+                // Every room is offered, not what the last forward searched for.
+                self.forward_search.clear();
                 self.modal = Some(crate::state::Modal::Forward {
                     body,
                     formatted_body: formatted,
@@ -3060,6 +3142,15 @@ impl FluxChat {
                 self.create_menu_open = false;
                 if matches!(modal, crate::state::Modal::PendingInvites) {
                     self.decline_all_armed = false;
+                }
+                // Opened this way it is for the room on screen. A room or
+                // space it was opened for earlier (from a menu) and closed
+                // without inviting anyone was still its target: the invite
+                // went there.
+                if matches!(modal, crate::state::Modal::Invite) {
+                    self.invite_target_id = None;
+                    self.invite_search.clear();
+                    self.invite_results.clear();
                 }
                 // Clicking own profile opens settings instead
                 if let crate::state::Modal::Profile { ref user_id } = modal {
