@@ -569,6 +569,18 @@ mod composer_tests {
     }
 
     #[tokio::test]
+    async fn up_arrow_edits_my_last_message_that_this_view_shows() {
+        let mut app = in_room();
+        let in_a_thread = MessageInfo { thread_root: Some("$root".into()), ..mine("$3", "a reply in a thread") };
+        let deleted = MessageInfo { row_kind: fluxchat_core::RowKind::Redacted, ..mine("$4", "Message deleted") };
+        let theirs = MessageInfo { sender: "@bob:x".into(), ..mine("$5", "not mine") };
+        app.messages_by_room.insert("!a:x".into(), vec![mine("$1", "first"), mine("$2", "second"), in_a_thread, deleted, theirs]);
+        let _ = app.update(Message::InputChanged("\x1b[A".into()));
+        assert_eq!(app.edit_event.as_ref().map(|(id, _)| id.as_str()), Some("$2"));
+        assert_eq!(app.input_text, "second");
+    }
+
+    #[tokio::test]
     async fn a_command_typed_over_an_edit_ends_the_edit() {
         let mut app = in_room();
         app.messages_by_room.insert("!a:x".into(), vec![mine("$1", "hello")]);
@@ -649,6 +661,38 @@ mod composer_tests {
         assert!(!app.mention_completions.is_empty());
         let _ = app.update(Message::SendMessage);
         assert!(app.mention_completions.is_empty() && app.input_text.is_empty());
+    }
+}
+
+/// Opening rooms, through the real `update()`.
+#[cfg(test)]
+mod navigation_tests {
+    use fluxchat_core::MessageInfo;
+
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+
+    #[tokio::test]
+    async fn a_room_loaded_in_the_background_opens_like_any_other() {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        let msg = |id: &str| MessageInfo { event_id: id.into(), sender: "@me:x".into(), body: "text".into(), ..Default::default() };
+        let photo = MessageInfo { image_mxc: Some("mxc://x/cat".into()), ..msg("$2") };
+        // An agent's room: its timeline is kept loaded, nobody has opened
+        // it yet (so there's no member list for it).
+        app.messages_by_room.insert("!agent:x".into(), vec![
+            msg("$1"),
+            msg(fluxchat_core::timeline::READ_MARKER_ID),
+            photo,
+        ]);
+        let _ = app.update(Message::SelectRoom("!agent:x".into()));
+        assert_eq!(
+            app.read_anchor,
+            Some(("!agent:x".to_string(), "$1".to_string())),
+            "at the first unread message, not the bottom",
+        );
+        assert!(app.image_cache_pending.contains("mxc://x/cat"), "its images are fetched now, not at the next event");
+        assert!(app.read_anchor_pending.is_none(), "nothing to wait for: the messages are here");
     }
 }
 
@@ -1774,13 +1818,13 @@ impl FluxChat {
                     )
                 };
 
-                if needs_messages || needs_members {
+                let load = if needs_messages || needs_members {
                     // Messages arrive only through the view's watcher (created
                     // together with its Timeline), never from this task — so a
                     // snapshot taken here can't race with and clobber a newer one.
                     let core = self.core.clone();
                     let key = room_id.clone();
-                    let load = Task::perform(
+                    Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             if needs_messages && !core.timelines.request_snapshot(&key).await {
@@ -1804,23 +1848,34 @@ impl FluxChat {
                             Some((key, members)) => Message::SyncEvent(SyncEvent::MembersUpdated(key, members)),
                             None => Message::Noop,
                         },
-                    );
+                    )
+                } else {
+                    Task::none()
+                };
+                if needs_messages {
                     // Messages aren't here yet: capture the read marker when they arrive.
-                    if room_changed && needs_messages {
+                    if room_changed {
                         self.read_anchor_pending = Some(room_id.clone());
                     }
                     return Task::batch([load, focus, call_check, pin_load, close_threads, reload_threads, join_requests, Task::done(Message::ScrollToBottom)]);
                 }
+                // The messages are here — also when only the members weren't:
+                // a room kept loaded in the background (every agent room) and
+                // opened for the first time. That used to go the way above,
+                // which waits for messages that already came: no images or
+                // link previews until the next event, no first-unread position.
+                //
                 // Load images not fetched yet (failed ones retry after IMAGE_RETRY_AFTER).
                 // Borrowed out and back rather than cloning the whole room.
                 let image_task = match self.messages_by_room.remove(&room_id) {
                     Some(msgs) => {
-                        let t = self.resolve_images(&room_id, &msgs);
+                        let t = Task::batch([self.resolve_images(&room_id, &msgs), self.resolve_url_previews(&msgs)]);
                         self.messages_by_room.insert(room_id.clone(), msgs);
                         t
                     }
                     None => Task::none(),
                 };
+                let utd_task = self.check_utd_reasons(&room_id);
                 // A view whose Timeline came up empty (its initial backfill
                 // failed or was cut short) would otherwise stay blank until a
                 // new event arrives — fetch history now.
@@ -1842,7 +1897,7 @@ impl FluxChat {
                     Task::done(Message::ScrollToBottom)
                 };
                 let read_task = self.update(Message::SendReadReceipt);
-                return Task::batch([focus, call_check, image_task, scroll, pin_load, read_task, close_threads, reload_threads, backfill, join_requests]);
+                return Task::batch([load, focus, call_check, image_task, utd_task, scroll, pin_load, read_task, close_threads, reload_threads, backfill, join_requests]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -1897,7 +1952,17 @@ impl FluxChat {
                     // Up arrow on empty input — edit last own message
                     if let Some(room_id) = &self.selected_room_id {
                         if let Some(msgs) = self.messages_by_room.get(room_id) {
-                            if let Some(msg) = msgs.iter().rev().find(|m| m.sender == self.user_id && !m.event_id.starts_with('~')) {
+                            // The last one this view shows: the list also
+                            // holds my replies in threads (hidden in the
+                            // room) and "Message deleted" placeholders, and
+                            // the edit went to those.
+                            let last = self.visible_rows(room_id, msgs).into_iter().rev().find(|m| {
+                                m.sender == self.user_id
+                                    && !m.event_id.starts_with('~')
+                                    && m.row_kind == fluxchat_core::RowKind::Message
+                                    && m.poll.is_none()
+                            });
+                            if let Some(msg) = last {
                                 return self.update(Message::StartEdit(msg.event_id.clone(), editable_text(msg)));
                             }
                         }
