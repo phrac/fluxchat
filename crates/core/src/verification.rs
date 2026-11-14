@@ -114,6 +114,9 @@ pub async fn accept_verification(
     let user_id = matrix_sdk::ruma::UserId::parse(user_id).map_err(|_| AppError::Other("Invalid user ID".into()))?;
     let request = client.encryption().get_verification_request(&user_id, flow_id).await
         .ok_or(AppError::Other("Verification request not found".into()))?;
+    // Another user's request isn't one of our own sessions' (the emoji step
+    // told you to look at "your other session" for those too).
+    let is_self = request.is_self_verification();
 
     let state = request.state();
     tracing::info!("Accepting verification, current state: {}", match &state {
@@ -140,7 +143,7 @@ pub async fn accept_verification(
                         tracing::info!("Got {} emojis", emojis.len());
                         on_emojis(VerificationInfo {
                             flow_id: flow_id.clone(), other_user_id: other_user.clone(),
-                            is_self_verification: true, state: "emojis_ready".into(),
+                            is_self_verification: is_self, state: "emojis_ready".into(),
                             emojis: Some(emojis.iter().map(|e| EmojiInfo { symbol: e.symbol.to_string(), description: e.description.to_string() }).collect()),
                         });
                     }
@@ -180,7 +183,7 @@ pub async fn accept_verification(
                                         tracing::info!("Got {} emojis for verification", emojis.len());
                                         on_emojis(VerificationInfo {
                                             flow_id: flow_id.clone(), other_user_id: other_user.clone(),
-                                            is_self_verification: true, state: "emojis_ready".into(),
+                                            is_self_verification: is_self, state: "emojis_ready".into(),
                                             emojis: Some(emojis.iter().map(|e| EmojiInfo { symbol: e.symbol.to_string(), description: e.description.to_string() }).collect()),
                                         });
                                     } else {
@@ -215,7 +218,7 @@ pub async fn accept_verification(
                                     tracing::info!("Got {} emojis for verification", emojis.len());
                                     on_emojis(VerificationInfo {
                                         flow_id: flow_id.clone(), other_user_id: other_user.clone(),
-                                        is_self_verification: true, state: "emojis_ready".into(),
+                                        is_self_verification: is_self, state: "emojis_ready".into(),
                                         emojis: Some(emojis.iter().map(|e| EmojiInfo { symbol: e.symbol.to_string(), description: e.description.to_string() }).collect()),
                                     });
                                 }
