@@ -45,6 +45,35 @@ class MarkdownTest {
     }
 
     @Test
+    fun codeAtTheStartOfASentenceIsNotAFence() {
+        // Taken for an opener ("make test``` and read the log" as its language),
+        // it turned everything after it into one code block.
+        val blocks = parseBlocks("```make test``` and read the log.\nThen deploy.\n\n- one\n  ```a``` then b\n- two\n\n```sh\nls\n```")
+        assertEquals(3, blocks.size)
+        assertEquals("```make test``` and read the log.\nThen deploy.", (blocks[0] as Block.Paragraph).text)
+        assertEquals("make test and read the log.\nThen deploy.", inline((blocks[0] as Block.Paragraph).text, colors).text)
+        assertEquals(listOf("make test"), inline((blocks[0] as Block.Paragraph).text, colors).code())
+        // Under a list item it is the item's next line, as any other text would be.
+        assertEquals(listOf("one\n```a``` then b", "two"), (blocks[1] as Block.ListBlock).items.map { it.text })
+        // A real fence still is one.
+        assertEquals("ls", (blocks[2] as Block.Code).text)
+        assertEquals("sh", (blocks[2] as Block.Code).lang)
+    }
+
+    @Test
+    fun aFoldedListStopsAtTheFold() {
+        val items = (parseBlocks((1..40).joinToString("\n") { "- item $it" + if (it == 3) "\n  wrapped" else "" }).single() as Block.ListBlock).items
+        // Unfolded: every item, none of them cut.
+        assertEquals(40, foldedItems(items, Int.MAX_VALUE).size)
+        // Folded at five lines: the list was shown whole whatever the fold,
+        // so "Show all" under a long list of steps changed nothing.
+        val shown = foldedItems(items, 5)
+        assertEquals(listOf("item 1", "item 2", "item 3\nwrapped", "item 4"), shown.map { it.first.text })
+        assertEquals("each may take what is left of the fold", listOf(5, 4, 3, 1), shown.map { it.second })
+        assertTrue(foldedItems(items, 0).isEmpty())
+    }
+
+    @Test
     fun onlyABareFenceAtLeastAsLongCloses() {
         val blocks = parseBlocks("````md\n```python\nprint(1)\n```\n````\nafter")
         assertEquals("```python\nprint(1)\n```", (blocks[0] as Block.Code).text)

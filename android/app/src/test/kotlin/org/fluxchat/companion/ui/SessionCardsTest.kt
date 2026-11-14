@@ -56,6 +56,15 @@ class SessionCardsTest {
     }
 
     @Test
+    fun aOneLineCodeBlockDoesNotHideTheRestOfTheSummary() {
+        // Taken for a fence's opener, it left a card saying only "Run:".
+        assertEquals("Run:\nmake test\nThen read the log.", plainSummary("Run:\n```make test```\nThen read the log."))
+        assertEquals("make test and read the log.\nDone.", plainSummary("```make test``` and read the log.\nDone."))
+        // A real fence still keeps its code out of the summary.
+        assertEquals("before\nafter", plainSummary("before\n```\ncode\n```\nafter"))
+    }
+
+    @Test
     fun yesterdayIsYesterdayAcrossNewYear() {
         val zone = java.time.ZoneId.systemDefault()
         fun at(y: Int, m: Int, d: Int) = java.time.LocalDate.of(y, m, d).atTime(12, 0).atZone(zone).toInstant().toEpochMilli()
