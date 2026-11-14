@@ -140,6 +140,32 @@ internal fun followTarget(runs: Map<ViewKey, RunInfo?>, sentAt: Long, followed: 
     }?.key?.threadRoot
 }
 
+/** What the sessions list's "New session" does from a screen. */
+internal enum class NewSession {
+    /** Send the agent's own "new session" command. */
+    Command,
+    /** Go to the project: a request sent there starts one. */
+    Project,
+    /** Nothing more: this is the project, and its message box starts one. */
+    Here,
+}
+
+/**
+ * [isDm] / not [threaded]: the agent answers in the conversation itself, so
+ * a new request there is the same session going on — only its own command
+ * ([hasNew]) starts a fresh one. That was asked of one-to-one conversations
+ * alone: in a project whose agent doesn't thread its answers (OpenClaw, say)
+ * the button closed the list and did nothing. Where each request gets its
+ * own thread, a session is started from the project ([inSession]: we're in
+ * one of its sessions, not in the project itself).
+ */
+internal fun newSessionAction(isDm: Boolean, inSession: Boolean, threaded: Boolean, hasNew: Boolean): NewSession = when {
+    isDm && hasNew -> NewSession.Command
+    !inSession && !threaded && hasNew -> NewSession.Command
+    inSession -> NewSession.Project
+    else -> NewSession.Here
+}
+
 /** A room's timeline, or a thread's (`root`): messages, the run, the composer. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -290,11 +316,10 @@ fun ChatScreen(roomId: String, root: String?, go: (Screen) -> Unit, back: () -> 
     }
     val newSession: () -> Unit = {
         scope.launch { drawer.close() }
-        when {
-            // A DM has no threads: the agent's own "new session" command.
-            Matrix.isDm(roomId) && harness.hasCommand("new") -> command("new")
-            // Elsewhere a new request in the room starts one (its thread opens).
-            root != null -> swap(Screen.Room(roomId))
+        when (newSessionAction(Matrix.isDm(roomId), inSession = root != null, threaded = threaded, hasNew = harness.hasCommand("new"))) {
+            NewSession.Command -> command("new")
+            NewSession.Project -> swap(Screen.Room(roomId))
+            NewSession.Here -> {}
         }
     }
 

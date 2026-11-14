@@ -6,7 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** Where a search result opens, and which project the quick prompt sends to. */
+/** Where a search result opens, what "New session" does, and which project the quick prompt sends to. */
 class WhereThingsGoTest {
     private val room = "!r:x"
     private val dm = "!dm:x"
@@ -30,6 +30,21 @@ class WhereThingsGoTest {
         // is a message in it, not a session of its own — opened as one, it
         // came up alone on an empty screen.
         assertEquals(Screen.Room(dm, "\$hit"), searchTarget(reply(dm, "\$hit", "\$hit"), sessions = false))
+    }
+
+    @Test
+    fun newSessionAsksTheAgentWhereItAnswersInTheConversationItself() {
+        // One to one: the agent's own command, as before.
+        assertEquals(NewSession.Command, newSessionAction(isDm = true, inSession = false, threaded = false, hasNew = true))
+        // A project whose agent doesn't thread its answers is the same kind of
+        // conversation: the button closed the list there and did nothing.
+        assertEquals(NewSession.Command, newSessionAction(isDm = false, inSession = false, threaded = false, hasNew = true))
+        // Each request in its own thread: a session is started from the project.
+        assertEquals(NewSession.Project, newSessionAction(isDm = false, inSession = true, threaded = false, hasNew = true))
+        assertEquals(NewSession.Here, newSessionAction(isDm = false, inSession = false, threaded = true, hasNew = true))
+        // No such command to send: nothing is.
+        assertEquals(NewSession.Here, newSessionAction(isDm = false, inSession = false, threaded = false, hasNew = false))
+        assertEquals(NewSession.Project, newSessionAction(isDm = true, inSession = true, threaded = false, hasNew = false))
     }
 
     private fun project(id: String) = AgentRoom(id, id, false, listOf("@hermes:x"))
