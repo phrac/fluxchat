@@ -238,6 +238,10 @@ pub struct FluxChat {
     pub space_tree: Vec<fluxchat_core::rooms::SpaceNode>,
     pub space_descendants: HashMap<String, Vec<String>>,
     pub invited_rooms: Vec<RoomInfo>,
+    /// Invites in the server's list as last received (`None`: no list yet
+    /// this session). What makes an invite new: `invited_rooms` can't say,
+    /// answering an invite takes it out of there before the server has.
+    pub known_invites: Option<HashSet<String>>,
     /// Invites dialog: "Decline all" asked for, awaiting confirmation.
     pub decline_all_armed: bool,
     /// Rooms we just put in a space (room -> space) that the server's room
@@ -749,6 +753,7 @@ impl FluxChat {
             space_tree: Vec::new(),
             space_descendants: HashMap::new(),
             invited_rooms: Vec::new(),
+            known_invites: None,
             decline_all_armed: false,
             pending_space_links: HashMap::new(),
             pending_favourites: HashMap::new(),

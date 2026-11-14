@@ -652,7 +652,8 @@ mod composer_tests {
     }
 }
 
-/// Search and verification results that arrive late, through `update()`.
+/// Search results, room lists and verification outcomes that arrive late or
+/// again, through `update()`.
 #[cfg(test)]
 mod late_result_tests {
     use fluxchat_core::messages::SearchResult;
@@ -706,6 +707,61 @@ mod late_result_tests {
         // Another room: picking "$1" here would page through !b's history for it.
         let _ = app.update(Message::SelectRoom("!b:x".into()));
         assert!(app.search_results.is_empty() && !app.search_done && app.search_selected.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_opened_again_does_not_say_the_last_one_found_nothing() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::ToggleSearch);
+        let _ = app.update(Message::SearchQueryChanged("deploy".into()));
+        let _ = app.update(results("!a:x", "deploy", vec![hit("$1", "!a:x")]));
+        assert!(app.search_done);
+        // Esc closes it: the list goes, the query stays in the box.
+        let _ = app.update(Message::Escape);
+        assert!(!app.search_open && app.search_results.is_empty());
+        let _ = app.update(Message::ToggleSearch);
+        assert!(app.search_open);
+        assert!(!app.search_done, "\"No messages found\" under a query that found one");
+    }
+
+    fn invites(rooms: &[&str]) -> Message {
+        let invited = rooms.iter()
+            .map(|id| fluxchat_core::RoomInfo { room_id: id.to_string(), name: id.to_string(), ..Default::default() })
+            .collect();
+        Message::SyncEvent(crate::message::SyncEvent::RoomListUpdate(
+            Vec::new(), Vec::new(), invited, Vec::new(), Vec::new(), Default::default(),
+        ))
+    }
+
+    /// New invites open the sidebar's Invites section (and notify): whether
+    /// a room list brought any is read off that.
+    fn announced(app: &mut crate::state::FluxChat, list: Message) -> bool {
+        app.collapsed_sections.insert("Invites".into());
+        let _ = app.update(list);
+        !app.collapsed_sections.contains("Invites")
+    }
+
+    #[tokio::test]
+    async fn invites_being_answered_are_not_announced_again() {
+        let mut app = app();
+        // Nothing pops up in a test run.
+        app.notifications_enabled = false;
+        // The session's first list is what was already waiting.
+        assert!(!announced(&mut app, invites(&["!1:x", "!2:x", "!3:x"])));
+        assert_eq!(app.invited_rooms.len(), 3);
+        // "Decline all": the dialog empties at once, the server takes them
+        // one by one — and sends a new room list after each.
+        let _ = app.update(Message::ArmDeclineAllInvites(true));
+        let _ = app.update(Message::DeclineAllInvites);
+        assert!(app.invited_rooms.is_empty());
+        assert!(!announced(&mut app, invites(&["!2:x", "!3:x"])), "still waiting their turn, not new");
+        assert!(!announced(&mut app, invites(&["!3:x"])));
+        assert!(!announced(&mut app, invites(&[])));
+        // One that is new, and one invited again after being declined.
+        assert!(announced(&mut app, invites(&["!4:x"])));
+        assert!(announced(&mut app, invites(&["!4:x", "!1:x"])));
+        assert!(!announced(&mut app, invites(&["!4:x", "!1:x"])));
     }
 
     #[tokio::test]
@@ -1020,6 +1076,7 @@ impl FluxChat {
                 self.space_tree.clear();
                 self.space_descendants.clear();
                 self.invited_rooms.clear();
+                self.known_invites = None;
                 self.knocked_rooms.clear();
                 self.selected_room_id = None;
                 self.selected_space_id = None;
@@ -1169,6 +1226,8 @@ impl FluxChat {
                 self.spaces = spaces;
                 self.space_tree = space_tree;
                 self.space_descendants = space_descendants;
+                self.known_invites.get_or_insert_with(Default::default)
+                    .extend(invited.iter().map(|r| r.room_id.clone()));
                 self.invited_rooms = invited;
                 self.knocked_rooms = knocked;
                 self.sync_running = true;
@@ -1273,12 +1332,20 @@ impl FluxChat {
                     self.space_tree = space_tree;
                     self.space_descendants = space_descendants;
 
-                    // Detect new invites and notify
-                    let old_invite_ids: std::collections::HashSet<&str> = self.invited_rooms
-                        .iter().map(|r| r.room_id.as_str()).collect();
-                    let new_invites: Vec<&fluxchat_core::models::RoomInfo> = invited.iter()
-                        .filter(|r| !old_invite_ids.contains(r.room_id.as_str()))
-                        .collect();
+                    // Detect new invites and notify. New to the server's
+                    // list, not to `invited_rooms`: answering an invite takes
+                    // it out of that at once, so a list that arrived before
+                    // the server caught up announced it again — "Decline
+                    // all" on twenty: every one still waiting, each update.
+                    let listed: std::collections::HashSet<String> =
+                        invited.iter().map(|r| r.room_id.clone()).collect();
+                    let new_invites: Vec<&fluxchat_core::models::RoomInfo> = match &self.known_invites {
+                        // The session's first list: what was already waiting
+                        // (it can get here before `InitialRoomsLoaded`).
+                        None => Vec::new(),
+                        Some(known) => invited.iter().filter(|r| !known.contains(&r.room_id)).collect(),
+                    };
+                    self.known_invites = Some(listed);
                     if !new_invites.is_empty() {
                         // Auto-expand the Invites section
                         self.collapsed_sections.remove("Invites");
@@ -2630,6 +2697,10 @@ impl FluxChat {
                     self.highlight_event_id = None;
                 }
                 if self.search_open {
+                    // Closing (here, Esc, picking a result) empties the list
+                    // and keeps this: opened again, the box said "No
+                    // messages found" about a search that had found some.
+                    self.search_done = false;
                     return iced::widget::operation::focus(crate::view::search_input_id());
                 }
             }
