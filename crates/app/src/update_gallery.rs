@@ -134,9 +134,7 @@ impl FluxChat {
                     return Some(Task::none());
                 };
                 let Some(g) = &self.gallery else { return Some(Task::none()) };
-                let images: Vec<&MessageInfo> = g.items.iter()
-                    .filter(|m| m.image_mxc.is_some() && !m.is_video && !self.media_hidden(&g.view_key, m))
-                    .collect();
+                let images = self.gallery_lightbox_images();
                 let Some(pos) = images.iter().position(|m| m.image_mxc.as_ref() == Some(url)) else {
                     return Some(Task::none());
                 };
@@ -170,6 +168,20 @@ impl FluxChat {
             _ => return None,
         };
         Some(task)
+    }
+
+    /// The images a lightbox opened from the gallery steps through: the
+    /// shown ones, newest first, each file once. The lightbox knows its image
+    /// by URL, so a file posted twice (a sticker, a forward) has to be one
+    /// stop: as two, the step on from the first landed on the second, which
+    /// reads as the first again, and nothing older could be reached.
+    pub(crate) fn gallery_lightbox_images(&self) -> Vec<&MessageInfo> {
+        let Some(g) = &self.gallery else { return Vec::new() };
+        let mut seen = std::collections::HashSet::new();
+        g.items.iter()
+            .filter(|m| !m.is_video && !self.media_hidden(&g.view_key, m))
+            .filter(|m| m.image_mxc.as_deref().is_some_and(|url| seen.insert(url)))
+            .collect()
     }
 
     /// Media and file messages of a view's loaded history, newest first.
@@ -401,6 +413,26 @@ mod tests {
         assert!(matches!(app.modal, Some(Modal::Gallery)), "Esc goes back to the gallery");
         let _ = app.update(Message::Escape);
         assert!(app.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn lightbox_steps_past_an_image_posted_twice() {
+        // The same sticker twice: one file, two events.
+        let mut again = image("$again", 20);
+        again.image_mxc = Some("mxc://x/$sticker".into());
+        let mut app = open_room(vec![image("$old", 10), again, image("$sticker", 30), image("$new", 40)]);
+        let _ = app.update(Message::GalleryOpen("$new".into()));
+        let url = |app: &crate::state::FluxChat| match &app.modal {
+            Some(Modal::Lightbox { url, .. }) => url.clone(),
+            other => panic!("expected a lightbox, got {other:?}"),
+        };
+        let _ = app.update(Message::GalleryStep(1));
+        assert_eq!(url(&app), "mxc://x/$sticker");
+        let _ = app.update(Message::GalleryStep(1));
+        assert_eq!(url(&app), "mxc://x/$old", "on to the next image, not the sticker's other post");
+        let _ = app.update(Message::GalleryStep(-1));
+        assert_eq!(url(&app), "mxc://x/$sticker");
+        assert_eq!(app.gallery_lightbox_controls(&url(&app)).len(), 3);
     }
 
     #[tokio::test]
