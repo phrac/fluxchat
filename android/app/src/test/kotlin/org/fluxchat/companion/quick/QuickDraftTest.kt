@@ -3,6 +3,7 @@ package org.fluxchat.companion.quick
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,5 +53,22 @@ class QuickDraftTest {
         Quick.clearDrafts(context)
         assertEquals("", Quick.draft(context, "!a:x"))
         assertEquals("!a:x", Quick.widgetRoom(context, 7))
+    }
+
+    @Test fun `signing out takes the account's names off the widget`() {
+        // The widget went on reading "Ask hermes… · New session · Ops (last
+        // used)" on a signed-out phone, and under the next account.
+        Quick.saveLabels(context, listOf(Triple("!a:x", "Ops", "hermes")))
+        Quick.remember(context, "!a:x")
+        Quick.saveDraft(context, "!a:x", "one")
+        Quick.setWidgetRoom(context, 7, "!a:x")
+        Quick.signedOut(context)
+        assertNull(Quick.label(context, "!a:x"))
+        assertNull(Quick.room(context))
+        assertEquals("", Quick.draft(context, "!a:x"))
+        // Which project a widget was set to is the phone's setup: it's there when the account is back.
+        assertEquals("!a:x", Quick.widgetRoom(context, 7))
+        Quick.saveLabels(context, listOf(Triple("!a:x", "Ops", "hermes")))
+        assertEquals("Ops" to "hermes", Quick.label(context, "!a:x"))
     }
 }
