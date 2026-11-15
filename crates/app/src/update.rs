@@ -3271,11 +3271,6 @@ impl FluxChat {
                         |(uid, p)| Message::ProfilePresenceLoaded(uid, p),
                     );
                     Task::batch([verified, presence])
-                } else if matches!(&modal, crate::state::Modal::Invite) {
-                    // For the room on screen: the target of an invite dialog
-                    // closed without inviting (a space, another room) is not this one's.
-                    self.invite_target_id = None;
-                    Task::none()
                 } else if matches!(&modal, crate::state::Modal::CreateDm) {
                     self.dm_search.clear();
                     self.dm_results.clear();
@@ -8421,28 +8416,10 @@ pub(crate) fn extract_urls(text: &str) -> Vec<String> {
         .map(|w| w.trim_start_matches(['(', '[', '<', '`', '"', '\'']))
         .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
         .take(5)
-        .map(|w| trim_url_end(w).to_string())
+        // The end a link in the text has too: cut short, the preview was
+        // asked for a page that doesn't exist.
+        .map(|w| crate::html::trim_url_end(w).to_string())
         .collect()
-}
-
-/// `url` without the punctuation a sentence put after it. A bracket stays
-/// when it closes one opened inside the URL (`…/wiki/Rust_(language)`):
-/// cut off, the preview was asked for a page that doesn't exist.
-fn trim_url_end(mut url: &str) -> &str {
-    loop {
-        let Some(last) = url.chars().next_back() else { return url };
-        let unopened = |open: char, close: char| url.matches(close).count() > url.matches(open).count();
-        let cut = match last {
-            ')' => unopened('(', ')'),
-            ']' => unopened('[', ']'),
-            '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | '>' | '`' => true,
-            _ => false,
-        };
-        if !cut {
-            return url;
-        }
-        url = &url[..url.len() - last.len_utf8()];
-    }
 }
 
 /// Whether `data` starts like an image format we display. The RIFF and

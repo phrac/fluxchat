@@ -870,8 +870,11 @@ pub async fn set_room_favourite(client: &matrix_sdk::Client, room_id: &str, favo
 mod tests {
     use super::*;
 
+    /// A tree's rows (space, depth) and each space's descendants.
+    type Tree = (Vec<(String, usize)>, HashMap<String, Vec<String>>);
+
     /// A tree from (space, name) and (parent, child) pairs.
-    fn tree(spaces: &[(&str, &str)], links: &[(&str, &str)]) -> (Vec<(String, usize)>, HashMap<String, Vec<String>>) {
+    fn tree(spaces: &[(&str, &str)], links: &[(&str, &str)]) -> Tree {
         let all: HashMap<String, RoomInfo> = spaces.iter()
             .map(|(id, name)| (id.to_string(), RoomInfo { room_id: id.to_string(), name: name.to_string(), is_space: true, ..Default::default() }))
             .collect();

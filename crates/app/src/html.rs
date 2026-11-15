@@ -1457,20 +1457,32 @@ pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
 }
 
 /// Punctuation that ends a sentence rather than a URL written in it.
-const URL_END_PUNCTUATION: [char; 10] = ['.', ',', ']', ';', ':', '!', '?', '"', '\'', '>'];
+const URL_END_PUNCTUATION: [char; 10] = ['.', ',', ';', ':', '!', '?', '"', '\'', '>', '`'];
 
-/// `url` without the punctuation of the sentence around it. A `)` that
-/// closes a `(` inside the URL is part of it (`…/wiki/Rust_(language)`).
-fn trim_url_end(url: &str) -> &str {
-    let opens = url.matches('(').count();
-    let mut closes = url.matches(')').count();
+/// `url` without the punctuation of the sentence around it. A bracket that
+/// closes one opened inside the URL is part of it (`…/wiki/Rust_(language)`,
+/// `?ids=[1]`). The one rule for links in text and for the URLs previews
+/// are asked for (`update::extract_urls`), in one pass over the text: a
+/// message can be a URL followed by 60 000 brackets.
+pub(crate) fn trim_url_end(url: &str) -> &str {
+    // Closing brackets nothing in the URL opened, per kind.
+    let unopened = |open: char, close: char| url.matches(close).count().saturating_sub(url.matches(open).count());
+    let (mut round, mut square) = (unopened('(', ')'), unopened('[', ']'));
     let mut end = url.len();
     for c in url.chars().rev() {
-        if c == ')' && closes > opens {
-            closes -= 1;
-        } else if !URL_END_PUNCTUATION.contains(&c) {
+        let left = match c {
+            ')' => &mut round,
+            ']' => &mut square,
+            c if URL_END_PUNCTUATION.contains(&c) => {
+                end -= c.len_utf8();
+                continue;
+            }
+            _ => break,
+        };
+        if *left == 0 {
             break;
         }
+        *left -= 1;
         end -= c.len_utf8();
     }
     &url[..end]
@@ -1950,6 +1962,11 @@ mod tests {
         assert_eq!(links(html_to_spans("(see https://x.org/a)")), ["https://x.org/a"]);
         assert_eq!(links(plain_text_to_spans("really https://x.org/a?! \"https://y.org/\"")), ["https://x.org/a", "https://y.org/"]);
         assert_eq!(trim_url_end(&")".repeat(60_000)), "");
+        // Square brackets alike, and a code span's closing backtick.
+        assert_eq!(trim_url_end("https://x.org/?ids=[1]"), "https://x.org/?ids=[1]");
+        assert_eq!(trim_url_end("https://x.org/a]"), "https://x.org/a");
+        assert_eq!(trim_url_end("https://x.org/a`."), "https://x.org/a");
+        assert_eq!(links(html_to_spans("[see https://x.org/?ids=[1]]")), ["https://x.org/?ids=[1]"]);
     }
 
     #[test]
