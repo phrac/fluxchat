@@ -65,10 +65,22 @@ import kotlinx.coroutines.launch
 import org.fluxchat.companion.Diag
 import org.fluxchat.companion.agents.BusyMode
 import org.fluxchat.companion.agents.Runs
+import org.fluxchat.companion.matrix.AgentRoom
 import org.fluxchat.companion.matrix.Auth
 import org.fluxchat.companion.matrix.Matrix
 import org.fluxchat.companion.quick.Quick
 import org.fluxchat.companion.quick.QuickSend
+
+/**
+ * The project the quick prompt sends to: the one it was opened for ([wanted]:
+ * the widget's, the shortcut's, or the last one used), else the first of
+ * [ordered]. But not the first while the projects are still being found
+ * ([loading]): at a start they turn up one by one, and until the one asked
+ * for had, the sheet named another — Send went there, and that project's
+ * draft was put in the box and then saved as this one's.
+ */
+internal fun quickRoom(wanted: String?, rooms: Map<String, AgentRoom>, ordered: List<AgentRoom>, loading: Boolean): AgentRoom? =
+    wanted?.let { rooms[it] } ?: ordered.firstOrNull().takeIf { wanted == null || !loading }
 
 /**
  * A new session from anywhere (widget, Quick Settings, a launcher shortcut):
@@ -92,7 +104,8 @@ fun QuickPromptSheet(roomArg: String?, voice: Boolean, onOpen: (String, String) 
     val pins by Matrix.pins.collectAsState()
     val ordered = remember(rooms, pins) { rooms.values.sortedWith(agentRoomOrder(pins)) }
     var roomId by rememberSaveable { mutableStateOf(roomArg ?: Quick.room(context)) }
-    val room = rooms[roomId] ?: ordered.firstOrNull()
+    val loading by Matrix.loading.collectAsState()
+    val room = quickRoom(roomId, rooms, ordered, loading)
     /** The project the text is a draft of (known before the projects have loaded, when the sheet was opened for one). */
     val draftOf = room?.roomId ?: roomId
     var text by rememberSaveable { mutableStateOf(roomId?.let { Quick.draft(context, it) }.orEmpty()) }

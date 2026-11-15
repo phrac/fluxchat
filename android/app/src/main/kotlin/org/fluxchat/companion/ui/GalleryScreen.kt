@@ -56,6 +56,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -217,7 +218,8 @@ private fun MediaTab(items: List<Msg>, loading: Boolean, done: Boolean, error: S
             .collect { last -> if (rows.isNotEmpty() && last >= rows.size - 6) more() }
     }
     // Open image by event id, not index: live merges grow the list underneath.
-    var openId by remember { mutableStateOf<String?>(null) }
+    // Saved: turning the phone to look at a photo closed it.
+    var openId by rememberSaveable { mutableStateOf<String?>(null) }
     val images = remember(items) { items.filter { galleryIsImage(it) } }
     LazyVerticalGrid(
         GridCells.Adaptive(112.dp),

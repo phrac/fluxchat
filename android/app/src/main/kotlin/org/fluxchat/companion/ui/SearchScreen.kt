@@ -50,6 +50,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import org.fluxchat.companion.agents.Runs
 import org.fluxchat.companion.agents.SearchResult
 import org.fluxchat.companion.agents.SessionSearch
 import org.fluxchat.companion.matrix.Matrix
@@ -123,7 +124,9 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, @Suppress("UNUSED_PARAM
     // The hits answer the query last asked: while the box is ahead of it
     // (typing), the old query's hits are not this one's results.
     val asked by (search?.query ?: remember { kotlinx.coroutines.flow.MutableStateFlow<String?>(null) }).collectAsState()
-    val current = if (asked == trimmed) hits else emptyList()
+    // Your projects' hits only: the index is the whole account's, and a
+    // match in some other conversation is not a session to open here.
+    val current = if (asked == trimmed) hits.filter { it.roomId in rooms } else emptyList()
     val matches = remember(trimmed, snapshot, current, batches) {
         SessionSearch.merge(trimmed, snapshot, current) { Matrix.roomName(it) }
     }
@@ -218,7 +221,7 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, @Suppress("UNUSED_PARAM
                         // results (swapped out, it went past them to Projects).
                         modifier = Modifier.clickable {
                             keyboard?.hide()
-                            go(Screen.Thread(m.roomId, m.root, eventOf(m)))
+                            go(searchTarget(m, sessions = projectHasSessions(m.roomId)))
                         },
                     )
                     HorizontalDivider()
@@ -228,5 +231,24 @@ fun SearchScreen(go: (Screen) -> Unit, back: () -> Unit, @Suppress("UNUSED_PARAM
     }
 }
 
-/** The reply event to scroll to (null: the session's own title is the match). */
-private fun eventOf(m: SearchResult): String? = (m as? SearchResult.Reply)?.eventId
+/**
+ * Where a result opens: its session, scrolled to the reply that matched.
+ * A message that is in no session, in a project that has none ([sessions]
+ * false: one to one with an agent, the conversation itself is where it
+ * answers), opens that conversation at the message — as a "session" of its
+ * own it came up alone on an otherwise empty screen, with a message box that
+ * would have started a thread there.
+ */
+internal fun searchTarget(m: SearchResult, sessions: Boolean): Screen = when {
+    m is SearchResult.Reply && m.root == m.eventId && !sessions -> Screen.Room(m.roomId, m.eventId)
+    // (no event for a session matched by its title: it opens as it is)
+    else -> Screen.Thread(m.roomId, m.root, (m as? SearchResult.Reply)?.eventId)
+}
+
+/** Whether the project reads as its sessions (each request in a thread of its own) — what [ChatScreen] goes by. */
+private fun projectHasSessions(roomId: String): Boolean {
+    if (Matrix.isDm(roomId)) return false
+    val agent = Matrix.agentRooms.value[roomId]?.agents?.firstOrNull() ?: return false
+    val own = Matrix.roomTimeline(roomId)?.messages?.value.orEmpty().filter { it.threadRoot == null }
+    return Runs.repliesInThreads(own, agent, Matrix.agentList.value.harnessOf(agent), false)
+}

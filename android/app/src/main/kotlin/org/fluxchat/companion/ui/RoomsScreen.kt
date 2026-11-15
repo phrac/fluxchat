@@ -263,7 +263,8 @@ internal fun CreateProjectFlow(
 /** Name a new project; the app invites every agent (the list's count is the promise). */
 @Composable
 private fun NewProjectDialog(agents: Int, busy: Boolean, onDismiss: () -> Unit, onCreate: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
+    // Saved like the dialog itself: it came back from a turn of the phone with the name gone.
+    var name by rememberSaveable { mutableStateOf("") }
     val error by Matrix.error.collectAsState()
     // An error from somewhere else (a failed pin, an hour ago) isn't this dialog's.
     LaunchedEffect(Unit) { Matrix.clearError() }

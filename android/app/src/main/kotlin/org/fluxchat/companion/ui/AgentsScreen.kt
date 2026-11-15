@@ -51,6 +51,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,10 +73,15 @@ private val USER_ID = Regex("^@[^:\\s]+:\\S+$")
 fun AgentsScreen(back: () -> Unit) {
     val list by Matrix.agentList.collectAsState()
     val error by Matrix.error.collectAsState()
-    val scope = rememberCoroutineScope()
-    var adding by remember { mutableStateOf(false) }
+    // The ID being typed into "Add an agent" (null: the dialog is closed).
+    // Saved, and kept here rather than in the dialog: turning the phone half
+    // way through an ID closed the dialog and lost it, and so did the app
+    // locking while you went to copy the ID from somewhere else.
+    var adding by rememberSaveable { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<AgentEntry?>(null) }
-    val save: (List<AgentEntry>) -> Unit = { agents -> scope.launch { Matrix.saveAgentList(list.copy(agents = agents)) } }
+    // On the app's scope: Add, then straight Back to Projects, cancelled the
+    // save with this screen's — the agent was never added, and nothing said so.
+    val save: (List<AgentEntry>) -> Unit = { agents -> Matrix.launch { Matrix.saveAgentList(list.copy(agents = agents)) } }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
         modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),
@@ -88,7 +94,7 @@ fun AgentsScreen(back: () -> Unit) {
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { adding = true },
+                onClick = { adding = "" },
                 icon = { Icon(Icons.Outlined.Add, null) },
                 text = { Text("Add agent") },
             )
@@ -115,21 +121,20 @@ fun AgentsScreen(back: () -> Unit) {
         }
     }
 
-    if (adding && unlocked()) {
-        var id by remember { mutableStateOf("") }
+    adding?.takeIf { unlocked() }?.let { id ->
         val valid = USER_ID.matches(id) && list.agents.none { it.userId == id }
         AlertDialog(
-            onDismissRequest = { adding = false },
+            onDismissRequest = { adding = null },
             icon = { Icon(Icons.Outlined.SmartToy, null) },
             title = { Text("Add an agent") },
             text = {
                 OutlinedTextField(
-                    id, { id = it.trim() }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    id, { adding = it.trim() }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                     label = { Text("Agent ID") }, placeholder = { Text("@hermes:example.org") },
                 )
             },
-            confirmButton = { TextButton(onClick = { save(list.agents + AgentEntry(id)); adding = false }, enabled = valid) { Text("Add") } },
-            dismissButton = { TextButton(onClick = { adding = false }) { Text("Cancel") } },
+            confirmButton = { TextButton(onClick = { save(list.agents + AgentEntry(id)); adding = null }, enabled = valid) { Text("Add") } },
+            dismissButton = { TextButton(onClick = { adding = null }) { Text("Cancel") } },
         )
     }
 

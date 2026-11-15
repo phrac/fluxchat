@@ -280,8 +280,12 @@ fun ShareScreen(back: () -> Unit, swap: (Screen) -> Unit) {
     // Leaving without picking a project (Back, a notification opening
     // something else) ends the share: its file would otherwise sit in the
     // cache, and the item in the inbox, with no screen left to send it from.
+    // Not when the screen is only being rebuilt — the phone was turned, the
+    // theme changed: it comes back ([decodeScreen]), and what was shared
+    // with it. That used to end the share too, and left you on Projects.
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
     DisposableEffect(Unit) {
-        onDispose { if (ShareInbox.target.value == null) ShareInbox.discard() }
+        onDispose { if (ShareInbox.target.value == null && activity?.isChangingConfigurations != true) ShareInbox.discard() }
     }
     Scaffold(topBar = {
         TopAppBar(
