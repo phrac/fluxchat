@@ -345,7 +345,14 @@ impl FluxChat {
                     .key_binding(move |key_press| {
                         use iced::keyboard::Key;
                         use iced::keyboard::key::Named;
-                        use iced::widget::text_editor::Binding;
+                        use iced::widget::text_editor::{Binding, Status};
+                        // An editor is asked about every key press that
+                        // reaches it, with the keyboard or without, and
+                        // what it answers is done: Enter in the main
+                        // composer also sent the draft of every side pane.
+                        if !matches!(key_press.status, Status::Focused { .. }) {
+                            return None;
+                        }
                         if let Some(b) = crate::view_input::tmux_binding(&key_press) {
                             return Some(b);
                         }
@@ -402,5 +409,57 @@ impl FluxChat {
                 ..Default::default()
             })
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::keyboard::key::Named;
+    use iced::{mouse, Event, Point};
+
+    use crate::message::Message;
+    use crate::panes::Placement;
+    use crate::view::bench::{key_press, Bench};
+
+    fn enter() -> Event {
+        key_press(Named::Enter)
+    }
+
+    #[tokio::test]
+    async fn enter_elsewhere_does_not_send_a_side_panes_draft() {
+        let mut app = crate::panes::flow_tests::app();
+        app.screen = crate::state::Screen::Main;
+        app.rooms = ["!a:x", "!b:x"].iter()
+            .map(|id| fluxchat_core::RoomInfo { room_id: id.to_string(), name: id.to_string(), ..Default::default() })
+            .collect();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::OpenAt("!b:x".into(), Placement::Right));
+        for key in ["!a:x", "!b:x"] {
+            app.messages_by_room.insert(key.into(), vec![fluxchat_core::MessageInfo {
+                event_id: "$1".into(), body: "hi".into(), sender: "@u:x".into(), ..Default::default()
+            }]);
+        }
+        // Something half-written in a, then over to b: a's pane (on the
+        // left) shows the draft in its own composer.
+        app.input_text = "not ready to go".into();
+        let pb = *app.window().grid.iter().find(|(_, s)| s.key.as_deref() == Some("!b:x")).unwrap().0;
+        let _ = app.update(Message::PaneFocus(pb));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        app.window_size = (1200.0, 600.0);
+
+        let sends_a = |messages: &[Message]| messages.iter().any(|m| matches!(m, Message::PaneSend(key) if key == "!a:x"));
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        // Enter, typed anywhere but in a's composer (b's sends b's message).
+        let sent = bench.send(enter());
+        assert!(!sends_a(&sent), "a's draft went out with it: {sent:?}");
+        // Typed in a's composer, it does send a's.
+        let _ = bench.move_to(Point::new(450.0, 548.0));
+        let clicked = bench.send(Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)));
+        assert!(
+            clicked.iter().any(|m| matches!(m, Message::PaneInputAction(key, _) if key == "!a:x")),
+            "the click landed in a's composer: {clicked:?}",
+        );
+        let sent = bench.send(enter());
+        assert!(sends_a(&sent), "{sent:?}");
     }
 }

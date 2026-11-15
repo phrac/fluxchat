@@ -1575,8 +1575,23 @@ impl FluxChat {
         .spacing(8)
         .align_y(iced::Alignment::Center);
 
-        let looks_like_id = search.starts_with('@') && search.contains(':');
+        let typed = typed_user_id(search, results);
         let mut list = column![].spacing(2);
+        if let Some(id) = typed {
+            list = list.push(
+                container(
+                    row![
+                        self.render_avatar_with_initial(None, id.trim_start_matches('@'), 32.0),
+                        text(id).font(MONO).size(13).color(theme::colors().text_bright).width(Fill),
+                        ui::btn(cta, Tone::Primary, Some(on_pick(id.to_string()))),
+                    ]
+                    .spacing(10)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding([6, 8])
+                .width(Fill),
+            );
+        }
         for user in results {
             let name = user.display_name.as_deref().unwrap_or(&user.user_id);
             list = list.push(
@@ -1598,20 +1613,8 @@ impl FluxChat {
                 .width(Fill),
             );
         }
-        let body: Element<Message> = if results.is_empty() {
-            if looks_like_id {
-                container(
-                    row![
-                        self.render_avatar_with_initial(None, search.trim_start_matches('@'), 32.0),
-                        text(search).font(MONO).size(13).color(theme::colors().text_bright).width(Fill),
-                        ui::btn(cta, Tone::Primary, Some(on_pick(search.to_string()))),
-                    ]
-                    .spacing(10)
-                    .align_y(iced::Alignment::Center),
-                )
-                .padding([6, 8])
-                .into()
-            } else if search.is_empty() {
+        let body: Element<Message> = if results.is_empty() && typed.is_none() {
+            if search.is_empty() {
                 ui::empty_state(crate::icons::SVG_USERS, "Search the user directory",
                     Some("Type a name, or paste a full Matrix ID.".into()))
             } else {
@@ -1976,6 +1979,20 @@ impl FluxChat {
 
 }
 
+/// The Matrix ID typed into a user picker, when it can be offered as it
+/// stands: a whole `@user:server` the results don't already list. The
+/// directory only knows people the server has seen (and by default only
+/// those you share a room with or who are in public rooms), so the ID you
+/// typed is often not among its matches. It used to be offered only while
+/// the list was empty: after any search that found someone — or with an
+/// earlier search's results still listed — there was no way to pick it.
+fn typed_user_id<'a>(search: &'a str, results: &[fluxchat_core::rooms::UserSearchResult]) -> Option<&'a str> {
+    let id = search.trim();
+    let whole = id.starts_with('@')
+        && id.split_once(':').is_some_and(|(local, server)| local.len() > 1 && !server.is_empty());
+    (whole && !results.iter().any(|u| u.user_id == id)).then_some(id)
+}
+
 /// A space offered in Room Settings' "Add to space" picker.
 #[derive(Debug, Clone)]
 struct SpaceChoice {
@@ -1992,5 +2009,31 @@ impl PartialEq for SpaceChoice {
 impl std::fmt::Display for SpaceChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::typed_user_id;
+    use fluxchat_core::rooms::UserSearchResult;
+
+    fn found(id: &str) -> UserSearchResult {
+        UserSearchResult { user_id: id.into(), display_name: None, avatar_url: None }
+    }
+
+    #[test]
+    fn a_typed_matrix_id_can_be_picked_whatever_the_directory_found() {
+        assert_eq!(typed_user_id("@bob:example.org", &[]), Some("@bob:example.org"));
+        // Results from this search, or still listed from the one before.
+        assert_eq!(typed_user_id("@bob:example.org", &[found("@bobby:example.org")]), Some("@bob:example.org"));
+        assert_eq!(typed_user_id("@bob:example.org", &[found("@alice:example.org")]), Some("@bob:example.org"));
+        // Already in the list: its own row will do.
+        assert_eq!(typed_user_id("@bob:example.org", &[found("@bob:example.org")]), None);
+        // Pasted with a space around it.
+        assert_eq!(typed_user_id(" @bob:example.org ", &[]), Some("@bob:example.org"));
+        // Not an ID (yet).
+        for partial in ["bob", "@bob", "@bob:", "@:example.org", "bob:example.org", ""] {
+            assert_eq!(typed_user_id(partial, &[]), None, "{partial:?}");
+        }
     }
 }
