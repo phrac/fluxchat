@@ -42,7 +42,52 @@ internal sealed interface PushPayload {
         } catch (e: JSONException) {
             false
         }
+
+        /**
+         * An edit that could be read, as what it does: null when [rawEvent]
+         * isn't one. An edit is an event of its own (a new ID, and a body
+         * that is the old message's with "* " in front), but what it is
+         * *about* is the message it replaces: that one is in the timeline,
+         * takes the reactions and the replies, and has the notification.
+         */
+        fun edit(rawEvent: String): Edit? = try {
+            val content = JSONObject(rawEvent).optJSONObject("content")
+            val rel = content?.optJSONObject("m.relates_to")
+            if (content == null || rel == null || text(rel, "rel_type") != "m.replace") null
+            else text(rel, "event_id").takeIf { it.isNotEmpty() }?.let { of ->
+                val now = content.optJSONObject("m.new_content")?.let { text(it, "body") }?.takeIf { it.isNotEmpty() }
+                    ?: text(content, "body").removePrefix("* ")
+                Edit(of, now)
+            }
+        } catch (e: JSONException) {
+            null
+        }
     }
+
+    /** [of]: the event edited; [body]: what it says now. */
+    data class Edit(val of: String, val body: String)
+}
+
+/** What a pushed edit is to the notifications ([editNews]). */
+internal enum class EditNews { None, Refresh, New }
+
+/**
+ * An edit of a message is not news by itself: the message already pushed.
+ * It notified all the same, once per edit and as an event of its own — a
+ * step log growing a line at a time, each line a notification reading
+ * "* 🔧 …", with buttons that reacted to the edit instead of the prompt.
+ *
+ * [asks]: as edited it waits on you (a status message turned into a prompt);
+ * [showing]: the edited message's notification is still up, and gets the new
+ * words; [notified]: it had one, since opened or swiped away — an agent's
+ * message that never notified (a step log edited into the answer) is news
+ * now. [fromAgent]: a person's edit only reaches us for its mention of you.
+ */
+internal fun editNews(asks: Boolean, fromAgent: Boolean, showing: Boolean, notified: Boolean): EditNews = when {
+    asks -> EditNews.New
+    showing -> EditNews.Refresh
+    fromAgent && notified -> EditNews.None
+    else -> EditNews.New
 }
 
 /**

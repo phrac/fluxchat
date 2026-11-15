@@ -1,6 +1,7 @@
 package org.fluxchat.companion.push
 
 import android.content.Context
+import org.fluxchat.companion.agents.Harness
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.Runs
 import org.fluxchat.companion.agents.ViewKey
@@ -38,6 +39,26 @@ object PromptWatcher {
         Matrix.supervise("Watching for prompts") { Matrix.agentRooms.collect { rooms -> look(app, rooms) } }
     }
 
+    /**
+     * You answered [id] from its notification. A process that only started
+     * for that tap has announced nothing yet, and the prompt stays open in
+     * the timeline until the agent takes it down: found "new" there, it came
+     * straight back — alert, buttons and all — over "Answered".
+     */
+    @Synchronized
+    fun answered(id: String) {
+        announced += id
+    }
+
+    /** That answer didn't go out and its prompt couldn't be put back: finding it open is news again. */
+    @Synchronized
+    fun unanswered(id: String) {
+        announced -= id
+    }
+
+    @Synchronized
+    internal fun wasAnnounced(id: String): Boolean = id in announced
+
     @Synchronized
     private fun look(app: Context, rooms: Map<String, AgentRoom>) {
         val now = System.currentTimeMillis()
@@ -74,10 +95,34 @@ object PromptWatcher {
         }
         return Note(
             room.roomId, m.id, m.threadRoot, m.sender,
-            "${room.name} · ${m.senderName} needs you", m.body, kind,
+            Notifier.needsYouTitle(room.name, m.senderName), m.body, kind,
             choices.ifEmpty { question.orEmpty() },
             headline = headline,
         )
+    }
+
+    /**
+     * Whether a prompt a push has just brought is already over, as this
+     * phone's timeline has it: answered on the desktop while the push was on
+     * its way (sync is usually the faster of the two, and a dozing phone
+     * holds pushes back for minutes). The push carries the message as it was
+     * first sent — still asking — so it went up with its buttons after the
+     * watcher had taken the answered prompt's notification down, and nothing
+     * took it down a second time. False when the timeline doesn't have the
+     * message: then the push is all there is to go by.
+     */
+    fun settled(note: Note, now: Long = System.currentTimeMillis()): Boolean {
+        if (note.kind == Note.Kind.Message) return false
+        val all = Matrix.roomTimeline(note.roomId)?.messages?.value ?: return false
+        val m = all.firstOrNull { it.id == note.eventId } ?: return false
+        return over(Runs.viewMessages(all, ViewKey(note.roomId, m.threadRoot)), m.id, Matrix.agentList.value.harnessOf(m.sender), now)
+    }
+
+    /** [id], loaded in [view], waits on nobody any more: neither an open prompt nor a pending question. */
+    internal fun over(view: List<Msg>, id: String, h: Harness, now: Long): Boolean {
+        val i = view.indexOfFirst { it.id == id }
+        if (i < 0) return false
+        return Runs.openPrompt(view, i, h, now).isEmpty() && Runs.pendingQuestion(view, i, view[i].sender, h, now) == null
     }
 
     /**

@@ -46,6 +46,45 @@ class PushPayloadTest {
         assertFalse(PushPayload.isEdit("not json"))
     }
 
+    @Test fun `an edit is about the message it replaces, in its new words`() {
+        // As agents send them: the old body with "* " in front, the new one in m.new_content.
+        val edit = """{"type":"m.room.message","event_id":"${'$'}edit","content":{"msgtype":"m.text","body":"* 🔧 Reading notes.md\n💻 Running the tests",""" +
+            """"m.new_content":{"msgtype":"m.text","body":"🔧 Reading notes.md\n💻 Running the tests"},"m.relates_to":{"rel_type":"m.replace","event_id":"${'$'}bubble"}}}"""
+        assertEquals(PushPayload.Edit("\$bubble", "🔧 Reading notes.md\n💻 Running the tests"), PushPayload.edit(edit))
+        // Read by its fallback body, a growing step log was no step log ("* 🔧 …"): it notified once per step.
+        assertNull(org.fluxchat.companion.agents.Runs.progressSteps("* 🔧 Reading notes.md\n💻 Running the tests"))
+        assertEquals(2, org.fluxchat.companion.agents.Runs.progressSteps(PushPayload.edit(edit)!!.body)?.size)
+        // Without m.new_content the fallback body is all there is: minus its marker.
+        val bare = """{"content":{"body":"* fixed the typo","m.relates_to":{"rel_type":"m.replace","event_id":"${'$'}first"}}}"""
+        assertEquals(PushPayload.Edit("\$first", "fixed the typo"), PushPayload.edit(bare))
+    }
+
+    @Test fun `a reply, a thread reply and a plain message are not edits`() {
+        assertNull(PushPayload.edit("""{"content":{"body":"ok","m.relates_to":{"rel_type":"m.thread","event_id":"${'$'}root"}}}"""))
+        assertNull(PushPayload.edit("""{"content":{"body":"ok","m.relates_to":{"m.in_reply_to":{"event_id":"${'$'}q"}}}}"""))
+        assertNull(PushPayload.edit("""{"content":{"body":"* not an edit, just a star"}}"""))
+        assertNull(PushPayload.edit("""{"content":{"body":"x","m.relates_to":{"rel_type":"m.replace"}}}"""))
+        assertNull(PushPayload.edit("not json"))
+    }
+
+    @Test fun `an edit of a message that already notified is not news a second time`() {
+        // An answer written an edit at a time: one notification, kept current while it's up…
+        assertEquals(EditNews.Refresh, editNews(asks = false, fromAgent = true, showing = true, notified = true))
+        // …and once it's been opened or swiped away, nothing more.
+        assertEquals(EditNews.None, editNews(asks = false, fromAgent = true, showing = false, notified = true))
+    }
+
+    @Test fun `an edit is news when it is the first you hear of the message`() {
+        // A step log (never notified) edited into the answer.
+        assertEquals(EditNews.New, editNews(asks = false, fromAgent = true, showing = false, notified = false))
+        // A person's edit only gets here for its mention of you.
+        assertEquals(EditNews.New, editNews(asks = false, fromAgent = false, showing = false, notified = false))
+        assertEquals(EditNews.New, editNews(asks = false, fromAgent = false, showing = false, notified = true))
+        // A status message edited into a prompt waits on you, whatever came before.
+        assertEquals(EditNews.New, editNews(asks = true, fromAgent = true, showing = true, notified = true))
+        assertEquals(EditNews.New, editNews(asks = true, fromAgent = true, showing = false, notified = true))
+    }
+
     @Test fun `a message that cannot be decrypted yet still says who and where`() {
         // It used to be dropped as "not a renderable message": no notification at all.
         val note = Notifier.undecryptedNote("!r:x", "\$e", "\$root", "@hermes:x", "Hermes", "maintdx")

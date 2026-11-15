@@ -42,6 +42,27 @@ class QuickSendTest {
         assertNull(QuickSend.echoState(setOf("\$old", "\$older", "\$same"), history + msg("\$same")))
     }
 
+    @Test fun `history that loads while the message is on its way is not its echo`() {
+        // The sheet opened on a cold start, the project's history still
+        // arriving: last week's request of yours turned up, sent of course,
+        // and the sheet said "Sent" and closed with the new one in the queue.
+        val since = 1_700_000_000_000L
+        val lastWeek = msg("\$lastWeek").copy(ts = since - 7 * 24 * 3_600_000L)
+        assertNull(QuickSend.echoState(before, history + lastWeek, since))
+        val echo = msg("~txn1", state = SendState.Sending).copy(ts = since + 20)
+        assertNull(QuickSend.echoState(before, history + lastWeek + echo, since))
+        assertEquals(SendState.Sent, QuickSend.echoState(before, history + lastWeek + echo.copy(sendState = SendState.Sent), since))
+        // Nor an old send that failed and is back in the list with the rest.
+        val stuck = msg("~old", state = SendState.Failed).copy(ts = since - 3_600_000L)
+        assertNull(QuickSend.echoState(before, history + stuck, since))
+    }
+
+    @Test fun `the server's clock need not agree with the phone's`() {
+        // The event that replaces the echo carries the server's time: a little behind is still ours.
+        val since = 1_700_000_000_000L
+        assertEquals(SendState.Sent, QuickSend.echoState(before, history + msg("\$new").copy(ts = since - 20_000), since))
+    }
+
     @Test fun `the agent answering meanwhile is not our message`() {
         assertNull(QuickSend.echoState(before, history + msg("\$answer", own = false)))
     }
