@@ -46,6 +46,18 @@ pub fn is_patch_file(msg: &fluxchat_core::MessageInfo) -> bool {
     ) && msg.file_size.is_none_or(|s| s <= MAX_PATCH_BYTES)
 }
 
+/// What a patch download ends in. A failed one still ends the dialog's
+/// "Loading the patch…" (it said so for good, behind the error).
+fn patch_fetched(event_id: String, patch: Result<String, String>) -> Message {
+    match patch {
+        Ok(text) => Message::ReviewLoaded(event_id, text),
+        Err(e) => Message::Batch(vec![
+            Message::ReviewLoaded(event_id, String::new()),
+            Message::ShowError(format!("Couldn't open the patch: {e}")),
+        ]),
+    }
+}
+
 impl FluxChat {
     /// "Review changes · 3 files +40 −12" under an agent's message with a diff.
     pub(crate) fn view_review_button<'a>(&self, view_key: &str, msg: &fluxchat_core::MessageInfo) -> Option<Element<'a, Message>> {
@@ -87,14 +99,14 @@ impl FluxChat {
         let room = fluxchat_core::timeline::real_room_id(&view_key).to_string();
         Task::perform(
             async move {
-                let client = core.get_client().await.map_err(|e| e.to_string())?;
-                let (bytes, _) = fluxchat_core::media::get_event_media_bytes(&client, &room, &event_id).await.map_err(|e| e.to_string())?;
-                Ok::<_, String>((event_id, String::from_utf8_lossy(&bytes).into_owned()))
+                let patch = async {
+                    let client = core.get_client().await.map_err(|e| e.to_string())?;
+                    let (bytes, _) = fluxchat_core::media::get_event_media_bytes(&client, &room, &event_id).await.map_err(|e| e.to_string())?;
+                    Ok::<_, String>(String::from_utf8_lossy(&bytes).into_owned())
+                }.await;
+                (event_id, patch)
             },
-            |r| match r {
-                Ok((id, text)) => Message::ReviewLoaded(id, text),
-                Err(e) => Message::ShowError(format!("Couldn't open the patch: {e}")),
-            },
+            |(id, patch)| patch_fetched(id, patch),
         )
     }
 
@@ -171,6 +183,7 @@ impl FluxChat {
         // The selected file's diff.
         let mut lines = column![].spacing(0);
         if let Some(f) = r.files.get(r.selected) {
+            let total: usize = f.hunks.iter().map(|h| h.lines.len()).sum();
             let mut shown = 0usize;
             'hunks: for h in &f.hunks {
                 lines = lines.push(container(text(h.header.clone()).font(crate::view::MONO).size(11).color(colors.accent))
@@ -181,7 +194,7 @@ impl FluxChat {
                     }));
                 for l in &h.lines {
                     if shown >= MAX_LINES_SHOWN {
-                        lines = lines.push(text(format!("\u{2026} {} more lines", f.added + f.removed)).font(crate::view::MONO).size(11).color(colors.text_dim));
+                        lines = lines.push(text(format!("\u{2026} {} more lines", total - shown)).font(crate::view::MONO).size(11).color(colors.text_dim));
                         break 'hunks;
                     }
                     shown += 1;
@@ -255,5 +268,37 @@ impl FluxChat {
         .spacing(ui::GAP)
         .width(Length::Fixed(980.0))
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_patch_that_fails_to_download_stops_loading() {
+        let mut app = crate::panes::flow_tests::app();
+        app.prefs.agents = vec!["@bot:x".into()];
+        let patch = fluxchat_core::MessageInfo {
+            event_id: "$p".into(), sender: "@bot:x".into(), body: "fix.patch".into(),
+            file_mxc: Some("mxc://x/patch".into()), ..Default::default()
+        };
+        assert!(is_patch_file(&patch));
+        app.messages_by_room.insert("!r:x".into(), vec![patch]);
+        let _ = app.open_review("!r:x".into(), "$p".into());
+        assert!(app.review.as_ref().unwrap().loading);
+        // The download fails: the error shows, and the dialog stops saying
+        // "Loading the patch…".
+        let failed = patch_fetched("$p".into(), Err("offline".into()));
+        assert!(matches!(&failed, Message::Batch(m) if matches!(m.as_slice(), [Message::ReviewLoaded(..), Message::ShowError(_)])));
+        let _ = app.update(failed);
+        let r = app.review.as_ref().unwrap();
+        assert!(!r.loading && r.files.is_empty());
+        // One that arrives is parsed.
+        let _ = app.open_review("!r:x".into(), "$p".into());
+        let _ = app.update(patch_fetched("$p".into(), Ok("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n".into())));
+        let r = app.review.as_ref().unwrap();
+        assert!(!r.loading);
+        assert_eq!(r.files.len(), 1);
     }
 }

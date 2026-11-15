@@ -93,7 +93,6 @@ impl FluxChat {
     /// Send `text` to every agent in `room`, one message each, and show the
     /// Compare dialog for it.
     pub(crate) fn send_comparison(&mut self, room: String, text: String) -> Task<Message> {
-        self.compare.armed.remove(&room);
         let dm = self.rooms.iter().any(|r| r.room_id == room && r.is_direct);
         let mut entries = Vec::new();
         let mut skipped = Vec::new();
@@ -109,8 +108,15 @@ impl FluxChat {
         }
         if entries.is_empty() {
             self.help_text = Some("Every agent here is over its budget: nothing was sent.".into());
+            // Nothing went out, so the task isn't gone either: back into the
+            // composer it was taken from (still set to ask all).
+            if self.selected_room_id.as_deref() == Some(room.as_str()) && self.input_text.is_empty() {
+                self.input_content = iced::widget::text_editor::Content::with_text(&text);
+                self.input_text = text;
+            }
             return Task::none();
         }
+        self.compare.armed.remove(&room);
         let bodies: Vec<String> = entries.iter().map(|e| e.body.clone()).collect();
         self.compare.list.push(Comparison { room: room.clone(), prompt: text, created: now_ms(), entries, skipped });
         self.compare.shown = self.compare.list.len() - 1;
@@ -487,6 +493,26 @@ mod tests {
         let c = &app.compare.list[0];
         assert_eq!(c.entries.len(), 1);
         assert_eq!(c.skipped, vec!["@claw:x".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_task_nobody_could_take_stays_in_the_composer() {
+        let mut app = agents_app();
+        app.selected_room_id = Some("!r:x".into());
+        for agent in ["@hermes:x", "@claw:x"] {
+            app.prefs.agent_budgets.insert(agent.into(), crate::budgets::Budget { usd: 1.0, period: crate::budgets::Period::Month });
+            app.run_history.push(crate::history::RunRecord {
+                key: "!r:x".into(), room: "!r:x".into(), agent: agent.into(), title: "t".into(), state: "done".into(),
+                started: now_ms() - 1000, ended: Some(now_ms()), cost_usd: Some(2.0), ..Default::default()
+            });
+        }
+        let _ = app.update(Message::ToggleCompare("!r:x".into()));
+        app.input_text = "Summarise the outage, with a timeline".into();
+        let _ = app.update(Message::SendMessage);
+        // Every agent is over its budget: nothing is sent, and nothing is lost.
+        assert!(app.compare.list.is_empty());
+        assert_eq!(app.input_text, "Summarise the outage, with a timeline");
+        assert!(app.compare_armed("!r:x"), "still set to ask all, for when a limit is raised");
     }
 }
 

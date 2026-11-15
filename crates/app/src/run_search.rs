@@ -76,11 +76,16 @@ fn cap(text: String) -> String {
 }
 
 /// "Name: body" lines of the messages sent in `[from, until)` (ms).
-fn text_of(msgs: &[MessageInfo], from: u64, until: u64) -> String {
+/// `threads`: with the replies in threads. A room's list holds them too, and
+/// they are other runs' (each thread is its own session): with them, a run in
+/// the room was found by what was said in every session going at the time.
+fn text_of(msgs: &[MessageInfo], from: u64, until: u64, threads: bool) -> String {
     let mut out = String::new();
     for m in msgs {
         let at = crate::agents::sent_ms(m);
-        if at < from || at >= until || m.is_system() || m.event_id.starts_with('~') || m.body.trim().is_empty() {
+        if at < from || at >= until || m.is_system() || m.event_id.starts_with('~') || m.body.trim().is_empty()
+            || (!threads && m.thread_root.is_some())
+        {
             continue;
         }
         let name = if m.sender_name.is_empty() { m.sender.as_str() } else { m.sender_name.as_str() };
@@ -156,7 +161,7 @@ impl FluxChat {
         let texts: Vec<(String, String)> = runs.iter().enumerate()
             .map(|(i, (id, from, until))| {
                 let from = if threaded && i == 0 { 0 } else { *from };
-                (id.clone(), text_of(msgs, from, *until))
+                (id.clone(), text_of(msgs, from, *until, threaded))
             })
             .collect();
         for (id, text) in texts {
@@ -225,7 +230,7 @@ impl FluxChat {
             return;
         }
         let texts: Vec<(String, String)> = self.runs_in(&key).into_iter().enumerate()
-            .map(|(i, (id, from, until))| (id, text_of(&msgs, if i == 0 { 0 } else { from }, until)))
+            .map(|(i, (id, from, until))| (id, text_of(&msgs, if i == 0 { 0 } else { from }, until, true)))
             .collect();
         for (id, text) in texts {
             self.set_run_text(id, text);
@@ -317,6 +322,22 @@ mod tests {
         // Stored on flush, read back on load.
         app.flush_run_texts();
         assert!(app.run_texts.dirty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_in_the_room_is_not_found_by_what_other_sessions_said() {
+        let mut app = crate::panes::flow_tests::app();
+        app.run_history = vec![record("!r:x", 100)];
+        let mut elsewhere = message("$t1", "@bot:x", 130, "Rotated certificates on the load balancer");
+        elsewhere.thread_root = Some("$other".into());
+        app.messages_by_room.insert("!r:x".into(), vec![
+            message("$ask", "@me:x", 100, "Upgrade the Postgres cluster"),
+            elsewhere,
+            message("$a", "@bot:x", 150, "Done: pg 17 is live on db-3"),
+        ]);
+        app.capture_run_texts("!r:x");
+        assert!(app.run_text_has(&app.run_history[0], &["postgres", "db-3"], ""));
+        assert!(!app.run_text_has(&app.run_history[0], &["certificates"], ""), "a thread's replies are that session's");
     }
 
     #[tokio::test]

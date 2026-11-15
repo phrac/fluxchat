@@ -131,6 +131,9 @@ pub enum Message {
     RunsQuery(String),
     /// Save a run's thread as a Markdown transcript (view key).
     ExportRun(String),
+    /// The same for one of a view's recorded runs (view key, the record's
+    /// start in ms): a History row's, not the view's latest.
+    ExportRunOf(String, u64),
     /// Review the diffs in a message (view key, event ID).
     OpenReview(String, String),
     /// A patch file for the open review, downloaded (event ID, text).
