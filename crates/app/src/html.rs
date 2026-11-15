@@ -361,9 +361,68 @@ struct WalkCtx<'a> {
     nodes: &'a [Node],
     segments: Vec<Segment>,
     depth: usize,
+    /// Whitespace seen between inline elements, held until more inline
+    /// text follows it: `segments.len()` at the time, whether it had a
+    /// newline, and its style.
+    pending_space: Option<(usize, bool, Style)>,
+    /// Lists we're inside of (nested items are indented).
+    list_depth: usize,
+    /// Width of the current list item's marker: later blocks of the item
+    /// line up under its text.
+    item_indent: usize,
+    /// `segments.len()` right after a list marker or item indent: a block
+    /// starting there stays on that line.
+    line_lead: Option<usize>,
+    /// Math spans still converted in this message (`MAX_MATH_SPANS`).
+    math_left: usize,
 }
 
 impl<'a> WalkCtx<'a> {
+    fn new(nodes: &'a [Node]) -> Self {
+        WalkCtx {
+            nodes,
+            segments: Vec::new(),
+            depth: 0,
+            pending_space: None,
+            list_depth: 0,
+            item_indent: 0,
+            line_lead: None,
+            math_left: MAX_MATH_SPANS,
+        }
+    }
+
+    /// Before inline text is pushed: the space that separated it from the
+    /// inline text before it (`<b>a</b> <i>b</i>`), unless a block or line
+    /// break came in between.
+    fn flush_space(&mut self, next: &str) {
+        let Some((at, newline, style)) = self.pending_space.take() else { return };
+        if at != self.segments.len() || next.starts_with(char::is_whitespace) {
+            return;
+        }
+        self.segments.push(if newline { Segment::LineBreak } else { Segment::Text(" ".to_string(), style) });
+    }
+
+    /// End the current line, if anything is on it.
+    fn end_line(&mut self) {
+        if !matches!(self.segments.last(), None | Some(Segment::LineBreak)) {
+            self.segments.push(Segment::LineBreak);
+        }
+    }
+
+    /// A block (paragraph, quote) starts on its own line. In a list item
+    /// the first one stays beside the marker and later ones are indented
+    /// under it.
+    fn start_block(&mut self) {
+        if self.line_lead == Some(self.segments.len()) {
+            return;
+        }
+        self.end_line();
+        if self.item_indent > 0 {
+            self.segments.push(Segment::Text(" ".repeat(self.item_indent), Style::default()));
+            self.line_lead = Some(self.segments.len());
+        }
+    }
+
     /// Check if a node is an element with the given local name.
     fn is_element(&self, id: NodeId, name: &str) -> bool {
         match &self.nodes[id].data {
@@ -387,7 +446,10 @@ impl<'a> WalkCtx<'a> {
     fn collect_text(&self, id: NodeId) -> String {
         let mut out = String::new();
         self.collect_text_inner(id, &mut out);
-        out
+        match plain_line_breaks(&out) {
+            Cow::Borrowed(_) => out,
+            Cow::Owned(fixed) => fixed,
+        }
     }
 
     /// Iterative (explicit stack): used on arbitrarily deep subtrees.
@@ -420,6 +482,7 @@ impl<'a> WalkCtx<'a> {
         if self.depth >= MAX_HTML_DEPTH {
             let text = self.collect_text(id);
             if !text.trim().is_empty() {
+                self.flush_space(&text);
                 self.segments.push(Segment::Text(text, style.clone()));
             }
             return;
@@ -441,12 +504,22 @@ impl<'a> WalkCtx<'a> {
                 if text.is_empty() {
                     return;
                 }
-                // Skip whitespace-only text nodes between block elements
+                // Whitespace-only text: between inline content
+                // (`<b>a</b> <i>b</i>`, two mention pills) it's a space
+                // the sender typed, kept if more inline text follows;
+                // next to a block it's only the markup's formatting.
                 if text.trim().is_empty() {
+                    if let Some(Segment::Text(before, _) | Segment::Link { text: before, .. }) = self.segments.last() {
+                        if !before.ends_with(char::is_whitespace) {
+                            self.pending_space = Some((self.segments.len(), text.contains('\n'), style.clone()));
+                        }
+                    }
                     return;
                 }
+                let text = plain_line_breaks(text);
                 // Code keeps its dollars (`$HOME:$PATH`).
-                let text = if style.code { text.to_string() } else { convert_inline_latex(text) };
+                let text = if style.code { text.into_owned() } else { convert_inline_latex(&text, &mut self.math_left) };
+                self.flush_space(&text);
                 if style.code || style.mention {
                     self.segments.push(Segment::Text(text, style.clone()));
                     return;
@@ -475,6 +548,20 @@ impl<'a> WalkCtx<'a> {
 
                     "br" => {
                         self.segments.push(Segment::LineBreak);
+                        return;
+                    }
+
+                    // Custom emoji and inline images aren't drawn in the
+                    // text: their written form (`:party:`) stands in, or a
+                    // message of only custom emoji would be an empty row.
+                    "img" => {
+                        let label = ["alt", "title"].iter()
+                            .filter_map(|a| self.get_attr(id, a))
+                            .find(|l| !l.trim().is_empty());
+                        if let Some(label) = label {
+                            self.flush_space(&label);
+                            self.segments.push(Segment::Text(plain_line_breaks(&label).into_owned(), style.clone()));
+                        }
                         return;
                     }
 
@@ -537,6 +624,7 @@ impl<'a> WalkCtx<'a> {
                             }
                         } else if let Some(url) = href {
                             let text = self.collect_text(id);
+                            self.flush_space(&text);
                             self.segments.push(Segment::Link {
                                 text,
                                 url,
@@ -570,6 +658,9 @@ impl<'a> WalkCtx<'a> {
 
                 match tag {
                     "p" | "div" => {
+                        // After text ("a<div>b</div>") or an item's earlier
+                        // paragraph, a paragraph starts a new line.
+                        self.start_block();
                         // Inside <li>, don't add extra line breaks for <p>
                         if self.inside_li(id) {
                             for child in children {
@@ -584,28 +675,45 @@ impl<'a> WalkCtx<'a> {
                         }
                     }
                     "ol" | "ul" => {
-                        let mut li_count = 0u32;
+                        // On its own line: a list nested in an item would
+                        // otherwise continue the item's line ("• a• b").
+                        self.end_line();
+                        let indent = "  ".repeat(self.list_depth);
+                        // `<ol start="3">`: a list that carries on after a
+                        // paragraph or a code block.
+                        let mut number = self.get_attr(id, "start")
+                            .filter(|_| tag == "ol")
+                            .and_then(|n| n.trim().parse::<i64>().ok())
+                            .unwrap_or(1);
+                        let outer = (self.item_indent, self.line_lead);
+                        self.list_depth += 1;
                         for child in children.iter() {
                             if self.is_element(*child, "li") {
-                                li_count += 1;
-                                if tag == "ol" {
+                                let marker = if tag == "ol" {
                                     // Numbered list
-                                    let num = format!("{li_count}. ");
-                                    self.segments.push(Segment::Text(num, s.clone()));
+                                    format!("{indent}{number}. ")
                                 } else {
                                     // Bullet list
-                                    self.segments.push(Segment::Text("\u{2022} ".to_string(), s.clone()));
-                                }
+                                    format!("{indent}\u{2022} ")
+                                };
+                                number = number.saturating_add(1);
+                                self.item_indent = marker.chars().count();
+                                self.segments.push(Segment::Text(marker, s.clone()));
+                                self.line_lead = Some(self.segments.len());
                                 // Walk li children
                                 let li_children: Vec<NodeId> = self.nodes[*child].children.clone();
                                 for li_child in li_children {
                                     self.walk(li_child, &s);
                                 }
-                                self.segments.push(Segment::LineBreak);
+                                // One break, also after a nested list (which
+                                // ended its own last line).
+                                self.end_line();
                             } else {
                                 self.walk(*child, &s);
                             }
                         }
+                        self.list_depth -= 1;
+                        (self.item_indent, self.line_lead) = outer;
                     }
                     "li" => {
                         // li handled by parent ol/ul — but if we get here directly, just walk children
@@ -614,9 +722,13 @@ impl<'a> WalkCtx<'a> {
                         }
                     }
                     "blockquote" => {
+                        // A quote is its own lines, also when it holds bare
+                        // text ("<blockquote>quoted</blockquote>reply").
+                        self.start_block();
                         for child in children {
                             self.walk(child, &s);
                         }
+                        self.end_line();
                     }
                     _ => {
                         for child in children {
@@ -649,6 +761,10 @@ impl<'a> WalkCtx<'a> {
 
         let mut headers: Vec<Vec<Segment>> = Vec::new();
         let mut rows: Vec<Vec<Vec<Segment>>> = Vec::new();
+        // Cells are laid out on their own: nothing of the line or list
+        // item the table sits in carries into them.
+        let outer = (self.list_depth, self.item_indent, self.line_lead);
+        (self.list_depth, self.item_indent, self.line_lead) = (0, 0, None);
 
         for tr_id in tr_ids {
             let cell_ids: Vec<NodeId> = self.nodes[tr_id]
@@ -668,6 +784,7 @@ impl<'a> WalkCtx<'a> {
                 }
                 // Walk cell into an isolated segment buffer
                 let saved = std::mem::take(&mut self.segments);
+                self.pending_space = None;
                 let children: Vec<NodeId> = self.nodes[cell_id].children.clone();
                 let mut cell_style = style.clone();
                 if self.is_element(cell_id, "th") {
@@ -677,6 +794,7 @@ impl<'a> WalkCtx<'a> {
                     self.walk(child, &cell_style);
                 }
                 let cell_segs = std::mem::replace(&mut self.segments, saved);
+                self.pending_space = None;
                 cells.push(cell_segs);
             }
             if is_header_row && headers.is_empty() {
@@ -686,6 +804,7 @@ impl<'a> WalkCtx<'a> {
             }
         }
 
+        (self.list_depth, self.item_indent, self.line_lead) = outer;
         TableData { headers, rows }
     }
 
@@ -706,26 +825,12 @@ impl<'a> WalkCtx<'a> {
             (None, pre_id)
         };
 
-        // Collect all text from the code subtree
+        // Collect all text from the code subtree (blank lines included:
+        // they're part of the code)
         let code = self.collect_code_text(code_root);
 
-        // Collapse consecutive newlines
-        let mut collapsed = String::with_capacity(code.len());
-        let mut prev_newline = false;
-        for ch in code.chars() {
-            if ch == '\n' {
-                if !prev_newline {
-                    collapsed.push('\n');
-                }
-                prev_newline = true;
-            } else {
-                prev_newline = false;
-                collapsed.push(ch);
-            }
-        }
-
         self.segments.push(Segment::CodeBlock {
-            code: collapsed.trim_matches('\n').to_string(),
+            code: plain_line_breaks(code.trim_matches('\n')).into_owned(),
             language,
         });
     }
@@ -739,11 +844,27 @@ impl<'a> WalkCtx<'a> {
 
     /// Iterative (explicit stack): code blocks can hold arbitrarily deep markup.
     fn collect_code_text_inner(&self, id: NodeId, out: &mut String) {
+        // A `<br>` and a newline right beside it ("a<br>\nb") are one line
+        // break, not a blank line: `after_br` drops the newline that follows
+        // one, `text_newline` the `<br>` that follows a newline.
+        let (mut after_br, mut text_newline) = (false, false);
         let mut stack = vec![id];
         while let Some(id) = stack.pop() {
             match &self.nodes[id].data {
-                NodeData::Text(t) => out.push_str(t),
-                NodeData::Element { name, .. } if &*name.local == "br" => out.push('\n'),
+                NodeData::Text(t) => {
+                    let t = if after_br { t.strip_prefix('\n').unwrap_or(t) } else { t.as_str() };
+                    after_br = false;
+                    if !t.is_empty() {
+                        text_newline = t.ends_with('\n');
+                        out.push_str(t);
+                    }
+                }
+                NodeData::Element { name, .. } if &*name.local == "br" => {
+                    if !text_newline {
+                        out.push('\n');
+                    }
+                    (after_br, text_newline) = (true, false);
+                }
                 _ => stack.extend(self.nodes[id].children.iter().rev().copied()),
             }
         }
@@ -794,7 +915,7 @@ fn parse_html(html: &str) -> Vec<Segment> {
                 _ => {}
             }
         }
-        return vec![Segment::Text(text, Style::default())];
+        return vec![Segment::Text(plain_line_breaks(&text).into_owned(), Style::default())];
     }
     let arena = Arena::new();
 
@@ -812,11 +933,7 @@ fn parse_html(html: &str) -> Vec<Segment> {
 
     // Walk the DOM tree to produce Segments
     let nodes = arena.nodes.into_inner();
-    let mut ctx = WalkCtx {
-        nodes: &nodes,
-        segments: Vec::new(),
-        depth: 0,
-    };
+    let mut ctx = WalkCtx::new(&nodes);
 
     let doc_children: Vec<NodeId> = nodes[arena.document].children.clone();
     let style = Style::default();
@@ -1167,7 +1284,9 @@ fn styled_span(text: String, style: &Style, base_size: f32) -> Span<'static, Str
 
     // Mention pill styling
     if style.mention {
-        let nick_text = span.text.to_string();
+        // Some clients put the @ in the pill's text themselves ("@Alice",
+        // or the whole user ID): one @, and the nick's own colour.
+        let nick_text = span.text.strip_prefix('@').unwrap_or(&span.text).to_string();
         let color = theme::nick_color(&nick_text);
         // Prefix with @ symbol
         span.text = format!("@{nick_text}").into();
@@ -1208,7 +1327,9 @@ fn try_room_pill(url: &str, rooms: &[fluxchat_core::RoomInfo]) -> Option<Span<'s
     // Extract room ID or alias from matrix.to URL, dropping query params (?via=...)
     let rest = url.strip_prefix("https://matrix.to/#/")?;
     let decoded = rest.replace("%3A", ":").replace("%23", "#");
-    let room_id = decoded.split('?').next().unwrap_or(&decoded).to_string();
+    // The room part only: a link to a message (`!room:server/$event`) is
+    // still that room's pill, by name.
+    let room_id = decoded.split(['?', '/']).next().unwrap_or(&decoded).to_string();
 
     // Must start with ! (room ID) or # (alias)
     if !room_id.starts_with('!') && !room_id.starts_with('#') {
@@ -1243,121 +1364,116 @@ fn try_room_pill(url: &str, rooms: &[fluxchat_core::RoomInfo]) -> Option<Span<'s
     Some(span)
 }
 
+/// Markers of the basic markdown read in plain bodies, with the tag each
+/// wraps its text in (`**` before `*`).
+const PLAIN_MARKERS: [(&str, &str); 4] = [("**", "b"), ("*", "i"), ("~~", "del"), ("`", "code")];
+
+/// Length of the text a just-opened `marker` wraps: up to its closing marker
+/// on the same line. Emphasis hugs its text on both sides, as in Markdown,
+/// and a code span may hold anything.
+fn marked_len(after: &str, marker: &str) -> Option<usize> {
+    let line = after.split('\n').next().unwrap_or(after);
+    line.match_indices(marker).map(|(i, _)| i).find(|&i| {
+        i > 0
+            && (marker == "`" || !line[..i].ends_with(char::is_whitespace))
+            // A `*` isn't closed by half of a `**`.
+            && (marker != "*" || !(line[..i].ends_with('*') || line[i + 1..].starts_with('*')))
+    })
+}
+
 /// Convert plain text with basic markdown to Spans.
 /// Handles **bold**, *italic*, ~~strike~~, `code`, and ```codeblocks```.
+///
+/// A marker only counts with its closing one: plain bodies are mostly not
+/// markdown, and `SELECT * FROM t`, `ls *.rs`, a stray backtick or a
+/// `* bullet` would otherwise lose the character and restyle what follows.
 pub fn plain_text_to_spans(input: &str) -> Vec<Span<'static, String>> {
-    // Convert inline LaTeX before markdown processing
-    let input = convert_inline_latex(input);
-    // Convert basic markdown to HTML, then use the HTML parser
+    // Convert basic markdown to HTML, then use the HTML parser (which also
+    // converts inline LaTeX — outside code, so `$HOME:$PATH` keeps its dollars)
     let mut html = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
+    // Per marker: the end of the line on which a search for its closing one
+    // failed. Nothing later on that line closes it either, so a long line of
+    // lone `*` is searched once, not once per `*`.
+    let mut unclosed = [0usize; PLAIN_MARKERS.len()];
+    let mut i = 0;
 
-    while let Some(c) = chars.next() {
+    while let Some(c) = input[i..].chars().next() {
+        let rest = &input[i..];
+        if let Some(after) = rest.strip_prefix("```") {
+            // Code block — until the closing ``` (or the end)
+            let code = after.find("```").map_or(after, |end| &after[..end]);
+            html.push_str("<pre><code>");
+            html.push_str(&html_escape(code));
+            html.push_str("</code></pre>");
+            i += (code.len() + 6).min(rest.len());
+            continue;
+        }
+        if rest.starts_with("``") {
+            html.push_str("``");
+            i += 2;
+            continue;
+        }
+        if let Some((k, (marker, tag))) = PLAIN_MARKERS.iter().enumerate().find(|(_, (m, _))| rest.starts_with(m)) {
+            let after = &rest[marker.len()..];
+            let opens = *marker == "`" || !after.starts_with(char::is_whitespace);
+            let wrapped = (opens && i >= unclosed[k]).then(|| marked_len(after, marker)).flatten();
+            match wrapped {
+                Some(len) => {
+                    html.push_str(&format!("<{tag}>{}</{tag}>", html_escape(&after[..len])));
+                    i += len + 2 * marker.len();
+                }
+                None => {
+                    if opens && i >= unclosed[k] {
+                        unclosed[k] = i + rest.find('\n').unwrap_or(rest.len());
+                    }
+                    html.push_str(marker);
+                    i += marker.len();
+                }
+            }
+            continue;
+        }
+        if rest.starts_with("http://") || rest.starts_with("https://") {
+            // The character ending the URL stays in the text.
+            let run = rest.find(|c: char| c.is_whitespace() || c == '<' || c == '>').map_or(rest, |end| &rest[..end]);
+            let url = trim_url_end(run);
+            let escaped = html_escape(url);
+            html.push_str(&format!("<a href=\"{}\">{escaped}</a>", escaped.replace('"', "&quot;")));
+            i += url.len();
+            continue;
+        }
         match c {
-            '`' if chars.peek() == Some(&'`') => {
-                chars.next(); // second `
-                if chars.peek() == Some(&'`') {
-                    chars.next(); // third `
-                    // Code block — collect until ```
-                    let mut code = String::new();
-                    loop {
-                        match chars.next() {
-                            Some('`') if chars.peek() == Some(&'`') => {
-                                chars.next();
-                                if chars.peek() == Some(&'`') {
-                                    chars.next();
-                                    break;
-                                }
-                                code.push_str("``");
-                            }
-                            Some(ch) => code.push(ch),
-                            None => break,
-                        }
-                    }
-                    html.push_str("<pre><code>");
-                    html.push_str(&html_escape(&code));
-                    html.push_str("</code></pre>");
-                } else {
-                    html.push_str("``");
-                }
-            }
-            '`' => {
-                let mut code = String::new();
-                for ch in chars.by_ref() {
-                    if ch == '`' { break; }
-                    code.push(ch);
-                }
-                html.push_str("<code>");
-                html.push_str(&html_escape(&code));
-                html.push_str("</code>");
-            }
-            '*' if chars.peek() == Some(&'*') => {
-                chars.next();
-                let mut bold = String::new();
-                loop {
-                    match chars.next() {
-                        Some('*') if chars.peek() == Some(&'*') => { chars.next(); break; }
-                        Some(ch) => bold.push(ch),
-                        None => break,
-                    }
-                }
-                html.push_str("<b>");
-                html.push_str(&html_escape(&bold));
-                html.push_str("</b>");
-            }
-            '*' => {
-                let mut italic = String::new();
-                for ch in chars.by_ref() {
-                    if ch == '*' { break; }
-                    italic.push(ch);
-                }
-                html.push_str("<i>");
-                html.push_str(&html_escape(&italic));
-                html.push_str("</i>");
-            }
-            '~' if chars.peek() == Some(&'~') => {
-                chars.next();
-                let mut strike = String::new();
-                loop {
-                    match chars.next() {
-                        Some('~') if chars.peek() == Some(&'~') => { chars.next(); break; }
-                        Some(ch) => strike.push(ch),
-                        None => break,
-                    }
-                }
-                html.push_str("<del>");
-                html.push_str(&html_escape(&strike));
-                html.push_str("</del>");
-            }
             '<' => html.push_str("&lt;"),
             '>' => html.push_str("&gt;"),
             '&' => html.push_str("&amp;"),
             '\n' => html.push_str("<br>"),
-            'h' => {
-                // Detect http:// or https:// URLs
-                let mut url = String::from('h');
-                let prefix_rest: String = chars.clone().take(7).collect();
-                if prefix_rest.starts_with("ttps://") || prefix_rest.starts_with("ttp://") {
-                    // Consume the URL
-                    // `next_if`: the character ending the URL stays in the text.
-                    while let Some(ch) = chars.next_if(|c| !c.is_whitespace() && *c != '<' && *c != '>') {
-                        url.push(ch);
-                    }
-                    // Trim trailing punctuation
-                    let trimmed = url.trim_end_matches(['.', ',', ')', ']', ';']);
-                    let trailing = &url[trimmed.len()..];
-                    let escaped = html_escape(trimmed);
-                    html.push_str(&format!("<a href=\"{escaped}\">{escaped}</a>"));
-                    html.push_str(&html_escape(trailing));
-                } else {
-                    html.push('h');
-                }
-            }
+            // CRLF is one line break (the parser reads a CR as another).
+            '\r' if rest[1..].starts_with('\n') => {}
             _ => html.push(c),
         }
+        i += c.len_utf8();
     }
 
     html_to_spans(&html)
+}
+
+/// Punctuation that ends a sentence rather than a URL written in it.
+const URL_END_PUNCTUATION: [char; 10] = ['.', ',', ']', ';', ':', '!', '?', '"', '\'', '>'];
+
+/// `url` without the punctuation of the sentence around it. A `)` that
+/// closes a `(` inside the URL is part of it (`…/wiki/Rust_(language)`).
+fn trim_url_end(url: &str) -> &str {
+    let opens = url.matches('(').count();
+    let mut closes = url.matches(')').count();
+    let mut end = url.len();
+    for c in url.chars().rev() {
+        if c == ')' && closes > opens {
+            closes -= 1;
+        } else if !URL_END_PUNCTUATION.contains(&c) {
+            break;
+        }
+        end -= c.len_utf8();
+    }
+    &url[..end]
 }
 
 /// Bare URLs in text: `http(s)://…`, `www.…`, and `host.tld/path` (a path
@@ -1372,7 +1488,7 @@ fn find_urls(text: &str) -> Vec<(std::ops::Range<usize>, String)> {
         start += token.len();
         // Leading punctuation: "(https://…" or "\"www.…"
         let lead = word.len() - word.trim_start_matches(['(', '[', '"', '\'', '<']).len();
-        let candidate = word[lead..].trim_end_matches(['.', ',', ')', ']', ';', ':', '!', '?', '"', '\'', '>']);
+        let candidate = trim_url_end(&word[lead..]);
         if candidate.is_empty() {
             continue;
         }
@@ -1412,14 +1528,32 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// `text` with every paragraph separator as a plain `\n`. The text layout
+/// starts a new line at each of them (a CR written as `&#13;`, NEL, U+2029,
+/// the FS/GS/RS controls) while selection offsets count `\n` lines, so a
+/// selection below one would copy other text than it highlights.
+fn plain_line_breaks(text: &str) -> Cow<'_, str> {
+    const BREAKS: [char; 6] = ['\r', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}'];
+    if text.contains(BREAKS) {
+        Cow::Owned(text.replace("\r\n", "\n").replace(BREAKS, "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Math spans converted in one message; later ones stay as typed. Each is
+/// thousands of passes in unicodeit (a fraction of a millisecond), which a
+/// message of 16 000 `$a$` turned into a window frozen for seconds.
+const MAX_MATH_SPANS: usize = 200;
+/// Longest math span converted (bytes): those passes, and the checks here,
+/// grow with its length. Inline math is a few dozen characters.
+const MAX_MATH_LEN: usize = 4000;
+
 /// Where the `$` closing inline math is, for the text after an opening `$`.
 /// Pandoc's rule, so prices stay prices ("$0.18 of $5.00"): the opening `$`
-/// has a non-space right after it, the closing one a non-space right before
-/// it and no digit after it.
+/// has a non-space right after it (`math_opens`), the closing one a
+/// non-space right before it and no digit after it.
 fn math_end(after_dollar: &str) -> Option<usize> {
-    if after_dollar.chars().next().is_none_or(char::is_whitespace) {
-        return None;
-    }
     after_dollar.match_indices('$').map(|(i, _)| i).find(|&i| {
         let before = after_dollar[..i].chars().next_back();
         let after = after_dollar[i + 1..].chars().next();
@@ -1427,14 +1561,101 @@ fn math_end(after_dollar: &str) -> Option<usize> {
     })
 }
 
+fn math_opens(after_dollar: &str) -> bool {
+    !after_dollar.chars().next().is_none_or(char::is_whitespace)
+}
+
+/// unicodeit's accents (`\hat{x}`, `\vec{v}`, …) take one character: it
+/// keeps a group's first and drops the rest (`\overline{AB}` → "A̅}"), and
+/// it slices by byte doing so — `\hat{y_i}`, whose subscript is three bytes
+/// by then, panics. Math with a longer group is left as typed.
+fn accents_fit(latex: &str) -> bool {
+    const ACCENTS: [&str; 14] = [
+        "\\doubleunderline", "\\strikethrough", "\\underline", "\\overline", "\\tilde", "\\grave",
+        "\\acute", "\\slash", "\\breve", "\\ddot", "\\dot", "\\bar", "\\vec", "\\hat",
+    ];
+    ACCENTS.iter().all(|accent| {
+        latex.match_indices(accent).all(|(at, _)| {
+            let Some(group) = latex[at + accent.len()..].strip_prefix('{') else { return true };
+            let mut inner = group.split('}').next().unwrap_or(group).chars();
+            match inner.next() {
+                // One command (`\vec{\alpha}`) is one character once converted.
+                Some('\\') => inner.all(|c| c.is_ascii_alphabetic()),
+                Some(_) => inner.next().is_none(),
+                None => true,
+            }
+        })
+    })
+}
+
+/// One math span as Unicode; `None` when it's shown as typed instead.
+fn latex_to_unicode(latex: &str) -> Option<String> {
+    if latex.len() > MAX_MATH_LEN {
+        return None;
+    }
+    // Strip \text{...}, \mathrm{...}, \mathbf{...} etc. to just their content
+    let mut cleaned = latex.to_string();
+    for cmd in &["\\text", "\\mathrm", "\\mathbf", "\\mathit", "\\textbf", "\\textit", "\\operatorname"] {
+        while let Some(pos) = cleaned.find(cmd) {
+            let after_cmd = &cleaned[pos + cmd.len()..];
+            if let Some(brace_start) = after_cmd.find('{') {
+                let inner_start = pos + cmd.len() + brace_start + 1;
+                if let Some(brace_end) = cleaned[inner_start..].find('}') {
+                    let inner = cleaned[inner_start..inner_start + brace_end].to_string();
+                    cleaned = format!("{}{}{}", &cleaned[..pos], inner, &cleaned[inner_start + brace_end + 1..]);
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+    let cleaned = slash_negations(&cleaned);
+    if !accents_fit(&cleaned) {
+        return None;
+    }
+    // Convert remaining LaTeX to Unicode. Message text is anyone's, and the
+    // accent check doesn't see every way into that slicing (`\not\\alpha`
+    // gets there through unicodeit's own rewrite of `\not`): a panic costs
+    // the span its conversion, not everyone in the room their window.
+    std::panic::catch_unwind(|| unicodeit::replace(&cleaned)).ok()
+}
+
+/// `\not\in` as `\slash{\in}`: what unicodeit makes of it itself, but it
+/// adds a stray `"` that then shows after the symbol.
+fn slash_negations(latex: &str) -> String {
+    const NOT: &str = "\\not";
+    let mut out = String::with_capacity(latex.len());
+    let mut rest = latex;
+    while let Some(at) = rest.find("\\not\\") {
+        let command = &rest[at + NOT.len() + 1..];
+        let len = command.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(command.len());
+        if len == 0 {
+            // Not a command name: left to unicodeit.
+            out.push_str(&rest[..at + NOT.len()]);
+            rest = &rest[at + NOT.len()..];
+            continue;
+        }
+        out.push_str(&rest[..at]);
+        out.push_str(&format!("\\slash{{\\{}}}", &command[..len]));
+        rest = &command[len..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Convert inline LaTeX math ($...$) to Unicode via unicodeit.
-/// Leaves non-math text unchanged.
-fn convert_inline_latex(text: &str) -> String {
+/// Leaves non-math text unchanged. `budget` is how many more spans this
+/// message may convert (`MAX_MATH_SPANS`).
+fn convert_inline_latex(text: &str, budget: &mut usize) -> String {
     if !text.contains('$') {
         return text.to_string();
     }
     let mut result = String::with_capacity(text.len());
     let mut remaining = text;
+    // Cleared when a search for a closing `$` finds none: nothing further
+    // on closes math either (a closing `$` doesn't depend on its opening
+    // one), so a text full of lone `$` is searched once.
+    let mut closable = true;
     while let Some(start) = remaining.find('$') {
         result.push_str(&remaining[..start]);
         let after_dollar = &remaining[start + 1..];
@@ -1444,27 +1665,24 @@ fn convert_inline_latex(text: &str) -> String {
             remaining = after_dollar;
             continue;
         }
-        if let Some(end) = math_end(after_dollar) {
+        let end = if closable && *budget > 0 && math_opens(after_dollar) {
+            let end = math_end(after_dollar);
+            closable = end.is_some();
+            end
+        } else {
+            None
+        };
+        if let Some(end) = end {
             let latex = &after_dollar[..end];
-            // Strip \text{...}, \mathrm{...}, \mathbf{...} etc. to just their content
-            let mut cleaned = latex.to_string();
-            for cmd in &["\\text", "\\mathrm", "\\mathbf", "\\mathit", "\\textbf", "\\textit", "\\operatorname"] {
-                while let Some(pos) = cleaned.find(cmd) {
-                    let after_cmd = &cleaned[pos + cmd.len()..];
-                    if let Some(brace_start) = after_cmd.find('{') {
-                        let inner_start = pos + cmd.len() + brace_start + 1;
-                        if let Some(brace_end) = cleaned[inner_start..].find('}') {
-                            let inner = cleaned[inner_start..inner_start + brace_end].to_string();
-                            cleaned = format!("{}{}{}", &cleaned[..pos], inner, &cleaned[inner_start + brace_end + 1..]);
-                            continue;
-                        }
-                    }
-                    break;
+            *budget -= 1;
+            match latex_to_unicode(latex) {
+                Some(unicode) => result.push_str(&unicode),
+                None => {
+                    result.push('$');
+                    result.push_str(latex);
+                    result.push('$');
                 }
             }
-            // Convert remaining LaTeX to Unicode
-            let unicode = unicodeit::replace(&cleaned);
-            result.push_str(&unicode);
             remaining = &after_dollar[end + 1..];
         } else {
             // No closing $ — keep the dollar literal
@@ -1569,14 +1787,148 @@ mod tests {
         assert_eq!(builds, 2);
     }
 
+    fn latex(text: &str) -> String {
+        let mut budget = MAX_MATH_SPANS;
+        convert_inline_latex(text, &mut budget)
+    }
+
     #[test]
     fn prices_are_not_math() {
-        assert_eq!(convert_inline_latex("Spent $0.18 of $5.00 today"), "Spent $0.18 of $5.00 today");
-        assert_eq!(convert_inline_latex("costs $5"), "costs $5");
-        assert_eq!(convert_inline_latex("a $ b $ c"), "a $ b $ c");
+        assert_eq!(latex("Spent $0.18 of $5.00 today"), "Spent $0.18 of $5.00 today");
+        assert_eq!(latex("costs $5"), "costs $5");
+        assert_eq!(latex("a $ b $ c"), "a $ b $ c");
         // Real inline math still converts.
-        assert_eq!(convert_inline_latex("so $\\alpha$ it is"), "so \u{3b1} it is");
-        assert_eq!(convert_inline_latex("$x$"), "x");
+        assert_eq!(latex("so $\\alpha$ it is"), "so \u{3b1} it is");
+        assert_eq!(latex("$x$"), "x");
+    }
+
+    /// unicodeit slices by byte around an accent's group: these panicked,
+    /// i.e. crashed the app for everyone the message was shown to.
+    #[test]
+    fn accented_math_with_a_longer_group_stays_as_typed() {
+        for math in ["$\\hat{y_i}$", "$\\vec{v_1}$", "$\\bar{x^2}$", "$\\hat{a\\alpha}$", "$\\tilde{n\u{f1}}$", "$\\hat{y_i$", "$\\text{mean} = \\bar{\\text{x}_i}$"] {
+            assert_eq!(latex(math), math);
+        }
+        // Dropped the B and left a brace before.
+        assert_eq!(latex("$\\overline{AB}$"), "$\\overline{AB}$");
+        // The same slicing, reached through unicodeit's own `\not` rewrite.
+        assert_eq!(latex("$\\not\\\\alpha$"), "$\\not\\\\alpha$");
+        assert_eq!(latex("$\\not\\_\\alpha$"), "$\\not\\_\\alpha$");
+        // A negated symbol has no quote after it.
+        assert_eq!(latex("$a \\not\\in B$"), "a \u{2208}\u{338} B");
+        assert_eq!(latex("$a \\notin B, a \\not= b$"), unicodeit::replace("a \\notin B, a \\not= b"));
+        // One character (or one symbol) under the accent still converts.
+        assert_eq!(latex("$\\hat{x}$"), "x\u{302}");
+        assert_eq!(latex("$\\vec{\\alpha}_i$"), "\u{3b1}\u{20d7}\u{1d62}");
+        assert_eq!(latex("$\\tilde{\u{f1}}$"), "\u{f1}\u{303}");
+        // Through the message path, where it crashed.
+        assert_eq!(texts(&html_to_spans("<p>so $\\hat{y_i}$ is the estimate</p>")).concat().trim_end(), "so $\\hat{y_i}$ is the estimate");
+    }
+
+    #[test]
+    fn a_message_full_of_math_or_dollars_is_parsed_in_bounded_time() {
+        let t = std::time::Instant::now();
+        // 16 000 spans took over 20 s (debug): the first MAX_MATH_SPANS convert.
+        let spans = html_to_spans(&"$a$ ".repeat(16_000));
+        let text = texts(&spans).concat();
+        assert!(text.starts_with("a a a "), "{}", &text[..20]);
+        assert!(text.ends_with("$a$ $a$ "), "{}", &text[text.len() - 20..]);
+        // Split across text nodes: the budget is the message's, not the node's.
+        let text = texts(&html_to_spans(&"<b>$a$</b> ".repeat(8_000))).concat();
+        assert!(text.ends_with("$a$ $a$"), "{}", &text[text.len() - 20..]);
+        // Lone dollars (no valid closing one) and one huge span.
+        assert_eq!(latex(&"$a ".repeat(20_000)), "$a ".repeat(20_000));
+        let huge = format!("${}$", "x+".repeat(30_000));
+        assert_eq!(latex(&huge), huge);
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn spaces_between_inline_elements_are_kept() {
+        let joined = |html: &str| texts(&html_to_spans(html)).concat();
+        assert_eq!(joined("<strong>a</strong> <em>b</em> <code>c</code>"), "a b c");
+        // Two people mentioned one after the other.
+        assert_eq!(
+            joined("<a href=\"https://matrix.to/#/@a:x.org\">Al</a> <a href=\"https://matrix.to/#/@b:x.org\">Bo</a>: hi"),
+            "@Al @Bo: hi",
+        );
+        assert_eq!(joined("<a href=\"https://x.org\">one</a> <a href=\"https://y.org\">two</a>"), "one two");
+        // A line break between them stays a line break, like one in text does.
+        assert_eq!(joined("<b>Name:</b>\n<b>Other:</b>"), "Name:\nOther:");
+        // Around blocks it is only the markup's own formatting.
+        assert_eq!(joined("<p>a</p>\n<p>b</p>\n"), "a\n\nb\n\n");
+        assert_eq!(joined("<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n"), "\u{2022} a\n\u{2022} b\n");
+        assert_eq!(joined("<b>a</b> <br> <i>b</i>"), "a\nb");
+        assert_eq!(joined("<b>a </b> <i>b</i>"), "a b");
+        assert_eq!(joined("<b>a</b> "), "a");
+    }
+
+    #[test]
+    fn lists_keep_their_numbers_nesting_and_paragraphs() {
+        let joined = |html: &str| texts(&html_to_spans(html)).concat();
+        // A numbered list continued after a code block or paragraph.
+        assert_eq!(joined("<ol start=\"3\"><li>c</li><li>d</li></ol>"), "3. c\n4. d\n");
+        assert_eq!(joined("<ol start=\"x\"><li>a</li></ol>"), "1. a\n");
+        // A nested list is its own indented lines, with no blank line after.
+        assert_eq!(
+            joined("<ul><li>a<ul><li>b</li><li>c</li></ul></li><li>d</li></ul>"),
+            "\u{2022} a\n  \u{2022} b\n  \u{2022} c\n\u{2022} d\n",
+        );
+        // An item's second paragraph is a new line under the first.
+        assert_eq!(
+            joined("<ol>\n<li>\n<p><strong>Title</strong></p>\n<p>Body</p>\n</li>\n<li>\n<p>Next</p>\n</li>\n</ol>"),
+            "1. Title\n   Body\n2. Next\n",
+        );
+        // A list right after text starts on its own line.
+        assert_eq!(joined("Items:<ul><li>a</li></ul>"), "Items:\n\u{2022} a\n");
+    }
+
+    #[test]
+    fn quotes_and_paragraphs_start_their_own_line() {
+        let joined = |html: &str| texts(&html_to_spans(html)).concat();
+        assert_eq!(joined("<blockquote>quoted</blockquote>reply"), "quoted\nreply");
+        assert_eq!(joined("intro<blockquote>quoted</blockquote>"), "intro\nquoted\n");
+        assert_eq!(joined("line one<div>line two</div><div>line three</div>"), "line one\nline two\n\nline three\n\n");
+        // Unchanged where the markup already had its paragraphs.
+        assert_eq!(joined("<blockquote><p>quoted</p></blockquote><p>reply</p>"), "quoted\n\nreply\n\n");
+    }
+
+    #[test]
+    fn blank_lines_stay_in_code_blocks() {
+        let code = |html: &str| match html_to_parts(html, &[], 14.0).into_iter().next() {
+            Some(MessagePart::CodeBlock(spans)) => texts(&spans).concat(),
+            _ => panic!("no code block"),
+        };
+        assert_eq!(code("<pre><code>fn a() {}\n\nfn b() {}\n</code></pre>"), " 1 fn a() {}\n 2 \n 3 fn b() {}");
+        // Lines as <br> (what this app sent until recently), blank ones too.
+        assert_eq!(code("<pre><code>a<br>b<br><br>c</code></pre>"), " 1 a\n 2 b\n 3 \n 4 c");
+        // A <br> and the newline beside it are one break.
+        assert_eq!(code("<pre><code>a<br>\nb\n<br>c\n<br>\nd</code></pre>"), " 1 a\n 2 b\n 3 c\n 4 d");
+    }
+
+    #[test]
+    fn custom_emoji_show_their_shortcode() {
+        let joined = |html: &str| texts(&html_to_spans(html)).concat();
+        assert_eq!(joined("<img data-mx-emoticon src=\"mxc://x/y\" alt=\":party:\" title=\":party:\" height=\"32\">"), ":party:");
+        assert_eq!(joined("nice <img src=\"mxc://x/y\" title=\":tada:\"> <img src=\"mxc://x/z\" alt=\":100:\">"), "nice :tada: :100:");
+        assert_eq!(joined("a<img src=\"mxc://x/y\">b"), "ab");
+    }
+
+    #[test]
+    fn mention_pills_have_one_at_sign() {
+        let pill = |text: &str| html_to_spans(&format!("<a href=\"https://matrix.to/#/@alice:example.org\">{text}</a>")).remove(0);
+        assert_eq!(pill("@Alice").text, "@Alice");
+        assert_eq!(pill("@alice:example.org").text, "@alice:example.org");
+        // …and the colour the nick has everywhere else.
+        assert_eq!(pill("@Alice").color, pill("Alice").color);
+    }
+
+    #[test]
+    fn a_message_link_is_its_rooms_pill() {
+        let rooms = [fluxchat_core::RoomInfo { room_id: "!r:x.org".into(), name: "general".into(), ..Default::default() }];
+        let spans = html_to_spans_with_rooms("<a href=\"https://matrix.to/#/!r:x.org/$ev?via=x.org\">https://matrix.to/#/!r:x.org/$ev?via=x.org</a>", &rooms, 14.0);
+        assert_eq!(texts(&spans), ["#general"]);
+        assert_eq!(spans[0].link.as_deref(), Some("https://matrix.to/#/!r:x.org/$ev?via=x.org"));
     }
 
     #[test]
@@ -1584,5 +1936,65 @@ mod tests {
         let joined = |input: &str| texts(&plain_text_to_spans(input)).concat();
         assert_eq!(joined("see https://x.org now"), "see https://x.org now");
         assert_eq!(joined("https://x.org/a."), "https://x.org/a.");
+    }
+
+    #[test]
+    fn urls_keep_their_balanced_parentheses() {
+        let wiki = "https://en.wikipedia.org/wiki/Rust_(programming_language)";
+        let links = |spans: Vec<Span<'static, String>>| spans.iter().filter_map(|s| s.link.clone()).collect::<Vec<_>>();
+        for text in [format!("see {wiki} ok"), format!("({wiki})"), format!("it's {wiki}).")] {
+            assert_eq!(links(html_to_spans(&text)), [wiki], "{text}");
+            assert_eq!(links(plain_text_to_spans(&text)), [wiki], "{text}");
+            assert_eq!(texts(&plain_text_to_spans(&text)).concat(), text);
+        }
+        assert_eq!(links(html_to_spans("(see https://x.org/a)")), ["https://x.org/a"]);
+        assert_eq!(links(plain_text_to_spans("really https://x.org/a?! \"https://y.org/\"")), ["https://x.org/a", "https://y.org/"]);
+        assert_eq!(trim_url_end(&")".repeat(60_000)), "");
+    }
+
+    #[test]
+    fn plain_bodies_keep_unpaired_markdown_characters() {
+        let joined = |input: &str| texts(&plain_text_to_spans(input)).concat();
+        for text in [
+            "SELECT * FROM t WHERE a * b",
+            "ls *.rs and void *p, *q",
+            "it`s 5 o'clock",
+            "* item one\n* item two",
+            "a ** b ~~ c",
+            "rated ***** stars~~",
+            "2 * 3 * 4",
+        ] {
+            let spans = plain_text_to_spans(text);
+            assert_eq!(texts(&spans).concat(), text);
+            assert!(spans.iter().all(|s| s.font.is_none() && !s.strikethrough), "{text}");
+        }
+        // Paired ones are still read.
+        let spans = plain_text_to_spans("**bold** and *it* and ~~no~~ and `c` and a*b*c");
+        assert_eq!(texts(&spans), ["bold", " and ", "it", " and ", "no", " and ", "c", " and a", "b", "c"]);
+        assert_eq!(spans[0].font.map(|f| f.weight), Some(font::Weight::Bold));
+        assert_eq!(spans[2].font.map(|f| f.style), Some(font::Style::Italic));
+        assert!(spans[4].strikethrough);
+        // Code keeps its dollars (they were read as math, and dropped).
+        assert_eq!(joined("run `echo $HOME:$PATH` now"), "run echo $HOME:$PATH now");
+        assert_eq!(joined("```\nexport PATH=$HOME/bin:$PATH\n```"), "\n 1 export PATH=$HOME/bin:$PATH\n");
+        assert_eq!(joined("so $\\alpha$ it is"), "so \u{3b1} it is");
+        // Windows line endings are one line break each.
+        assert_eq!(joined("a\r\nb\r\n\r\nc"), "a\nb\n\nc");
+        // A long line of lone markers isn't searched once per marker.
+        let t = std::time::Instant::now();
+        let stars = "*a ".repeat(20_000);
+        assert_eq!(joined(&stars), stars);
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+    }
+
+    /// Selection offsets count `\n` lines; the text layout also breaks at
+    /// these.
+    #[test]
+    fn paragraph_separators_become_newlines() {
+        let joined = |html: &str| texts(&html_to_spans(html)).concat();
+        assert_eq!(joined("a&#13;b&#x2029;c\u{85}d &#x1c; e"), "a\nb\nc\nd \n e");
+        assert_eq!(joined("<a href=\"https://x.org\">x&#13;&#10;y</a>"), "x\ny");
+        let parts = html_to_parts("<pre><code>a\u{2029}b</code></pre>", &[], 14.0);
+        assert!(matches!(&parts[0], MessagePart::CodeBlock(spans) if texts(spans).concat() == " 1 a\n 2 b"));
     }
 }
