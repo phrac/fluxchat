@@ -130,11 +130,6 @@ class TimelineModel(
     /** A reset arrived while a refill was running: run another when it ends. */
     @Volatile private var refillAgain = false
 
-    private fun release() = synchronized(items) {
-        held = false
-        _messages.value = items.filterNotNull()
-    }
-
     /**
      * Back-paginate until there's a screenful again (or the start), with some
      * of the room's own messages among it: in agent rooms the newest events
@@ -142,8 +137,10 @@ class TimelineModel(
      * run is going) sit further back.
      */
     fun refill() {
-        if (refilling) return
-        refilling = true
+        synchronized(items) {
+            if (refilling) return
+            refilling = true
+        }
         _atStart.value = false
         scope.launch {
             try {
@@ -154,13 +151,24 @@ class TimelineModel(
                     if (msgs.size >= REFILL_BELOW && (threadRoot != null || own >= REFILL_TOP_LEVEL) || !paginateBack()) return@launch
                 }
             } finally {
-                refilling = false
-                if (refillAgain) {
-                    refillAgain = false
-                    refill()
-                } else {
-                    release()
+                // Under the lock `apply` holds, so a reset can't fall between
+                // "this refill is over" and the release: one that did (it was
+                // being applied as the refill ended) saw no refill running,
+                // started its own, and then had its emptied list published
+                // by this release — what holding the list back is there to
+                // prevent — for as long as that refill took.
+                val again = synchronized(items) {
+                    refilling = false
+                    if (refillAgain) {
+                        refillAgain = false
+                        true
+                    } else {
+                        held = false
+                        _messages.value = items.filterNotNull()
+                        false
+                    }
                 }
+                if (again) refill()
             }
         }
     }
