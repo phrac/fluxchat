@@ -408,10 +408,20 @@ fn stash_code(text: &str) -> (String, Vec<String>) {
         result = format!("{}{}{}", &result[..start], token, &result[start + 6 + end..]);
     }
     // Inline code (` ... `)
-    while let Some(start) = result.find('`') {
+    let mut from = 0;
+    while let Some(start) = result[from..].find('`').map(|i| from + i) {
+        // Backticks side by side hold no code. Mostly they're a fence that
+        // was never closed: taken as an empty span (and an opening one),
+        // "```js" reached everyone else as "`js".
+        let run = result[start..].bytes().take_while(|b| *b == b'`').count();
+        if run > 1 {
+            from = start + run;
+            continue;
+        }
         let Some(end) = result[start + 1..].find('`') else { break };
         let token = stash(format!("<code>{}</code>", &result[start + 1..start + 1 + end]));
         result = format!("{}{}{}", &result[..start], token, &result[start + 2 + end..]);
+        from = start + token.len();
     }
     (result, code)
 }
@@ -670,6 +680,17 @@ mod tests {
             "<pre><code class=\"language-rust\">fn main() {}</code></pre>",
         );
         assert_eq!(simple_markdown("```ls -la```"), "<pre><code>ls -la</code></pre>");
+    }
+
+    #[test]
+    fn an_unclosed_fence_stays_as_typed() {
+        // Nothing to format: the message goes out as plain text.
+        assert!(format_message("```js\nconsole.log(1)", &[]).html.is_none());
+        assert_eq!(simple_markdown("```"), "```");
+        assert_eq!(simple_markdown("an empty `` pair"), "an empty `` pair");
+        // Code around it still is code.
+        assert_eq!(simple_markdown("```\nand `this` is code"), "```\nand <code>this</code> is code");
+        assert_eq!(simple_markdown("`a``b`"), "<code>a</code><code>b</code>");
     }
 
     #[test]
