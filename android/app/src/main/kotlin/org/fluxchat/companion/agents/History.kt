@@ -221,6 +221,39 @@ object History {
         return true
     }
 
+    /** The view a record's key ([keyOf]) names. */
+    fun viewOf(rec: RunRecord): ViewKey = ViewKey(rec.room, rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key })
+
+    /**
+     * Give [roomId]'s open records their end when their view's run
+     * ([runs]) is another one by now. A view reports one run — its newest
+     * request's — so a run that a later request took the view from (queued
+     * behind it, or asked while this phone wasn't looking: a session is one
+     * thread, a DM one room) is never reported again. Its record stayed
+     * "working" for as long as the session went on, then closed as stalled
+     * at the session's last message, hours or days on. [past]: how such a
+     * run ended, by its own request ([Runs.pastRun]); null = that doesn't
+     * say, and the record is left to the sweep. Returns whether any changed.
+     */
+    fun settlePast(
+        history: MutableList<RunRecord>,
+        roomId: String,
+        runs: Map<ViewKey, RunInfo?>,
+        now: Long,
+        past: (RunRecord, ViewKey) -> RunInfo?,
+    ): Boolean {
+        var changed = false
+        for (rec in history.toList()) {
+            if (rec.room != roomId || rec.ended != null) continue
+            val view = viewOf(rec)
+            val shown = runs[view] ?: continue
+            if (shown.since == rec.started || (rec.runId != null && rec.runId == shown.runId)) continue
+            val run = past(rec, view)?.takeIf { !it.state.live } ?: continue
+            if (record(history, view, run, rec.title, rec.request, now)) changed = true
+        }
+        return changed
+    }
+
     /**
      * Close open "needs you" records nothing waits behind any more.
      * [waiting]: whether the record's prompt is still open — null when that

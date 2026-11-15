@@ -92,9 +92,13 @@ class GalleryView(
     }
 
     /**
-     * Live history replaces the list wholesale (redactions included); paged-in
-     * older events merge per id. Sent-only, gallery kinds — unsent drafts and
-     * plain messages never enter, matching the desktop's filters.
+     * The seed replaces the list; what the timeline loads merges per id, and
+     * speaks for every event it holds: one that is no attachment any more
+     * (deleted) leaves, one that changed (a new caption) is brought up to
+     * date. Merging only ever added, so a deleted photo stayed in the gallery
+     * — and opened — until the view was dropped. Sent-only, gallery kinds —
+     * unsent drafts and plain messages never enter, matching the desktop's
+     * filters.
      */
     private fun merge(msgs: List<Msg>, replace: Boolean) =
         synchronized(this) {
@@ -105,6 +109,12 @@ class GalleryView(
                         (isGalleryMedia(it) || isGalleryFile(it))
                 }
             val items = ArrayList(if (replace) emptyList() else _state.value.items)
+            if (items.isNotEmpty()) {
+                val current = media.associateBy { it.id }
+                val loaded = msgs.mapTo(HashSet()) { it.id }
+                items.removeAll { it.id in loaded && it.id !in current }
+                for (i in items.indices) current[items[i].id]?.let { items[i] = it }
+            }
             mergeGalleryItems(items, media)
             _state.value = _state.value.copy(items = items)
         }

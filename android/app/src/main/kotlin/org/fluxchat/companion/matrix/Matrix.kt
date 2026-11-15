@@ -89,6 +89,17 @@ data class AgentEntry(val userId: String, val harness: String? = null)
 data class AgentList(val agents: List<AgentEntry> = emptyList(), val notAgents: List<String> = emptyList()) {
     fun harnessOf(userId: String): Harness = Harnesses.get(agents.firstOrNull { it.userId == userId }?.harness)
 
+    /**
+     * This list put on top of [theirs] (the account's): theirs as it is —
+     * agents, their harnesses, the not-agents — plus the agents only this
+     * one names. For an edit made before the account's list had been read:
+     * built on the empty list, all it can have done is add.
+     */
+    fun addedTo(theirs: AgentList): AgentList {
+        val added = agents.filter { a -> theirs.agents.none { it.userId == a.userId } }
+        return AgentList(theirs.agents + added, (theirs.notAgents + notAgents).distinct().filter { id -> added.none { it.userId == id } })
+    }
+
     fun toJson(): String = JSONObject().apply {
         put("agents", JSONArray(agents.map { a -> JSONObject().put("user_id", a.userId).apply { a.harness?.let { put("harness", it) } } }))
         if (notAgents.isNotEmpty()) put("not_agents", JSONArray(notAgents))
@@ -152,8 +163,6 @@ object Matrix {
     private const val PIN_ECHO_MS = 30_000L
     /** Under cacheDir: what an account leaves outside the SDK store (see logout). */
     private val ACCOUNT_CACHE_DIRS = listOf("files", "uploads", "media-tmp")
-    /** Own-message ↔ run-start match tolerance (echo vs server timestamps). */
-    private const val REQUEST_MATCH_SLACK_MS = 2_000L
     /** A new sign-in waits this long to learn whether to ask for the recovery key ([RecoveryPrompt]). */
     private const val RECOVERY_WAIT_MS = 15_000L
 
@@ -386,6 +395,10 @@ object Matrix {
             // that crash and rebuild the store before anyone touches it.
             val live = if (StoreHeal.healRequested()) rebuildStore(c, saved.session, saved.storePassphrase) else c
             started(live, fresh = false)
+            // Whatever an earlier try said ("couldn't restore your session")
+            // is over: left set, it stood in red under the agent list — and
+            // under the sign-in form after signing out — from then on.
+            _error.value = null
             true
         } catch (e: Exception) {
             Diag.error("Restoring the session failed", e)
@@ -799,6 +812,8 @@ object Matrix {
             .onFailure { Diag.error("Clearing notifications", it) }
         _agentList.value = AgentList()
         _pins.value = PinStore.Pins()
+        // The last session's failures are not the sign-in form's to show.
+        _error.value = null
         _auth.value = Auth.SignedOut
     }
 
@@ -1187,8 +1202,10 @@ object Matrix {
                 // update {}: these arrive on SDK threads, one per room.
                 _typing.update { it + (roomId to others) }
                 // An agent typing is a run for some harnesses (typing_means_working),
-                // and nothing else looks again until a message arrives.
-                if (before.toSet() != others.toSet()) scope.launch { recompute() }
+                // and nothing else looks again until a message arrives. (A
+                // one-off, so on [tasks]: bare on [scope], a throw in this
+                // look alone took the process down.)
+                if (before.toSet() != others.toSet()) tasks.launch { recompute() }
             }
         }))?.cancel()
         // Signed out in between: stopAll has closed the model, and missed this.
@@ -1363,6 +1380,9 @@ object Matrix {
                 if (stalled) stalledKeys += key
                 !stalled
             }
+            // Which of the last look's live runs were still being watched:
+            // asked before `date`, which forgets one whose view shows another run now.
+            val watched = prev.filter { (k, run) -> run != null && run.state.live && runWatch.watching(k, run.since, now) }.keys
             // Finished runs get the end this process watched, where it did.
             val runs = runWatch.date(roomId, going, now, following)
             // The agent typing, for harnesses that say "working" that way
@@ -1388,7 +1408,7 @@ object Matrix {
                 avatar = meta.avatar,
                 unread = meta.unread,
             )
-            recordRuns(roomId, msgs, runs, prev, stalledKeys, r.stopped, now)
+            recordRuns(roomId, msgs, runs, prev, stalledKeys, r.stopped, watched, now)
         }
         _agentRooms.value = out
     }
@@ -1405,6 +1425,8 @@ object Matrix {
         stalledKeys: Set<ViewKey>,
         /** Runs you stopped (no longer in [runs]): their records end when you said so. */
         stopped: Map<ViewKey, RunInfo>,
+        /** Views whose run of the last look was live and watched until now ([RunWatch.watching]). */
+        watched: Set<ViewKey>,
         now: Long,
     ) {
         if (!historyLoaded) return
@@ -1424,6 +1446,16 @@ object Matrix {
             if (msgs.none { !it.isLocal && it.ts == old.since }) continue
             if (History.close(runHistory, key, old.since, now, old.runId)) changed = true
         }
+        // A run that a later request took its view from is not reported
+        // again either, but its own request says how it ended: watched
+        // until this look, it ended now; else when its messages say.
+        val settled = History.settlePast(runHistory, roomId, runs, now) { rec, key ->
+            val old = prev[key]
+            val seenEnd = key in watched && old != null && (old.since == rec.started || (rec.runId != null && rec.runId == old.runId))
+            Runs.pastRun(roomId, msgs, key, rec.agent, _agentList.value.harnessOf(rec.agent), rec.started, rec.runId)
+                ?.let { if (seenEnd) it.copy(ended = null) else it }
+        }
+        if (settled) changed = true
         // Records a finished run would end now (open, or stalled and coming
         // back): only those need their run's runtime info looked up.
         val ending = runHistory.filter { it.room == roomId && (it.ended == null || it.state == History.STALLED) }.mapTo(HashSet()) { it.key }
@@ -1431,12 +1463,9 @@ object Matrix {
             val rec = run ?: continue
             // The agent typing isn't a request: nothing to record.
             if (rec.typing) continue
-            // The request behind the run: the thread's root, or the room's
-            // latest own message at the run's start (lone commands aren't tasks).
-            // With slack: a local echo (`~txn`) gets re-timestamped with the
-            // server's origin_server_ts when the real event lands.
-            val request = key.threadRoot?.let { root -> msgs.firstOrNull { it.id == root } }
-                ?: msgs.lastOrNull { it.isOwn && it.threadRoot == null && kotlin.math.abs(it.ts - rec.since) <= REQUEST_MATCH_SLACK_MS }
+            // The request behind the run: your message at the run's start in
+            // its view, else the thread's root (lone commands aren't tasks).
+            val request = Runs.requestOf(msgs, key, rec.since)
             val title = key.threadRoot?.let { root ->
                 threadTitle(msgs.firstOrNull { it.id == root }, msgs.filter { it.threadRoot == root })
             } ?: "Request in the room"
@@ -1834,13 +1863,39 @@ object Matrix {
 
     suspend fun saveAgentList(list: AgentList): Boolean = io { saveAgentListOnIo(list) }
 
-    private suspend fun saveAgentListOnIo(list: AgentList): Boolean {
+    private suspend fun saveAgentListOnIo(edited: AgentList): Boolean {
         val c = client ?: return false
+        // An edit is built on the list on screen, and until the account's
+        // has been read that is the empty one: "Add agent" during a slow
+        // first sync uploaded a list of one over the account's, and every
+        // other agent, its harness and the not-agents were gone on the
+        // desktop too (which only saves once it has loaded the list,
+        // `agent_list_loaded`). So ask the server what it holds first, and
+        // put the edit on top of that.
+        var list = edited
+        val unread = !agentListRead
+        if (unread) {
+            val theirs = fetchAccountData(c, AgentList.TYPE)
+            if (theirs == null) {
+                _error.value = "Couldn't load your agents from your account, so nothing was changed. Check your connection and try again."
+                return false
+            }
+            if (client !== c) return false
+            theirs.json?.let { AgentList.parse(it) }?.let { list = edited.addedTo(it) }
+        }
         return try {
             c.setAccountData(AgentList.TYPE, list.toJson())
             notSet.wrote(AgentList.TYPE)
             agentListWritten = list to System.currentTimeMillis()
             _agentList.value = list
+            // Saved: "couldn't save the agent list" from the try before no
+            // longer holds (the screen shows it for as long as it is set).
+            _error.value = null
+            if (unread && !agentListRead) {
+                // The server answered above: what the account holds is known now.
+                agentListRead = true
+                lookAgain.update { it + 1 }
+            }
             true
         } catch (e: Exception) {
             Diag.error("Saving the agent list", e)

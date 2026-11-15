@@ -436,6 +436,51 @@ class HistoryTest {
     }
 
     @Test
+    fun aRecordWhoseViewShowsAnotherRunTakesItsOwnRunsEnd() {
+        val h = ArrayList<RunRecord>()
+        val first = now - 600_000
+        val second = now - 100_000
+        val dm = ViewKey(room)
+        History.record(h, thread, run(RunState.Working, first, cost = 0.2), "Ship it", "ship it", first)
+        History.record(h, thread, run(RunState.Working, second), "Ship it", "and the docs", second)
+        History.record(h, dm, run(RunState.NeedsYou, first), "Request in the room", "deploy", first)
+        History.record(h, ViewKey("!other:x", a), run(RunState.Working, first), "Elsewhere", "x", first)
+        val shown = mapOf<ViewKey, RunInfo?>(thread to run(RunState.Working, second), dm to run(RunState.Done, second), ViewKey("!other:x", a) to run(RunState.Working, second))
+        val asked = ArrayList<Pair<String, ViewKey>>()
+        val over = { rec: RunRecord, view: ViewKey ->
+            asked += rec.key to view
+            run(RunState.Failed, rec.started, cost = 0.5).copy(ended = rec.started + 60_000)
+        }
+        assertTrue(History.settlePast(h, room, shown, now, over))
+        // Only this room's open records whose view shows another run are asked about.
+        assertEquals(listOf(History.keyOf(thread) to thread, room to dm), asked)
+        assertEquals("failed", h[0].state)
+        assertEquals(first + 60_000, h[0].ended)
+        assertEquals(0.5, h[0].costUsd!!, 1e-9)
+        assertEquals("the view's own run is left alone", "working" to null, h[1].state to h[1].ended)
+        assertEquals("failed", h[2].state)
+        assertEquals("another room's", "working", h[3].state)
+        assertEquals(4, h.size)
+
+        // Its own request doesn't say (or says it's still going): left as it is.
+        val open = ArrayList<RunRecord>()
+        History.record(open, thread, run(RunState.Working, first), "Ship it", "ship it", first)
+        assertFalse(History.settlePast(open, room, shown, now) { _, _ -> null })
+        assertFalse(History.settlePast(open, room, shown, now) { rec, _ -> run(RunState.Working, rec.started) })
+        // Nothing shown on its view: the run is simply gone, which `close` and the sweep answer.
+        assertFalse(History.settlePast(open, room, mapOf(thread to null), now, over))
+        // The view's run is this record's, dated from its status message: the run id says so.
+        val described = ArrayList<RunRecord>()
+        History.record(described, thread, run(RunState.Working, first).copy(runId = "req"), "Ship it", "ship it", first)
+        assertFalse(History.settlePast(described, room, mapOf(thread to run(RunState.Working, second).copy(runId = "req")), now, over))
+        assertNull(open[0].ended)
+        assertNull(described[0].ended)
+        // Watched until now (the run carries no end of its own): it ended now.
+        assertTrue(History.settlePast(open, room, shown, now) { rec, _ -> run(RunState.Done, rec.started) })
+        assertEquals("done" to now, open[0].state to open[0].ended)
+    }
+
+    @Test
     fun aNeedsYouRecordNothingWaitsBehindIsClosed() {
         val h = ArrayList<RunRecord>()
         val other = ViewKey(room, "\$b")

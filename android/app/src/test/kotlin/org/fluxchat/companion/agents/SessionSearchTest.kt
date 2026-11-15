@@ -91,6 +91,17 @@ class SessionSearchTest {
         assertTrue(s.startsWith("…") && s.endsWith("…"))
     }
 
+    @Test fun `snippet finds the word where it is in text that grows when lowercased`() {
+        // "İ".lowercase() is two characters: the lowercased copy's index ran
+        // ahead of the text by one per İ, and past its end after enough of them.
+        val body = "İ".repeat(90) + " the Needle is here"
+        assertEquals(180, "İ".repeat(90).lowercase().length)
+        val s = SessionSearch.snippet(body, listOf("needle"))
+        assertTrue(s, s.contains("Needle"))
+        val hits = listOf(hit("b", "\$tr", "\$tr", body))
+        assertTrue((merge("needle", hits).single() as SearchResult.Reply).snippet.contains("Needle"))
+    }
+
     @Test fun `snippet of a body without the word is its head`() {
         assertEquals("hello there", SessionSearch.snippet("hello there", listOf("nope")))
     }
