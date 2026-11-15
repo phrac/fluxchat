@@ -238,6 +238,10 @@ pub struct FluxChat {
     pub space_tree: Vec<fluxchat_core::rooms::SpaceNode>,
     pub space_descendants: HashMap<String, Vec<String>>,
     pub invited_rooms: Vec<RoomInfo>,
+    /// Invites in the server's list as last received (`None`: no list yet
+    /// this session). What makes an invite new: `invited_rooms` can't say,
+    /// answering an invite takes it out of there before the server has.
+    pub known_invites: Option<HashSet<String>>,
     /// Invites dialog: "Decline all" asked for, awaiting confirmation.
     pub decline_all_armed: bool,
     /// Rooms we just put in a space (room -> space) that the server's room
@@ -488,6 +492,12 @@ pub struct FluxChat {
     pub login_error: Option<String>,
     pub login_submitting: bool,
     pub login_caps: Option<fluxchat_core::auth::LoginCapabilities>,
+    /// The SSO sign-in in flight: it waits for the browser to come back,
+    /// which it may never do, so a password sign-in may take its place.
+    pub login_sso: Option<iced::task::Handle>,
+    /// Counts changes of the homeserver field: a login-type lookup waiting
+    /// out its pause is dropped once a later change has moved this on.
+    pub login_lookup: Arc<std::sync::atomic::AtomicU64>,
 
     // Room list UI
     pub collapsed_sections: HashSet<String>,
@@ -743,6 +753,7 @@ impl FluxChat {
             space_tree: Vec::new(),
             space_descendants: HashMap::new(),
             invited_rooms: Vec::new(),
+            known_invites: None,
             decline_all_armed: false,
             pending_space_links: HashMap::new(),
             pending_favourites: HashMap::new(),
@@ -895,6 +906,8 @@ impl FluxChat {
             login_error: None,
             login_submitting: false,
             login_caps: None,
+            login_sso: None,
+            login_lookup: Default::default(),
             collapsed_sections: HashSet::new(),
             search_query: String::new(),
             search_results: Vec::new(),

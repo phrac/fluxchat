@@ -107,7 +107,9 @@ pub enum Message {
     // --- Search ---
     SearchQueryChanged(String),
     SearchSubmit,
-    SearchResults(Vec<fluxchat_core::messages::SearchResult>),
+    /// What a search found, with the room and the query it was for: results
+    /// that are late for either aren't shown.
+    SearchResults(String, String, Vec<fluxchat_core::messages::SearchResult>),
     SearchSelectResult(usize),
     SearchArrowDown,
     SearchArrowUp,
@@ -450,6 +452,13 @@ pub enum Message {
     VerificationAccept(String, String),  // user_id, flow_id
     VerificationConfirm(String, String), // user_id, flow_id
     VerificationCancel(String, String),  // user_id, flow_id
+    /// A verification we asked for went out (its flow ID, which cancelling
+    /// it needs) or couldn't be started: (user ID, flow ID or error).
+    VerificationRequested(String, Result<String, String>),
+    /// A verification with this user is over (confirmed here, or declined,
+    /// timed out or cancelled elsewhere, possibly long after its dialog was
+    /// closed): closes that dialog only. `Some`: what went wrong.
+    VerificationEnded(String, Option<String>),
 
     // --- Avatars ---
     AvatarsResolved(Vec<(String, Option<Vec<u8>>)>), // (mxc_uri, image bytes or None if the fetch failed)
