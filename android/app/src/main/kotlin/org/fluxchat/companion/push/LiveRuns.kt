@@ -204,6 +204,7 @@ object LiveRuns {
             .putExtra(ActionReceiver.THREAD, l.key.threadRoot)
             .putExtra(ActionReceiver.VALUE, text)
             .putExtra(ActionReceiver.LABEL, "Stop")
+            .putExtra(ActionReceiver.STOP, true)
         return PendingIntent.getBroadcast(context, ("stop" + l.key).hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 

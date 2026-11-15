@@ -232,15 +232,16 @@ object Notifier {
      * four seconds, and nothing showed it again: the agent waited with
      * nothing on the phone. When this process no longer has the prompt (it
      * was restarted since), a note that opens the session stands in — false
-     * then: the prompt itself is not back.
+     * then: the prompt itself is not back. [stop]: it was Stop (from the live
+     * runs notification or the widget), which answers nothing.
      */
-    fun failed(context: Context, roomId: String, threadRoot: String?, eventId: String): Boolean {
+    fun failed(context: Context, roomId: String, threadRoot: String?, eventId: String, stop: Boolean = false): Boolean {
         val note = synchronized(shown) { shown[eventId] }
         if (note != null) {
             show(context, note.copy(title = "Not sent · " + note.title.removePrefix("Not sent · ")))
             return true
         }
-        val stand = Note(roomId, eventId, threadRoot, "", "Couldn't send your answer", "Open fluxchat to answer.", Note.Kind.Message)
+        val stand = failedNote(roomId, eventId, threadRoot, stop)
         val b = NotificationCompat.Builder(context, Notifications.PROMPTS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(stand.title)
@@ -252,6 +253,11 @@ object Notifier {
             .onFailure { Diag.error("Notification for $eventId", it) }
         return false
     }
+
+    /** What stands in for something that didn't go out, in its own words: a Stop is not "your answer". */
+    internal fun failedNote(roomId: String, eventId: String, threadRoot: String?, stop: Boolean): Note =
+        if (stop) Note(roomId, eventId, threadRoot, "", "Couldn't send Stop", "The run is still going. Open fluxchat to stop it.", Note.Kind.Message)
+        else Note(roomId, eventId, threadRoot, "", "Couldn't send your answer", "Open fluxchat to answer.", Note.Kind.Message)
 
     fun cancel(context: Context, eventId: String) {
         forget(eventId)
@@ -303,9 +309,15 @@ object Notifier {
         cancelWhere(context, "read elsewhere") { _, _, _, asks -> !asks }
     }
 
-    /** Whether [eventId]'s notification is still up (not opened or swiped away). */
+    /**
+     * Whether [eventId]'s notification is still up (not opened or swiped
+     * away). The line that stands in its place for a moment after an answer
+     * ("Answered: …") is not it: an edit arriving then would put the whole
+     * message back up over it.
+     */
     fun isShowing(context: Context, eventId: String): Boolean = try {
-        context.getSystemService(NotificationManager::class.java)?.activeNotifications?.any { it.tag == eventId } == true
+        context.getSystemService(NotificationManager::class.java)?.activeNotifications
+            ?.any { it.tag == eventId && it.notification.extras?.containsKey(X_ROOM) == true } == true
     } catch (e: Exception) {
         Diag.error("Reading the notifications shown", e)
         false

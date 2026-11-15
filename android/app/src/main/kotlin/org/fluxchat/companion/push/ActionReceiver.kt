@@ -39,9 +39,15 @@ class ActionReceiver : BroadcastReceiver() {
         if (!taps.begin(tap, SystemClock.elapsedRealtime())) {
             return Diag.note("notification action $action on $event: already sent, the second tap is ignored")
         }
+        // Stop comes from the live runs notification or the widget, about a
+        // run rather than a message: what is said of it goes under a tag of
+        // its own, not over the notification of whatever message [event] is.
+        val stop = action == SEND && intent.getBooleanExtra(STOP, false)
+        val tag = if (stop) "stop:$event" else event
         // A choice made: the prompt is this notification's to finish with
         // (a typed reply to a message says nothing about a prompt it may yet become).
-        if (action != REPLY) PromptWatcher.answered(event)
+        if (action != REPLY && !stop) PromptWatcher.answered(event)
+        val failed = { if (!Notifier.failed(context.applicationContext, room, thread, tag, stop) && !stop) PromptWatcher.unanswered(event) }
         val pending = goAsync()
         // A broadcast has about ten seconds. From a dead process on a slow
         // network (restore the session, share keys, send) an answer can take
@@ -73,14 +79,14 @@ class ActionReceiver : BroadcastReceiver() {
                 }
                 Diag.note("notification action $action on $event: ${if (ok) "sent" else "failed"}")
                 if (!ok) {
-                    if (!Notifier.failed(app, room, thread, event)) PromptWatcher.unanswered(event)
+                    failed()
                     return@launch
                 }
                 sent = true
-                Notifier.answered(app, event, ask.done)
+                Notifier.answered(app, tag, if (stop) "Stop sent" else ask.done)
             } catch (e: Exception) {
                 Diag.error("Notification action failed", e)
-                if (!Notifier.failed(app, room, thread, event)) PromptWatcher.unanswered(event)
+                failed()
             } finally {
                 taps.end(tap, sent, SystemClock.elapsedRealtime())
                 budget.cancel()
@@ -106,6 +112,8 @@ class ActionReceiver : BroadcastReceiver() {
         const val THREAD = "thread"
         const val VALUE = "value"
         const val LABEL = "label"
+        /** Set on a Stop sent from the live runs notification or the run widget (a question's choice can be labelled "Stop" too). */
+        const val STOP = "stop"
         const val CHOICE_TITLES = "choice_titles"
         const val CHOICE_KEYS = "choice_keys"
         const val CHOICE_ACTION = "choice_action"
