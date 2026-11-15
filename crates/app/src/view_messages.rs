@@ -269,6 +269,22 @@ impl FluxChat {
         col.into()
     }
 
+    /// Who reacted, for a reaction's tooltip: display names from the member
+    /// list of the view the row is in (a side pane shows another room than
+    /// the main view, where its people had no names or other ones).
+    fn reactor_names(&self, view_key: &str, users: &[String]) -> String {
+        let members = self.members_by_room.get(view_key);
+        users.iter()
+            .map(|uid| {
+                members
+                    .and_then(|m| m.iter().find(|m| m.user_id == *uid))
+                    .map(|m| m.display_name.as_str())
+                    .unwrap_or_else(|| uid.split(':').next().unwrap_or(uid).trim_start_matches('@'))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// Distance from the row's left edge to the message text.
     pub(crate) fn msg_content_indent(&self) -> f32 {
         let c = self.msg_columns();
@@ -1059,9 +1075,9 @@ impl FluxChat {
                     // Convert markdown-style bullets and headings to HTML
                     // (some bots send * bullets and ### headings in formatted_body)
                     if !display_html.contains("<ul>") && !display_html.contains("<ol>") {
-                        display_html = convert_markdown_bullets(&display_html);
+                        display_html = outside_code(&display_html, convert_markdown_bullets);
                     }
-                    display_html = convert_markdown_headings(&display_html);
+                    display_html = outside_code(&display_html, convert_markdown_headings);
 
                     if has_code_block || has_table {
                         crate::html::RenderedBody::Parts(crate::html::html_to_parts(&display_html, &self.rooms, fs))
@@ -1500,14 +1516,8 @@ impl FluxChat {
             msg.sender_name.clone(),
             msg.body.chars().take(80).collect(),
         )));
-        if let Some(room_id) = &self.selected_room_id {
-            if !room_id.starts_with("thread::") {
-                let thread_root = msg.thread_root.as_deref().unwrap_or(&msg.event_id);
-                action_row = action_row.push(make_msg_action(SVG_THREAD, "Reply in thread", Message::OpenThread(
-                    room_id.clone(),
-                    thread_root.to_string(),
-                )));
-            }
+        if let Some(open_thread) = thread_action(view_key, msg) {
+            action_row = action_row.push(make_msg_action(SVG_THREAD, "Reply in thread", open_thread));
         }
         action_row = action_row.push(make_msg_action(SVG_FORWARD, "Forward", Message::ForwardMessage(
             msg.body.clone(),
@@ -1655,18 +1665,7 @@ impl FluxChat {
             };
 
             // Build tooltip with user names
-            let room_members = self.selected_room_id.as_ref()
-                .and_then(|rid| self.members_by_room.get(rid));
-            let tooltip_text: String = reaction.users.iter()
-                .map(|uid| {
-                    room_members
-                        .and_then(|m| m.iter().find(|m| m.user_id == *uid))
-                        .map(|m| m.display_name.as_str())
-                        .unwrap_or_else(|| uid.split(':').next().unwrap_or(uid).trim_start_matches('@'))
-                        .to_string()
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+            let tooltip_text = self.reactor_names(view_key, &reaction.users);
 
             let reaction_btn = button(
                 row![
@@ -1951,6 +1950,44 @@ impl FluxChat {
     }
 }
 
+/// "Reply in thread" for a row shown in `view_key`: a thread of that view's
+/// room (a side pane's row would otherwise open a thread of the main view's
+/// room on an event that isn't in it); none in a thread view.
+fn thread_action(view_key: &str, msg: &fluxchat_core::MessageInfo) -> Option<Message> {
+    let thread_root = msg.thread_root.as_deref().unwrap_or(&msg.event_id);
+    (!view_key.starts_with("thread::")).then(|| Message::OpenThread(view_key.to_string(), thread_root.to_string()))
+}
+
+/// Where the next `<pre>` block of `html` starts (`<pre>` or `<pre attr..>`,
+/// not e.g. `<prefix>`).
+fn pre_start(html: &str) -> Option<usize> {
+    let mut pos = 0;
+    while let Some(found) = html[pos..].find("<pre") {
+        let tag = pos + found;
+        if html[tag + 4..].starts_with(['>', ' ', '\t', '\n']) {
+            return Some(tag);
+        }
+        pos = tag + 4;
+    }
+    None
+}
+
+/// `convert` applied to `html` around its `<pre>` blocks, which stay as they
+/// are: a `# comment` or a `- item` line of code isn't markdown, and read as
+/// such it lost its marker and its line breaks.
+fn outside_code(html: &str, convert: fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = pre_start(rest) {
+        let end = rest[start..].find("</pre>").map_or(rest.len(), |e| start + e + "</pre>".len());
+        out.push_str(&convert(&rest[..start]));
+        out.push_str(&rest[start..end]);
+        rest = &rest[end..];
+    }
+    out.push_str(&convert(rest));
+    out
+}
+
 /// Convert markdown-style bullet lines (`* text` or `- text`) into `<ul><li>` HTML.
 fn convert_markdown_bullets(html: &str) -> String {
     // Split on <br> variants and newlines, preserving separators as empty entries
@@ -2001,34 +2038,32 @@ fn convert_markdown_headings(html: &str) -> String {
     if !html.contains('#') {
         return html.to_string();
     }
+    let lines = || html.split("<br>").flat_map(|s| s.split("<br/>")).flat_map(|s| s.split('\n'));
+    // Any heading lines at all? A `#` alone says little (every mention
+    // link has one), and putting the lines back together with <br> below
+    // leaves a blank line between the items of a list.
+    if !lines().any(|line| markdown_heading(line).is_some()) {
+        return html.to_string();
+    }
     let mut result = String::with_capacity(html.len());
-    for part in html.split("<br>").flat_map(|s| s.split("<br/>")).flat_map(|s| s.split('\n')) {
-        let trimmed = part.trim();
-        let (level, rest) = if let Some(r) = trimmed.strip_prefix("###### ") {
-            (6, r)
-        } else if let Some(r) = trimmed.strip_prefix("##### ") {
-            (5, r)
-        } else if let Some(r) = trimmed.strip_prefix("#### ") {
-            (4, r)
-        } else if let Some(r) = trimmed.strip_prefix("### ") {
-            (3, r)
-        } else if let Some(r) = trimmed.strip_prefix("## ") {
-            (2, r)
-        } else if let Some(r) = trimmed.strip_prefix("# ") {
-            (1, r)
-        } else {
-            if !result.is_empty() {
-                result.push_str("<br>");
-            }
-            result.push_str(part);
-            continue;
-        };
+    for part in lines() {
         if !result.is_empty() {
             result.push_str("<br>");
         }
-        result.push_str(&format!("<h{level}>{rest}</h{level}>"));
+        match markdown_heading(part) {
+            Some((level, rest)) => result.push_str(&format!("<h{level}>{rest}</h{level}>")),
+            None => result.push_str(part),
+        }
     }
     result
+}
+
+/// A markdown heading line (`# ` to `###### `): its level and text.
+fn markdown_heading(line: &str) -> Option<(usize, &str)> {
+    let line = line.trim();
+    let level = line.bytes().take_while(|b| *b == b'#').count();
+    let text = line[level..].strip_prefix(' ')?;
+    (1..=6).contains(&level).then_some((level, text))
 }
 
 /// Byte range of each `<pre>` block's code (inside `<pre>` / `<pre><code ..>`),
@@ -2036,13 +2071,8 @@ fn convert_markdown_headings(html: &str) -> String {
 fn code_block_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
     let mut ranges = Vec::new();
     let mut pos = 0;
-    while let Some(found) = html[pos..].find("<pre") {
+    while let Some(found) = pre_start(&html[pos..]) {
         let tag = pos + found;
-        // `<pre>` or `<pre attr..>`, not e.g. `<prefix>`.
-        if !html[tag + 4..].starts_with(['>', ' ', '\t', '\n']) {
-            pos = tag + 4;
-            continue;
-        }
         let Some(gt) = html[tag..].find('>') else { break };
         let content_start = tag + gt + 1;
         let (code_start, end_marker) = if html[content_start..].starts_with("<code") {
@@ -2070,14 +2100,32 @@ pub(crate) fn code_blocks_of(html: &str) -> Vec<String> {
 fn code_block_texts(html: &str) -> Vec<String> {
     code_block_ranges(html).into_iter()
         .map(|r| {
-            let mut out = String::with_capacity(r.len());
-            let mut in_tag = false;
-            for c in html[r].chars() {
-                match c {
-                    '<' => in_tag = true,
-                    '>' if in_tag => in_tag = false,
-                    _ if !in_tag => out.push(c),
-                    _ => {}
+            let code = &html[r];
+            let mut out = String::with_capacity(code.len());
+            let mut tag = None;
+            // Lines may end in `<br>` instead of a newline (dropped with the
+            // other tags, the code was copied as one line); a `<br>` and the
+            // newline beside it are one break, as where the block is drawn
+            // (`collect_code_text_inner`).
+            let (mut after_br, mut text_newline) = (false, false);
+            for (i, c) in code.char_indices() {
+                match (c, tag) {
+                    ('<', _) => tag = Some(i + 1),
+                    ('>', Some(start)) => {
+                        tag = None;
+                        if code[start..i].trim_end_matches('/').trim().eq_ignore_ascii_case("br") {
+                            if !text_newline {
+                                out.push('\n');
+                            }
+                            (after_br, text_newline) = (true, false);
+                        }
+                    }
+                    (_, Some(_)) => {}
+                    ('\n', None) if after_br => after_br = false,
+                    (_, None) => {
+                        (after_br, text_newline) = (false, c == '\n');
+                        out.push(c);
+                    }
                 }
             }
             out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
@@ -2092,10 +2140,17 @@ fn is_long_answer(body: &str) -> bool {
     body.lines().nth(LONG_ANSWER_LINES).is_some() || body.len() > LONG_ANSWER_CHARS
 }
 
+/// A code block's lines. Most senders end the last one with a newline,
+/// which isn't a line more: a block of exactly the limit was cut to itself
+/// and offered "1 more lines" that didn't exist.
+fn code_lines(code: &str) -> Vec<&str> {
+    code.strip_suffix('\n').unwrap_or(code).split('\n').collect()
+}
+
 /// Whether each code block is longer than `max_lines` (worth a Show more).
 fn long_code_blocks(html: &str, max_lines: usize) -> Vec<bool> {
     code_block_ranges(html).into_iter()
-        .map(|r| html[r].split('\n').nth(max_lines).is_some())
+        .map(|r| code_lines(&html[r]).len() > max_lines)
         .collect()
 }
 
@@ -2107,11 +2162,12 @@ fn collapse_code_blocks(html: &str, max_lines: usize, expanded: &[bool]) -> Stri
         if expanded.get(i).copied().unwrap_or(false) {
             continue;
         }
-        let lines: Vec<&str> = html[range.clone()].split('\n').collect();
+        let lines = code_lines(&html[range.clone()]);
         if lines.len() > max_lines {
+            let hidden = lines.len() - max_lines;
             result.push_str(&html[copied..range.start]);
             result.push_str(&lines[..max_lines].join("\n"));
-            result.push_str(&format!("\n... ({} more lines)", lines.len() - max_lines));
+            result.push_str(&format!("\n... ({hidden} more line{})", if hidden == 1 { "" } else { "s" }));
             copied = range.end;
         }
     }
@@ -2175,7 +2231,82 @@ fn category_emojis(category: u8) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{category_emojis, code_block_texts, collapse_code_blocks, contains_word, format_clock, is_long_answer, long_code_blocks};
+    use super::{
+        category_emojis, code_block_texts, collapse_code_blocks, contains_word, convert_markdown_bullets,
+        convert_markdown_headings, format_clock, is_long_answer, long_code_blocks, outside_code, thread_action,
+    };
+    use crate::message::Message;
+
+    #[test]
+    fn code_in_a_formatted_body_is_not_read_as_markdown() {
+        // A `# comment` or `- item` line of code lost its marker and its
+        // line breaks; the text around the block is still converted.
+        let html = "intro<br># Title<pre><code># a comment\n- item\n## not a heading</code></pre>- one<br>- two";
+        let out = outside_code(&outside_code(html, convert_markdown_bullets), convert_markdown_headings);
+        assert_eq!(out, "intro<br><h1>Title</h1><pre><code># a comment\n- item\n## not a heading</code></pre><ul><li>one</li><li>two</li></ul>");
+        // A block that never closes is code to the end.
+        assert_eq!(outside_code("a<pre>- x", convert_markdown_bullets), "a<pre>- x");
+        // `<prefix>` isn't a code block.
+        assert_eq!(outside_code("<prefix>\n# T", convert_markdown_headings), "<prefix><br><h1>T</h1>");
+    }
+
+    #[test]
+    fn a_hash_alone_is_not_a_heading() {
+        // Every mention link has a `#`: with no heading lines the markup
+        // stays as it is (its newlines became <br>, a blank line per item).
+        let list = "<ul>\n<li><a href=\"https://matrix.to/#/@a:x\">a</a></li>\n<li>b</li>\n</ul>";
+        assert_eq!(convert_markdown_headings(list), list);
+        for text in ["#hashtag", "####### seven", "#", "a # b"] {
+            assert_eq!(convert_markdown_headings(text), text);
+        }
+        assert_eq!(convert_markdown_headings("## Two<br>text<br/>###### Six"), "<h2>Two</h2><br>text<br><h6>Six</h6>");
+    }
+
+    #[test]
+    fn code_copies_with_the_line_breaks_it_is_drawn_with() {
+        // Lines ending in <br> were copied as one line.
+        assert_eq!(code_block_texts("<pre><code>a<br>b<br/><br />c</code></pre>"), ["a\nb\n\nc"]);
+        // A <br> and the newline beside it are one break.
+        assert_eq!(code_block_texts("<pre><code>a<br>\nb\n<br>c</code></pre>"), ["a\nb\nc"]);
+    }
+
+    #[test]
+    fn a_trailing_newline_is_not_a_line_more() {
+        // Exactly the limit: nothing to show more of.
+        let fits = "<pre><code>a\nb\n</code></pre>";
+        assert_eq!(long_code_blocks(fits, 2), [false]);
+        assert_eq!(collapse_code_blocks(fits, 2, &[false]), fits);
+        let over = "<pre><code>a\nb\nc\n</code></pre>";
+        assert_eq!(long_code_blocks(over, 2), [true]);
+        assert_eq!(collapse_code_blocks(over, 2, &[false]), "<pre><code>a\nb\n... (1 more line)</code></pre>");
+    }
+
+    #[test]
+    fn reply_in_thread_opens_a_thread_of_the_rows_own_view() {
+        let msg = |root: Option<&str>| fluxchat_core::MessageInfo {
+            event_id: "$m".into(), thread_root: root.map(str::to_string), ..Default::default()
+        };
+        // A side pane's row: its room, not the main view's.
+        assert!(matches!(thread_action("!side:x", &msg(None)), Some(Message::OpenThread(room, root)) if room == "!side:x" && root == "$m"));
+        assert!(matches!(thread_action("!side:x", &msg(Some("$root"))), Some(Message::OpenThread(_, root)) if root == "$root"));
+        // Already in a thread: nothing to open.
+        assert!(thread_action("thread::!side:x::$root", &msg(Some("$root"))).is_none());
+    }
+
+    #[tokio::test]
+    async fn reaction_tooltips_name_people_from_the_rows_own_view() {
+        let member = |id: &str, name: &str| fluxchat_core::MemberInfo {
+            user_id: id.into(), display_name: name.into(), avatar_url: None, power_level: 0, role: "Member".into(),
+            presence: "offline".into(), status_msg: None, server_name: "x".into(), last_active_secs: None,
+        };
+        let mut app = crate::panes::flow_tests::app();
+        app.selected_room_id = Some("!main:x".into());
+        app.members_by_room.insert("!main:x".into(), vec![member("@a:x", "Someone else")]);
+        app.members_by_room.insert("!side:x".into(), vec![member("@a:x", "Alice")]);
+        // The side pane's people, and the local part for anyone not in its list.
+        assert_eq!(app.reactor_names("!side:x", &["@a:x".to_string(), "@zed:y.org".to_string()]), "Alice, zed");
+        assert_eq!(app.reactor_names("!main:x", &["@a:x".to_string()]), "Someone else");
+    }
 
     #[test]
     fn code_blocks_copy_as_plain_text_and_long_answers_fold() {
