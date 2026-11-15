@@ -391,10 +391,12 @@ pub enum Message {
     DirectorySearch,
     DirectorySearchChanged(String),
     DirectoryServerChanged(String),
-    DirectoryResults(Vec<fluxchat_core::rooms::PublicRoomResult>, Option<String>), // results, next_batch
+    DirectoryResults(u64, Vec<fluxchat_core::rooms::PublicRoomResult>, Option<String>), // search it answers, results, next_batch
     DirectoryLoadMore,
     DirectoryJoinRoom(String), // room_id
     SetNick(String),                            // new display name
+    /// The display name change went through, or not: (the name to put back, error).
+    NickSet(Result<(), (Option<String>, String)>),
     SendDm(String, String),                     // user_id, body
 
     // --- File upload ---
@@ -507,6 +509,9 @@ pub enum Message {
     JoinRequestsWatching(String, crate::state::TaskGuard),
     ToggleJoinRequests,
     RespondJoinRequest(String, fluxchat_core::room_admin::JoinResponse), // user_id
+    /// An answer to a join request didn't go through: room, the request
+    /// that was taken off the list (and where it was), error.
+    JoinRequestFailed(String, Option<(usize, Box<fluxchat_core::room_admin::JoinRequest>)>, String),
     KnockRoom(String, Option<String>), // room_id_or_alias, reason
     CancelKnock(String), // room_id
     SendLocation(String), // geo_uri (e.g. "geo:51.5074,-0.1278")
@@ -522,7 +527,7 @@ pub enum Message {
     VideoEndOfStream,
     VideoClose,
     VideoThumbResolved(String, Vec<u8>, u32, u32), // thumb_key, png_data, width, height
-    AudioFinished,
+    AudioFinished(u64), // the playback that ended (`audio_token`)
     StartVoiceRecording,
     /// Mic pressed: start recording (push to talk), or stop a tapped one.
     MicPressed,

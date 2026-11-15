@@ -101,6 +101,8 @@ const MENTIONS_FETCH: u32 = 50;
 const PALETTE_ACTION_LIMIT: usize = 5;
 /// Space kept above the last-read message when opening at the first unread.
 const READ_ANCHOR_MARGIN: f32 = 60.0;
+/// Space kept above a message that is jumped to.
+const JUMP_TOP_MARGIN: f32 = 80.0;
 /// Settings keys for restoring the last view on launch.
 const LAST_ROOM_KEY: &str = "last_room";
 /// Threads listed under each room in the sidebar.
@@ -3269,6 +3271,11 @@ impl FluxChat {
                         |(uid, p)| Message::ProfilePresenceLoaded(uid, p),
                     );
                     Task::batch([verified, presence])
+                } else if matches!(&modal, crate::state::Modal::Invite) {
+                    // For the room on screen: the target of an invite dialog
+                    // closed without inviting (a space, another room) is not this one's.
+                    self.invite_target_id = None;
+                    Task::none()
                 } else if matches!(&modal, crate::state::Modal::CreateDm) {
                     self.dm_search.clear();
                     self.dm_results.clear();
@@ -3552,6 +3559,8 @@ impl FluxChat {
                         Ok::<_, String>(result)
                     },
                     |result| match result {
+                        // A space is picked in the spaces bar, never opened as a chat.
+                        Ok(room) if room.is_space => Message::SelectSpace(Some(room.room_id)),
                         Ok(room) => Message::SelectRoom(room.room_id),
                         Err(e) => Message::ShowError(format!("Join failed: {e}")),
                     },
@@ -3608,6 +3617,14 @@ impl FluxChat {
                 );
             }
             Message::ScrollMessagesBy(fraction) => {
+                // Nowhere to go (at the end already, or everything fits): the
+                // scrollable wouldn't move, so it reports nothing back, and
+                // an offset past its end would stand as where the view is —
+                // "not at the bottom" (new messages no longer followed) with
+                // rows built around a place that isn't on screen.
+                if self.messages_underfilled || (fraction > 0.0 && self.messages_at_bottom) {
+                    return Task::none();
+                }
                 let delta = self.messages_viewport_h * fraction;
                 let y = (self.last_scroll_offset + delta).max(0.0);
                 self.messages_at_bottom = false;
@@ -3920,13 +3937,16 @@ impl FluxChat {
                     };
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
                             fluxchat_core::rooms::send_raw_event(
                                 &client, &room_id, &event_type,
                                 state_key.as_deref(), &body,
-                            ).await.ok()
+                            ).await.map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Event not sent: {e}")),
+                        },
                     );
                 }
             }
@@ -3941,6 +3961,9 @@ impl FluxChat {
                 self.directory_results.clear();
                 self.directory_next_batch = None;
                 self.directory_loading = true;
+                // A new search: whatever the earlier ones still bring is not for it.
+                self.directory_request += 1;
+                let request = self.directory_request;
                 let core = self.core.clone();
                 let query = self.directory_search.clone();
                 let server = self.directory_server.clone();
@@ -3951,13 +3974,19 @@ impl FluxChat {
                         let srv = if server.is_empty() { None } else { Some(server.as_str()) };
                         fluxchat_core::rooms::list_public_rooms(&client, search, Some(20), None, srv).await.ok()
                     },
-                    |result| match result {
-                        Some((rooms, next)) => Message::DirectoryResults(rooms, next),
-                        None => Message::DirectoryResults(vec![], None),
+                    move |result| match result {
+                        Some((rooms, next)) => Message::DirectoryResults(request, rooms, next),
+                        None => Message::DirectoryResults(request, vec![], None),
                     },
                 );
             }
-            Message::DirectoryResults(rooms, next_batch) => {
+            Message::DirectoryResults(request, rooms, next_batch) => {
+                // An answer to an earlier search (another server, another
+                // query): appended here it mixed the two lists, and its
+                // "next page" token went to the wrong server.
+                if request != self.directory_request {
+                    return Task::none();
+                }
                 self.directory_loading = false;
                 let mxc_uris: Vec<String> = rooms.iter()
                     .filter_map(|r| r.avatar_url.clone())
@@ -3971,6 +4000,7 @@ impl FluxChat {
             Message::DirectoryLoadMore => {
                 if let Some(since) = self.directory_next_batch.clone() {
                     self.directory_loading = true;
+                    let request = self.directory_request;
                     let core = self.core.clone();
                     let query = self.directory_search.clone();
                     let server = self.directory_server.clone();
@@ -3981,22 +4011,23 @@ impl FluxChat {
                             let srv = if server.is_empty() { None } else { Some(server.as_str()) };
                             fluxchat_core::rooms::list_public_rooms(&client, search, Some(20), Some(&since), srv).await.ok()
                         },
-                        |result| match result {
-                            Some((rooms, next)) => Message::DirectoryResults(rooms, next),
-                            None => Message::DirectoryResults(vec![], None),
+                        move |result| match result {
+                            Some((rooms, next)) => Message::DirectoryResults(request, rooms, next),
+                            None => Message::DirectoryResults(request, vec![], None),
                         },
                     );
                 }
             }
             Message::DirectoryJoinRoom(room_id) => {
-                let core = self.core.clone();
-                return Task::perform(
-                    async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::join_room(&client, &room_id).await.ok()
-                    },
-                    |_| Message::CloseModal,
-                );
+                // Like any other join: through servers that are in the room
+                // (one listed by another server's directory can't be joined
+                // by its bare ID), into the room, and with failures shown.
+                let via = self.directory_results.iter()
+                    .find(|r| r.room_id == room_id)
+                    .map(crate::update_room_admin::directory_via)
+                    .unwrap_or_default();
+                self.modal = None;
+                return self.update(Message::JoinRoomVia(room_id, via));
             }
             Message::SetTopic(room_id, topic) => {
                 let core = self.core.clone();
@@ -4013,24 +4044,39 @@ impl FluxChat {
                 );
             }
             Message::SetNick(name) => {
-                self.display_name = Some(name.clone());
+                // Shown at once; NickSet puts the old one back if the server refuses.
+                let previous = self.display_name.replace(name.clone());
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::set_display_name(&client, &name).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::profile::set_display_name(&client, &name).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    move |r| Message::NickSet(r.map_err(|e| (previous, e))),
                 );
             }
+            Message::NickSet(result) => match result {
+                Ok(()) => self.settings_status = Some("Display name updated".into()),
+                Err((previous, e)) => {
+                    self.display_name = previous;
+                    let failed = format!("Couldn't change the display name: {e}");
+                    self.settings_status = Some(failed.clone());
+                    return self.update(Message::ShowError(failed));
+                }
+            },
             Message::SendDm(user_id, body) => {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::send_dm(&client, &user_id, &body).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::send_dm(&client, &user_id, &body).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    // The text left the composer when the command ran: say so
+                    // when it went nowhere.
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Message not sent: {e}")),
+                    },
                 );
             }
 
@@ -4056,14 +4102,16 @@ impl FluxChat {
             Message::FileDropped(path) => {
                 return Task::perform(
                     async move {
-                        let data = tokio::fs::read(&path).await.ok()?;
-                        let name = path.file_name()?.to_string_lossy().to_string();
+                        let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().to_string();
+                        // A folder, or a file we may not read: say so rather
+                        // than attach nothing.
+                        let data = tokio::fs::read(&path).await.map_err(|e| format!("Couldn't attach {name}: {e}"))?;
                         let mime = mime_from_extension(&name);
-                        Some((name, mime, data))
+                        Ok((name, mime, data))
                     },
-                    |result| match result {
-                        Some((name, mime, data)) => Message::FileSelected(name, mime, data),
-                        None => Message::Noop,
+                    |result: Result<_, String>| match result {
+                        Ok((name, mime, data)) => Message::FileSelected(name, mime, data),
+                        Err(e) => Message::ShowError(e),
                     },
                 );
             }
@@ -4224,8 +4272,8 @@ impl FluxChat {
 
             // --- URL Previews ---
             Message::UrlPreviewFetched(url, preview) => {
-                self.url_previews_pending.remove(&url);
                 if let Some(preview) = preview {
+                    self.url_previews_pending.remove(&url);
                     // Fetch og:image if present
                     let task = if let Some(ref image_url) = preview.image_url {
                         if !self.url_preview_images.contains_key(image_url) && image_url.starts_with("mxc://") {
@@ -4260,6 +4308,12 @@ impl FluxChat {
                     evict_cache(&mut self.url_previews, URL_PREVIEW_LIMIT);
                     return task;
                 }
+                // No preview (the page has none, the server doesn't make
+                // them, or the request failed): the URL stays in the pending
+                // set until Tick lets it go. Taken out at once, every
+                // timeline update asked the server again for each such link
+                // in the room.
+                self.url_preview_misses.insert(url, std::time::Instant::now());
             }
             Message::UrlPreviewImageResolved(url, data) => {
                 let handle = iced::widget::image::Handle::from_bytes(data);
@@ -4297,9 +4351,21 @@ impl FluxChat {
 
             // --- Formatting ---
             Message::InsertFormat(prefix, suffix) => {
+                use iced::widget::text_editor::{Action, Motion};
+                // From the editor, not its mirror: that one drops trailing
+                // line breaks, and a code block started on a fresh line
+                // would open on the line before (where it isn't one).
+                self.input_text = self.input_content.text();
                 self.input_text.push_str(prefix);
                 self.input_text.push_str(suffix);
                 self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                // New content starts with the caret at the very beginning
+                // (the next key went in front of the whole message): put it
+                // between the markers, where the text they format goes.
+                self.input_content.perform(Action::Move(Motion::DocumentEnd));
+                for _ in suffix.chars() {
+                    self.input_content.perform(Action::Move(Motion::Left));
+                }
                 return iced::widget::operation::focus(crate::view::input_id());
             }
 
@@ -4404,13 +4470,22 @@ impl FluxChat {
                 );
             }
             Message::CancelKnock(room_id) => {
+                // Gone from the list at once, like a declined invite; the
+                // refresh brings it back if the server refused.
+                self.knocked_rooms.retain(|r| r.room_id != room_id);
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::cancel_knock(&client, &room_id).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::cancel_knock(&client, &room_id).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |result| match result {
+                        Ok(()) => Message::RefreshRoomList,
+                        Err(e) => Message::Batch(vec![
+                            Message::RefreshRoomList,
+                            Message::ShowError(format!("Couldn't withdraw the request: {e}")),
+                        ]),
+                    },
                 );
             }
 
@@ -4438,16 +4513,27 @@ impl FluxChat {
                 self.audio_start_time = Some(std::time::Instant::now());
                 self.audio_duration_ms = duration;
                 self.audio_progress = 0.0;
+                // This playback's number. A player reports its end when it is
+                // stopped too, and a download can finish after Stop: without
+                // the number the previous clip's end reset the one just
+                // started, and a clip stopped while loading played anyway.
+                use std::sync::atomic::Ordering;
+                let token = self.audio_token.fetch_add(1, Ordering::SeqCst) + 1;
+                let current = self.audio_token.clone();
 
                 let core = self.core.clone();
                 let tx = self.timeline_tx.clone();
                 let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
                         let (bytes, _mime) = fluxchat_core::media::get_event_media_bytes(
                             &client, &real_room, &event_id,
-                        ).await.ok()?;
+                        ).await.map_err(|e| e.to_string())?;
+                        // Stopped (or another clip started) while this loaded.
+                        if current.load(Ordering::SeqCst) != token {
+                            return Ok(());
+                        }
                         // Voice messages (OGG Opus) decode and play in-process.
                         if is_voice || _mime.contains("ogg") || _mime.contains("opus") {
                             match fluxchat_core::voice::decode_ogg_opus(&bytes) {
@@ -4455,12 +4541,21 @@ impl FluxChat {
                                     let tx_done = tx.clone();
                                     let started = fluxchat_core::voice::play_pcm(
                                         pcm, channels, 48000,
-                                        Box::new(move || { let _ = tx_done.send(Message::AudioFinished); }),
+                                        Box::new(move || { let _ = tx_done.send(Message::AudioFinished(token)); }),
                                     );
                                     match started {
                                         Ok(handle) => {
-                                            *AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
-                                            return Some(());
+                                            // Checked under the lock Stop takes the handle with.
+                                            let mut playing = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner());
+                                            if current.load(Ordering::SeqCst) == token {
+                                                // (A preview of your own recording may be going.)
+                                                if let Some(previous) = playing.replace(handle) {
+                                                    previous.stop();
+                                                }
+                                            } else {
+                                                handle.stop();
+                                            }
+                                            return Ok(());
                                         }
                                         Err(e) => tracing::warn!("In-process playback failed, using system player: {e}"),
                                     }
@@ -4474,8 +4569,10 @@ impl FluxChat {
                             else if _mime.contains("wav") { "wav" }
                             else if _mime.contains("mp4") || _mime.contains("m4a") { "m4a" }
                             else { "ogg" };
-                        let path = std::env::temp_dir().join(format!("fluxchat_audio.{ext}"));
-                        std::fs::write(&path, &bytes).ok()?;
+                        // A file per playback: the previous clip's player removes
+                        // its file when it exits, which can be after this one is written.
+                        let path = std::env::temp_dir().join(format!("fluxchat_audio_{}_{token}.{ext}", std::process::id()));
+                        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
 
                         let tx2 = tx.clone();
                         std::thread::spawn(move || {
@@ -4508,15 +4605,24 @@ impl FluxChat {
                                 let _ = c.wait();
                             }
                             let _ = std::fs::remove_file(&path);
-                            let _ = tx2.send(Message::AudioFinished);
+                            let _ = tx2.send(Message::AudioFinished(token));
                         });
 
-                        Some(())
+                        Ok(())
                     },
-                    |_| Message::Noop,
+                    // Couldn't load it: stop showing it as playing.
+                    move |result: Result<(), String>| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::Batch(vec![
+                            Message::AudioFinished(token),
+                            Message::ShowError(format!("Couldn't play the audio: {e}")),
+                        ]),
+                    },
                 );
             }
             Message::StopAudio => {
+                // Whatever is still loading or ending belongs to a playback that's over.
+                self.audio_token.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if let Some(handle) = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).take() {
                     handle.stop();
                 }
@@ -4538,21 +4644,29 @@ impl FluxChat {
                         .and_then(|g| g.items.iter().find(|m| m.event_id == event_id)))
                     .map(|m| m.body.clone())
                     .unwrap_or_else(|| "file".to_string());
+                // The name is the sender's: only its last part is suggested.
+                let filename = crate::update_spaces::save_name(&filename);
                 let core = self.core.clone();
                 let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
+                            .map_err(|e| e.to_string())?;
                         // Open save dialog
-                        let handle = rfd::AsyncFileDialog::new()
+                        let Some(handle) = rfd::AsyncFileDialog::new()
                             .set_file_name(&filename)
                             .save_file()
-                            .await?;
-                        handle.write(&data).await.ok()?;
-                        Some(())
+                            .await
+                        else {
+                            return Ok(()); // cancelled
+                        };
+                        handle.write(&data).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |result: Result<(), String>| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Download failed: {e}")),
+                    },
                 );
             }
             Message::PlayVideo(event_id, room_id) => {
@@ -4569,23 +4683,33 @@ impl FluxChat {
                 return Task::perform(
                     async move {
                         // Lazy GStreamer init (safe to call multiple times)
-                        if let Err(e) = gstreamer::init() {
-                            tracing::warn!("GStreamer init failed: {e}");
-                            return None;
-                        }
-                        let client = core.get_client().await.ok()?;
-                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &eid).await.ok()?;
+                        gstreamer::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &eid).await
+                            .map_err(|e| e.to_string())?;
                         let tmp = video_temp_path(&event_id, &filename);
-                        std::fs::write(&tmp, &data).ok()?;
-                        Some((event_id, tmp))
+                        std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
+                        Ok((event_id, tmp))
                     },
-                    |result| match result {
-                        Some((eid, path)) => Message::VideoReady(eid, path),
-                        None => Message::Noop,
+                    // A click on Play that does nothing looks like a dead button.
+                    |result: Result<_, String>| match result {
+                        Ok((eid, path)) => Message::VideoReady(eid, path),
+                        Err(e) => Message::ShowError(format!("Couldn't play the video: {e}")),
                     },
                 );
             }
             Message::VideoReady(event_id, path) => {
+                // Downloaded while we moved on: with its message in no view
+                // there would be no player to see or to close, only its sound.
+                let on_screen = self.pane_keys().map(str::to_string)
+                    .chain(self.selected_room_id.clone())
+                    .any(|key| self.messages_by_room.get(&key).is_some_and(|msgs| msgs.iter().any(|m| m.event_id == event_id)));
+                if !on_screen {
+                    if self.video_temp_path.as_ref() != Some(&path) {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    return Task::none();
+                }
                 match url::Url::from_file_path(&path) {
                     Ok(file_url) => {
                         match create_video_player(&file_url) {
@@ -4593,7 +4717,8 @@ impl FluxChat {
                                 video.set_volume(1.0);
                                 self.video_player = Some(video);
                                 self.video_playing_event = Some(event_id);
-                                self.video_temp_path = Some(path);
+                                // The video this one replaces is closed with it.
+                                crate::update_spaces::swap_temp_file(&mut self.video_temp_path, path);
                                 self.video_position = 0.0;
                                 self.video_dragging = false;
                             }
@@ -4655,7 +4780,12 @@ impl FluxChat {
                 self.image_cache.insert(key.clone(), handle);
                 self.video_thumb_sizes.insert(key, (w, h));
             }
-            Message::AudioFinished => {
+            Message::AudioFinished(token) => {
+                // The end of a playback that was stopped or replaced: the one
+                // playing now isn't over.
+                if token != self.audio_token.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Task::none();
+                }
                 AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).take();
                 self.audio_playing = None;
                 self.audio_progress = 0.0;
@@ -4680,7 +4810,10 @@ impl FluxChat {
                         VOICE_HANDLE.lock().unwrap_or_else(|e| e.into_inner()).0 = Some(handle);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to start recording: {e}");
+                        // Said out loud: holding the mic with nothing
+                        // recording looks like a message being sent.
+                        self.ptt_held = None;
+                        return self.update(Message::ShowError(format!("Couldn't start recording: {e}")));
                     }
                 }
             }
@@ -4693,7 +4826,7 @@ impl FluxChat {
                         Ok((bytes, duration)) => {
                             return self.update(Message::VoiceRecordingReady(bytes, duration));
                         }
-                        Err(e) => tracing::warn!("Voice encode failed: {e}"),
+                        Err(e) => return self.update(Message::ShowError(format!("Couldn't save the recording: {e}"))),
                     }
                 }
             }
@@ -4733,6 +4866,20 @@ impl FluxChat {
                 if let Some((ref bytes, _)) = self.voice_ready {
                     let bytes = bytes.clone();
                     std::thread::spawn(move || {
+                        // In-process first, the way received voice messages
+                        // play: the players below are on few machines (none
+                        // of them on a stock Mac), and without one the
+                        // button did nothing.
+                        if let Ok((pcm, channels)) = fluxchat_core::voice::decode_ogg_opus(&bytes) {
+                            if let Ok(handle) = fluxchat_core::voice::play_pcm(pcm, channels, 48000, Box::new(|| {})) {
+                                // A second click starts it over.
+                                let previous = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).replace(handle);
+                                if let Some(previous) = previous {
+                                    previous.stop();
+                                }
+                                return;
+                            }
+                        }
                         let path = std::env::temp_dir().join("fluxchat_voice_preview.ogg");
                         if std::fs::write(&path, &bytes).is_ok() {
                             #[cfg(target_os = "macos")]
@@ -4799,7 +4946,25 @@ impl FluxChat {
                     if let Some(msgs) = self.messages_by_room.get(room_id) {
                         if msgs.iter().any(|m| m.event_id == event_id) {
                             if let Some(top) = self.row_top(&event_id) {
-                                let y = (top - 80.0).max(0.0);
+                                let y = (top - JUMP_TOP_MARGIN).max(0.0);
+                                // In the last screenful of a view that's at its
+                                // end: it is on screen, and the scrollable has
+                                // nowhere further to go — it wouldn't move, so it
+                                // wouldn't report, and "scrolled to y" would
+                                // stand: new messages no longer followed, rows
+                                // built around an offset past the end. Only
+                                // from measured rows (estimates say little
+                                // about what is on screen), or a list that fits.
+                                let on_screen = self.messages_underfilled || {
+                                    let rows = self.visible_rows(room_id, msgs);
+                                    let measured = self.row_heights.borrow();
+                                    rows.iter().position(|m| m.event_id == event_id)
+                                        .and_then(|at| rows[at..].iter().map(|m| measured.get(&m.event_id).copied()).sum::<Option<f32>>())
+                                        .is_some_and(|below| below <= self.messages_viewport_h - JUMP_TOP_MARGIN)
+                                };
+                                if self.messages_at_bottom && on_screen {
+                                    return Task::none();
+                                }
                                 self.messages_at_bottom = false;
                                 self.last_scroll_offset = y;
                                 return iced::widget::operation::scroll_to(
@@ -4830,10 +4995,16 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::report_message(&client, &room_id, &event_id, &reason).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::messages::report_message(&client, &room_id, &event_id, &reason).await
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        // The dialog is gone by now: a report that didn't go
+                        // through must not look like one that did.
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Report not sent: {e}")),
+                        },
                     );
                 }
             }
@@ -4928,12 +5099,17 @@ impl FluxChat {
                 self.location_lon = val;
             }
             Message::LocationSubmit => {
-                let lat = self.location_lat.trim().to_string();
-                let lon = self.location_lon.trim().to_string();
-                if lat.is_empty() || lon.is_empty() {
+                let (Ok(lat), Ok(lon)) = (
+                    self.location_lat.trim().parse::<f64>(),
+                    self.location_lon.trim().parse::<f64>(),
+                ) else {
                     return Task::none();
-                }
-                if lat.parse::<f64>().is_err() || lon.parse::<f64>().is_err() {
+                };
+                // A point on the map: "nan" and "1e9" parse as numbers too,
+                // and a pair pasted the other way round (GeoJSON order) is
+                // the usual slip. Sent as it was, nobody could show it.
+                if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                    self.help_text = Some("Latitude goes from -90 to 90, longitude from -180 to 180".into());
                     return Task::none();
                 }
                 let geo_uri = format!("geo:{lat},{lon}");
@@ -5098,7 +5274,12 @@ impl FluxChat {
                         (room_id, result.err())
                     },
                     // Reloads the Security tab either way (shows the real state on failure).
-                    |(rid, err)| Message::RoomAdminDone(rid, err),
+                    |(rid, err)| match err {
+                        None => Message::RoomAdminDone(rid, None),
+                        // And the room list: its lock (header, status bar)
+                        // was set above and must not keep saying "encrypted".
+                        Some(e) => Message::Batch(vec![Message::RoomAdminDone(rid, Some(e)), Message::RefreshRoomList]),
+                    },
                 );
             }
             Message::RoomSettingsSaveName => {
@@ -5116,7 +5297,12 @@ impl FluxChat {
                         },
                         |r| match r {
                             Ok(_) => Message::Noop,
-                            Err(e) => Message::ShowError(format!("Renaming room failed: {e}")),
+                            // The new name above was ours alone: the list is
+                            // rebuilt so the room goes by its real one again.
+                            Err(e) => Message::Batch(vec![
+                                Message::ShowError(format!("Renaming room failed: {e}")),
+                                Message::RefreshRoomList,
+                            ]),
                         },
                     );
                 }
@@ -5136,7 +5322,10 @@ impl FluxChat {
                         },
                         |r| match r {
                             Ok(_) => Message::Noop,
-                            Err(e) => Message::ShowError(format!("Setting topic failed: {e}")),
+                            Err(e) => Message::Batch(vec![
+                                Message::ShowError(format!("Setting topic failed: {e}")),
+                                Message::RefreshRoomList,
+                            ]),
                         },
                     );
                 }
@@ -5192,13 +5381,13 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::remove_room_avatar(&client, &room_id).await.ok()?;
-                            Some(room_id)
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::remove_room_avatar(&client, &room_id).await.map_err(|e| e.to_string())?;
+                            Ok(room_id)
                         },
-                        |result| match result {
-                            Some(room_id) => Message::RoomAvatarUpdated(room_id, None),
-                            None => Message::Noop,
+                        |result: Result<String, String>| match result {
+                            Ok(room_id) => Message::RoomAvatarUpdated(room_id, None),
+                            Err(e) => Message::ShowError(format!("Couldn't remove the icon: {e}")),
                         },
                     );
                 }
@@ -5217,10 +5406,14 @@ impl FluxChat {
                     self.modal = None;
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::forward_message(&client, &rid, &body, formatted.as_deref()).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::messages::forward_message(&client, &rid, &body, formatted.as_deref()).await
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Forwarding failed: {e}")),
+                        },
                     );
                 }
             }
@@ -5257,10 +5450,14 @@ impl FluxChat {
                     self.invite_results.clear();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::invite_user(&client, &room_id, &user_id).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::invite_user(&client, &room_id, &user_id).await
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Invite failed: {e}")),
+                        },
                     );
                 }
             }
@@ -5319,30 +5516,10 @@ impl FluxChat {
             }
 
             // --- Room notifications ---
-            Message::MuteRoom => {
-                if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_notification_mode(&client, &room_id, "mute").await.ok()
-                        },
-                        |_| Message::Noop,
-                    );
-                }
-            }
-            Message::UnmuteRoom => {
-                if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_notification_mode(&client, &room_id, "all").await.ok()
-                        },
-                        |_| Message::Noop,
-                    );
-                }
-            }
+            // `/mute`, `/unmute`: the change Room Settings makes, so a refusal
+            // is shown (dropped, the room just stayed as loud as it was).
+            Message::MuteRoom => return self.update(Message::SetRoomNotifyMode("mute".into())),
+            Message::UnmuteRoom => return self.update(Message::SetRoomNotifyMode("all".into())),
             Message::RefreshTimeline => {
                 // Manual rebuild: drop the Timeline (aborting its watcher) and
                 // open a fresh one; the new watcher replaces the view's messages.
@@ -5800,10 +5977,22 @@ impl FluxChat {
                 use crate::state::ResizeTarget;
                 let window_w = self.window_size.0;
                 // Width of the panels to the right of a divider (left→right:
-                // panes | pins | threads | mentions | members).
-                let members = if self.show_member_list { self.member_list_width } else { 0.0 };
-                let mentions = if self.mentions_open { self.mentions_width } else { 0.0 };
-                let threads = if self.threads_open { self.thread_list_width } else { 0.0 };
+                // panes | pins | threads | mentions | members), as view_main
+                // lays them out: each with its divider, the member list only
+                // with a room open, and its rail when it is hidden. Counted
+                // wrong, the divider sits that far from the cursor (the
+                // panel jumps when the drag starts).
+                let handle = crate::view::RESIZE_HANDLE_WIDTH;
+                let room_open = self.selected_room_id.is_some();
+                let members = if !room_open {
+                    0.0
+                } else if self.show_member_list {
+                    self.member_list_width + handle
+                } else {
+                    crate::view::MEMBER_RAIL_WIDTH
+                };
+                let mentions = if self.mentions_open { self.mentions_width + handle } else { 0.0 };
+                let threads = if self.threads_open && room_open { self.thread_list_width + handle } else { 0.0 };
                 match self.resizing {
                     Some(ResizeTarget::RoomList) => {
                         self.sidebar_width = (x - 56.0).clamp(150.0, 400.0);
@@ -5864,6 +6053,11 @@ impl FluxChat {
                         None => self.update(Message::SelectRoom(target)),
                     };
                 }
+                // A space we're in: show it. (Not a room, so it fell through
+                // to "Join?", and joining opened the space as a chat.)
+                if self.spaces.iter().any(|s| s.room_id == target) {
+                    return self.update(Message::SelectSpace(Some(target)));
+                }
                 self.modal = Some(crate::state::Modal::ConfirmJoin { target, via });
             }
             Message::Escape => {
@@ -5886,7 +6080,9 @@ impl FluxChat {
                 } else if !self.emoji_completions.is_empty() {
                     self.emoji_completions.clear();
                 } else if self.modal.is_some() {
-                    self.modal = self.modal_after_close();
+                    // As the close button does: Settings' mic test would
+                    // otherwise keep the microphone open behind a closed dialog.
+                    return self.update(Message::CloseModal);
                 } else if self.tmux_prefix {
                     crate::panes::PREFIX_ARMED.store(false, std::sync::atomic::Ordering::Relaxed);
                     self.tmux_prefix = false;
@@ -5942,6 +6138,16 @@ impl FluxChat {
                 self.flush_layout();
                 self.sweep_stalled_runs();
                 self.flush_run_texts();
+                // Links without a preview get another try after a while.
+                const URL_PREVIEW_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+                let pending = &mut self.url_previews_pending;
+                self.url_preview_misses.retain(|url, at| {
+                    let keep = at.elapsed() < URL_PREVIEW_RETRY_AFTER;
+                    if !keep {
+                        pending.remove(url);
+                    }
+                    keep
+                });
                 let fetch_texts = self.fetch_run_texts();
                 if self.sync_running {
                     let mut tasks = Vec::new();
@@ -6075,7 +6281,7 @@ impl FluxChat {
                 | Message::SetAliasPublished(..) | Message::ConfirmRoomUpgrade(_)
                 | Message::RoomUpgraded(..) | Message::JoinRequestsWatching(..)
                 | Message::JoinRequestsUpdated(..) | Message::ToggleJoinRequests
-                | Message::RespondJoinRequest(..)) => {
+                | Message::RespondJoinRequest(..) | Message::JoinRequestFailed(..)) => {
                 if let Some(task) = self.handle_room_admin_message(msg) {
                     return task;
                 }

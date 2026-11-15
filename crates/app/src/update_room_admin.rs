@@ -5,6 +5,21 @@ use fluxchat_core::room_admin;
 use crate::message::Message;
 use crate::state::{FluxChat, Modal};
 
+/// Servers to join a directory entry through: the ones its address and its
+/// ID name. Our server can only join a room it isn't in yet by asking one
+/// that is; without these, joining anything listed by another server's
+/// directory failed.
+pub(crate) fn directory_via(room: &fluxchat_core::rooms::PublicRoomResult) -> Vec<String> {
+    let server_of = |id: &str| id.split_once(':').map(|(_, server)| server.to_string());
+    let mut via: Vec<String> = Vec::new();
+    for server in [room.alias.as_deref().and_then(server_of), server_of(&room.room_id)].into_iter().flatten() {
+        if !server.is_empty() && !via.contains(&server) {
+            via.push(server);
+        }
+    }
+    via
+}
+
 impl FluxChat {
     /// Load the room's security settings and permissions for Room Settings.
     pub(crate) fn load_room_admin(&self, room_id: String) -> Task<Message> {
@@ -215,8 +230,11 @@ impl FluxChat {
             }
             Message::RespondJoinRequest(user_id, response) => {
                 let Some((room_id, reqs)) = self.join_requests.as_mut() else { return Some(Task::none()) };
-                // Gone at once; the watcher re-sends the list if it fails.
-                reqs.requests.retain(|r| r.user_id != user_id);
+                // Gone at once. JoinRequestFailed puts it back if the answer
+                // doesn't go through: the watcher only reports changes, and
+                // a refused answer changes nothing.
+                let removed = reqs.requests.iter().position(|r| r.user_id == user_id)
+                    .map(|at| (at, Box::new(reqs.requests.remove(at))));
                 if reqs.requests.is_empty() {
                     self.join_requests_open = false;
                 }
@@ -224,16 +242,25 @@ impl FluxChat {
                 let core = self.core.clone();
                 Task::perform(
                     async move {
-                        match core.get_client().await {
+                        let err = match core.get_client().await {
                             Ok(client) => room_admin::respond_join_request(&client, &room_id, &user_id, response).await.err().map(|e| e.to_string()),
                             Err(e) => Some(e.to_string()),
-                        }
+                        };
+                        (room_id, err)
                     },
-                    |err| match err {
-                        Some(e) => Message::ShowError(format!("Couldn't answer the join request: {e}")),
+                    move |(room_id, err)| match err {
+                        Some(e) => Message::JoinRequestFailed(room_id, removed, e),
                         None => Message::Noop,
                     },
                 )
+            }
+            Message::JoinRequestFailed(room_id, removed, e) => {
+                if let (Some((watched, reqs)), Some((at, request))) = (self.join_requests.as_mut(), removed) {
+                    if *watched == room_id && !reqs.requests.iter().any(|r| r.user_id == request.user_id) {
+                        reqs.requests.insert(at.min(reqs.requests.len()), *request);
+                    }
+                }
+                self.update(Message::ShowError(format!("Couldn't answer the join request: {e}")))
             }
             Message::RoomAdvancedLoaded(room_id, result) => {
                 if self.room_settings_room().as_deref() == Some(room_id.as_str()) {
@@ -318,6 +345,9 @@ impl FluxChat {
                         if self.room_settings_room().as_deref() == Some(old_room.as_str()) {
                             self.modal = None;
                         }
+                        // An upgrade takes a while: only follow it from the
+                        // room it was started in, not from wherever we are now.
+                        let here = self.active_real_room() == Some(old_room.as_str());
                         if let Some(old) = self.rooms.iter_mut().find(|r| r.room_id == old_room) {
                             old.successor = Some(new_room.clone());
                             let mut info = old.clone();
@@ -329,7 +359,11 @@ impl FluxChat {
                                 self.rooms.push(info);
                             }
                         }
-                        self.update(Message::SelectRoom(new_room))
+                        if here {
+                            self.update(Message::SelectRoom(new_room))
+                        } else {
+                            Task::none()
+                        }
                     }
                     Err(e) => self.update(Message::ShowError(format!("Couldn't upgrade the room: {e}"))),
                 }
@@ -403,6 +437,32 @@ mod tests {
         // A late update from the old room is ignored.
         let _ = app.update(Message::JoinRequestsUpdated("!a:x".into(), requests(&["@w:x"])));
         assert!(app.join_requests.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_join_request_whose_answer_failed_comes_back() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let guard = crate::state::TaskGuard::new(&tokio::spawn(async {}));
+        let _ = app.update(Message::JoinRequestsWatching("!a:x".into(), guard));
+        let _ = app.update(Message::JoinRequestsUpdated("!a:x".into(), requests(&["@u:x", "@v:x"])));
+        let _ = app.update(Message::RespondJoinRequest("@u:x".into(), JoinResponse::Approve));
+        let pending = |app: &crate::state::FluxChat| -> Vec<String> {
+            app.join_requests.as_ref().unwrap().1.requests.iter().map(|r| r.user_id.clone()).collect()
+        };
+        assert_eq!(pending(&app), ["@v:x"]);
+        // Refused (or offline): nothing changed on the server, so the
+        // watcher has nothing to say; the row returns to where it was.
+        let taken = Some((0, Box::new(requests(&["@u:x"]).requests.remove(0))));
+        let _ = app.update(Message::JoinRequestFailed("!a:x".into(), taken.clone(), "not allowed".into()));
+        assert_eq!(pending(&app), ["@u:x", "@v:x"]);
+        assert!(app.help_text.as_deref().is_some_and(|t| t.contains("not allowed")));
+        // Not twice (the watcher got there first), and not into another room's list.
+        let _ = app.update(Message::JoinRequestFailed("!a:x".into(), taken, "again".into()));
+        let other = Some((0, Box::new(requests(&["@w:x"]).requests.remove(0))));
+        let _ = app.update(Message::JoinRequestFailed("!b:x".into(), other, "elsewhere".into()));
+        assert_eq!(pending(&app), ["@u:x", "@v:x"]);
     }
 
     #[tokio::test]
@@ -645,5 +705,339 @@ mod tests {
         let _ = app.update(Message::SyncEvent(SyncEvent::MessagesUpdated(thread.into(), vec![reply("locked", true)])));
         assert_eq!(body_in(&app, thread), "the answer");
         assert!(app.messages_by_room[thread][0].utd.is_none());
+    }
+
+    fn text(id: &str, body: &str) -> fluxchat_core::MessageInfo {
+        fluxchat_core::MessageInfo {
+            event_id: id.into(), sender: "@a:x".into(), body: body.into(), timestamp: 10, ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_invite_for_this_room_is_not_sent_to_the_last_dialogs_target() {
+        use crate::state::Modal;
+        let mut app = app();
+        app.rooms = vec![room("!a:x"), room("!b:x")];
+        app.spaces = vec![room("!space:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        // An invite to the space, closed without inviting anyone.
+        let _ = app.update(Message::SpaceInvite("!space:x".into()));
+        assert_eq!(app.invite_target_id.as_deref(), Some("!space:x"));
+        let _ = app.update(Message::Escape);
+        assert!(app.modal.is_none());
+        // "Invite to this room" is for this room, not that space.
+        let _ = app.update(Message::OpenModal(Modal::Invite));
+        assert!(app.invite_target_id.is_none());
+        // And, bound to the room on screen, it closes when that changes.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(app.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn page_down_at_the_end_leaves_the_view_at_the_bottom() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_viewport_h = 800.0;
+        app.messages_at_bottom = true;
+        app.last_scroll_offset = 4200.0;
+        // The scrollable can't move, so nothing would report back: the
+        // offset must not run past the end (rows are built around it).
+        let _ = app.update(Message::ScrollMessagesBy(0.9));
+        let _ = app.update(Message::ScrollMessagesBy(0.9));
+        assert!(app.messages_at_bottom);
+        assert_eq!(app.last_scroll_offset, 4200.0);
+        // Page Up still goes up.
+        let _ = app.update(Message::ScrollMessagesBy(-0.5));
+        assert!(!app.messages_at_bottom);
+        assert_eq!(app.last_scroll_offset, 3800.0);
+        // Nothing to scroll in a list that fits.
+        app.messages_at_bottom = true;
+        app.messages_underfilled = true;
+        app.last_scroll_offset = 0.0;
+        let _ = app.update(Message::ScrollMessagesBy(-0.9));
+        assert!(app.messages_at_bottom);
+    }
+
+    #[tokio::test]
+    async fn jumping_to_a_message_in_the_last_screenful_stays_at_the_bottom() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        // 30 rows of 40 px in an 800 px list: 400 px to scroll.
+        let msgs: Vec<_> = (0..30).map(|i| text(&format!("$m{i}"), "hello")).collect();
+        app.messages_by_room.insert("!a:x".into(), msgs);
+        app.messages_viewport_h = 800.0;
+        app.messages_at_bottom = true;
+        app.last_scroll_offset = 400.0;
+
+        // Rows not laid out yet (a room just opened): their heights are
+        // guesses, so the jump scrolls as it always did.
+        let _ = app.update(Message::JumpToEvent("$m28".into()));
+        assert!(!app.messages_at_bottom);
+        app.messages_at_bottom = true;
+        app.last_scroll_offset = 400.0;
+
+        // The rows on screen are measured. A reply's quote pointing at one of them:
+        for i in 10..30 {
+            app.row_heights.borrow_mut().insert(format!("$m{i}"), 40.0);
+        }
+        let _ = app.update(Message::JumpToEvent("$m28".into()));
+        assert_eq!(app.highlight_event_id.as_deref(), Some("$m28"));
+        assert!(app.messages_at_bottom, "still following new messages");
+        assert_eq!(app.last_scroll_offset, 400.0);
+
+        // One further up is scrolled to, as before.
+        let _ = app.update(Message::JumpToEvent("$m4".into()));
+        assert!(!app.messages_at_bottom);
+        assert_eq!(app.last_scroll_offset, 80.0);
+    }
+
+    #[tokio::test]
+    async fn the_end_of_a_stopped_clip_does_not_end_the_next_one() {
+        use std::sync::atomic::Ordering;
+        let mut app = app();
+        let _ = app.update(Message::PlayAudio("$a".into(), "!a:x".into()));
+        let first = app.audio_token.load(Ordering::SeqCst);
+        // Another clip: the first is stopped, and its player says so a moment later.
+        let _ = app.update(Message::PlayAudio("$b".into(), "!a:x".into()));
+        let _ = app.update(Message::AudioFinished(first));
+        assert_eq!(app.audio_playing.as_deref(), Some("$b"));
+        // Its own end (or a failed download) does end it.
+        let second = app.audio_token.load(Ordering::SeqCst);
+        let _ = app.update(Message::AudioFinished(second));
+        assert!(app.audio_playing.is_none() && app.audio_start_time.is_none());
+        // Stopping also disowns a download still on its way.
+        let _ = app.update(Message::PlayAudio("$c".into(), "!a:x".into()));
+        let loading = app.audio_token.load(Ordering::SeqCst);
+        let _ = app.update(Message::StopAudio);
+        assert_ne!(app.audio_token.load(Ordering::SeqCst), loading);
+        assert!(app.audio_playing.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_link_without_a_preview_is_not_asked_for_on_every_update() {
+        use crate::message::SyncEvent;
+        let url = "https://example.org/page";
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let update = || Message::SyncEvent(SyncEvent::MessagesUpdated(
+            "!a:x".into(), vec![text("$m", &format!("see {url}"))],
+        ));
+        let _ = app.update(update());
+        assert!(app.url_previews_pending.contains(url), "asked for");
+        // The server has no preview for it.
+        let _ = app.update(Message::UrlPreviewFetched(url.into(), None));
+        assert!(app.url_previews_pending.contains(url), "the next update won't ask again");
+        let _ = app.update(Message::Tick);
+        assert!(app.url_previews_pending.contains(url));
+        // Much later it gets another try.
+        if let Some(long_ago) = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(3600)) {
+            app.url_preview_misses.insert(url.into(), long_ago);
+            let _ = app.update(Message::Tick);
+            assert!(!app.url_previews_pending.contains(url) && app.url_preview_misses.is_empty());
+        }
+        // A preview that did arrive is kept, and no longer pending.
+        let _ = app.update(update());
+        let preview = fluxchat_core::UrlPreview {
+            url: url.into(), title: Some("Page".into()), description: None, image_url: None, site_name: None,
+        };
+        let _ = app.update(Message::UrlPreviewFetched(url.into(), Some(preview)));
+        assert!(app.url_previews.contains_key(url) && !app.url_previews_pending.contains(url));
+    }
+
+    #[tokio::test]
+    async fn format_buttons_put_the_caret_between_their_markers() {
+        use iced::widget::text_editor::{Action, Edit};
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let type_in = |app: &mut crate::state::FluxChat, s: &str| {
+            for c in s.chars() {
+                let _ = app.update(Message::InputAction(Action::Edit(Edit::Insert(c))));
+            }
+        };
+        type_in(&mut app, "so ");
+        let _ = app.update(Message::InsertFormat("**", "**"));
+        type_in(&mut app, "bold");
+        assert_eq!(app.input_text, "so **bold**");
+        // Across the line break of a code block's closing fence too.
+        let mut app = crate::panes::flow_tests::app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::InsertFormat("```\n", "\n```"));
+        type_in(&mut app, "x");
+        assert_eq!(app.input_text, "```\nx\n```");
+        // A block started on a fresh line opens there, not on the line before.
+        let mut app = crate::panes::flow_tests::app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        type_in(&mut app, "hi");
+        let _ = app.update(Message::InputAction(Action::Edit(Edit::Enter)));
+        let _ = app.update(Message::InsertFormat("```\n", "\n```"));
+        type_in(&mut app, "x");
+        assert_eq!(app.input_text, "hi\n```\nx\n```");
+    }
+
+    #[tokio::test]
+    async fn a_video_that_finished_loading_after_we_left_does_not_start() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![text("$video", "clip.mp4")]);
+        // Play was pressed in !a; the download ends with !b on screen.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        let path = std::env::temp_dir().join(format!("fluxchat-video-test-{}.mp4", std::process::id()));
+        std::fs::write(&path, b"video").unwrap();
+        let _ = app.update(Message::VideoReady("$video".into(), path.clone()));
+        assert!(app.video_player.is_none() && app.video_playing_event.is_none(), "no sound without a player to close");
+        assert!(!path.exists(), "its temp file goes too");
+    }
+
+    #[tokio::test]
+    async fn an_earlier_directory_searchs_results_are_dropped() {
+        let listed = |id: &str| fluxchat_core::rooms::PublicRoomResult {
+            room_id: id.into(), name: None, alias: None, topic: None, num_members: 1, avatar_url: None,
+        };
+        let mut app = app();
+        let _ = app.update(Message::DirectorySearch);
+        let slow = app.directory_request;
+        // Back to the other server before the first one answered.
+        let _ = app.update(Message::DirectoryServerChanged("matrixrooms.info".into()));
+        let current = app.directory_request;
+        let _ = app.update(Message::DirectoryResults(current, vec![listed("!new:x")], None));
+        let _ = app.update(Message::DirectoryResults(slow, vec![listed("!old:x")], Some("token".into())));
+        assert_eq!(app.directory_results.len(), 1);
+        assert_eq!(app.directory_results[0].room_id, "!new:x");
+        assert!(app.directory_next_batch.is_none(), "not the other server's page token");
+        // A further page of the search on screen is added to it.
+        let _ = app.update(Message::DirectoryResults(current, vec![listed("!more:x")], None));
+        assert_eq!(app.directory_results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn joining_from_the_directory_goes_through_the_rooms_servers() {
+        use crate::state::Modal;
+        let listed = fluxchat_core::rooms::PublicRoomResult {
+            room_id: "!abc:far.example".into(), name: None, alias: Some("#talk:hub.example:8448".into()),
+            topic: None, num_members: 1, avatar_url: None,
+        };
+        assert_eq!(super::directory_via(&listed), ["hub.example:8448", "far.example"]);
+        // The same server twice is one; a room ID without a server has none.
+        let same = fluxchat_core::rooms::PublicRoomResult {
+            room_id: "!abc:far.example".into(), alias: Some("#talk:far.example".into()), ..listed.clone()
+        };
+        assert_eq!(super::directory_via(&same), ["far.example"]);
+        let bare = fluxchat_core::rooms::PublicRoomResult { room_id: "!abc".into(), alias: None, ..listed.clone() };
+        assert!(super::directory_via(&bare).is_empty());
+
+        // The join is the ordinary one (reported, lands in the room): the
+        // dialog doesn't wait for it.
+        let mut app = app();
+        app.modal = Some(Modal::Directory);
+        app.directory_results = vec![listed];
+        let _ = app.update(Message::DirectoryJoinRoom("!abc:far.example".into()));
+        assert!(app.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_panels_divider_counts_what_is_right_of_it() {
+        use crate::state::ResizeTarget;
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        app.window_size = (1200.0, 800.0);
+        app.mentions_open = true;
+        app.member_list_width = 200.0;
+        let drag = |app: &mut crate::state::FluxChat, x: f32| {
+            let _ = app.update(Message::ResizeStart(ResizeTarget::Mentions));
+            let _ = app.update(Message::CursorMoved(x, 10.0));
+            let _ = app.update(Message::SidebarDragEnd);
+            app.mentions_width
+        };
+        // No room open: no member list (and no rail) is drawn beside it.
+        app.show_member_list = true;
+        assert_eq!(drag(&mut app, 900.0), 300.0);
+        // Member list hidden: its rail is still there.
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.show_member_list = false;
+        assert_eq!(drag(&mut app, 900.0), 300.0 - crate::view::MEMBER_RAIL_WIDTH);
+        // Shown: the list and its own divider.
+        app.show_member_list = true;
+        assert_eq!(drag(&mut app, 700.0), 300.0 - crate::view::RESIZE_HANDLE_WIDTH);
+    }
+
+    #[tokio::test]
+    async fn a_link_to_a_space_we_are_in_shows_the_space() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        app.spaces = vec![room("!space:x")];
+        let _ = app.update(Message::OpenMatrixLink("!space:x".into(), None, vec![]));
+        assert!(app.modal.is_none(), "nothing to join");
+        assert_eq!(app.selected_space_id.as_deref(), Some("!space:x"));
+        assert!(app.selected_room_id.is_none(), "a space isn't opened as a chat");
+        // One we're not in still asks.
+        let _ = app.update(Message::OpenMatrixLink("!elsewhere:x".into(), None, vec![]));
+        assert!(matches!(app.modal, Some(crate::state::Modal::ConfirmJoin { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_place_off_the_map_is_not_shared() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let mut submit = |lat: &str, lon: &str| {
+            app.help_text = None;
+            app.location_open = true;
+            app.location_lat = lat.into();
+            app.location_lon = lon.into();
+            let _ = app.update(Message::LocationSubmit);
+            (app.location_open, app.help_text.is_some())
+        };
+        // Longitude first (GeoJSON order), and things that only parse as numbers.
+        assert_eq!(submit("151.2093", "-33.8688"), (true, true));
+        assert_eq!(submit("nan", "10"), (true, true));
+        assert_eq!(submit("10", "inf"), (true, true));
+        assert_eq!(submit("-33.8688", "151.2093"), (false, false), "sent");
+    }
+
+    #[tokio::test]
+    async fn withdrawing_a_join_request_removes_it_at_once() {
+        let mut app = app();
+        app.knocked_rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::CancelKnock("!a:x".into()));
+        assert_eq!(app.knocked_rooms.len(), 1);
+        assert_eq!(app.knocked_rooms[0].room_id, "!b:x");
+    }
+
+    #[tokio::test]
+    async fn a_refused_display_name_is_put_back() {
+        let mut app = app();
+        app.display_name = Some("old".into());
+        app.settings_nick_input = "  new  ".into();
+        let _ = app.update(Message::SettingsSaveNick);
+        assert_eq!(app.display_name.as_deref(), Some("new"));
+        assert!(app.settings_status.is_none(), "not \"updated\" before the server said so");
+        let _ = app.update(Message::NickSet(Err((Some("old".into()), "offline".into()))));
+        assert_eq!(app.display_name.as_deref(), Some("old"));
+        assert!(app.settings_status.as_deref().is_some_and(|s| s.contains("offline")));
+        let _ = app.update(Message::SetNick("new".into()));
+        let _ = app.update(Message::NickSet(Ok(())));
+        assert_eq!(app.display_name.as_deref(), Some("new"));
+        assert_eq!(app.settings_status.as_deref(), Some("Display name updated"));
+    }
+
+    #[tokio::test]
+    async fn an_upgrade_that_ends_after_you_left_the_room_does_not_pull_you_back() {
+        let mut app = app();
+        app.rooms = vec![room("!a:x"), room("!b:x")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        let _ = app.update(Message::RoomUpgraded("!a:x".into(), Ok("!a2:x".into())));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b:x"));
+        assert!(app.rooms.iter().any(|r| r.room_id == "!a2:x"), "the new room is listed");
+        assert_eq!(app.rooms[0].successor.as_deref(), Some("!a2:x"));
+        // Still in the room: on to its replacement.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        let _ = app.update(Message::RoomUpgraded("!b:x".into(), Ok("!b2:x".into())));
+        assert_eq!(app.selected_room_id.as_deref(), Some("!b2:x"));
     }
 }
