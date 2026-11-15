@@ -23,6 +23,14 @@ Put an `org.fluxchat.agent` object in the message content. Every field is option
 | `result` | string | How the run ended, one line: `"Deployed v0.2.0"` / `"2 tests still failing"`. Put it on the `done` / `failed` status edit; clients show it as the run's result body. |
 | `choices` | array | A prompt: `[{ "key": "✅", "label": "Approve" }, …]`. The user answers by reacting with a `key`. |
 
+## Numbers
+
+Matrix events are canonical JSON, which has integers and no fractions. In an **unencrypted** room the server checks that: an event with `0.5` anywhere in its content is refused (Synapse, room versions 6 and later: `400 Bad JSON value: float`), and so is one with `1.0`. In an **encrypted** room the fields travel inside the ciphertext, which the server doesn't read, so fractions arrive.
+
+- Send whole values as integers: `"progress": 1`, not `1.0`. Readers take either. The libraries below do this for you: a status edit that ends a run with `progress: 1.0` would otherwise be the one message the server turns away.
+- A fractional `progress`, `context` or `cost_usd` only reaches an encrypted room. In an unencrypted one, leave those fields out (or send `progress` as `0` and `1` only); `state`, `step` and `steps` carry the run.
+- `steps` is a whole number, zero or more. `cost_usd` is zero or more. NaN and infinity aren't JSON at all.
+
 ## How to use it
 
 **One status message per run, edited.** When a run starts, send a status message in the run's thread (or in the room) with `state: "working"`, and edit it (`m.replace`) as the run moves: new `step`, `steps`, `progress`. Put the fields in `m.new_content` too, as with any edit; clients read the latest edit. End with `state: "done"` or `"failed"`.
