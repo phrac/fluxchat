@@ -669,6 +669,9 @@ pub struct AgentRuns {
     typing_since: HashMap<String, HashMap<String, (u64, u64)>>,
     /// Per room, the agent you're talking to when there are several.
     pub(crate) target: HashMap<String, String>,
+    /// Which run of the view an export is waiting to load (`pending_export`)
+    /// is for: its record's start (None: the view's latest).
+    pub(crate) exporting: Option<u64>,
 }
 
 impl AgentRuns {
@@ -2300,9 +2303,13 @@ impl FluxChat {
         };
         let section = |label: &str| container(text(label.to_string()).font(self.sidebar_font()).size(11).color(colors.text_dim))
             .padding(iced::Padding { top: 8.0, right: 10.0, bottom: 2.0, left: 10.0 });
-        let export = |key: &str| ui::with_tooltip(
+        // A History row exports its own run (a view can hold several).
+        let export = |key: &str, started: Option<u64>| ui::with_tooltip(
             button(ui::icon(crate::icons::SVG_DOWNLOAD, 13.0, colors.text_dim))
-                .on_press(Message::ExportRun(key.to_string()))
+                .on_press(match started {
+                    Some(at) => Message::ExportRunOf(key.to_string(), at),
+                    None => Message::ExportRun(key.to_string()),
+                })
                 .padding(5)
                 .style(ui::button_style(Tone::Ghost)),
             "Export the transcript (Markdown)",
@@ -2353,7 +2360,7 @@ impl FluxChat {
                 .padding([7, 10])
                 .width(Fill)
                 .style(ui::row_style(false)),
-                export(key),
+                export(key, None),
             ].align_y(Alignment::Center));
         }
 
@@ -2412,7 +2419,7 @@ impl FluxChat {
                 .padding([7, 10])
                 .width(Fill)
                 .style(ui::row_style(false)),
-                export(&h.key),
+                export(&h.key, Some(h.started)),
             ].align_y(Alignment::Center));
         }
         if live.is_empty() && self.run_history.is_empty() {

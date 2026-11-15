@@ -340,9 +340,25 @@ impl FluxChat {
     }
 
     /// The run's thread as Markdown: a header with the run, then each message.
-    pub(crate) fn transcript(&self, key: &str) -> Option<String> {
+    /// `started`: which of the view's recorded runs (None: its latest). A
+    /// History row's export had the latest run's details on top whichever
+    /// row it was; and a run in a room without threads (a DM) came with the
+    /// whole room, every session's replies in it — now its own stretch: from
+    /// its request to the next one there.
+    pub(crate) fn transcript(&self, key: &str, started: Option<u64>) -> Option<String> {
         let msgs = self.messages_by_room.get(key)?;
-        let rec = self.run_history.iter().rev().find(|r| r.key == key);
+        let rec = self.run_history.iter().rev().find(|r| r.key == key && started.is_none_or(|s| r.started == s));
+        let threaded = fluxchat_core::timeline::parse_thread_key(key).is_some();
+        let stretch = rec.filter(|_| !threaded).map(|r| {
+            let next = self.run_history.iter()
+                .filter(|x| x.key == key && x.started > r.started)
+                .map(|x| x.started)
+                .min()
+                .unwrap_or(u64::MAX);
+            r.started..next
+        });
+        let in_run = |m: &fluxchat_core::MessageInfo| threaded
+            || (m.thread_root.is_none() && stretch.as_ref().is_none_or(|s| s.contains(&crate::agents::sent_ms(m))));
         let room = self.rooms.iter().find(|r| r.room_id == real_room_id(key)).map(|r| r.name.clone()).unwrap_or_default();
         let title = rec.map(|r| r.title.clone()).unwrap_or_else(|| self.thread_title(key));
         let stamp = |secs: u64| format!("{} {}", crate::view_messages::local_day_label(secs),
@@ -361,17 +377,29 @@ impl FluxChat {
         }
         out.push_str(&meta.join("  \n"));
         out.push_str("\n\n---\n");
-        for m in msgs.iter().filter(|m| !m.is_system() && !m.event_id.starts_with('~')) {
+        for m in msgs.iter().filter(|m| !m.is_system() && !m.event_id.starts_with('~') && in_run(m)) {
             out.push_str(&format!("\n**{}** · {}\n\n{}\n", m.sender_name, stamp(m.timestamp), m.body.trim()));
         }
         Some(out)
     }
 
-    /// Save a run's transcript (loading its thread first if needed).
+    /// Save the transcript of a view's latest run (loading its thread first
+    /// if needed).
     pub(crate) fn export_run(&mut self, key: String) -> Task<Message> {
-        let Some(md) = self.transcript(&key) else {
+        self.export(key, None)
+    }
+
+    /// Save the transcript of the run of view `key` recorded as starting at
+    /// `started` (a History row).
+    pub(crate) fn export_run_of(&mut self, key: String, started: u64) -> Task<Message> {
+        self.export(key, Some(started))
+    }
+
+    fn export(&mut self, key: String, started: Option<u64>) -> Task<Message> {
+        let Some(md) = self.transcript(&key, started) else {
             // Not loaded: open its timeline; the export runs when it arrives.
             self.pending_export = Some(key.clone());
+            self.agent_runs.exporting = started;
             let core = self.core.clone();
             return Task::perform(
                 async move {
@@ -409,7 +437,8 @@ impl FluxChat {
     pub(crate) fn export_if_pending(&mut self, key: &str) -> Task<Message> {
         if self.pending_export.as_deref() == Some(key) {
             self.pending_export = None;
-            return self.export_run(key.to_string());
+            let started = self.agent_runs.exporting.take();
+            return self.export(key.to_string(), started);
         }
         Task::none()
     }
@@ -626,6 +655,48 @@ mod tests {
         assert_eq!(app.run_history.len(), 1);
         app.settle_lost_records();
         assert_eq!(app.run_history[0].ended, None);
+    }
+
+    #[tokio::test]
+    async fn a_history_rows_transcript_is_that_runs() {
+        let mut app = crate::panes::flow_tests::app();
+        let t0 = (now_ms() / 1000 - 3600) * 1000;
+        let say = |id: &str, sender: &str, body: &str, at: u64, root: Option<&str>| fluxchat_core::MessageInfo {
+            event_id: id.into(), sender: sender.into(), sender_name: sender.into(), body: body.into(),
+            timestamp: at / 1000, thread_root: root.map(str::to_string), ..Default::default()
+        };
+        let rec = |key: &str, started: u64, state: &str| RunRecord {
+            key: key.into(), room: "!dm:x".into(), agent: "@bot:x".into(), title: "Request in the room".into(),
+            state: state.into(), started, ended: Some(started + 60_000), ..Default::default()
+        };
+        // Two runs in a DM (no threads there), and another session's thread
+        // going on in the same room.
+        app.messages_by_room.insert("!dm:x".into(), vec![
+            say("$1", "@me:x", "upgrade postgres", t0, None),
+            say("$t", "@bot:x", "rotated the certificates", t0 + 20_000, Some("$elsewhere")),
+            say("$2", "@bot:x", "pg 17 is live", t0 + 40_000, None),
+            say("$3", "@me:x", "now prune the logs", t0 + 600_000, None),
+            say("$4", "@bot:x", "pruned 4 GB", t0 + 640_000, None),
+        ]);
+        app.run_history = vec![rec("!dm:x", t0, "done"), rec("!dm:x", t0 + 600_000, "failed")];
+        let first = app.transcript("!dm:x", Some(t0)).unwrap();
+        assert!(first.contains("State: done") && first.contains("upgrade postgres") && first.contains("pg 17 is live"));
+        assert!(!first.contains("prune") && !first.contains("certificates"), "the next run and the other session aren't in it");
+        // No row named (a live run's button): the view's latest.
+        let latest = app.transcript("!dm:x", None).unwrap();
+        assert!(latest.contains("State: failed") && latest.contains("pruned 4 GB") && !latest.contains("postgres"));
+        // A thread is exported whole, under the row's own details.
+        let tk = "thread::!r:x::$a";
+        app.messages_by_room.insert(tk.into(), vec![
+            say("$a", "@me:x", "ship it", t0, None),
+            say("$b", "@bot:x", "shipped", t0 + 30_000, Some("$a")),
+            say("$c", "@me:x", "and tag it", t0 + 900_000, Some("$a")),
+        ]);
+        app.run_history.push(RunRecord { key: tk.into(), title: "ship it".into(), ..rec(tk, t0, "done") });
+        app.run_history.push(RunRecord { key: tk.into(), title: "ship it".into(), ..rec(tk, t0 + 900_000, "stalled") });
+        let first = app.transcript(tk, Some(t0)).unwrap();
+        assert!(first.contains("State: done") && first.contains("shipped") && first.contains("and tag it"));
+        assert!(app.transcript("!unloaded:x", None).is_none());
     }
 
     #[tokio::test]

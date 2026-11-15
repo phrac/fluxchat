@@ -2054,6 +2054,9 @@ impl FluxChat {
             Message::ExportRun(key) => {
                 return self.export_run(key);
             }
+            Message::ExportRunOf(key, started) => {
+                return self.export_run_of(key, started);
+            }
             Message::OpenReview(view_key, event_id) => {
                 return self.open_review(view_key, event_id);
             }
