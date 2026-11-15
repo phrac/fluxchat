@@ -12,8 +12,22 @@ use crate::view::thin_scrollbar;
 
 /// Most avatars shown on the hidden member list's rail (then "+N").
 const MEMBER_RAIL_MAX: usize = 40;
+/// Members listed per section at first: every row is built on every redraw,
+/// so a big room's list isn't laid out whole.
+const MEMBER_ROWS: usize = 30;
+/// Rows each press of "Show more" adds per section.
+pub(crate) const MEMBER_ROWS_MORE: usize = 100;
 
 impl FluxChat {
+    /// How many members each section of the list shows in the view on
+    /// screen: the first few, or what "Show more" has made of it there.
+    pub(crate) fn member_rows_shown(&self) -> usize {
+        match (&self.member_rows, &self.selected_room_id) {
+            (Some((key, rows)), Some(selected)) if key == selected => *rows,
+            _ => MEMBER_ROWS,
+        }
+    }
+
     /// Member list panel (right sidebar).
     pub(crate) fn view_member_list(&self) -> Element<Message> {
         let room_id = match &self.selected_room_id {
@@ -115,7 +129,9 @@ impl FluxChat {
         let is_connected = self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
         let is_connecting = self.call_state == fluxchat_core::rtc::CallConnectionState::Connecting;
         let is_failed = matches!(self.call_state, fluxchat_core::rtc::CallConnectionState::Failed(_));
-        let selected_has_call = self.rooms_with_calls.contains(room_id);
+        // A thread view's call is its room's.
+        let call_room = fluxchat_core::timeline::real_room_id(room_id);
+        let selected_has_call = self.rooms_with_calls.contains(call_room);
 
         if is_connected {
             // In a call — show room name, participants, controls
@@ -236,7 +252,7 @@ impl FluxChat {
             }));
         } else if selected_has_call {
             // Room has an active call we can join
-            let rid = room_id.to_string();
+            let rid = call_room.to_string();
             panel = panel.push(container(
                 row![
                     iced::widget::svg(iced::widget::svg::Handle::from_memory(SVG_PHONE))
@@ -293,8 +309,25 @@ impl FluxChat {
         ]
         .spacing(0);
 
-        for member in members.iter().take(30) {
+        let shown = self.member_rows_shown();
+        for member in members.iter().take(shown) {
             col = col.push(self.view_member_row(member));
+        }
+        // The rest used to be out of reach: the list stopped at the first
+        // rows whatever its heading counted, with nothing to say so.
+        if let Some(more) = members.len().checked_sub(shown).filter(|more| *more > 0) {
+            col = col.push(
+                button(
+                    text(format!("Show more ({more} not shown)"))
+                        .font(self.sidebar_font())
+                        .size(12)
+                        .color(theme::colors().text_dim),
+                )
+                .on_press(Message::ShowMoreMembers)
+                .padding([4, 12])
+                .width(Fill)
+                .style(crate::ui::button_style(crate::ui::Tone::Ghost)),
+            );
         }
 
         col.into()
@@ -432,5 +465,42 @@ impl FluxChat {
                 ..Default::default()
             })
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MEMBER_ROWS, MEMBER_ROWS_MORE};
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+
+    fn member(n: usize) -> fluxchat_core::MemberInfo {
+        fluxchat_core::MemberInfo {
+            user_id: format!("@u{n}:x"),
+            display_name: format!("User {n}"),
+            avatar_url: None,
+            power_level: 0,
+            role: "Member".into(),
+            presence: "offline".into(),
+            status_msg: None,
+            server_name: "x".into(),
+            last_active_secs: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_member_list_shows_more_where_it_was_asked_to() {
+        let mut app = app();
+        app.selected_room_id = Some("!a:x".into());
+        app.members_by_room.insert("!a:x".into(), (0..500).map(member).collect());
+        assert_eq!(app.member_rows_shown(), MEMBER_ROWS);
+        let _ = app.update(Message::ShowMoreMembers);
+        let _ = app.update(Message::ShowMoreMembers);
+        assert_eq!(app.member_rows_shown(), MEMBER_ROWS + 2 * MEMBER_ROWS_MORE);
+        // The list builds with the longer section (and the row for the rest).
+        let _ = app.view_member_list();
+        // Another room starts with the short list again.
+        app.selected_room_id = Some("!b:x".into());
+        assert_eq!(app.member_rows_shown(), MEMBER_ROWS);
     }
 }

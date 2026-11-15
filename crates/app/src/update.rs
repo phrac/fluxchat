@@ -4309,11 +4309,8 @@ impl FluxChat {
                     return task;
                 }
                 // No preview (the page has none, the server doesn't make
-                // them, or the request failed): the URL stays in the pending
-                // set until Tick lets it go. Taken out at once, every
-                // timeline update asked the server again for each such link
-                // in the room.
-                self.url_preview_misses.insert(url, std::time::Instant::now());
+                // them, or the request failed): a miss, however it got here.
+                return self.update(Message::UrlPreviewFailed(url));
             }
             Message::UrlPreviewImageResolved(url, data) => {
                 let handle = iced::widget::image::Handle::from_bytes(data);
@@ -6138,16 +6135,6 @@ impl FluxChat {
                 self.flush_layout();
                 self.sweep_stalled_runs();
                 self.flush_run_texts();
-                // Links without a preview get another try after a while.
-                const URL_PREVIEW_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
-                let pending = &mut self.url_previews_pending;
-                self.url_preview_misses.retain(|url, at| {
-                    let keep = at.elapsed() < URL_PREVIEW_RETRY_AFTER;
-                    if !keep {
-                        pending.remove(url);
-                    }
-                    keep
-                });
                 let fetch_texts = self.fetch_run_texts();
                 if self.sync_running {
                     let mut tasks = Vec::new();
@@ -6438,6 +6425,22 @@ impl FluxChat {
             Message::Batch(messages) => {
                 let tasks: Vec<Task<Message>> = messages.into_iter().map(|m| self.update(m)).collect();
                 return Task::batch(tasks);
+            }
+            Message::UrlPreviewFailed(url) => {
+                // Left alone for a while. Only dropped from the pending set,
+                // it was asked for again on every timeline update — each URL
+                // without a preview, which is all of them where the server
+                // has previews turned off.
+                self.url_previews_pending.remove(&url);
+                let now = std::time::Instant::now();
+                self.url_preview_failed.retain(|_, at| now.duration_since(*at) < URL_PREVIEW_RETRY_AFTER);
+                self.url_preview_failed.insert(url, now);
+            }
+            Message::ShowMoreMembers => {
+                if let Some(key) = self.selected_room_id.clone() {
+                    let rows = self.member_rows_shown() + crate::view_members::MEMBER_ROWS_MORE;
+                    self.member_rows = Some((key, rows));
+                }
             }
             Message::Noop => {}
         }
@@ -7503,6 +7506,7 @@ impl FluxChat {
                 let core = self.core.clone();
                 let mxc_clone = mxc.clone();
                 let event_id = msg.event_id.clone();
+                let is_video = msg.is_video;
                 let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
                 tasks.push(Task::perform(
                     async move {
@@ -7520,13 +7524,19 @@ impl FluxChat {
                         }
                         let client = core.get_client().await.ok()?;
                         let _permit = MEDIA_FETCHES.acquire().await.ok()?;
-                        // Try event-based fetch first (handles encrypted media)
-                        let event_result = fluxchat_core::media::get_event_media_bytes(
-                            &client, &real_room, &event_id,
-                        ).await;
+                        // Try event-based fetch first (handles encrypted media).
+                        // A video's image is its thumbnail: the event's own
+                        // media is the video.
+                        let event_result = if is_video {
+                            video_thumbnail_bytes(&client, &real_room, &event_id).await
+                        } else {
+                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
+                                .ok()
+                                .map(|(bytes, _mime)| bytes)
+                        };
                         let data = match event_result {
-                            Ok((bytes, _mime)) => bytes,
-                            Err(_) => {
+                            Some(bytes) => bytes,
+                            None => {
                                 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
                                 use matrix_sdk::ruma::events::room::MediaSource;
                                 use matrix_sdk::ruma::MxcUri;
@@ -7573,10 +7583,9 @@ impl FluxChat {
                     let core = self.core.clone();
                     let event_id = msg.event_id.clone();
                     let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
-                    let failed_key = thumb_key.clone();
+                    let cache_key = format!("iced_img:{thumb_key}");
                     tasks.push(Task::perform(
                         async move {
-                            let cache_key = format!("iced_img:{thumb_key}");
                             // Cached thumbnail (dimensions read from its header).
                             let cached = {
                                 let core = core.clone();
@@ -7593,35 +7602,41 @@ impl FluxChat {
                                 }).await.ok().flatten()
                             };
                             if let Some((data, w, h)) = cached {
-                                return Some((thumb_key, data, w, h));
+                                return Preview::Ready(data, w, h);
                             }
-                            let client = core.get_client().await.ok()?;
-                            let (data, _mime) = {
-                                let _permit = MEDIA_FETCHES.acquire().await.ok()?;
-                                fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id)
-                                    .await.ok()?
+                            let Ok(client) = core.get_client().await else { return Preview::Failed };
+                            let fetched = {
+                                let Ok(_permit) = MEDIA_FETCHES.acquire().await else { return Preview::Failed };
+                                fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
                             };
+                            let Ok((data, _mime)) = fetched else { return Preview::Failed };
                             // GStreamer reads a file and blocks: off the async workers.
-                            let (data, w, h) = tokio::task::spawn_blocking(move || {
-                                let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{}.tmp", safe_file_stem(&event_id)));
-                                std::fs::write(&tmp, &data).ok()?;
-                                let result = extract_video_thumbnail(&tmp);
-                                let _ = std::fs::remove_file(&tmp);
-                                result
-                            }).await.ok().flatten()?;
+                            let frame = tokio::task::spawn_blocking(move || {
+                                let tmp = TempFile(std::env::temp_dir().join(format!("fluxchat_thumb_{}.tmp", safe_file_stem(&event_id))));
+                                write_private(&tmp.0, &data).ok()?;
+                                Some(extract_video_thumbnail(&tmp.0))
+                            }).await;
+                            let (data, w, h) = match frame {
+                                Ok(Some(Some(thumb))) => thumb,
+                                // The temp file couldn't be written.
+                                Ok(None) => return Preview::Failed,
+                                // No frame in it we can decode (or the decoder
+                                // panicked): the same next time.
+                                Ok(Some(None)) | Err(_) => return Preview::Unavailable,
+                            };
                             let to_store = data.clone();
                             drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
-                            Some((thumb_key, data, w, h))
+                            Preview::Ready(data, w, h)
                         },
-                        move |result| match result {
-                            Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
-                            None => Message::ImageFailed(failed_key.clone()),
-                        },
+                        move |preview| preview_message(thumb_key.clone(), preview),
                     ));
                 }
             }
-            // PDFs: their first page, rendered here (and cached).
-            let is_pdf = msg.file_mimetype.as_deref() == Some("application/pdf");
+            // PDFs: their first page, rendered here (and cached). Not where
+            // the room's images are hidden: the page isn't shown there, and
+            // making it means downloading the file.
+            let is_pdf = msg.file_mimetype.as_deref() == Some("application/pdf")
+                && !self.room_media_hidden(view_key);
             let small = msg.file_size.is_none_or(|s| s <= PDF_PREVIEW_MAX_BYTES);
             if let (true, true, Some(fmxc)) = (is_pdf, small, msg.file_mxc.as_ref()) {
                 let key = format!("pdf_preview:{fmxc}");
@@ -7634,10 +7649,9 @@ impl FluxChat {
                 let core = self.core.clone();
                 let event_id = msg.event_id.clone();
                 let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
-                let failed_key = key.clone();
+                let cache_key = format!("iced_img:{key}");
                 tasks.push(Task::perform(
                     async move {
-                        let cache_key = format!("iced_img:{key}");
                         let cached = {
                             let core = core.clone();
                             let cache_key = cache_key.clone();
@@ -7649,24 +7663,25 @@ impl FluxChat {
                             }).await.ok().flatten()
                         };
                         if let Some((data, w, h)) = cached {
-                            return Some((key, data, w, h));
+                            return Preview::Ready(data, w, h);
                         }
-                        let client = core.get_client().await.ok()?;
-                        let (data, _mime) = {
-                            let _permit = MEDIA_FETCHES.acquire().await.ok()?;
-                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?
+                        let Ok(client) = core.get_client().await else { return Preview::Failed };
+                        let fetched = {
+                            let Ok(_permit) = MEDIA_FETCHES.acquire().await else { return Preview::Failed };
+                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
                         };
-                        let (png, w, h) = tokio::task::spawn_blocking(move || {
+                        let Ok((data, _mime)) = fetched else { return Preview::Failed };
+                        let page = tokio::task::spawn_blocking(move || {
                             fluxchat_core::media::pdf_preview(&data, PDF_PREVIEW_WIDTH)
-                        }).await.ok().flatten()?;
+                        }).await.ok().flatten();
+                        // Encrypted, broken, or beyond the renderer: the same
+                        // next time.
+                        let Some((png, w, h)) = page else { return Preview::Unavailable };
                         let to_store = png.clone();
                         drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
-                        Some((key, png, w, h))
+                        Preview::Ready(png, w, h)
                     },
-                    move |result| match result {
-                        Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
-                        None => Message::ImageFailed(failed_key.clone()),
-                    },
+                    move |preview| preview_message(key.clone(), preview),
                 ));
             }
             // Location cards: composed OSM tile preview (fetched once, cached).
@@ -7747,7 +7762,9 @@ impl FluxChat {
         let mut tasks = Vec::new();
         for msg in messages {
             for url in extract_urls(&msg.body) {
-                if self.url_previews.contains_key(&url) || self.url_previews_pending.contains(&url) {
+                if self.url_previews.contains_key(&url) || self.url_previews_pending.contains(&url)
+                    || self.url_preview_failed.get(&url).is_some_and(|t| t.elapsed() < URL_PREVIEW_RETRY_AFTER)
+                {
                     continue;
                 }
                 self.url_previews_pending.insert(url.clone());
@@ -7755,18 +7772,17 @@ impl FluxChat {
                 let url_clone = url.clone();
                 tasks.push(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let preview = fluxchat_core::preview::get_url_preview(
-                            &client,
-                            &core.preview_cache,
-                            &url_clone,
-                        ).await.ok()?;
-                        Some((url_clone, preview))
+                        let preview = match core.get_client().await {
+                            Ok(client) => fluxchat_core::preview::get_url_preview(
+                                &client,
+                                &core.preview_cache,
+                                &url_clone,
+                            ).await.ok().flatten(),
+                            Err(_) => None,
+                        };
+                        (url_clone, preview)
                     },
-                    |result| match result {
-                        Some((url, preview)) => Message::UrlPreviewFetched(url, preview),
-                        None => Message::Noop,
-                    },
+                    |(url, preview)| url_preview_message(url, preview),
                 ));
             }
         }
@@ -8135,6 +8151,18 @@ impl FluxChat {
     }
 }
 
+/// How long a URL the server had no preview for is left alone.
+const URL_PREVIEW_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// What a preview request came to. A miss is its own message: the URL must
+/// not look unasked, or the next timeline update asks for it again.
+fn url_preview_message(url: String, preview: Option<fluxchat_core::UrlPreview>) -> Message {
+    match preview {
+        Some(preview) => Message::UrlPreviewFetched(url, Some(preview)),
+        None => Message::UrlPreviewFailed(url),
+    }
+}
+
 /// Convert (line, byte_index) in a multi-line string to a flat byte offset.
 fn line_index_to_offset(text: &str, line: usize, index: usize) -> usize {
     let mut offset = 0;
@@ -8174,6 +8202,80 @@ fn create_video_player(uri: &url::Url) -> Result<iced_video_player::Video, iced_
         .map_err(|_| iced_video_player::Error::Cast)?;
 
     iced_video_player::Video::from_gst_pipeline(pipeline, video_sink, None)
+}
+
+/// How making a preview image (a video's first frame, a PDF's first page)
+/// went.
+enum Preview {
+    Ready(Vec<u8>, u32, u32),
+    /// The file was fetched and nothing can be drawn from it.
+    Unavailable,
+    /// The file couldn't be fetched.
+    Failed,
+}
+
+/// What a preview task reports for its `key`. A file nothing can be drawn
+/// from reports nothing, so its key stays pending and it's looked at once:
+/// reported as a failure it was downloaded again every `IMAGE_RETRY_AFTER`,
+/// with the same result.
+fn preview_message(key: String, preview: Preview) -> Message {
+    match preview {
+        Preview::Ready(data, w, h) => Message::VideoThumbResolved(key, data, w, h),
+        Preview::Unavailable => Message::Noop,
+        Preview::Failed => Message::ImageFailed(key),
+    }
+}
+
+/// A temp file that goes away with this, whichever way its scope ends.
+struct TempFile(std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Write `data` to a new file only this user can read. The temp folder is
+/// shared on Linux, and what goes here is decrypted media; a file (or link)
+/// someone else put at `path` is replaced, never written through.
+fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(data)
+}
+
+/// Sets a pipeline back to Null when dropped. GStreamer doesn't free one
+/// that's let go of in any other state: its threads stay, and so does the
+/// file it was reading, deleted or not.
+struct StopOnDrop(gstreamer::Pipeline);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.set_state(gstreamer::State::Null);
+    }
+}
+
+/// A raw RGB frame's pixels as `width * 3` bytes per row. GStreamer pads
+/// each row to a multiple of four bytes; read as if it didn't, every row of
+/// a frame whose width isn't a multiple of four starts a little further off
+/// (a slanted picture in the wrong colours).
+fn packed_rgb(data: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let row = (width as usize).checked_mul(3)?;
+    let rows = height as usize;
+    if row == 0 || rows == 0 {
+        return None;
+    }
+    let padded = row.checked_add(3)? & !3;
+    let stride = [padded, row].into_iter()
+        .find(|stride| stride.checked_mul(rows - 1).and_then(|n| n.checked_add(row)).is_some_and(|n| n <= data.len()))?;
+    Some(data.chunks(stride).take(rows).flat_map(|line| &line[..row]).copied().collect())
 }
 
 /// Extract the first frame of a video as a PNG thumbnail using GStreamer.
@@ -8221,28 +8323,37 @@ fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
         "uridecodebin uri=\"{}\" ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true",
         uri.as_str()
     );
-    let pipeline = gstreamer::parse::launch(&pipeline_str).ok()?
-        .downcast::<gstreamer::Pipeline>().ok()?;
+    let pipeline = StopOnDrop(gstreamer::parse::launch(&pipeline_str).ok()?
+        .downcast::<gstreamer::Pipeline>().ok()?);
 
-    let sink = pipeline.by_name("sink")?
+    let sink = pipeline.0.by_name("sink")?
         .downcast::<gstreamer_app::AppSink>().ok()?;
 
-    pipeline.set_state(gstreamer::State::Playing).ok()?;
-    pipeline.state(gstreamer::ClockTime::from_seconds(5)).0.ok()?;
+    pipeline.0.set_state(gstreamer::State::Playing).ok()?;
+    // Until the first frame is there, or it's clear there won't be one (no
+    // decoder for it, not a video): an error ends the wait at once instead
+    // of after both timeouts.
+    let settled = pipeline.0.bus()?.timed_pop_filtered(
+        gstreamer::ClockTime::from_seconds(5),
+        &[gstreamer::MessageType::Error, gstreamer::MessageType::AsyncDone],
+    );
+    let failed = settled.is_some_and(|m| m.type_() == gstreamer::MessageType::Error);
+    pipeline.0.state(gstreamer::ClockTime::ZERO).0.ok()?;
 
-    let sample = sink.try_pull_sample(gstreamer::ClockTime::from_seconds(5))?;
+    // After an error there's a frame only if it's there already.
+    let wait = if failed { gstreamer::ClockTime::ZERO } else { gstreamer::ClockTime::from_seconds(5) };
+    let sample = sink.try_pull_sample(wait)?;
     let caps = sample.caps()?;
     let s = caps.structure(0)?;
-    let width = s.get::<i32>("width").ok()? as u32;
-    let height = s.get::<i32>("height").ok()? as u32;
+    let width = u32::try_from(s.get::<i32>("width").ok()?).ok()?;
+    let height = u32::try_from(s.get::<i32>("height").ok()?).ok()?;
 
     let buffer = sample.buffer()?;
     let map = buffer.map_readable().ok()?;
-    let rgb_data = map.as_slice();
+    let rgb = packed_rgb(map.as_slice(), width, height)?;
+    drop(pipeline);
 
-    pipeline.set_state(gstreamer::State::Null).ok()?;
-
-    let img = image::RgbImage::from_raw(width, height, rgb_data.to_vec())?;
+    let img = image::RgbImage::from_raw(width, height, rgb)?;
 
     // Apply rotation from metadata
     let rotated = match rotation {
@@ -8257,8 +8368,9 @@ fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
     let max_w = 350u32;
     let max_h = 500u32;
     let scale = (max_w as f64 / rw as f64).min(max_h as f64 / rh as f64).min(1.0);
-    let new_w = (rw as f64 * scale) as u32;
-    let new_h = (rh as f64 * scale) as u32;
+    // At least a pixel each way, however thin the frame.
+    let new_w = ((rw as f64 * scale) as u32).max(1);
+    let new_h = ((rh as f64 * scale) as u32).max(1);
 
     let resized = image::imageops::resize(&rotated, new_w, new_h, image::imageops::FilterType::Triangle);
 
@@ -8273,20 +8385,28 @@ fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
     Some((png_buf, new_w, new_h))
 }
 
-/// Guess MIME type from file extension.
+/// Guess MIME type from file extension. The video types are the ones the
+/// player takes (`video_temp_path`): a `.mov` screen recording sent as a
+/// plain file gets a download card instead of the player.
 fn mime_from_extension(filename: &str) -> String {
-    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let ext = filename.rsplit_once('.').map(|(_, ext)| ext.to_lowercase()).unwrap_or_default();
     match ext.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
         "svg" => "image/svg+xml",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "ogv" => "video/ogg",
+        "avi" => "video/x-msvideo",
         "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
+        "ogg" | "oga" | "opus" => "audio/ogg",
         "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "flac" => "audio/flac",
         "pdf" => "application/pdf",
         "txt" => "text/plain",
         _ => "application/octet-stream",
@@ -8294,25 +8414,76 @@ fn mime_from_extension(filename: &str) -> String {
     .to_string()
 }
 
-/// Extract URLs from message text (max 2 per message).
+/// Extract URLs from message text (the first five).
 pub(crate) fn extract_urls(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|w| w.trim_matches(|c: char| c == '`' || c == '<' || c == '>' || c == '"' || c == '\''))
+        // What a sentence puts in front: "(https://…", "<https://…>", quotes.
+        .map(|w| w.trim_start_matches(['(', '[', '<', '`', '"', '\'']))
         .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
         .take(5)
-        .map(|w| w.trim_end_matches(['.', ',', ')', ']']).to_string())
+        .map(|w| trim_url_end(w).to_string())
         .collect()
 }
 
-/// Whether `data` starts like an image format we display.
+/// `url` without the punctuation a sentence put after it. A bracket stays
+/// when it closes one opened inside the URL (`…/wiki/Rust_(language)`):
+/// cut off, the preview was asked for a page that doesn't exist.
+fn trim_url_end(mut url: &str) -> &str {
+    loop {
+        let Some(last) = url.chars().next_back() else { return url };
+        let unopened = |open: char, close: char| url.matches(close).count() > url.matches(open).count();
+        let cut = match last {
+            ')' => unopened('(', ')'),
+            ']' => unopened('[', ']'),
+            '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | '>' | '`' => true,
+            _ => false,
+        };
+        if !cut {
+            return url;
+        }
+        url = &url[..url.len() - last.len_utf8()];
+    }
+}
+
+/// Whether `data` starts like an image format we display. The RIFF and
+/// `ftyp` containers hold video too (AVI, MP4): only their image kinds count,
+/// or a video stored where an image belongs is taken for one.
 fn looks_like_image(data: &[u8]) -> bool {
+    const FTYP_IMAGES: [&[u8]; 6] = [b"avif", b"avis", b"heic", b"heix", b"mif1", b"msf1"];
     data.len() > 100 && (
         data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
         data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
         data.starts_with(b"GIF") ||                     // GIF
-        data.starts_with(b"RIFF") ||                    // WebP
-        &data[4..8] == b"ftyp"                          // MP4/HEIF
+        (data.starts_with(b"RIFF") && &data[8..12] == b"WEBP") ||
+        (&data[4..8] == b"ftyp" && FTYP_IMAGES.contains(&&data[8..12])) // AVIF/HEIF
     )
+}
+
+/// Where a video message says its thumbnail is.
+fn video_thumbnail_source(
+    event: &matrix_sdk::ruma::events::AnySyncTimelineEvent,
+) -> Option<matrix_sdk::ruma::events::room::MediaSource> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent};
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) = event else {
+        return None;
+    };
+    let MessageType::Video(video) = &msg.content.msgtype else { return None };
+    video.info.as_ref()?.thumbnail_source.clone()
+}
+
+/// A video message's thumbnail, fetched through its event so an encrypted
+/// one decrypts. (`get_event_media_bytes` gives a message's own media: for a
+/// video the whole video, which used to stand in for the thumbnail — every
+/// video on screen downloaded in full, for a picture that couldn't draw.)
+async fn video_thumbnail_bytes(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Option<Vec<u8>> {
+    use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
+    let room = client.get_room(&matrix_sdk::ruma::RoomId::parse(room_id).ok()?)?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+    let event = room.event(&event_id, None).await.ok()?;
+    let source = video_thumbnail_source(&event.raw().deserialize().ok()?)?;
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    client.media().get_media_content(&request, false).await.ok()
 }
 
 /// A cached inline image, if present and plausibly an image (a failed fetch
@@ -8567,5 +8738,294 @@ mod selection_tests {
         app.selection_texts.borrow_mut().insert(wid("$1", 0), "🔥 DEAL".into());
         let _ = app.update(Message::SelectionMoved(wid("$1", 0), 0, 99));
         assert_eq!(app.extract_selection_text().as_deref(), Some("🔥 DEAL"));
+    }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+    use fluxchat_core::MessageInfo;
+
+    fn text(body: &str) -> MessageInfo {
+        MessageInfo { event_id: "$t".into(), sender: "@a:x".into(), body: body.into(), ..Default::default() }
+    }
+
+    fn pdf(id: &str) -> MessageInfo {
+        MessageInfo {
+            event_id: id.into(), sender: "@a:x".into(), body: "doc.pdf".into(),
+            file_mxc: Some(format!("mxc://x/{id}")), file_mimetype: Some("application/pdf".into()),
+            file_size: Some(1000), ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_url_the_server_has_no_preview_for_is_not_asked_for_on_every_update() {
+        let mut app = crate::panes::flow_tests::app();
+        let url = "https://example.org/page";
+        let msgs = vec![text("see https://example.org/page")];
+        assert_eq!(app.resolve_url_previews(&msgs).units(), 1);
+        assert!(app.url_previews_pending.contains(url));
+        // The same list again (a reaction, a receipt): still in flight.
+        assert_eq!(app.resolve_url_previews(&msgs).units(), 0);
+
+        // No preview (most servers have them turned off).
+        let _ = app.update(url_preview_message(url.into(), None));
+        assert!(app.url_previews_pending.is_empty());
+        assert_eq!(app.resolve_url_previews(&msgs).units(), 0, "asked again with every timeline update");
+
+        // Asked once more when the wait is over.
+        if let Some(long_ago) = std::time::Instant::now().checked_sub(URL_PREVIEW_RETRY_AFTER) {
+            app.url_preview_failed.insert(url.into(), long_ago);
+            assert_eq!(app.resolve_url_previews(&msgs).units(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_arrives_is_kept_and_a_miss_is_its_own_message() {
+        let preview = fluxchat_core::UrlPreview {
+            url: "https://example.org".into(), title: Some("Example".into()),
+            description: None, image_url: None, site_name: None,
+        };
+        assert!(matches!(
+            url_preview_message("https://example.org".into(), Some(preview)),
+            Message::UrlPreviewFetched(_, Some(_)),
+        ));
+        assert!(matches!(url_preview_message("https://example.org".into(), None), Message::UrlPreviewFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn pdf_first_pages_are_not_fetched_where_the_rooms_images_are_hidden() {
+        let mut app = crate::panes::flow_tests::app();
+        app.hidden_media_rooms.insert("!hidden:x".into());
+        assert_eq!(app.resolve_images("!hidden:x", &[pdf("$a")]).units(), 0);
+        assert_eq!(app.resolve_images("thread::!hidden:x::$root", &[pdf("$a")]).units(), 0, "threads follow their room");
+        assert!(app.image_cache_pending.is_empty());
+        // Elsewhere, and here once the room's images show again.
+        assert_eq!(app.resolve_images("!other:x", &[pdf("$b")]).units(), 1);
+        app.hidden_media_rooms.clear();
+        assert_eq!(app.resolve_images("!hidden:x", &[pdf("$a")]).units(), 1);
+        assert!(app.image_cache_pending.contains("pdf_preview:mxc://x/$a"));
+    }
+
+    fn event(content: serde_json::Value) -> matrix_sdk::ruma::events::AnySyncTimelineEvent {
+        serde_json::from_value(serde_json::json!({
+            "type": "m.room.message",
+            "event_id": "$e:x",
+            "sender": "@a:x",
+            "origin_server_ts": 1_700_000_000_000u64,
+            "content": content,
+        })).unwrap()
+    }
+
+    #[test]
+    fn a_videos_picture_is_its_thumbnail_not_the_video() {
+        use matrix_sdk::ruma::events::room::MediaSource;
+        let plain = video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4", "url": "mxc://x/video",
+            "info": { "thumbnail_url": "mxc://x/thumb" },
+        })));
+        assert!(matches!(plain, Some(MediaSource::Plain(uri)) if uri == "mxc://x/thumb"));
+        // In an encrypted room the thumbnail has keys of its own.
+        let encrypted = video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4",
+            "file": {
+                "url": "mxc://x/video", "v": "v2", "iv": "AAAAAAAAAAAAAAAAAAAAAA",
+                "hashes": { "sha256": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU" },
+                "key": { "kty": "oct", "key_ops": ["encrypt", "decrypt"], "alg": "A256CTR", "ext": true,
+                    "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+            },
+            "info": { "thumbnail_file": {
+                "url": "mxc://x/thumb", "v": "v2", "iv": "AAAAAAAAAAAAAAAAAAAAAA",
+                "hashes": { "sha256": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU" },
+                "key": { "kty": "oct", "key_ops": ["encrypt", "decrypt"], "alg": "A256CTR", "ext": true,
+                    "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+            } },
+        })));
+        assert!(matches!(encrypted, Some(MediaSource::Encrypted(file)) if file.url == "mxc://x/thumb"));
+        // None to fetch: its first frame is used instead.
+        assert!(video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4", "url": "mxc://x/video",
+        }))).is_none());
+        assert!(video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.image", "body": "cat.png", "url": "mxc://x/cat",
+            "info": { "thumbnail_url": "mxc://x/thumb" },
+        }))).is_none());
+    }
+
+    #[test]
+    fn video_files_are_not_taken_for_images() {
+        let with = |head: &[u8]| {
+            let mut data = head.to_vec();
+            data.resize(200, 0);
+            data
+        };
+        assert!(looks_like_image(&with(&[0x89, b'P', b'N', b'G'])));
+        assert!(looks_like_image(&with(&[0xFF, 0xD8, 0xFF, 0xE0])));
+        assert!(looks_like_image(&with(b"GIF89a")));
+        assert!(looks_like_image(&with(b"RIFF\x10\0\0\0WEBPVP8 ")));
+        assert!(looks_like_image(&with(b"\0\0\0\x1cftypavif")));
+        // What a video's thumbnail used to be stored as.
+        assert!(!looks_like_image(&with(b"\0\0\0\x18ftypisom")));
+        assert!(!looks_like_image(&with(b"\0\0\0\x14ftypqt  ")));
+        assert!(!looks_like_image(&with(b"RIFF\x10\0\0\0AVI LIST")));
+        assert!(!looks_like_image(&with(&[0x1A, 0x45, 0xDF, 0xA3])));
+        assert!(!looks_like_image(&[0x89, b'P', b'N', b'G']), "too short to be one");
+    }
+
+    #[test]
+    fn a_file_nothing_can_be_drawn_from_is_not_fetched_again() {
+        // No report: its key stays pending, so `resolve_images` skips it.
+        assert!(matches!(preview_message("video_thumb:mxc://x/v".into(), Preview::Unavailable), Message::Noop));
+        // A failed download is tried again later.
+        assert!(matches!(
+            preview_message("video_thumb:mxc://x/v".into(), Preview::Failed),
+            Message::ImageFailed(key) if key == "video_thumb:mxc://x/v",
+        ));
+        assert!(matches!(
+            preview_message("pdf_preview:mxc://x/p".into(), Preview::Ready(vec![1], 2, 3)),
+            Message::VideoThumbResolved(key, _, 2, 3) if key == "pdf_preview:mxc://x/p",
+        ));
+    }
+
+    #[test]
+    fn padded_rgb_rows_are_packed() {
+        // 2×2: six bytes a row, padded to eight.
+        let padded = [1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 9, 10, 11, 12, 0, 0];
+        assert_eq!(packed_rgb(&padded, 2, 2).unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        // The last row may come without its padding.
+        assert_eq!(packed_rgb(&padded[..14], 2, 2).unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        // A width that needs none, and rows that came packed already.
+        let tight: Vec<u8> = (0..24).collect();
+        assert_eq!(packed_rgb(&tight, 4, 2).unwrap(), tight);
+        assert_eq!(packed_rgb(&tight[..12], 2, 2).unwrap(), &tight[..12]);
+        // Not a whole frame.
+        assert!(packed_rgb(&tight[..11], 2, 2).is_none());
+        assert!(packed_rgb(&tight, 0, 2).is_none());
+        assert!(packed_rgb(&tight, u32::MAX, u32::MAX).is_none());
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("fluxchat-media-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_media_is_private_and_never_written_through_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch_dir("private");
+        let path = dir.join("fluxchat_thumb_x.tmp");
+        // Someone else's link, waiting where the file will go.
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"mine").unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        {
+            let tmp = TempFile(path.clone());
+            write_private(&tmp.0, b"decrypted").unwrap();
+            assert_eq!(std::fs::read(&victim).unwrap(), b"mine");
+            assert_eq!(std::fs::read(&path).unwrap(), b"decrypted");
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            assert!(meta.is_file());
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
+        assert!(!path.exists(), "gone with its scope");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A three-frame, 18×16, all-red video (raw frames in an AVI), or `None`
+    /// where this GStreamer can't make one.
+    fn red_video(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        gstreamer::init().ok()?;
+        let path = dir.join("red.avi");
+        let pipeline = gstreamer::parse::launch(&format!(
+            "videotestsrc num-buffers=3 pattern=red ! video/x-raw,format=I420,width=18,height=16,framerate=5/1 \
+             ! avimux ! filesink location=\"{}\"",
+            path.display(),
+        )).ok()?;
+        pipeline.set_state(gstreamer::State::Playing).ok()?;
+        let done = pipeline.bus()?.timed_pop_filtered(
+            gstreamer::ClockTime::from_seconds(10),
+            &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
+        );
+        let _ = pipeline.set_state(gstreamer::State::Null);
+        done.filter(|m| m.type_() == gstreamer::MessageType::Eos).map(|_| path)
+    }
+
+    /// Whether this process holds `path` open.
+    #[cfg(target_os = "linux")]
+    fn held_open(path: &std::path::Path) -> bool {
+        std::fs::read_dir("/proc/self/fd").unwrap()
+            .filter_map(|fd| std::fs::read_link(fd.ok()?.path()).ok())
+            .any(|target| target == path)
+    }
+
+    #[test]
+    fn a_video_whose_width_is_not_a_multiple_of_four_gets_a_straight_thumbnail() {
+        let dir = scratch_dir("thumb");
+        let Some(video) = red_video(&dir) else {
+            eprintln!("skipped: no GStreamer test source / AVI muxer here");
+            return;
+        };
+        // 18 px: 54 bytes a row, which GStreamer pads to 56.
+        let (png, w, h) = extract_video_thumbnail(&video).expect("a frame");
+        assert_eq!((w, h), (18, 16));
+        let img = image::load_from_memory(&png).unwrap().to_rgb8();
+        for (x, y, p) in img.enumerate_pixels() {
+            assert!(p.0[0] > 200 && p.0[1] < 60 && p.0[2] < 60, "pixel {x},{y} is {:?}, not red", p.0);
+        }
+        #[cfg(target_os = "linux")]
+        assert!(!held_open(&video));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_no_frame_comes_out_of_is_let_go_of() {
+        if gstreamer::init().is_err() {
+            return;
+        }
+        let dir = scratch_dir("garbage");
+        let path = dir.join("not-a-video.mp4");
+        std::fs::write(&path, vec![0u8; 64 * 1024]).unwrap();
+        let started = std::time::Instant::now();
+        assert!(extract_video_thumbnail(&path).is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "an error doesn't wait out the timeouts");
+        assert!(!held_open(&path), "the pipeline was stopped: it kept the file, and its threads");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn videos_the_player_takes_are_sent_as_videos() {
+        for name in ["clip.mp4", "Screen Recording.MOV", "a.b.webm", "x.mkv", "x.m4v", "x.ogv", "x.avi"] {
+            assert!(mime_from_extension(name).starts_with("video/"), "{name}");
+            // The same list the player goes by for what it's handed.
+            let ext = name.rsplit_once('.').unwrap().1.to_ascii_lowercase();
+            assert_eq!(video_temp_path("$e", name).extension().unwrap().to_str(), Some(ext.as_str()));
+        }
+        assert_eq!(mime_from_extension("voice.m4a"), "audio/mp4");
+        assert_eq!(mime_from_extension("notes.txt"), "text/plain");
+        assert_eq!(mime_from_extension("archive.tar.zst"), "application/octet-stream");
+        assert_eq!(mime_from_extension("png"), "application/octet-stream", "a name, not an extension");
+    }
+
+    #[test]
+    fn urls_lose_the_sentence_around_them_and_keep_their_own_brackets() {
+        assert_eq!(extract_urls("see https://example.org/a, https://example.org/b."), ["https://example.org/a", "https://example.org/b"]);
+        assert_eq!(
+            extract_urls("https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+            ["https://en.wikipedia.org/wiki/Rust_(programming_language)"],
+        );
+        assert_eq!(
+            extract_urls("(read https://en.wikipedia.org/wiki/Rust_(programming_language))"),
+            ["https://en.wikipedia.org/wiki/Rust_(programming_language)"],
+        );
+        assert_eq!(extract_urls("(https://example.org/page)"), ["https://example.org/page"]);
+        assert_eq!(extract_urls("is it https://example.org/page?! <https://example.org/x>"), ["https://example.org/page", "https://example.org/x"]);
+        assert_eq!(extract_urls("`https://example.org/code` \"https://example.org/q\""), ["https://example.org/code", "https://example.org/q"]);
+        assert_eq!(extract_urls("https://example.org/?q=a&b=[1]"), ["https://example.org/?q=a&b=[1]"]);
+        assert!(extract_urls("no links, not even http://x").is_empty());
+        assert_eq!(extract_urls(&"https://example.org/x ".repeat(9)).len(), 5);
     }
 }

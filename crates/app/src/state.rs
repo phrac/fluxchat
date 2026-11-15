@@ -489,9 +489,8 @@ pub struct FluxChat {
     pub url_previews: HashMap<String, fluxchat_core::UrlPreview>,
     pub url_preview_images: HashMap<String, iced::widget::image::Handle>, // og:image mxc/url -> handle
     pub url_previews_pending: std::collections::HashSet<String>, // URLs currently being fetched
-    /// URLs that came back without a preview, and when: they stay in
-    /// `url_previews_pending` (not asked for again) until Tick lets them go.
-    pub url_preview_misses: HashMap<String, std::time::Instant>,
+    /// URLs the server had no preview for, and when it was asked.
+    pub url_preview_failed: HashMap<String, std::time::Instant>,
 
     // Login form state
     pub login_homeserver: String,
@@ -541,6 +540,9 @@ pub struct FluxChat {
     pub drafts: HashMap<String, String>,
     /// Member list filter (name / user ID substring).
     pub member_filter: String,
+    /// The view whose member list was asked to show more, and how many rows
+    /// of each section it shows (other views show the first few).
+    pub member_rows: Option<(String, usize)>,
 
     // Settings modal state
     pub settings_devices: Vec<fluxchat_core::devices::DeviceInfo>,
@@ -938,6 +940,7 @@ impl FluxChat {
             max_upload_size: None,
             drafts: HashMap::new(),
             member_filter: String::new(),
+            member_rows: None,
             settings_devices: Vec::new(),
             settings_nick_input: String::new(),
             settings_status: None,
@@ -949,7 +952,7 @@ impl FluxChat {
             url_previews: HashMap::new(),
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),
-            url_preview_misses: HashMap::new(),
+            url_preview_failed: HashMap::new(),
             create_room_name: String::new(),
             create_room_topic: String::new(),
             create_room_public: false,

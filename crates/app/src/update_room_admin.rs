@@ -829,14 +829,14 @@ mod tests {
         assert!(app.url_previews_pending.contains(url), "asked for");
         // The server has no preview for it.
         let _ = app.update(Message::UrlPreviewFetched(url.into(), None));
-        assert!(app.url_previews_pending.contains(url), "the next update won't ask again");
-        let _ = app.update(Message::Tick);
-        assert!(app.url_previews_pending.contains(url));
+        assert!(!app.url_previews_pending.contains(url), "no longer in flight");
+        let _ = app.update(update());
+        assert!(!app.url_previews_pending.contains(url), "and the next update doesn't ask again");
         // Much later it gets another try.
         if let Some(long_ago) = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(3600)) {
-            app.url_preview_misses.insert(url.into(), long_ago);
-            let _ = app.update(Message::Tick);
-            assert!(!app.url_previews_pending.contains(url) && app.url_preview_misses.is_empty());
+            app.url_preview_failed.insert(url.into(), long_ago);
+            let _ = app.update(update());
+            assert!(app.url_previews_pending.contains(url));
         }
         // A preview that did arrive is kept, and no longer pending.
         let _ = app.update(update());

@@ -52,6 +52,8 @@ pub enum Message {
     ScrollMessagesBy(f32),
     /// Member list filter text changed.
     MemberFilterChanged(String),
+    /// List more of the room's members than the first rows of each section.
+    ShowMoreMembers,
     /// Lightbox: save the image (by MXC URI) via a file dialog.
     SaveImage(String),
     /// Lightbox: copy the image (by MXC URI) to the clipboard.
@@ -473,6 +475,8 @@ pub enum Message {
 
     // --- URL Previews ---
     UrlPreviewFetched(String, Option<fluxchat_core::UrlPreview>), // url, preview
+    /// The server has no preview for a URL (or couldn't be asked).
+    UrlPreviewFailed(String),
     UrlPreviewImageResolved(String, Vec<u8>), // image_url, bytes
 
     // --- Message hover ---
