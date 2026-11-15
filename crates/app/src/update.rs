@@ -90,6 +90,8 @@ const MENTIONS_FETCH: u32 = 50;
 const PALETTE_ACTION_LIMIT: usize = 5;
 /// Space kept above the last-read message when opening at the first unread.
 const READ_ANCHOR_MARGIN: f32 = 60.0;
+/// Space kept above a message that is jumped to.
+const JUMP_TOP_MARGIN: f32 = 80.0;
 /// Settings keys for restoring the last view on launch.
 const LAST_ROOM_KEY: &str = "last_room";
 /// Threads listed under each room in the sidebar.
@@ -4185,15 +4187,23 @@ impl FluxChat {
                     if let Some(msgs) = self.messages_by_room.get(room_id) {
                         if msgs.iter().any(|m| m.event_id == event_id) {
                             if let Some(top) = self.row_top(&event_id) {
-                                let y = (top - 80.0).max(0.0);
+                                let y = (top - JUMP_TOP_MARGIN).max(0.0);
                                 // In the last screenful of a view that's at its
                                 // end: it is on screen, and the scrollable has
                                 // nowhere further to go — it wouldn't move, so it
                                 // wouldn't report, and "scrolled to y" would
                                 // stand: new messages no longer followed, rows
-                                // built around an offset past the end.
-                                let total: f32 = self.visible_rows(room_id, msgs).iter().map(|m| self.row_height(m)).sum();
-                                if self.messages_at_bottom && y >= total - self.messages_viewport_h {
+                                // built around an offset past the end. Only
+                                // from measured rows (estimates say little
+                                // about what is on screen), or a list that fits.
+                                let on_screen = self.messages_underfilled || {
+                                    let rows = self.visible_rows(room_id, msgs);
+                                    let measured = self.row_heights.borrow();
+                                    rows.iter().position(|m| m.event_id == event_id)
+                                        .and_then(|at| rows[at..].iter().map(|m| measured.get(&m.event_id).copied()).sum::<Option<f32>>())
+                                        .is_some_and(|below| below <= self.messages_viewport_h - JUMP_TOP_MARGIN)
+                                };
+                                if self.messages_at_bottom && on_screen {
                                     return Task::none();
                                 }
                                 self.messages_at_bottom = false;

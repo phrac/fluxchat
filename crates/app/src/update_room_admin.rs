@@ -764,14 +764,24 @@ mod tests {
         let mut app = app();
         app.rooms = vec![room("!a:x")];
         let _ = app.update(Message::SelectRoom("!a:x".into()));
-        // 30 unmeasured rows of 40 px in an 800 px list: 400 px to scroll.
+        // 30 rows of 40 px in an 800 px list: 400 px to scroll.
         let msgs: Vec<_> = (0..30).map(|i| text(&format!("$m{i}"), "hello")).collect();
         app.messages_by_room.insert("!a:x".into(), msgs);
         app.messages_viewport_h = 800.0;
         app.messages_at_bottom = true;
         app.last_scroll_offset = 400.0;
 
-        // A reply's quote pointing at a message already on screen.
+        // Rows not laid out yet (a room just opened): their heights are
+        // guesses, so the jump scrolls as it always did.
+        let _ = app.update(Message::JumpToEvent("$m28".into()));
+        assert!(!app.messages_at_bottom);
+        app.messages_at_bottom = true;
+        app.last_scroll_offset = 400.0;
+
+        // The rows on screen are measured. A reply's quote pointing at one of them:
+        for i in 10..30 {
+            app.row_heights.borrow_mut().insert(format!("$m{i}"), 40.0);
+        }
         let _ = app.update(Message::JumpToEvent("$m28".into()));
         assert_eq!(app.highlight_event_id.as_deref(), Some("$m28"));
         assert!(app.messages_at_bottom, "still following new messages");
