@@ -218,9 +218,30 @@ impl FluxChat {
         })
     }
 
+    /// Whether a send in view `key` is waiting on "Send anyway": held, and
+    /// what's in its composer is still what a hold is about — a task for an
+    /// agent over its limit. The hold outlived the message (sent as a command
+    /// instead, deleted, or meant for another agent now): the bar went on
+    /// asking, and "Send anyway" waived the limit for the period over nothing.
+    pub(crate) fn budget_held(&self, key: &str) -> bool {
+        if self.budgets.hold.as_deref() != Some(key) {
+            return false;
+        }
+        let text = if self.selected_room_id.as_deref() == Some(key) {
+            self.input_text.clone()
+        } else {
+            self.pane_inputs.get(key).map(|c| c.text()).unwrap_or_default()
+        };
+        !text.trim().is_empty() && self.budget_blocks(key, &text)
+    }
+
     pub(crate) fn handle_budget_message(&mut self, message: Message) -> Option<Task<Message>> {
         match message {
             Message::BudgetSendAnyway(key) => {
+                if !self.budget_held(&key) {
+                    self.budgets.hold = None;
+                    return Some(Task::none());
+                }
                 if let Some(agent) = self.agent_in(&key).map(str::to_string) {
                     if let Some(st) = self.budget_status(&agent) {
                         self.budgets.acked.insert((agent, st.since));
@@ -269,7 +290,7 @@ impl FluxChat {
         let over = st.level == Level::Over;
         let color = if over { colors.red } else { colors.yellow };
         let name = self.agent_name(key, agent);
-        let held = self.budgets.hold.as_deref() == Some(key);
+        let held = self.budget_held(key);
         let what = if held {
             format!("{name} is over its budget ({} of {} {}). Send anyway?",
                 format_usd(st.spent), format_usd(st.budget.usd), st.budget.period.this())
@@ -398,6 +419,31 @@ mod tests {
         let st = app.budget_status("@bot:x").unwrap();
         app.budgets.acked.insert(("@bot:x".into(), st.since));
         assert!(!app.budget_blocks("!r:x", "do the thing"));
+    }
+
+    #[tokio::test]
+    async fn a_hold_is_over_once_its_task_is_no_longer_waiting() {
+        let mut app = crate::panes::flow_tests::app();
+        app.prefs.agents = vec!["@bot:x".into()];
+        app.messages_by_room.insert("!r:x".into(), vec![fluxchat_core::MessageInfo {
+            event_id: "$1".into(), sender: "@bot:x".into(), body: "hi".into(), ..Default::default()
+        }]);
+        app.run_history = vec![rec("!r:x", now_ms() - 1_000, 6.0)];
+        app.prefs.agent_budgets.insert("@bot:x".into(), Budget { usd: 5.0, period: Period::Day });
+        app.selected_room_id = Some("!r:x".into());
+        app.input_text = "do the thing".into();
+        let _ = app.update(Message::SendMessage);
+        assert!(app.budget_held("!r:x"));
+        assert_eq!(app.input_text, "do the thing", "the task waits in the composer");
+        // Changed to a command (those always go through), or deleted: nothing
+        // waits, so nothing is asked — and "Send anyway" has nothing to waive.
+        app.input_text = "!status".into();
+        assert!(!app.budget_held("!r:x"));
+        app.input_text.clear();
+        assert!(!app.budget_held("!r:x"));
+        let _ = app.update(Message::BudgetSendAnyway("!r:x".into()));
+        assert!(app.budgets.acked.is_empty() && app.budgets.hold.is_none());
+        assert!(app.budget_blocks("!r:x", "do the thing"), "the limit still holds the next task");
     }
 
     #[test]
