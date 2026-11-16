@@ -117,12 +117,15 @@ jobs:
             echo
             echo "### Linux: \`fluxchat-${VERSION}-linux-x86_64.tar.gz\`"
             echo
-            echo "The binary links against system libraries — it is not static."
+            echo "The binary links against system libraries — it is not static. It is"
+            echo "built on Ubuntu 24.04 and needs a system at least that recent"
+            echo "(glibc 2.39: Ubuntu 24.04, Debian 13, Fedora 40)."
             echo "Install these before first run (video playback and voice calls):"
             echo
             echo '```'
-            echo "# Debian/Ubuntu"
-            echo "sudo apt install libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good libpulse0 libasound2 libopusfile0"
+            echo "# Debian/Ubuntu (libasound2 is a virtual package there since the"
+            echo "# 64-bit time_t transition; apt refuses to pick one for it)"
+            echo "sudo apt install libgstreamer1.0-0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good libpulse0 libasound2t64 libopusfile0"
             echo "# Fedora"
             echo "sudo dnf install gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good pulseaudio-libs alsa-lib opusfile"
             echo '```'
