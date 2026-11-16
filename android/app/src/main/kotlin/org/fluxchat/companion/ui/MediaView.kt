@@ -34,7 +34,9 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -43,7 +45,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -157,9 +162,45 @@ internal fun clampPan(pan: Offset, scale: Float, image: Size, viewport: Size): O
     return Offset(if (maxX > 0f) pan.x.coerceIn(-maxX, maxX) else 0f, if (maxY > 0f) pan.y.coerceIn(-maxY, maxY) else 0f)
 }
 
+/** The message image open full screen (null: none), for [ImageViewerHost]. */
+@Stable
+internal class ImageViewerState(viewing: Media? = null) {
+    var viewing by mutableStateOf(viewing)
+}
+
+private val ImageViewerSaver = listSaver<ImageViewerState, String>(
+    save = { s -> s.viewing?.let { listOf(it.source, it.thumbnail.orEmpty(), it.width?.toString().orEmpty(), it.height?.toString().orEmpty()) } ?: emptyList() },
+    restore = { v ->
+        ImageViewerState(v.takeIf { it.size == 4 }?.let { Media(it[0], it[1].ifEmpty { null }, it[2].toIntOrNull(), it[3].toIntOrNull()) })
+    },
+)
+
+/** Saved with the screens: turning the phone to look at a photo recreates the activity. */
+@Composable
+internal fun rememberImageViewer(): ImageViewerState = rememberSaveable(saver = ImageViewerSaver) { ImageViewerState() }
+
+/** Where a message image opens full screen: the host above it, when there is one. */
+internal val LocalImageViewer = staticCompositionLocalOf<ImageViewerState?> { null }
+
+/**
+ * The full-screen viewer for the message images in [content]. Kept above the
+ * list rather than by the image that was tapped: as that row's own state the
+ * viewer closed when the phone was turned to look at the photo (a row's
+ * `remember` doesn't outlive the activity, and saved with the row it would
+ * come back only once the row did — pop up when you scrolled to it), and
+ * whenever new messages pushed the row out of the list.
+ */
+@Composable
+internal fun ImageViewerHost(state: ImageViewerState, content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalImageViewer provides state, content = content)
+    state.viewing?.let { Viewer(it) { state.viewing = null } }
+}
+
 /** An image in a message: sized from its info so the list doesn't jump; tap for full screen. */
 @Composable
 fun MessageImage(media: Media) {
+    val viewer = LocalImageViewer.current
+    // Only where nothing above keeps the viewer (see [ImageViewerHost]).
     var viewing by remember { mutableStateOf(false) }
     var attempt by remember { mutableIntStateOf(0) }
     val state by produceState<Any?>(Images.cached("thumb:" + media.source), media, attempt) {
@@ -180,7 +221,7 @@ fun MessageImage(media: Media) {
             .clickable(
                 enabled = state is ImageBitmap || failed,
                 onClickLabel = if (failed) "try again" else "view full screen",
-            ) { if (failed) attempt++ else viewing = true },
+            ) { if (failed) attempt++ else if (viewer != null) viewer.viewing = media else viewing = true },
         contentAlignment = Alignment.Center,
     ) {
         when (val s = state) {

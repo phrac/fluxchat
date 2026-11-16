@@ -22,6 +22,21 @@ pub(crate) const MAX_EMPTY_PAGES: u8 = 5;
 const UNDERFILL_PAGE_EVENTS: u16 = 100;
 /// Pages fetched to fill a view (per room open) before waiting for a scroll.
 const MAX_UNDERFILL_PAGES: u8 = 30;
+/// Pages fetched to fill a side pane's list (until the view is focused again).
+const MAX_PANE_FILL_PAGES: u8 = 10;
+/// Distance from the end (px) within which the list counts as at the bottom.
+const NEAR_BOTTOM: f32 = 50.0;
+
+/// Whether a scrollable reporting `offset` (of `max_scroll`) is somewhere
+/// other than where we believe the view is: at the bottom, or at `last`.
+fn list_astray(at_bottom: bool, last: f32, offset: f32, max_scroll: f32) -> bool {
+    if at_bottom {
+        max_scroll - offset >= NEAR_BOTTOM
+    } else {
+        (offset - last.min(max_scroll)).abs() > 1.0
+    }
+}
+
 /// Wait before retrying a failed page while the view doesn't fill.
 const PAGINATE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 /// Wait after a page finishes before judging what it added.
@@ -68,6 +83,17 @@ pub(crate) fn editable_text(msg: &fluxchat_core::MessageInfo) -> String {
         msg.body.clone()
     }
 }
+
+/// A composer holding `text` with the cursor after it. A new `Content` has
+/// its cursor at the very start, so what was typed next went in front of
+/// the completion, emoji or edited message just put there.
+fn composer_with(text: &str) -> iced::widget::text_editor::Content {
+    use iced::widget::text_editor::{Action, Content, Motion};
+    let mut content = Content::with_text(text);
+    content.perform(Action::Move(Motion::DocumentEnd));
+    content
+}
+
 /// Mentions kept in the inbox / fetched from the server.
 const MENTIONS_LIMIT: usize = 200;
 const MENTIONS_FETCH: u32 = 50;
@@ -75,6 +101,8 @@ const MENTIONS_FETCH: u32 = 50;
 const PALETTE_ACTION_LIMIT: usize = 5;
 /// Space kept above the last-read message when opening at the first unread.
 const READ_ANCHOR_MARGIN: f32 = 60.0;
+/// Space kept above a message that is jumped to.
+const JUMP_TOP_MARGIN: f32 = 80.0;
 /// Settings keys for restoring the last view on launch.
 const LAST_ROOM_KEY: &str = "last_room";
 /// Threads listed under each room in the sidebar.
@@ -347,6 +375,520 @@ pub(crate) fn show_notification(
     });
 }
 
+/// Signing in and out, through the real `update()` (no client; tasks aren't
+/// run, but `Task::units` says whether one was started).
+#[cfg(test)]
+mod session_tests {
+    use std::sync::atomic::Ordering;
+
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+
+    #[tokio::test]
+    async fn enter_pressed_twice_on_the_login_form_signs_in_once() {
+        let mut app = app();
+        assert!(app.update(Message::LoginSubmit).units() > 0);
+        assert!(app.login_submitting);
+        // The buttons are disabled while it runs; Enter in a field isn't.
+        assert_eq!(app.update(Message::LoginSubmit).units(), 0);
+        assert_eq!(app.update(Message::LoginSso).units(), 0);
+        // Once it has failed, the form works again.
+        let _ = app.update(Message::LoginResult(Err("wrong password".into())));
+        assert!(app.update(Message::LoginSubmit).units() > 0);
+    }
+
+    #[tokio::test]
+    async fn a_password_sign_in_takes_over_from_an_sso_one_waiting_on_the_browser() {
+        let mut app = app();
+        assert!(app.update(Message::LoginSso).units() > 0);
+        let sso = app.login_sso.clone().expect("the SSO sign-in can be stopped");
+        assert!(!sso.is_aborted());
+        assert!(app.update(Message::LoginSubmit).units() > 0);
+        assert!(sso.is_aborted(), "or both would sign in, each on the other's store");
+        assert!(app.login_sso.is_none() && app.login_submitting);
+        assert_eq!(app.update(Message::LoginSubmit).units(), 0);
+    }
+
+    #[tokio::test]
+    async fn typing_on_in_the_homeserver_field_overtakes_the_lookup_before_it() {
+        let mut app = app();
+        let _ = app.update(Message::LoginHomeserverChanged("matrix.o".into()));
+        let first = app.login_lookup.load(Ordering::Relaxed);
+        let _ = app.update(Message::LoginHomeserverChanged("matrix.or".into()));
+        assert_ne!(app.login_lookup.load(Ordering::Relaxed), first, "matrix.o is never looked up");
+        // Emptying the field overtakes it as well, though nothing is looked up.
+        let second = app.login_lookup.load(Ordering::Relaxed);
+        assert_eq!(app.update(Message::LoginHomeserverChanged(" ".into())).units(), 0);
+        assert_ne!(app.login_lookup.load(Ordering::Relaxed), second);
+    }
+
+    #[tokio::test]
+    async fn signing_out_leaves_nothing_of_the_session_in_the_way_of_the_next() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.login_password = "hunter2".into();
+        app.sync_status = Some("reconnecting\u{2026}".into());
+        app.calls_supported = true;
+        app.rooms_with_calls.insert("!a:x".into());
+        app.agent_list_loaded = true;
+        app.agent_rooms = vec!["!a:x".into()];
+        app.voice_ready = Some((vec![1, 2, 3], 1200));
+        app.search_open = true;
+        app.search_query = "what I looked for".into();
+        app.security_shown_recovery_key = Some("EsTc 5Wq4 xyzz".into());
+        app.settings_banner_data = Some(vec![1, 2, 3]);
+        app.settings_old_password = "hunter2".into();
+        let video = std::env::temp_dir().join(format!("fluxchat-logout-test-{}.mp4", std::process::id()));
+        std::fs::write(&video, b"decrypted").unwrap();
+        app.video_temp_path = Some(video.clone());
+
+        let _ = app.update(Message::Logout);
+
+        assert!(app.login_password.is_empty(), "the login form must not come back filled in");
+        assert!(app.sync_status.is_none(), "or the next session says \"reconnecting\" for good");
+        assert!(!app.calls_supported && app.rooms_with_calls.is_empty());
+        assert!(!app.agent_list_loaded, "or our list is saved over the next account's unread one");
+        assert!(app.agent_rooms.is_empty());
+        assert!(app.voice_ready.is_none(), "a recording waiting to be sent");
+        assert!(!app.search_open && app.search_query.is_empty());
+        assert!(app.security_shown_recovery_key.is_none(), "shown on the Security tab to whoever signs in next");
+        assert!(app.settings_banner_data.is_none() && app.settings_old_password.is_empty());
+        assert!(!video.exists(), "a playing video's decrypted temp file");
+    }
+}
+
+/// The composer, through the real `update()`.
+#[cfg(test)]
+mod composer_tests {
+    use fluxchat_core::{MemberInfo, MessageInfo};
+
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+    use crate::state::FluxChat;
+
+    /// Signed in as `@me:x`, in `!a:x`.
+    fn in_room() -> FluxChat {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app
+    }
+
+    fn member(id: &str, name: &str) -> MemberInfo {
+        MemberInfo {
+            user_id: id.into(),
+            display_name: name.into(),
+            avatar_url: None,
+            power_level: 0,
+            role: "Member".into(),
+            presence: "offline".into(),
+            status_msg: None,
+            server_name: "x".into(),
+            last_active_secs: None,
+        }
+    }
+
+    fn mine(id: &str, body: &str) -> MessageInfo {
+        MessageInfo { event_id: id.into(), sender: "@me:x".into(), body: body.into(), ..Default::default() }
+    }
+
+    /// Text arriving in the composer the way the editor reports it.
+    fn type_text(app: &mut FluxChat, text: &str) {
+        use iced::widget::text_editor::{Action, Edit};
+        let _ = app.update(Message::InputAction(Action::Edit(Edit::Paste(std::sync::Arc::new(text.to_string())))));
+    }
+
+    /// Where the cursor is on the composer's (only) line.
+    fn cursor(app: &FluxChat) -> usize {
+        app.input_content.cursor().position.column
+    }
+
+    fn tab(app: &mut FluxChat, kind: &str) {
+        let _ = app.update(Message::InputChanged(format!("{kind}\t")));
+    }
+
+    #[tokio::test]
+    async fn tab_completes_the_highlighted_mention_not_the_one_after_it() {
+        let mut app = in_room();
+        app.members_by_room.insert("!a:x".into(), vec![member("@alice:x", "Alice"), member("@alan:x", "Alan")]);
+        type_text(&mut app, "ask @al");
+        let names: Vec<&str> = app.mention_completions.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["Alice", "Alan"]);
+        assert_eq!(app.mention_completion_idx, 0, "Alice is the highlighted one");
+        tab(&mut app, "@");
+        assert_eq!(app.input_text, "ask @Alice ");
+        assert!(app.mention_completions.is_empty());
+        assert_eq!(cursor(&app), "ask @Alice ".len(), "typing goes on after the name");
+    }
+
+    #[tokio::test]
+    async fn tab_takes_the_highlighted_command_and_only_then_moves_on() {
+        let mut app = in_room();
+        type_text(&mut app, "/jo");
+        let names: Vec<&str> = app.cmd_completions.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["/join", "/joinpart"]);
+        tab(&mut app, "/");
+        assert_eq!(app.input_text, "/join ");
+        assert_eq!(cursor(&app), "/join ".len());
+        tab(&mut app, "/");
+        assert_eq!(app.input_text, "/joinpart ");
+        tab(&mut app, "/");
+        assert_eq!(app.input_text, "/join ");
+
+        // A row picked with the arrow keys is the one Tab takes.
+        let _ = app.update(Message::ClearInput);
+        type_text(&mut app, "/jo");
+        let _ = app.update(Message::SearchArrowDown);
+        assert_eq!(app.cmd_completion_idx, 1);
+        tab(&mut app, "/");
+        assert_eq!(app.input_text, "/joinpart ");
+    }
+
+    #[tokio::test]
+    async fn text_put_in_the_composer_leaves_the_cursor_after_it() {
+        let mut app = in_room();
+        type_text(&mut app, "/jo");
+        let _ = app.update(Message::CompleteCommand(0));
+        assert_eq!((app.input_text.as_str(), cursor(&app)), ("/join ", 6));
+
+        let _ = app.update(Message::ClearInput);
+        type_text(&mut app, "well ");
+        let _ = app.update(Message::EmojiSelect("\u{1f600}".into()));
+        assert_eq!(app.input_text, "well \u{1f600}");
+        assert_eq!(cursor(&app), app.input_text.len());
+
+        let _ = app.update(Message::ClearInput);
+        let _ = app.update(Message::StartEdit("$1".into(), "what I said".into()));
+        assert_eq!(cursor(&app), "what I said".len());
+    }
+
+    #[tokio::test]
+    async fn editing_a_message_that_starts_with_a_slash_does_not_run_it_as_a_command() {
+        let mut app = in_room();
+        app.messages_by_room.insert("!a:x".into(), vec![mine("$1", "/etc/hosts is wrong")]);
+        // Up on an empty composer: edit my last message.
+        let _ = app.update(Message::InputChanged("\x1b[A".into()));
+        assert_eq!(app.edit_event.as_ref().map(|(id, _)| id.as_str()), Some("$1"));
+        assert_eq!(app.input_text, "//etc/hosts is wrong", "as it has to be typed to be a message");
+        assert!(app.update(Message::SendMessage).units() > 0);
+        assert!(app.help_text.is_none(), "not \"Unknown command: /etc/hosts\"");
+        assert!(app.edit_event.is_none() && app.input_text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn up_arrow_edits_my_last_message_that_this_view_shows() {
+        let mut app = in_room();
+        let in_a_thread = MessageInfo { thread_root: Some("$root".into()), ..mine("$3", "a reply in a thread") };
+        let deleted = MessageInfo { row_kind: fluxchat_core::RowKind::Redacted, ..mine("$4", "Message deleted") };
+        let theirs = MessageInfo { sender: "@bob:x".into(), ..mine("$5", "not mine") };
+        app.messages_by_room.insert("!a:x".into(), vec![mine("$1", "first"), mine("$2", "second"), in_a_thread, deleted, theirs]);
+        let _ = app.update(Message::InputChanged("\x1b[A".into()));
+        assert_eq!(app.edit_event.as_ref().map(|(id, _)| id.as_str()), Some("$2"));
+        assert_eq!(app.input_text, "second");
+    }
+
+    #[tokio::test]
+    async fn a_command_typed_over_an_edit_ends_the_edit() {
+        let mut app = in_room();
+        app.messages_by_room.insert("!a:x".into(), vec![mine("$1", "hello")]);
+        let _ = app.update(Message::StartEdit("$1".into(), "hello".into()));
+        app.input_text = "/help join".into();
+        let _ = app.update(Message::SendMessage);
+        assert!(app.help_text.is_some());
+        assert!(app.edit_event.is_none(), "or the next message would replace $1 instead of being sent");
+    }
+
+    #[tokio::test]
+    async fn replying_and_editing_are_never_both_armed() {
+        let mut app = in_room();
+        let _ = app.update(Message::StartReply("$2".into(), "Bob".into(), "a question".into()));
+        let _ = app.update(Message::StartEdit("$1".into(), "my old text".into()));
+        assert!(app.reply_to.is_none() && app.edit_event.is_some());
+        // Reply while editing: the edit is dropped, with the old text it
+        // had put in the composer (it would go out again, as the reply).
+        let _ = app.update(Message::StartReply("$2".into(), "Bob".into(), "a question".into()));
+        assert!(app.edit_event.is_none() && app.reply_to.is_some());
+        assert!(app.input_text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn emptying_a_caption_removes_it_but_a_message_is_never_edited_to_nothing() {
+        let mut app = in_room();
+        let photo = MessageInfo {
+            image_mxc: Some("mxc://x/cat".into()),
+            caption: Some("my cat".into()),
+            ..mine("$img", "cat.png")
+        };
+        app.messages_by_room.insert("!a:x".into(), vec![mine("$1", "hello"), photo]);
+        let _ = app.update(Message::StartEdit("$img".into(), "my cat".into()));
+        app.input_text.clear();
+        assert!(app.update(Message::SendMessage).units() > 0, "the edit that removes the caption goes out");
+        assert!(app.edit_event.is_none());
+
+        let _ = app.update(Message::StartEdit("$1".into(), "hello".into()));
+        app.input_text.clear();
+        assert_eq!(app.update(Message::SendMessage).units(), 0);
+        assert!(app.edit_event.is_some());
+    }
+
+    #[tokio::test]
+    async fn deleting_the_message_being_edited_or_answered_drops_that_too() {
+        let mut app = in_room();
+        app.messages_by_room.insert("!a:x".into(), vec![mine("$1", "oops"), mine("$2", "other")]);
+        let _ = app.update(Message::StartEdit("$1".into(), "oops".into()));
+        let _ = app.update(Message::DeleteMessage("$1".into()));
+        assert!(app.edit_event.is_none() && app.input_text.is_empty());
+
+        let _ = app.update(Message::StartReply("$2".into(), "me".into(), "other".into()));
+        type_text(&mut app, "about that");
+        let _ = app.update(Message::DeleteMessage("$2".into()));
+        assert!(app.reply_to.is_none());
+        assert_eq!(app.input_text, "about that", "what was being written stays");
+    }
+
+    #[tokio::test]
+    async fn a_shrug_answers_the_message_being_replied_to() {
+        let mut app = in_room();
+        let _ = app.update(Message::StartReply("$2".into(), "Bob".into(), "can you fix it?".into()));
+        app.input_text = "/shrug no idea".into();
+        assert!(app.update(Message::SendMessage).units() > 0);
+        assert!(app.reply_to.is_none(), "or the next message would be the reply");
+    }
+
+    #[tokio::test]
+    async fn sending_closes_the_suggestion_lists() {
+        let mut app = in_room();
+        app.members_by_room.insert("!a:x".into(), vec![member("@alice:x", "Alice")]);
+        type_text(&mut app, "nice :smi");
+        assert!(!app.emoji_completions.is_empty());
+        let _ = app.update(Message::SendMessage);
+        assert!(app.emoji_completions.is_empty(), "a list of emoji over an empty composer");
+
+        type_text(&mut app, "/invite @al");
+        assert!(!app.mention_completions.is_empty());
+        let _ = app.update(Message::SendMessage);
+        assert!(app.mention_completions.is_empty() && app.input_text.is_empty());
+    }
+}
+
+/// Opening rooms, through the real `update()`.
+#[cfg(test)]
+mod navigation_tests {
+    use fluxchat_core::MessageInfo;
+
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+
+    #[tokio::test]
+    async fn a_room_loaded_in_the_background_opens_like_any_other() {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        let msg = |id: &str| MessageInfo { event_id: id.into(), sender: "@me:x".into(), body: "text".into(), ..Default::default() };
+        let photo = MessageInfo { image_mxc: Some("mxc://x/cat".into()), ..msg("$2") };
+        // An agent's room: its timeline is kept loaded, nobody has opened
+        // it yet (so there's no member list for it).
+        app.messages_by_room.insert("!agent:x".into(), vec![
+            msg("$1"),
+            msg(fluxchat_core::timeline::READ_MARKER_ID),
+            photo,
+        ]);
+        let _ = app.update(Message::SelectRoom("!agent:x".into()));
+        assert_eq!(
+            app.read_anchor,
+            Some(("!agent:x".to_string(), "$1".to_string())),
+            "at the first unread message, not the bottom",
+        );
+        assert!(app.image_cache_pending.contains("mxc://x/cat"), "its images are fetched now, not at the next event");
+        assert!(app.read_anchor_pending.is_none(), "nothing to wait for: the messages are here");
+    }
+
+    #[tokio::test]
+    async fn the_invite_and_forward_dialogs_open_without_the_last_ones_target_or_search() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        // Invite… on a space's menu, then closed without inviting anyone.
+        let _ = app.update(Message::ContextMenuAction("space_invite".into(), "!space:x".into()));
+        assert_eq!(app.invite_target_id.as_deref(), Some("!space:x"));
+        let _ = app.update(Message::CloseModal);
+        // The member list's Invite button: this room.
+        let _ = app.update(Message::OpenModal(crate::state::Modal::Invite));
+        assert!(app.invite_target_id.is_none(), "or the invite goes to the space");
+
+        // The forward dialog doesn't open filtered by the last one's search.
+        let _ = app.update(Message::ForwardSearchChanged("ops".into()));
+        let _ = app.update(Message::ForwardMessage("hello".into(), String::new(), None));
+        assert!(app.forward_search.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reply_in_the_same_second_as_the_last_message_is_still_new() {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let msg = |id: &str, sender: &str| MessageInfo {
+            event_id: id.into(), sender: sender.into(), body: "text".into(), timestamp: 1_700_000_000, ..Default::default()
+        };
+        let list = |msgs: Vec<MessageInfo>| Message::SyncEvent(crate::message::SyncEvent::MessagesUpdated("!a:x".into(), msgs));
+        let _ = app.update(list(vec![msg("$1", "@me:x")]));
+        // Reading further up when the bot answers, within the second.
+        app.messages_at_bottom = false;
+        let _ = app.update(list(vec![msg("$1", "@me:x"), msg("$2", "@bot:x")]));
+        assert!(app.new_messages_below, "timestamps are whole seconds");
+        // The same list again (the watcher re-sends it on every change) is not news.
+        app.new_messages_below = false;
+        let _ = app.update(list(vec![msg("$1", "@me:x"), msg("$2", "@bot:x")]));
+        assert!(!app.new_messages_below);
+    }
+}
+
+/// Search results, room lists and verification outcomes that arrive late or
+/// again, through `update()`.
+#[cfg(test)]
+mod late_result_tests {
+    use fluxchat_core::messages::SearchResult;
+
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+    use crate::state::Modal;
+
+    fn hit(event_id: &str, room: &str) -> SearchResult {
+        SearchResult {
+            event_id: event_id.into(),
+            sender: "@bob:x".into(),
+            sender_name: "Bob".into(),
+            body: "deploy failed".into(),
+            timestamp: 1,
+            room_id: room.into(),
+        }
+    }
+
+    fn results(room: &str, query: &str, hits: Vec<SearchResult>) -> Message {
+        Message::SearchResults(room.into(), query.into(), hits)
+    }
+
+    #[tokio::test]
+    async fn search_results_for_an_earlier_query_or_another_room_are_not_shown() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::SearchQueryChanged("deploy".into()));
+        let _ = app.update(Message::SearchQueryChanged("deploy failed".into()));
+        // The first search, slower than the second.
+        let _ = app.update(results("!a:x", "deploy", vec![hit("$old", "!a:x")]));
+        assert!(app.search_results.is_empty() && !app.search_done);
+        let _ = app.update(results("!a:x", "deploy failed", vec![hit("$new", "!a:x")]));
+        assert_eq!(app.search_results.len(), 1);
+        assert!(app.search_done);
+        // One started in the room we were in before, that found nothing.
+        let _ = app.update(results("!b:x", "deploy failed", Vec::new()));
+        assert_eq!(app.search_results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_results_stay_behind_when_the_room_changes() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::SearchQueryChanged("deploy".into()));
+        let _ = app.update(results("!a:x", "deploy", vec![hit("$1", "!a:x")]));
+        // A thread of the same room: still its results.
+        let thread = fluxchat_core::timeline::thread_key("!a:x", "$root");
+        let _ = app.update(Message::SelectRoom(thread));
+        assert_eq!(app.search_results.len(), 1);
+        // Another room: picking "$1" here would page through !b's history for it.
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        assert!(app.search_results.is_empty() && !app.search_done && app.search_selected.is_none());
+    }
+
+    #[tokio::test]
+    async fn search_opened_again_does_not_say_the_last_one_found_nothing() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let _ = app.update(Message::ToggleSearch);
+        let _ = app.update(Message::SearchQueryChanged("deploy".into()));
+        let _ = app.update(results("!a:x", "deploy", vec![hit("$1", "!a:x")]));
+        assert!(app.search_done);
+        // Esc closes it: the list goes, the query stays in the box.
+        let _ = app.update(Message::Escape);
+        assert!(!app.search_open && app.search_results.is_empty());
+        let _ = app.update(Message::ToggleSearch);
+        assert!(app.search_open);
+        assert!(!app.search_done, "\"No messages found\" under a query that found one");
+    }
+
+    fn invites(rooms: &[&str]) -> Message {
+        let invited = rooms.iter()
+            .map(|id| fluxchat_core::RoomInfo { room_id: id.to_string(), name: id.to_string(), ..Default::default() })
+            .collect();
+        Message::SyncEvent(crate::message::SyncEvent::RoomListUpdate(
+            Vec::new(), Vec::new(), invited, Vec::new(), Vec::new(), Default::default(),
+        ))
+    }
+
+    /// New invites open the sidebar's Invites section (and notify): whether
+    /// a room list brought any is read off that.
+    fn announced(app: &mut crate::state::FluxChat, list: Message) -> bool {
+        app.collapsed_sections.insert("Invites".into());
+        let _ = app.update(list);
+        !app.collapsed_sections.contains("Invites")
+    }
+
+    #[tokio::test]
+    async fn invites_being_answered_are_not_announced_again() {
+        let mut app = app();
+        // Nothing pops up in a test run.
+        app.notifications_enabled = false;
+        // The session's first list is what was already waiting.
+        assert!(!announced(&mut app, invites(&["!1:x", "!2:x", "!3:x"])));
+        assert_eq!(app.invited_rooms.len(), 3);
+        // "Decline all": the dialog empties at once, the server takes them
+        // one by one — and sends a new room list after each.
+        let _ = app.update(Message::ArmDeclineAllInvites(true));
+        let _ = app.update(Message::DeclineAllInvites);
+        assert!(app.invited_rooms.is_empty());
+        assert!(!announced(&mut app, invites(&["!2:x", "!3:x"])), "still waiting their turn, not new");
+        assert!(!announced(&mut app, invites(&["!3:x"])));
+        assert!(!announced(&mut app, invites(&[])));
+        // One that is new, and one invited again after being declined.
+        assert!(announced(&mut app, invites(&["!4:x"])));
+        assert!(announced(&mut app, invites(&["!4:x", "!1:x"])));
+        assert!(!announced(&mut app, invites(&["!4:x", "!1:x"])));
+    }
+
+    #[tokio::test]
+    async fn a_verification_that_could_not_start_closes_its_dialog_and_says_why() {
+        let mut app = app();
+        let _ = app.update(Message::StartVerification("@bot:x".into()));
+        assert!(matches!(app.modal, Some(Modal::Verification { .. })));
+        let _ = app.update(Message::VerificationRequested("@bot:x".into(), Err("No identity found for @bot:x".into())));
+        assert!(app.modal.is_none(), "not \"Waiting\u{2026}\" for good");
+        assert!(app.help_text.as_deref().is_some_and(|t| t.contains("No identity found")));
+    }
+
+    #[tokio::test]
+    async fn the_waiting_dialog_learns_its_flow_so_cancel_can_cancel_the_request() {
+        let mut app = app();
+        let _ = app.update(Message::StartVerification("@bob:x".into()));
+        let _ = app.update(Message::VerificationRequested("@bob:x".into(), Ok("flow-1".into())));
+        let Some(Modal::Verification { info }) = &app.modal else { panic!("the dialog stays open") };
+        assert_eq!(info.flow_id, "flow-1");
+    }
+
+    #[tokio::test]
+    async fn a_verification_ending_later_closes_its_own_dialog_only() {
+        let mut app = app();
+        let _ = app.update(Message::StartVerification("@bob:x".into()));
+        let _ = app.update(Message::VerificationEnded("@bob:x".into(), None));
+        assert!(app.modal.is_none());
+        // Bob declines ten minutes on; by then another dialog is open.
+        app.modal = Some(Modal::CreateRoom);
+        let _ = app.update(Message::VerificationEnded("@bob:x".into(), None));
+        assert!(matches!(app.modal, Some(Modal::CreateRoom)));
+        // Nor does it close a verification with someone else.
+        let _ = app.update(Message::StartVerification("@carol:x".into()));
+        let _ = app.update(Message::VerificationEnded("@bob:x".into(), None));
+        assert!(matches!(app.modal, Some(Modal::Verification { .. })));
+    }
+}
+
 impl FluxChat {
     /// Create state and return an initial task (attempt session restore).
     pub fn new_with_init(
@@ -479,18 +1021,29 @@ impl FluxChat {
                 self.login_homeserver = s.clone();
                 self.login_caps = None;
                 // Discover login types once typing pauses — each lookup does
-                // .well-known discovery, so not on every keystroke.
+                // .well-known discovery, so not on every keystroke: a lookup
+                // that finds the field changed during its pause is dropped
+                // (they all went out, to "matrix.o", "matrix.or", … in turn).
+                use std::sync::atomic::Ordering;
+                let turn = self.login_lookup.fetch_add(1, Ordering::Relaxed) + 1;
                 let homeserver = s.trim().to_string();
                 if homeserver.is_empty() {
                     return Task::none();
                 }
+                let latest = self.login_lookup.clone();
                 return Task::perform(
                     async move {
                         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                        if latest.load(Ordering::Relaxed) != turn {
+                            return None;
+                        }
                         let caps = fluxchat_core::auth::get_login_capabilities(&homeserver).await.ok();
-                        (homeserver, caps)
+                        Some((homeserver, caps))
                     },
-                    |(homeserver, caps)| Message::LoginCapsLoaded(homeserver, caps),
+                    |found| match found {
+                        Some((homeserver, caps)) => Message::LoginCapsLoaded(homeserver, caps),
+                        None => Message::Noop,
+                    },
                 );
             }
             Message::LoginUsernameChanged(s) => {
@@ -505,6 +1058,19 @@ impl FluxChat {
                 }
             }
             Message::LoginSubmit => {
+                // Enter in a field while a sign-in is running (the button is
+                // disabled, the fields aren't). Two at once each set the
+                // other's store aside and both end in `finish_login`: two
+                // syncs, every notification twice, and a saved session whose
+                // store the other attempt deleted.
+                if self.login_submitting {
+                    match self.login_sso.take() {
+                        // Waiting on a browser that may never come back:
+                        // the password sign-in takes its place.
+                        Some(sso) => sso.abort(),
+                        None => return Task::none(),
+                    }
+                }
                 self.login_error = None;
                 self.login_submitting = true;
                 let core = self.core.clone();
@@ -529,12 +1095,15 @@ impl FluxChat {
                 );
             }
             Message::LoginSso => {
+                if self.login_submitting {
+                    return Task::none();
+                }
                 self.login_error = None;
                 self.login_submitting = true;
                 let core = self.core.clone();
-                let homeserver = self.login_homeserver.clone();
+                let homeserver = self.login_homeserver.trim().to_string();
 
-                return Task::perform(
+                let (task, handle) = Task::perform(
                     async move {
                         match fluxchat_core::auth::login_sso(&core, &homeserver).await {
                             Ok((_, result)) => Ok(LoginSuccess {
@@ -546,15 +1115,22 @@ impl FluxChat {
                         }
                     },
                     Message::LoginResult,
-                );
+                ).abortable();
+                self.login_sso = Some(handle);
+                return task;
             }
             Message::LoginResult(Ok(success)) => {
                 self.login_submitting = false;
+                self.login_sso = None;
+                // Not kept past the sign-in: the form would come back filled
+                // in after signing out, one click from signing in again.
+                self.login_password.clear();
                 return self.finish_login(success);
             }
             Message::LoginResult(Err(e)) => {
                 self.login_error = Some(e);
                 self.login_submitting = false;
+                self.login_sso = None;
                 self.loading = false;
             }
             Message::NoSavedSession => {
@@ -589,6 +1165,7 @@ impl FluxChat {
                 self.space_tree.clear();
                 self.space_descendants.clear();
                 self.invited_rooms.clear();
+                self.known_invites = None;
                 self.knocked_rooms.clear();
                 self.selected_room_id = None;
                 self.selected_space_id = None;
@@ -640,6 +1217,9 @@ impl FluxChat {
                 self.context_threads = None;
                 self.drafts.clear();
                 self.pane_inputs.clear();
+                self.pane_fill.clear();
+                self.messages_remounted = false;
+                self.messages_underfilled = false;
                 self.input_text.clear();
                 self.input_content = iced::widget::text_editor::Content::new();
                 self.reply_to = None;
@@ -647,6 +1227,62 @@ impl FluxChat {
                 self.upload_pending = None;
                 self.windows = vec![crate::panes::Window::new(None)];
                 self.active_window = 0;
+                self.pending_pane_focus = None;
+                // What only a successful load replaces, so a failed one (or
+                // none: `calls_supported` is only ever set) left the last
+                // account's in place: "reconnecting…" in the status bar for
+                // good, its keywords highlighting, its server's call button.
+                self.sync_status = None;
+                self.notify_rules = None;
+                self.calls_supported = false;
+                self.rooms_with_calls.clear();
+                // The next account's agent list is read before ours is saved
+                // to it (`save_agent_list` waits for this).
+                self.agent_list_loaded = false;
+                self.agent_rooms.clear();
+                self.leaving_rooms.clear();
+                self.search_open = false;
+                self.search_query.clear();
+                self.search_selected = None;
+                self.search_done = false;
+                self.highlight_event_id = None;
+                self.login_password.clear();
+                // Settings keeps what it showed and what was typed into it:
+                // the recovery key stayed on the Security tab for whoever
+                // signed in next, the banner ready to be saved to their
+                // profile, the last account's sessions listed.
+                self.security_shown_recovery_key = None;
+                self.security_recovery_key_input.clear();
+                self.security_reset_password.clear();
+                self.security_reset_confirm = false;
+                self.security_resetting = false;
+                self.security_state = None;
+                self.settings_signout_password.clear();
+                self.settings_signout_device = None;
+                self.settings_old_password.clear();
+                self.settings_new_password.clear();
+                self.settings_confirm_password.clear();
+                self.settings_devices.clear();
+                self.settings_status = None;
+                self.settings_avatar_data = None;
+                self.settings_avatar_handle = None;
+                self.settings_banner_data = None;
+                self.settings_banner_handle = None;
+                self.settings_banner_dimensions = None;
+                self.help_text = None;
+                self.context_menu = None;
+                self.quick_switcher_open = false;
+                self.pending_export = None;
+                // The microphone and what it recorded, and what was playing
+                // (a video's decrypted temp file), don't outlive the session.
+                self.mic_test = None;
+                self.voice_ready = None;
+                self.ptt_held = None;
+                let _ = self.update(Message::CancelVoiceRecording);
+                let _ = self.update(Message::VideoClose);
+                if self.audio_playing.is_some() {
+                    let _ = self.update(Message::StopAudio);
+                }
                 // A call in progress ends with the session: hang up, and take
                 // our membership out of the room while the token still works.
                 crate::update_call::set_call_on_exit(&self.core, None);
@@ -670,6 +1306,8 @@ impl FluxChat {
                         if let Err(e) = fluxchat_core::auth::logout(&core).await {
                             tracing::warn!("Logout failed: {e}");
                         }
+                        // It names this account's rooms and devices.
+                        crate::logfile::clear();
                     },
                     |_| Message::Noop,
                 );
@@ -686,6 +1324,13 @@ impl FluxChat {
                 // Just make sure the active room's subscription is in place.
                 tracing::info!("Sync reconnected");
                 self.subscribe_active_room();
+                // A short view that gave up loading history while offline.
+                if self.messages_underfilled {
+                    self.underfill_pages = 0;
+                    if let Some(room_id) = self.selected_room_id.clone().filter(|k| self.can_fill(Some(k))) {
+                        return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
+                    }
+                }
             }
             Message::InitialRoomsLoaded(rooms, spaces, invited, knocked, space_tree, space_descendants) => {
                 let mut mxc_uris: Vec<String> = spaces.iter()
@@ -699,6 +1344,8 @@ impl FluxChat {
                 self.spaces = spaces;
                 self.space_tree = space_tree;
                 self.space_descendants = space_descendants;
+                self.known_invites.get_or_insert_with(Default::default)
+                    .extend(invited.iter().map(|r| r.room_id.clone()));
                 self.invited_rooms = invited;
                 self.knocked_rooms = knocked;
                 self.sync_running = true;
@@ -803,12 +1450,20 @@ impl FluxChat {
                     self.space_tree = space_tree;
                     self.space_descendants = space_descendants;
 
-                    // Detect new invites and notify
-                    let old_invite_ids: std::collections::HashSet<&str> = self.invited_rooms
-                        .iter().map(|r| r.room_id.as_str()).collect();
-                    let new_invites: Vec<&fluxchat_core::models::RoomInfo> = invited.iter()
-                        .filter(|r| !old_invite_ids.contains(r.room_id.as_str()))
-                        .collect();
+                    // Detect new invites and notify. New to the server's
+                    // list, not to `invited_rooms`: answering an invite takes
+                    // it out of that at once, so a list that arrived before
+                    // the server caught up announced it again — "Decline
+                    // all" on twenty: every one still waiting, each update.
+                    let listed: std::collections::HashSet<String> =
+                        invited.iter().map(|r| r.room_id.clone()).collect();
+                    let new_invites: Vec<&fluxchat_core::models::RoomInfo> = match &self.known_invites {
+                        // The session's first list: what was already waiting
+                        // (it can get here before `InitialRoomsLoaded`).
+                        None => Vec::new(),
+                        Some(known) => invited.iter().filter(|r| !known.contains(&r.room_id)).collect(),
+                    };
+                    self.known_invites = Some(listed);
                     if !new_invites.is_empty() {
                         // Auto-expand the Invites section
                         self.collapsed_sections.remove("Invites");
@@ -843,9 +1498,17 @@ impl FluxChat {
                     // Detect truly new messages for notifications
                     // Detect new messages by comparing against the last seen timestamp
                     let last_ts = self.last_seen_timestamp.get(&room_id).copied().unwrap_or(0);
+                    // Timestamps are whole seconds: one sent in the same
+                    // second as the newest we had (a bot answering at once)
+                    // is new too, if it wasn't in the list before (or taken
+                    // out of it by a delete the timeline hasn't shown yet).
+                    let had = |m: &fluxchat_core::MessageInfo| {
+                        self.messages_by_room.get(&room_id).is_some_and(|old| old.iter().any(|o| o.event_id == m.event_id))
+                            || self.pending_redactions.get(&room_id).is_some_and(|gone| gone.contains(&m.event_id))
+                    };
                     let brand_new: Vec<&fluxchat_core::MessageInfo> = new_messages.iter()
                         .filter(|m| last_ts > 0
-                            && m.timestamp > last_ts
+                            && (m.timestamp > last_ts || (m.timestamp == last_ts && !had(m)))
                             && !m.event_id.starts_with("~")
                             && m.sender != self.user_id)
                         .collect();
@@ -943,6 +1606,18 @@ impl FluxChat {
                         merged.retain(|m| !pending.contains(&m.event_id));
                     }
 
+                    // "Loaded back to the start" was said of the list we had. If
+                    // its oldest event is gone, the Timeline was reset (a gap in
+                    // sync) and holds recent events only: older history loads
+                    // again, instead of never (scrolling up did nothing).
+                    if self.history_start.contains(&room_id) {
+                        let oldest = self.messages_by_room.get(&room_id)
+                            .and_then(|old| old.iter().find(|m| !m.event_id.starts_with('~')));
+                        if oldest.is_some_and(|o| !merged.iter().any(|m| m.event_id == o.event_id)) {
+                            self.history_start.remove(&room_id);
+                        }
+                    }
+
                     // Compute thread reply counts once here instead of per-render
                     let mut tc: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
                     for m in &merged {
@@ -1034,7 +1709,9 @@ impl FluxChat {
                         // bottom, so it follows new messages while at the end
                         // and stays put while you read further up.
                         // Visible in a pane while the window is focused: read.
-                        if self.app_focused {
+                        // A pane of another window, or one hidden behind a
+                        // zoomed pane, isn't being looked at.
+                        if self.app_focused && self.visible(&room_id) {
                             let core = self.core.clone();
                             let key = room_id.clone();
                             let private = !self.prefs.send_read_receipts;
@@ -1110,6 +1787,13 @@ impl FluxChat {
             Message::SelectRoom(room_id) => {
                 let _already_loaded = self.messages_by_room.contains_key(&room_id);
                 self.quick_switcher_open = false;
+                // Search results are another room's now: left listed, picking
+                // one went looking for it through this room's history.
+                if fluxchat_core::timeline::real_room_id(&room_id) != self.active_real_room().unwrap_or("") {
+                    self.search_results.clear();
+                    self.search_selected = None;
+                    self.search_done = false;
+                }
                 // The threads sidebar follows the room.
                 let reload_threads = if self.threads_open
                     && fluxchat_core::timeline::real_room_id(&room_id) != self.active_real_room().unwrap_or("")
@@ -1122,14 +1806,10 @@ impl FluxChat {
                 };
                 // Keep unsent text per view so switching rooms doesn't lose
                 // (or misdirect) a half-written message.
+                let left = self.selected_room_id.clone().filter(|prev| *prev != room_id);
                 if self.selected_room_id.as_deref() != Some(room_id.as_str()) {
                     if let Some(prev) = self.selected_room_id.clone() {
-                        let draft = std::mem::take(&mut self.input_text);
-                        if draft.trim().is_empty() {
-                            self.drafts.remove(&prev);
-                        } else {
-                            self.drafts.insert(prev, draft);
-                        }
+                        self.stash_draft(prev);
                     }
                     // A jump still looking for its message belongs to the view
                     // it was started in; left armed, scrolling up in that room
@@ -1156,6 +1836,14 @@ impl FluxChat {
                 // showing is closed (nothing else shows it).
                 let replaced = self.focus_key_in_pane(&room_id);
                 let close_threads = self.release_view(replaced);
+                // The view we left may still be on screen as a side pane:
+                // its composer there shows what was being written.
+                if let Some(prev) = left {
+                    self.show_draft_in_pane(&prev);
+                }
+                // This view pages for itself now; as a side pane again it
+                // gets a fresh allowance.
+                self.pane_fill.remove(&room_id);
                 let join_requests = self.watch_join_requests(fluxchat_core::timeline::real_room_id(&room_id));
                 let _ = self.core.db.set_setting(LAST_ROOM_KEY, fluxchat_core::timeline::real_room_id(&room_id));
                 if room_changed {
@@ -1168,7 +1856,10 @@ impl FluxChat {
                 crate::view::set_scroll_room(&room_id);
                 self.paginating = false;
                 self.last_scroll_offset = 0.0;
-                crate::view::set_timeline_at_top(None); // until the new view reports its scroll
+                // Until the new view reports (a scroll, or that it fits).
+                self.messages_underfilled = false;
+                self.underfill_pages = 0;
+                crate::view::set_timeline_at_top(None);
                 *self.virt_anchor.borrow_mut() = None;
                 // Mark as read (session-only, SDK handles server-side)
                 self.read_rooms.insert(room_id.clone());
@@ -1209,13 +1900,13 @@ impl FluxChat {
                     )
                 };
 
-                if needs_messages || needs_members {
+                let load = if needs_messages || needs_members {
                     // Messages arrive only through the view's watcher (created
                     // together with its Timeline), never from this task — so a
                     // snapshot taken here can't race with and clobber a newer one.
                     let core = self.core.clone();
                     let key = room_id.clone();
-                    let load = Task::perform(
+                    Task::perform(
                         async move {
                             let client = core.get_client().await.ok()?;
                             if needs_messages && !core.timelines.request_snapshot(&key).await {
@@ -1239,23 +1930,34 @@ impl FluxChat {
                             Some((key, members)) => Message::SyncEvent(SyncEvent::MembersUpdated(key, members)),
                             None => Message::Noop,
                         },
-                    );
+                    )
+                } else {
+                    Task::none()
+                };
+                if needs_messages {
                     // Messages aren't here yet: capture the read marker when they arrive.
-                    if room_changed && needs_messages {
+                    if room_changed {
                         self.read_anchor_pending = Some(room_id.clone());
                     }
                     return Task::batch([load, focus, call_check, pin_load, close_threads, reload_threads, join_requests, Task::done(Message::ScrollToBottom)]);
                 }
+                // The messages are here — also when only the members weren't:
+                // a room kept loaded in the background (every agent room) and
+                // opened for the first time. That used to go the way above,
+                // which waits for messages that already came: no images or
+                // link previews until the next event, no first-unread position.
+                //
                 // Load images not fetched yet (failed ones retry after IMAGE_RETRY_AFTER).
                 // Borrowed out and back rather than cloning the whole room.
                 let image_task = match self.messages_by_room.remove(&room_id) {
                     Some(msgs) => {
-                        let t = self.resolve_images(&room_id, &msgs);
+                        let t = Task::batch([self.resolve_images(&room_id, &msgs), self.resolve_url_previews(&msgs)]);
                         self.messages_by_room.insert(room_id.clone(), msgs);
                         t
                     }
                     None => Task::none(),
                 };
+                let utd_task = self.check_utd_reasons(&room_id);
                 // A view whose Timeline came up empty (its initial backfill
                 // failed or was cut short) would otherwise stay blank until a
                 // new event arrives — fetch history now.
@@ -1263,7 +1965,6 @@ impl FluxChat {
                     Some(msgs) => self.visible_rows(&room_id, msgs).iter().all(|m| m.is_system()),
                     None => true,
                 };
-                self.underfill_pages = 0;
                 let backfill = if nothing_visible {
                     self.start_back_pagination(room_id.clone(), MAX_EMPTY_PAGES)
                 } else {
@@ -1278,7 +1979,7 @@ impl FluxChat {
                     Task::done(Message::ScrollToBottom)
                 };
                 let read_task = self.update(Message::SendReadReceipt);
-                return Task::batch([focus, call_check, image_task, scroll, pin_load, read_task, close_threads, reload_threads, backfill, join_requests]);
+                return Task::batch([load, focus, call_check, image_task, utd_task, scroll, pin_load, read_task, close_threads, reload_threads, backfill, join_requests]);
             }
             Message::SelectSpace(space_id) => {
                 self.selected_space_id = space_id;
@@ -1303,38 +2004,27 @@ impl FluxChat {
             Message::InputChanged(text) => {
                 // Handle special key signals
                 if text == "/\t" {
-                    // Tab cycling through command completions
+                    // Tab takes the highlighted command; Tab again (the box
+                    // then holds that command) moves on to the next. Stepping
+                    // first made the first Tab skip the highlighted row, and
+                    // a row picked with the arrows gave the one below it.
                     if !self.cmd_completions.is_empty() {
-                        self.cmd_completion_idx = (self.cmd_completion_idx + 1) % self.cmd_completions.len();
+                        let taken = self.cmd_completions.get(self.cmd_completion_idx)
+                            .is_some_and(|(name, _)| self.input_text.strip_suffix(' ') == Some(name.as_str()));
+                        if taken {
+                            self.cmd_completion_idx = (self.cmd_completion_idx + 1) % self.cmd_completions.len();
+                        }
                         if let Some((name, _)) = self.cmd_completions.get(self.cmd_completion_idx) {
                             self.input_text = format!("{name} ");
-                            self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
-                            // Move cursor to end
-                            self.input_content.perform(iced::widget::text_editor::Action::Move(
-                                iced::widget::text_editor::Motion::DocumentEnd,
-                            ));
+                            self.input_content = composer_with(&self.input_text);
                         }
                     }
                     return iced::widget::operation::focus(crate::view::input_id());
                 }
                 if text == "@\t" {
-                    // Tab cycling through mention completions
-                    if !self.mention_completions.is_empty() {
-                        self.mention_completion_idx = (self.mention_completion_idx + 1) % self.mention_completions.len();
-                        if let Some((_, display_name)) = self.mention_completions.get(self.mention_completion_idx) {
-                            if let Some(at_pos) = self.input_text.rfind('@') {
-                                self.input_text = format!("{}{display_name} ", &self.input_text[..at_pos + 1]);
-                                self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
-                                self.input_content.perform(iced::widget::text_editor::Action::Move(
-                                    iced::widget::text_editor::Motion::DocumentEnd,
-                                ));
-                                // Dismiss the autocomplete HUD after accepting
-                                self.mention_completions.clear();
-                                self.mention_completion_idx = 0;
-                            }
-                        }
-                    }
-                    return iced::widget::operation::focus(crate::view::input_id());
+                    // Tab takes the highlighted name (it used to step to the
+                    // next one first: with two matches, the wrong person).
+                    return self.update(Message::CompleteMention(self.mention_completion_idx));
                 }
                 if text == ":\t" {
                     // Accept the highlighted :shortcode emoji completion
@@ -1344,7 +2034,17 @@ impl FluxChat {
                     // Up arrow on empty input — edit last own message
                     if let Some(room_id) = &self.selected_room_id {
                         if let Some(msgs) = self.messages_by_room.get(room_id) {
-                            if let Some(msg) = msgs.iter().rev().find(|m| m.sender == self.user_id && !m.event_id.starts_with('~')) {
+                            // The last one this view shows: the list also
+                            // holds my replies in threads (hidden in the
+                            // room) and "Message deleted" placeholders, and
+                            // the edit went to those.
+                            let last = self.visible_rows(room_id, msgs).into_iter().rev().find(|m| {
+                                m.sender == self.user_id
+                                    && !m.event_id.starts_with('~')
+                                    && m.row_kind == fluxchat_core::RowKind::Message
+                                    && m.poll.is_none()
+                            });
+                            if let Some(msg) = last {
                                 return self.update(Message::StartEdit(msg.event_id.clone(), editable_text(msg)));
                             }
                         }
@@ -1402,7 +2102,14 @@ impl FluxChat {
                     return self.send_pending_upload();
                 }
                 if self.input_text.trim().is_empty() {
-                    return Task::none();
+                    // Nothing is sent empty, except an edit that empties an
+                    // attachment's caption: that is how a caption is removed.
+                    let clears_caption = self.edit_event.as_ref().zip(self.selected_room_id.as_ref())
+                        .and_then(|((event_id, _), view)| self.messages_by_room.get(view)?.iter().find(|m| m.event_id == *event_id))
+                        .is_some_and(|m| has_attachment(m) && m.caption.as_deref().is_some_and(|c| !c.trim().is_empty()));
+                    if !clears_caption {
+                        return Task::none();
+                    }
                 }
                 // "Ask all" armed: a copy to every agent here, then compare.
                 let task_text = !self.input_text.starts_with('/') && !self.input_text.starts_with('!');
@@ -1445,6 +2152,12 @@ impl FluxChat {
                     self.input_text.clear();
                     self.input_content = iced::widget::text_editor::Content::new();
                     self.cmd_completions.clear();
+                    self.mention_completions.clear();
+                    self.emoji_completions.clear();
+                    // A command typed over an edit ends the edit: left armed
+                    // (its text gone with the command), the next message
+                    // replaced the old one instead of being sent.
+                    self.edit_event = None;
 
                     let focus = iced::widget::operation::focus(crate::view::input_id());
                     match result {
@@ -1461,20 +2174,25 @@ impl FluxChat {
                             if let Some(room_id) = self.selected_room_id.clone() {
                                 let core = self.core.clone();
                                 let markdown = self.prefs.use_markdown;
-                                return Task::perform(
+                                // `/me` and `/shrug` answer what you were
+                                // replying to, like the text they stand for
+                                // (the reply stayed armed for the next message).
+                                let reply_to = self.reply_to.take().map(|(event_id, _, _)| event_id);
+                                let send = Task::perform(
                                     async move {
-                                        let client = core.get_client().await.ok()?;
+                                        let client = core.get_client().await.map_err(|e| e.to_string())?;
                                         // Through the view's Timeline, like typed
                                         // messages: local echo + thread relation.
-                                        if let Err(e) = fluxchat_core::timeline::send_text(
-                                            &client, &core.timelines, &room_id, &text, None, markdown,
-                                        ).await {
-                                            tracing::warn!("Failed to send to {room_id}: {e}");
-                                        }
-                                        Some(())
+                                        fluxchat_core::timeline::send_text(
+                                            &client, &core.timelines, &room_id, &text, reply_to.as_deref(), markdown,
+                                        ).await.map_err(|e| e.to_string())
                                     },
-                                    |_| Message::Noop,
+                                    |result| match result {
+                                        Ok(()) => Message::Noop,
+                                        Err(e) => Message::ShowError(format!("Couldn't send: {e}")),
+                                    },
                                 );
+                                return Task::batch([send, focus]);
                             }
                             return Task::none();
                         }
@@ -1500,6 +2218,7 @@ impl FluxChat {
                 self.help_text = None;
                 self.cmd_completions.clear();
                 self.mention_completions.clear();
+                self.emoji_completions.clear();
 
                 if let Some(room_id) = self.selected_room_id.clone() {
                     let core = self.core.clone();
@@ -1544,7 +2263,7 @@ impl FluxChat {
             Message::CompleteCommand(idx) => {
                 if let Some((name, _)) = self.cmd_completions.get(idx) {
                     self.input_text = format!("{name} ");
-                    self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                    self.input_content = composer_with(&self.input_text);
                     self.cmd_completions.clear();
                 }
                 return iced::widget::operation::focus(crate::view::input_id());
@@ -1554,9 +2273,10 @@ impl FluxChat {
                     // Replace @partial with @display_name
                     if let Some(at_pos) = self.input_text.rfind('@') {
                         self.input_text = format!("{}{display_name} ", &self.input_text[..at_pos + 1]);
-                        self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                        self.input_content = composer_with(&self.input_text);
                     }
                     self.mention_completions.clear();
+                    self.mention_completion_idx = 0;
                 }
                 return iced::widget::operation::focus(crate::view::input_id());
             }
@@ -1564,10 +2284,7 @@ impl FluxChat {
                 if let Some((emoji, _)) = self.emoji_completions.get(idx).cloned() {
                     if let Some(colon) = self.input_text.rfind(':') {
                         self.input_text = format!("{}{emoji} ", &self.input_text[..colon]);
-                        self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
-                        self.input_content.perform(iced::widget::text_editor::Action::Move(
-                            iced::widget::text_editor::Motion::DocumentEnd,
-                        ));
+                        self.input_content = composer_with(&self.input_text);
                     }
                     self.emoji_completions.clear();
                     self.emoji_completion_idx = 0;
@@ -1624,16 +2341,44 @@ impl FluxChat {
             Message::SyncStatus(status) => {
                 self.sync_status = status;
             }
+            Message::OpenLogs => {
+                self.help_text = Some(match crate::logfile::path() {
+                    Some(path) => {
+                        if let Some(dir) = path.parent() {
+                            if let Err(e) = open::that(dir) {
+                                tracing::warn!("Couldn't open {}: {e}", dir.display());
+                            }
+                        }
+                        format!("Log file: {} (the one before it, when it filled up, is beside it as fluxchat.log.1)", path.display())
+                    }
+                    None => "No log file: this system has no data folder to keep one in".into(),
+                });
+            }
             Message::StartReply(event_id, sender, body) => {
+                // Replying or editing, never both: the bar said "replying
+                // to" while Enter edited the other message — with its own
+                // old text, which is what the composer held.
+                if self.edit_event.take().is_some() {
+                    self.input_text.clear();
+                    self.input_content = iced::widget::text_editor::Content::new();
+                }
                 self.reply_to = Some((event_id, sender, body));
             }
             Message::CancelReply => {
                 self.reply_to = None;
             }
             Message::StartEdit(event_id, body) => {
-                self.edit_event = Some((event_id, body.clone()));
-                self.input_text = body.clone();
-                self.input_content = iced::widget::text_editor::Content::with_text(&body);
+                self.reply_to = None;
+                // As it would be typed: a message that starts with `/` was
+                // sent with `//`, and sending the edit without it ran the
+                // text as a command instead of changing the message.
+                self.input_text = if body.starts_with('/') { format!("/{body}") } else { body.clone() };
+                self.input_content = composer_with(&self.input_text);
+                self.edit_event = Some((event_id, body));
+                // Suggestions for what was in the box before.
+                self.cmd_completions.clear();
+                self.mention_completions.clear();
+                self.emoji_completions.clear();
             }
             Message::CancelEdit => {
                 self.edit_event = None;
@@ -1716,6 +2461,15 @@ impl FluxChat {
                     if let Some(msgs) = self.messages_by_room.get_mut(&room_id) {
                         msgs.retain(|m| m.event_id != event_id);
                     }
+                    // An edit of, or a reply to, the message that's going.
+                    if self.edit_event.as_ref().is_some_and(|(id, _)| *id == event_id) {
+                        self.edit_event = None;
+                        self.input_text.clear();
+                        self.input_content = iced::widget::text_editor::Content::new();
+                    }
+                    if self.reply_to.as_ref().is_some_and(|(id, _, _)| *id == event_id) {
+                        self.reply_to = None;
+                    }
                     self.pending_redactions.entry(room_id.clone()).or_default().insert(event_id.clone());
                     let core = self.core.clone();
                     return Task::perform(
@@ -1781,6 +2535,8 @@ impl FluxChat {
                 }
             }
             Message::ForwardMessage(body, formatted, sender) => {
+                // Every room is offered, not what the last forward searched for.
+                self.forward_search.clear();
                 self.modal = Some(crate::state::Modal::Forward {
                     body,
                     formatted_body: formatted,
@@ -1813,6 +2569,7 @@ impl FluxChat {
                         .get(&room_id)
                         .cloned()
                         .unwrap_or_default();
+                    let (for_room, for_query) = (search_room_id.clone(), query.clone());
                     return Task::perform(
                         async move {
                             // Try server-side search first
@@ -1847,13 +2604,16 @@ impl FluxChat {
                                 })
                                 .collect()
                         },
-                        Message::SearchResults,
+                        move |results| Message::SearchResults(for_room.clone(), for_query.clone(), results),
                     );
                 }
             }
-            Message::SearchResults(results) => {
-                // A search started in another room (we switched since).
-                if results.first().is_some_and(|r| Some(r.room_id.as_str()) != self.active_real_room()) {
+            Message::SearchResults(room_id, query, results) => {
+                // A search started in another room (we switched since), or
+                // for what the box said before: a slow first search landing
+                // after the second listed its results under the new query
+                // (or "no results" for one that was never searched).
+                if Some(room_id.as_str()) != self.active_real_room() || query != self.search_query {
                     return Task::none();
                 }
                 self.search_results = results;
@@ -1968,12 +2728,19 @@ impl FluxChat {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let timeline = fluxchat_core::timeline::get_or_create_for_key(&client, &core.timelines, &key).await.ok()?;
-                        let eid = fluxchat_core::ruma::EventId::parse(&event_id).ok()?.to_owned();
-                        timeline.toggle_reaction(&fluxchat_core::TimelineEventItemId::EventId(eid), &emoji).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let timeline = fluxchat_core::timeline::get_or_create_for_key(&client, &core.timelines, &key)
+                            .await.map_err(|e| e.to_string())?;
+                        let eid = fluxchat_core::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?.to_owned();
+                        timeline.toggle_reaction(&fluxchat_core::TimelineEventItemId::EventId(eid), &emoji)
+                            .await.map(|_| ()).map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    // The notification is gone by now, and the agent still
+                    // waits: an answer that didn't go out has to say so.
+                    |sent: Result<(), String>| match sent {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Couldn't send your answer to the agent: {e}")),
+                    },
                 );
             }
             Message::RunsQuery(q) => {
@@ -1992,6 +2759,9 @@ impl FluxChat {
             }
             Message::ExportRun(key) => {
                 return self.export_run(key);
+            }
+            Message::ExportRunOf(key, started) => {
+                return self.export_run_of(key, started);
             }
             Message::OpenReview(view_key, event_id) => {
                 return self.open_review(view_key, event_id);
@@ -2079,6 +2849,10 @@ impl FluxChat {
                     self.highlight_event_id = None;
                 }
                 if self.search_open {
+                    // Closing (here, Esc, picking a result) empties the list
+                    // and keeps this: opened again, the box said "No
+                    // messages found" about a search that had found some.
+                    self.search_done = false;
                     return iced::widget::operation::focus(crate::view::search_input_id());
                 }
             }
@@ -2207,7 +2981,7 @@ impl FluxChat {
                 match &self.emoji_mode {
                     crate::state::EmojiPickerMode::Insert => {
                         self.input_text.push_str(&emoji);
-                        self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                        self.input_content = composer_with(&self.input_text);
                         return iced::widget::operation::focus(crate::view::input_id());
                     }
                     crate::state::EmojiPickerMode::React(event_id) => {
@@ -2373,6 +3147,15 @@ impl FluxChat {
                 self.create_menu_open = false;
                 if matches!(modal, crate::state::Modal::PendingInvites) {
                     self.decline_all_armed = false;
+                }
+                // Opened this way it is for the room on screen. A room or
+                // space it was opened for earlier (from a menu) and closed
+                // without inviting anyone was still its target: the invite
+                // went there.
+                if matches!(modal, crate::state::Modal::Invite) {
+                    self.invite_target_id = None;
+                    self.invite_search.clear();
+                    self.invite_results.clear();
                 }
                 // Clicking own profile opens settings instead
                 if let crate::state::Modal::Profile { ref user_id } = modal {
@@ -2541,20 +3324,21 @@ impl FluxChat {
                         emojis: None,
                     },
                 });
+                let (who, ended) = (user_id.clone(), user_id.clone());
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
                         fluxchat_core::verification::request_verification(
                             &client, &user_id,
                             move |info| {
                                 let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(info)));
                             },
                             move || {
-                                let _ = tx2.send(Message::CloseModal);
+                                let _ = tx2.send(Message::VerificationEnded(ended.clone(), None));
                             },
-                        ).await.ok()
+                        ).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    move |result| Message::VerificationRequested(who.clone(), result),
                 );
             }
             Message::StartDeviceVerification(device_id) => {
@@ -2570,21 +3354,55 @@ impl FluxChat {
                         emojis: None,
                     },
                 });
+                let (who, ended) = (self.user_id.clone(), self.user_id.clone());
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
                         fluxchat_core::verification::request_device_verification(
                             &client, &device_id,
                             move |info| {
                                 let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(info)));
                             },
                             move || {
-                                let _ = tx2.send(Message::CloseModal);
+                                let _ = tx2.send(Message::VerificationEnded(ended.clone(), None));
                             },
-                        ).await.ok()
+                        ).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    move |result| Message::VerificationRequested(who.clone(), result),
                 );
+            }
+            Message::VerificationRequested(user_id, result) => {
+                // The dialog that asked, still waiting for its request to go out.
+                let waiting = matches!(&self.modal, Some(crate::state::Modal::Verification { info })
+                    if info.flow_id.is_empty() && info.other_user_id == user_id);
+                match result {
+                    // Its Cancel button needs the flow: without it the
+                    // request was never cancelled, only the dialog closed.
+                    Ok(flow_id) => {
+                        if let Some(crate::state::Modal::Verification { info }) = self.modal.as_mut().filter(|_| waiting) {
+                            info.flow_id = flow_id;
+                        }
+                    }
+                    // Nothing went out (someone with no cross-signing
+                    // identity, a bot): the dialog said "Waiting…" for good.
+                    Err(e) => {
+                        if waiting {
+                            self.modal = None;
+                        }
+                        return self.update(Message::ShowError(format!("Couldn't start the verification: {e}")));
+                    }
+                }
+            }
+            Message::VerificationEnded(user_id, error) => {
+                // Only the verification's own dialog: this can come minutes
+                // after it was closed (the request timing out, the other
+                // side declining), and closed whatever dialog was open then.
+                if matches!(&self.modal, Some(crate::state::Modal::Verification { info }) if info.other_user_id == user_id) {
+                    self.modal = None;
+                }
+                if let Some(e) = error {
+                    return self.update(Message::ShowError(e));
+                }
             }
             Message::VerificationAccept(user_id, flow_id) => {
                 let core = self.core.clone();
@@ -2594,20 +3412,26 @@ impl FluxChat {
                 if let Some(crate::state::Modal::Verification { ref mut info }) = self.modal {
                     info.state = "accepting...".into();
                 }
+                let (who, ended) = (user_id.clone(), user_id.clone());
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
                         fluxchat_core::verification::accept_verification(
                             &client, &user_id, &flow_id,
                             move |info| {
                                 let _ = tx.send(Message::SyncEvent(SyncEvent::VerificationRequest(info)));
                             },
                             move || {
-                                let _ = tx2.send(Message::CloseModal);
+                                let _ = tx2.send(Message::VerificationEnded(ended.clone(), None));
                             },
-                        ).await.ok()
+                        ).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    // A request that's gone (cancelled, expired) left the
+                    // dialog on "accepting..." with nothing to say why.
+                    move |result| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::VerificationEnded(who.clone(), Some(format!("Couldn't accept the verification: {e}"))),
+                    },
                 );
             }
             Message::VerificationConfirm(user_id, flow_id) => {
@@ -2615,6 +3439,7 @@ impl FluxChat {
                     info.state = "confirming...".into();
                 }
                 let core = self.core.clone();
+                let who = user_id.clone();
                 return Task::perform(
                     async move {
                         let client = core.get_client().await.map_err(|e| e.to_string())?;
@@ -2622,13 +3447,10 @@ impl FluxChat {
                             .await
                             .map_err(|e| e.to_string())
                     },
-                    |result| match result {
-                        Ok(()) => Message::CloseModal,
-                        Err(e) => Message::Batch(vec![
-                            Message::CloseModal,
-                            Message::ShowError(format!("Verification failed: {e}")),
-                        ]),
-                    },
+                    move |result| Message::VerificationEnded(
+                        who.clone(),
+                        result.err().map(|e| format!("Verification failed: {e}")),
+                    ),
                 );
             }
             Message::VerificationCancel(user_id, flow_id) => {
@@ -2732,6 +3554,8 @@ impl FluxChat {
                         Ok::<_, String>(result)
                     },
                     |result| match result {
+                        // A space is picked in the spaces bar, never opened as a chat.
+                        Ok(room) if room.is_space => Message::SelectSpace(Some(room.room_id)),
                         Ok(room) => Message::SelectRoom(room.room_id),
                         Err(e) => Message::ShowError(format!("Join failed: {e}")),
                     },
@@ -2788,6 +3612,14 @@ impl FluxChat {
                 );
             }
             Message::ScrollMessagesBy(fraction) => {
+                // Nowhere to go (at the end already, or everything fits): the
+                // scrollable wouldn't move, so it reports nothing back, and
+                // an offset past its end would stand as where the view is —
+                // "not at the bottom" (new messages no longer followed) with
+                // rows built around a place that isn't on screen.
+                if self.messages_underfilled || (fraction > 0.0 && self.messages_at_bottom) {
+                    return Task::none();
+                }
                 let delta = self.messages_viewport_h * fraction;
                 let y = (self.last_scroll_offset + delta).max(0.0);
                 self.messages_at_bottom = false;
@@ -3100,13 +3932,16 @@ impl FluxChat {
                     };
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
                             fluxchat_core::rooms::send_raw_event(
                                 &client, &room_id, &event_type,
                                 state_key.as_deref(), &body,
-                            ).await.ok()
+                            ).await.map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Event not sent: {e}")),
+                        },
                     );
                 }
             }
@@ -3121,6 +3956,9 @@ impl FluxChat {
                 self.directory_results.clear();
                 self.directory_next_batch = None;
                 self.directory_loading = true;
+                // A new search: whatever the earlier ones still bring is not for it.
+                self.directory_request += 1;
+                let request = self.directory_request;
                 let core = self.core.clone();
                 let query = self.directory_search.clone();
                 let server = self.directory_server.clone();
@@ -3131,13 +3969,19 @@ impl FluxChat {
                         let srv = if server.is_empty() { None } else { Some(server.as_str()) };
                         fluxchat_core::rooms::list_public_rooms(&client, search, Some(20), None, srv).await.ok()
                     },
-                    |result| match result {
-                        Some((rooms, next)) => Message::DirectoryResults(rooms, next),
-                        None => Message::DirectoryResults(vec![], None),
+                    move |result| match result {
+                        Some((rooms, next)) => Message::DirectoryResults(request, rooms, next),
+                        None => Message::DirectoryResults(request, vec![], None),
                     },
                 );
             }
-            Message::DirectoryResults(rooms, next_batch) => {
+            Message::DirectoryResults(request, rooms, next_batch) => {
+                // An answer to an earlier search (another server, another
+                // query): appended here it mixed the two lists, and its
+                // "next page" token went to the wrong server.
+                if request != self.directory_request {
+                    return Task::none();
+                }
                 self.directory_loading = false;
                 let mxc_uris: Vec<String> = rooms.iter()
                     .filter_map(|r| r.avatar_url.clone())
@@ -3151,6 +3995,7 @@ impl FluxChat {
             Message::DirectoryLoadMore => {
                 if let Some(since) = self.directory_next_batch.clone() {
                     self.directory_loading = true;
+                    let request = self.directory_request;
                     let core = self.core.clone();
                     let query = self.directory_search.clone();
                     let server = self.directory_server.clone();
@@ -3161,22 +4006,23 @@ impl FluxChat {
                             let srv = if server.is_empty() { None } else { Some(server.as_str()) };
                             fluxchat_core::rooms::list_public_rooms(&client, search, Some(20), Some(&since), srv).await.ok()
                         },
-                        |result| match result {
-                            Some((rooms, next)) => Message::DirectoryResults(rooms, next),
-                            None => Message::DirectoryResults(vec![], None),
+                        move |result| match result {
+                            Some((rooms, next)) => Message::DirectoryResults(request, rooms, next),
+                            None => Message::DirectoryResults(request, vec![], None),
                         },
                     );
                 }
             }
             Message::DirectoryJoinRoom(room_id) => {
-                let core = self.core.clone();
-                return Task::perform(
-                    async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::join_room(&client, &room_id).await.ok()
-                    },
-                    |_| Message::CloseModal,
-                );
+                // Like any other join: through servers that are in the room
+                // (one listed by another server's directory can't be joined
+                // by its bare ID), into the room, and with failures shown.
+                let via = self.directory_results.iter()
+                    .find(|r| r.room_id == room_id)
+                    .map(crate::update_room_admin::directory_via)
+                    .unwrap_or_default();
+                self.modal = None;
+                return self.update(Message::JoinRoomVia(room_id, via));
             }
             Message::SetTopic(room_id, topic) => {
                 let core = self.core.clone();
@@ -3193,24 +4039,39 @@ impl FluxChat {
                 );
             }
             Message::SetNick(name) => {
-                self.display_name = Some(name.clone());
+                // Shown at once; NickSet puts the old one back if the server refuses.
+                let previous = self.display_name.replace(name.clone());
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::set_display_name(&client, &name).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::profile::set_display_name(&client, &name).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    move |r| Message::NickSet(r.map_err(|e| (previous, e))),
                 );
             }
+            Message::NickSet(result) => match result {
+                Ok(()) => self.settings_status = Some("Display name updated".into()),
+                Err((previous, e)) => {
+                    self.display_name = previous;
+                    let failed = format!("Couldn't change the display name: {e}");
+                    self.settings_status = Some(failed.clone());
+                    return self.update(Message::ShowError(failed));
+                }
+            },
             Message::SendDm(user_id, body) => {
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::send_dm(&client, &user_id, &body).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::send_dm(&client, &user_id, &body).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    // The text left the composer when the command ran: say so
+                    // when it went nowhere.
+                    |r| match r {
+                        Ok(_) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Message not sent: {e}")),
+                    },
                 );
             }
 
@@ -3236,14 +4097,16 @@ impl FluxChat {
             Message::FileDropped(path) => {
                 return Task::perform(
                     async move {
-                        let data = tokio::fs::read(&path).await.ok()?;
-                        let name = path.file_name()?.to_string_lossy().to_string();
+                        let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().to_string();
+                        // A folder, or a file we may not read: say so rather
+                        // than attach nothing.
+                        let data = tokio::fs::read(&path).await.map_err(|e| format!("Couldn't attach {name}: {e}"))?;
                         let mime = mime_from_extension(&name);
-                        Some((name, mime, data))
+                        Ok((name, mime, data))
                     },
-                    |result| match result {
-                        Some((name, mime, data)) => Message::FileSelected(name, mime, data),
-                        None => Message::Noop,
+                    |result: Result<_, String>| match result {
+                        Ok((name, mime, data)) => Message::FileSelected(name, mime, data),
+                        Err(e) => Message::ShowError(e),
                     },
                 );
             }
@@ -3404,8 +4267,8 @@ impl FluxChat {
 
             // --- URL Previews ---
             Message::UrlPreviewFetched(url, preview) => {
-                self.url_previews_pending.remove(&url);
                 if let Some(preview) = preview {
+                    self.url_previews_pending.remove(&url);
                     // Fetch og:image if present
                     let task = if let Some(ref image_url) = preview.image_url {
                         if !self.url_preview_images.contains_key(image_url) && image_url.starts_with("mxc://") {
@@ -3440,6 +4303,9 @@ impl FluxChat {
                     evict_cache(&mut self.url_previews, URL_PREVIEW_LIMIT);
                     return task;
                 }
+                // No preview (the page has none, the server doesn't make
+                // them, or the request failed): a miss, however it got here.
+                return self.update(Message::UrlPreviewFailed(url));
             }
             Message::UrlPreviewImageResolved(url, data) => {
                 let handle = iced::widget::image::Handle::from_bytes(data);
@@ -3477,9 +4343,21 @@ impl FluxChat {
 
             // --- Formatting ---
             Message::InsertFormat(prefix, suffix) => {
+                use iced::widget::text_editor::{Action, Motion};
+                // From the editor, not its mirror: that one drops trailing
+                // line breaks, and a code block started on a fresh line
+                // would open on the line before (where it isn't one).
+                self.input_text = self.input_content.text();
                 self.input_text.push_str(prefix);
                 self.input_text.push_str(suffix);
                 self.input_content = iced::widget::text_editor::Content::with_text(&self.input_text);
+                // New content starts with the caret at the very beginning
+                // (the next key went in front of the whole message): put it
+                // between the markers, where the text they format goes.
+                self.input_content.perform(Action::Move(Motion::DocumentEnd));
+                for _ in suffix.chars() {
+                    self.input_content.perform(Action::Move(Motion::Left));
+                }
                 return iced::widget::operation::focus(crate::view::input_id());
             }
 
@@ -3584,13 +4462,22 @@ impl FluxChat {
                 );
             }
             Message::CancelKnock(room_id) => {
+                // Gone from the list at once, like a declined invite; the
+                // refresh brings it back if the server refused.
+                self.knocked_rooms.retain(|r| r.room_id != room_id);
                 let core = self.core.clone();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::rooms::cancel_knock(&client, &room_id).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::rooms::cancel_knock(&client, &room_id).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |result| match result {
+                        Ok(()) => Message::RefreshRoomList,
+                        Err(e) => Message::Batch(vec![
+                            Message::RefreshRoomList,
+                            Message::ShowError(format!("Couldn't withdraw the request: {e}")),
+                        ]),
+                    },
                 );
             }
 
@@ -3618,16 +4505,27 @@ impl FluxChat {
                 self.audio_start_time = Some(std::time::Instant::now());
                 self.audio_duration_ms = duration;
                 self.audio_progress = 0.0;
+                // This playback's number. A player reports its end when it is
+                // stopped too, and a download can finish after Stop: without
+                // the number the previous clip's end reset the one just
+                // started, and a clip stopped while loading played anyway.
+                use std::sync::atomic::Ordering;
+                let token = self.audio_token.fetch_add(1, Ordering::SeqCst) + 1;
+                let current = self.audio_token.clone();
 
                 let core = self.core.clone();
                 let tx = self.timeline_tx.clone();
                 let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
                         let (bytes, _mime) = fluxchat_core::media::get_event_media_bytes(
                             &client, &real_room, &event_id,
-                        ).await.ok()?;
+                        ).await.map_err(|e| e.to_string())?;
+                        // Stopped (or another clip started) while this loaded.
+                        if current.load(Ordering::SeqCst) != token {
+                            return Ok(());
+                        }
                         // Voice messages (OGG Opus) decode and play in-process.
                         if is_voice || _mime.contains("ogg") || _mime.contains("opus") {
                             match fluxchat_core::voice::decode_ogg_opus(&bytes) {
@@ -3635,12 +4533,21 @@ impl FluxChat {
                                     let tx_done = tx.clone();
                                     let started = fluxchat_core::voice::play_pcm(
                                         pcm, channels, 48000,
-                                        Box::new(move || { let _ = tx_done.send(Message::AudioFinished); }),
+                                        Box::new(move || { let _ = tx_done.send(Message::AudioFinished(token)); }),
                                     );
                                     match started {
                                         Ok(handle) => {
-                                            *AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
-                                            return Some(());
+                                            // Checked under the lock Stop takes the handle with.
+                                            let mut playing = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner());
+                                            if current.load(Ordering::SeqCst) == token {
+                                                // (A preview of your own recording may be going.)
+                                                if let Some(previous) = playing.replace(handle) {
+                                                    previous.stop();
+                                                }
+                                            } else {
+                                                handle.stop();
+                                            }
+                                            return Ok(());
                                         }
                                         Err(e) => tracing::warn!("In-process playback failed, using system player: {e}"),
                                     }
@@ -3654,8 +4561,10 @@ impl FluxChat {
                             else if _mime.contains("wav") { "wav" }
                             else if _mime.contains("mp4") || _mime.contains("m4a") { "m4a" }
                             else { "ogg" };
-                        let path = std::env::temp_dir().join(format!("fluxchat_audio.{ext}"));
-                        std::fs::write(&path, &bytes).ok()?;
+                        // A file per playback: the previous clip's player removes
+                        // its file when it exits, which can be after this one is written.
+                        let path = std::env::temp_dir().join(format!("fluxchat_audio_{}_{token}.{ext}", std::process::id()));
+                        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
 
                         let tx2 = tx.clone();
                         std::thread::spawn(move || {
@@ -3688,15 +4597,24 @@ impl FluxChat {
                                 let _ = c.wait();
                             }
                             let _ = std::fs::remove_file(&path);
-                            let _ = tx2.send(Message::AudioFinished);
+                            let _ = tx2.send(Message::AudioFinished(token));
                         });
 
-                        Some(())
+                        Ok(())
                     },
-                    |_| Message::Noop,
+                    // Couldn't load it: stop showing it as playing.
+                    move |result: Result<(), String>| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::Batch(vec![
+                            Message::AudioFinished(token),
+                            Message::ShowError(format!("Couldn't play the audio: {e}")),
+                        ]),
+                    },
                 );
             }
             Message::StopAudio => {
+                // Whatever is still loading or ending belongs to a playback that's over.
+                self.audio_token.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if let Some(handle) = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).take() {
                     handle.stop();
                 }
@@ -3718,21 +4636,29 @@ impl FluxChat {
                         .and_then(|g| g.items.iter().find(|m| m.event_id == event_id)))
                     .map(|m| m.body.clone())
                     .unwrap_or_else(|| "file".to_string());
+                // The name is the sender's: only its last part is suggested.
+                let filename = crate::update_spaces::save_name(&filename);
                 let core = self.core.clone();
                 let real_room = fluxchat_core::timeline::real_room_id(&room_id).to_string();
                 return Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
+                            .map_err(|e| e.to_string())?;
                         // Open save dialog
-                        let handle = rfd::AsyncFileDialog::new()
+                        let Some(handle) = rfd::AsyncFileDialog::new()
                             .set_file_name(&filename)
                             .save_file()
-                            .await?;
-                        handle.write(&data).await.ok()?;
-                        Some(())
+                            .await
+                        else {
+                            return Ok(()); // cancelled
+                        };
+                        handle.write(&data).await.map_err(|e| e.to_string())
                     },
-                    |_| Message::Noop,
+                    |result: Result<(), String>| match result {
+                        Ok(()) => Message::Noop,
+                        Err(e) => Message::ShowError(format!("Download failed: {e}")),
+                    },
                 );
             }
             Message::PlayVideo(event_id, room_id) => {
@@ -3749,23 +4675,33 @@ impl FluxChat {
                 return Task::perform(
                     async move {
                         // Lazy GStreamer init (safe to call multiple times)
-                        if let Err(e) = gstreamer::init() {
-                            tracing::warn!("GStreamer init failed: {e}");
-                            return None;
-                        }
-                        let client = core.get_client().await.ok()?;
-                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &eid).await.ok()?;
+                        gstreamer::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        let (data, _mime) = fluxchat_core::media::get_event_media_bytes(&client, &real_room, &eid).await
+                            .map_err(|e| e.to_string())?;
                         let tmp = video_temp_path(&event_id, &filename);
-                        std::fs::write(&tmp, &data).ok()?;
-                        Some((event_id, tmp))
+                        std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
+                        Ok((event_id, tmp))
                     },
-                    |result| match result {
-                        Some((eid, path)) => Message::VideoReady(eid, path),
-                        None => Message::Noop,
+                    // A click on Play that does nothing looks like a dead button.
+                    |result: Result<_, String>| match result {
+                        Ok((eid, path)) => Message::VideoReady(eid, path),
+                        Err(e) => Message::ShowError(format!("Couldn't play the video: {e}")),
                     },
                 );
             }
             Message::VideoReady(event_id, path) => {
+                // Downloaded while we moved on: with its message in no view
+                // there would be no player to see or to close, only its sound.
+                let on_screen = self.pane_keys().map(str::to_string)
+                    .chain(self.selected_room_id.clone())
+                    .any(|key| self.messages_by_room.get(&key).is_some_and(|msgs| msgs.iter().any(|m| m.event_id == event_id)));
+                if !on_screen {
+                    if self.video_temp_path.as_ref() != Some(&path) {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    return Task::none();
+                }
                 match url::Url::from_file_path(&path) {
                     Ok(file_url) => {
                         match create_video_player(&file_url) {
@@ -3773,7 +4709,8 @@ impl FluxChat {
                                 video.set_volume(1.0);
                                 self.video_player = Some(video);
                                 self.video_playing_event = Some(event_id);
-                                self.video_temp_path = Some(path);
+                                // The video this one replaces is closed with it.
+                                crate::update_spaces::swap_temp_file(&mut self.video_temp_path, path);
                                 self.video_position = 0.0;
                                 self.video_dragging = false;
                             }
@@ -3835,7 +4772,12 @@ impl FluxChat {
                 self.image_cache.insert(key.clone(), handle);
                 self.video_thumb_sizes.insert(key, (w, h));
             }
-            Message::AudioFinished => {
+            Message::AudioFinished(token) => {
+                // The end of a playback that was stopped or replaced: the one
+                // playing now isn't over.
+                if token != self.audio_token.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Task::none();
+                }
                 AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).take();
                 self.audio_playing = None;
                 self.audio_progress = 0.0;
@@ -3860,7 +4802,10 @@ impl FluxChat {
                         VOICE_HANDLE.lock().unwrap_or_else(|e| e.into_inner()).0 = Some(handle);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to start recording: {e}");
+                        // Said out loud: holding the mic with nothing
+                        // recording looks like a message being sent.
+                        self.ptt_held = None;
+                        return self.update(Message::ShowError(format!("Couldn't start recording: {e}")));
                     }
                 }
             }
@@ -3873,7 +4818,7 @@ impl FluxChat {
                         Ok((bytes, duration)) => {
                             return self.update(Message::VoiceRecordingReady(bytes, duration));
                         }
-                        Err(e) => tracing::warn!("Voice encode failed: {e}"),
+                        Err(e) => return self.update(Message::ShowError(format!("Couldn't save the recording: {e}"))),
                     }
                 }
             }
@@ -3913,6 +4858,20 @@ impl FluxChat {
                 if let Some((ref bytes, _)) = self.voice_ready {
                     let bytes = bytes.clone();
                     std::thread::spawn(move || {
+                        // In-process first, the way received voice messages
+                        // play: the players below are on few machines (none
+                        // of them on a stock Mac), and without one the
+                        // button did nothing.
+                        if let Ok((pcm, channels)) = fluxchat_core::voice::decode_ogg_opus(&bytes) {
+                            if let Ok(handle) = fluxchat_core::voice::play_pcm(pcm, channels, 48000, Box::new(|| {})) {
+                                // A second click starts it over.
+                                let previous = AUDIO_PLAYBACK.lock().unwrap_or_else(|e| e.into_inner()).replace(handle);
+                                if let Some(previous) = previous {
+                                    previous.stop();
+                                }
+                                return;
+                            }
+                        }
                         let path = std::env::temp_dir().join("fluxchat_voice_preview.ogg");
                         if std::fs::write(&path, &bytes).is_ok() {
                             #[cfg(target_os = "macos")]
@@ -3979,7 +4938,25 @@ impl FluxChat {
                     if let Some(msgs) = self.messages_by_room.get(room_id) {
                         if msgs.iter().any(|m| m.event_id == event_id) {
                             if let Some(top) = self.row_top(&event_id) {
-                                let y = (top - 80.0).max(0.0);
+                                let y = (top - JUMP_TOP_MARGIN).max(0.0);
+                                // In the last screenful of a view that's at its
+                                // end: it is on screen, and the scrollable has
+                                // nowhere further to go — it wouldn't move, so it
+                                // wouldn't report, and "scrolled to y" would
+                                // stand: new messages no longer followed, rows
+                                // built around an offset past the end. Only
+                                // from measured rows (estimates say little
+                                // about what is on screen), or a list that fits.
+                                let on_screen = self.messages_underfilled || {
+                                    let rows = self.visible_rows(room_id, msgs);
+                                    let measured = self.row_heights.borrow();
+                                    rows.iter().position(|m| m.event_id == event_id)
+                                        .and_then(|at| rows[at..].iter().map(|m| measured.get(&m.event_id).copied()).sum::<Option<f32>>())
+                                        .is_some_and(|below| below <= self.messages_viewport_h - JUMP_TOP_MARGIN)
+                                };
+                                if self.messages_at_bottom && on_screen {
+                                    return Task::none();
+                                }
                                 self.messages_at_bottom = false;
                                 self.last_scroll_offset = y;
                                 return iced::widget::operation::scroll_to(
@@ -4010,10 +4987,16 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::report_message(&client, &room_id, &event_id, &reason).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::messages::report_message(&client, &room_id, &event_id, &reason).await
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        // The dialog is gone by now: a report that didn't go
+                        // through must not look like one that did.
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Report not sent: {e}")),
+                        },
                     );
                 }
             }
@@ -4108,12 +5091,17 @@ impl FluxChat {
                 self.location_lon = val;
             }
             Message::LocationSubmit => {
-                let lat = self.location_lat.trim().to_string();
-                let lon = self.location_lon.trim().to_string();
-                if lat.is_empty() || lon.is_empty() {
+                let (Ok(lat), Ok(lon)) = (
+                    self.location_lat.trim().parse::<f64>(),
+                    self.location_lon.trim().parse::<f64>(),
+                ) else {
                     return Task::none();
-                }
-                if lat.parse::<f64>().is_err() || lon.parse::<f64>().is_err() {
+                };
+                // A point on the map: "nan" and "1e9" parse as numbers too,
+                // and a pair pasted the other way round (GeoJSON order) is
+                // the usual slip. Sent as it was, nobody could show it.
+                if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                    self.help_text = Some("Latitude goes from -90 to 90, longitude from -180 to 180".into());
                     return Task::none();
                 }
                 let geo_uri = format!("geo:{lat},{lon}");
@@ -4278,7 +5266,12 @@ impl FluxChat {
                         (room_id, result.err())
                     },
                     // Reloads the Security tab either way (shows the real state on failure).
-                    |(rid, err)| Message::RoomAdminDone(rid, err),
+                    |(rid, err)| match err {
+                        None => Message::RoomAdminDone(rid, None),
+                        // And the room list: its lock (header, status bar)
+                        // was set above and must not keep saying "encrypted".
+                        Some(e) => Message::Batch(vec![Message::RoomAdminDone(rid, Some(e)), Message::RefreshRoomList]),
+                    },
                 );
             }
             Message::RoomSettingsSaveName => {
@@ -4296,7 +5289,12 @@ impl FluxChat {
                         },
                         |r| match r {
                             Ok(_) => Message::Noop,
-                            Err(e) => Message::ShowError(format!("Renaming room failed: {e}")),
+                            // The new name above was ours alone: the list is
+                            // rebuilt so the room goes by its real one again.
+                            Err(e) => Message::Batch(vec![
+                                Message::ShowError(format!("Renaming room failed: {e}")),
+                                Message::RefreshRoomList,
+                            ]),
                         },
                     );
                 }
@@ -4316,7 +5314,10 @@ impl FluxChat {
                         },
                         |r| match r {
                             Ok(_) => Message::Noop,
-                            Err(e) => Message::ShowError(format!("Setting topic failed: {e}")),
+                            Err(e) => Message::Batch(vec![
+                                Message::ShowError(format!("Setting topic failed: {e}")),
+                                Message::RefreshRoomList,
+                            ]),
                         },
                     );
                 }
@@ -4372,13 +5373,13 @@ impl FluxChat {
                     let core = self.core.clone();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::remove_room_avatar(&client, &room_id).await.ok()?;
-                            Some(room_id)
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::remove_room_avatar(&client, &room_id).await.map_err(|e| e.to_string())?;
+                            Ok(room_id)
                         },
-                        |result| match result {
-                            Some(room_id) => Message::RoomAvatarUpdated(room_id, None),
-                            None => Message::Noop,
+                        |result: Result<String, String>| match result {
+                            Ok(room_id) => Message::RoomAvatarUpdated(room_id, None),
+                            Err(e) => Message::ShowError(format!("Couldn't remove the icon: {e}")),
                         },
                     );
                 }
@@ -4397,10 +5398,14 @@ impl FluxChat {
                     self.modal = None;
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::messages::forward_message(&client, &rid, &body, formatted.as_deref()).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::messages::forward_message(&client, &rid, &body, formatted.as_deref()).await
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Forwarding failed: {e}")),
+                        },
                     );
                 }
             }
@@ -4437,10 +5442,14 @@ impl FluxChat {
                     self.invite_results.clear();
                     return Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::invite_user(&client, &room_id, &user_id).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::rooms::invite_user(&client, &room_id, &user_id).await
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::Noop,
+                        |r| match r {
+                            Ok(_) => Message::Noop,
+                            Err(e) => Message::ShowError(format!("Invite failed: {e}")),
+                        },
                     );
                 }
             }
@@ -4499,30 +5508,10 @@ impl FluxChat {
             }
 
             // --- Room notifications ---
-            Message::MuteRoom => {
-                if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_notification_mode(&client, &room_id, "mute").await.ok()
-                        },
-                        |_| Message::Noop,
-                    );
-                }
-            }
-            Message::UnmuteRoom => {
-                if let Some(room_id) = self.active_real_room().map(str::to_string) {
-                    let core = self.core.clone();
-                    return Task::perform(
-                        async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::rooms::set_notification_mode(&client, &room_id, "all").await.ok()
-                        },
-                        |_| Message::Noop,
-                    );
-                }
-            }
+            // `/mute`, `/unmute`: the change Room Settings makes, so a refusal
+            // is shown (dropped, the room just stayed as loud as it was).
+            Message::MuteRoom => return self.update(Message::SetRoomNotifyMode("mute".into())),
+            Message::UnmuteRoom => return self.update(Message::SetRoomNotifyMode("all".into())),
             Message::RefreshTimeline => {
                 // Manual rebuild: drop the Timeline (aborting its watcher) and
                 // open a fresh one; the new watcher replaces the view's messages.
@@ -4720,7 +5709,15 @@ impl FluxChat {
             Message::PaginateBack(room_id) => {
                 let core = self.core.clone();
                 let key = room_id.clone();
-                let events = if self.messages_underfilled { UNDERFILL_PAGE_EVENTS } else { PAGINATE_PAGE_EVENTS };
+                // Big pages while the view doesn't fill, and once a page has
+                // shown nothing: what's back there is a stretch of events the
+                // view hides (an agent's thread replies and edits), and small
+                // pages through it look like scrolling up does nothing.
+                let events = if self.messages_underfilled || self.paginate_empty_budget < MAX_EMPTY_PAGES {
+                    UNDERFILL_PAGE_EVENTS
+                } else {
+                    PAGINATE_PAGE_EVENTS
+                };
                 return Task::perform(
                     async move {
                         // get-or-create also rebuilds a Timeline whose watcher stopped.
@@ -4788,6 +5785,14 @@ impl FluxChat {
                             move |_| Message::PaginateRetry(key.clone(), budget),
                         );
                     }
+                    // Out of retries (offline, most likely): stop filling by
+                    // itself. The list reports again whenever its height
+                    // changes ("Loading older messages…" going away is one),
+                    // which would start the retries over, for as long as the
+                    // view is open. A scroll-up or a reconnect resumes it.
+                    None if selected && self.messages_underfilled => {
+                        self.underfill_pages = MAX_UNDERFILL_PAGES;
+                    }
                     None => {}
                 }
                 // Looking for a message further back (gallery "Jump to message").
@@ -4812,6 +5817,15 @@ impl FluxChat {
                 self.messages_viewport_h = viewport_h;
                 let max_scroll = (content_h - viewport_h).max(0.0);
                 let near_top = offset < PAGINATE_TOP_ZONE;
+                // A new scrollable's first report says where it starts (the
+                // top), not where the user went: taken as a scroll it emptied
+                // the view (rows are only built around where we believe it
+                // is) or sent it to the oldest loaded message. Put it back.
+                if std::mem::take(&mut self.messages_remounted)
+                    && list_astray(self.messages_at_bottom, self.last_scroll_offset, offset, max_scroll)
+                {
+                    return self.restore_scroll();
+                }
                 // The user scrolled up (programmatic corrections below record
                 // their target in last_scroll_offset first, so they never
                 // count). Content resizing alone must not load history, or
@@ -4825,7 +5839,7 @@ impl FluxChat {
                 // At the very top a further scroll up can't move the view (so
                 // no event here): the wheel listener takes over from there.
                 crate::view::set_timeline_at_top((offset < 1.0).then(|| viewport.bounds()));
-                let near_bottom = (max_scroll - offset) < 50.0;
+                let near_bottom = (max_scroll - offset) < NEAR_BOTTOM;
 
                 // Keep the row that was at the top of the viewport in place when
                 // content above it changes height: rows above got measured (they
@@ -4871,6 +5885,50 @@ impl FluxChat {
                     }
                 }
             }
+            Message::MessagesMounted => {
+                self.messages_remounted = true;
+                return self.restore_scroll();
+            }
+            Message::MessagesFit(bounds, _content_height) => {
+                // Everything loaded is on screen with room to spare, which the
+                // scrollable never reports: without this a short view could
+                // not load history at all (nothing to scroll, no scroll event).
+                self.messages_remounted = false;
+                self.messages_viewport_h = bounds.height;
+                self.messages_underfilled = true;
+                self.messages_at_bottom = true;
+                self.new_messages_below = false;
+                self.last_scroll_offset = 0.0;
+                // A scroll-up over it asks for more, as at the top of a full list.
+                crate::view::set_timeline_at_top(Some(bounds));
+                // Not before the view's first rows are in (the placeholder
+                // fits too): it reports again when they change its height.
+                let loaded = self.selected_room_id.clone().filter(|k| self.messages_by_room.contains_key(k));
+                if let Some(room_id) = loaded.filter(|_| self.can_fill(None)) {
+                    self.underfill_pages += 1;
+                    return self.start_back_pagination(room_id, MAX_EMPTY_PAGES);
+                }
+            }
+            Message::PaneFit(key) => {
+                return self.load_older_in_pane(key, true, MAX_EMPTY_PAGES);
+            }
+            Message::PaneLoadOlder(key) => {
+                return self.load_older_in_pane(key, false, MAX_EMPTY_PAGES);
+            }
+            Message::PanePaged(key, visible_before, budget, outcome) => {
+                self.pane_fill.entry(key.clone()).or_default().in_flight = false;
+                match outcome {
+                    Some(true) => {
+                        self.history_start.insert(key);
+                    }
+                    // Nothing it shows arrived (hidden thread replies, edits):
+                    // the list didn't change, so it won't ask again by itself.
+                    Some(false) if budget > 0 && self.visible_count(&key) <= visible_before => {
+                        return self.load_older_in_pane(key, false, budget - 1);
+                    }
+                    _ => {}
+                }
+            }
             Message::ResizeStart(target) => {
                 self.resizing = Some(target);
             }
@@ -4911,10 +5969,22 @@ impl FluxChat {
                 use crate::state::ResizeTarget;
                 let window_w = self.window_size.0;
                 // Width of the panels to the right of a divider (left→right:
-                // panes | pins | threads | mentions | members).
-                let members = if self.show_member_list { self.member_list_width } else { 0.0 };
-                let mentions = if self.mentions_open { self.mentions_width } else { 0.0 };
-                let threads = if self.threads_open { self.thread_list_width } else { 0.0 };
+                // panes | pins | threads | mentions | members), as view_main
+                // lays them out: each with its divider, the member list only
+                // with a room open, and its rail when it is hidden. Counted
+                // wrong, the divider sits that far from the cursor (the
+                // panel jumps when the drag starts).
+                let handle = crate::view::RESIZE_HANDLE_WIDTH;
+                let room_open = self.selected_room_id.is_some();
+                let members = if !room_open {
+                    0.0
+                } else if self.show_member_list {
+                    self.member_list_width + handle
+                } else {
+                    crate::view::MEMBER_RAIL_WIDTH
+                };
+                let mentions = if self.mentions_open { self.mentions_width + handle } else { 0.0 };
+                let threads = if self.threads_open && room_open { self.thread_list_width + handle } else { 0.0 };
                 match self.resizing {
                     Some(ResizeTarget::RoomList) => {
                         self.sidebar_width = (x - 56.0).clamp(150.0, 400.0);
@@ -4975,6 +6045,11 @@ impl FluxChat {
                         None => self.update(Message::SelectRoom(target)),
                     };
                 }
+                // A space we're in: show it. (Not a room, so it fell through
+                // to "Join?", and joining opened the space as a chat.)
+                if self.spaces.iter().any(|s| s.room_id == target) {
+                    return self.update(Message::SelectSpace(Some(target)));
+                }
                 self.modal = Some(crate::state::Modal::ConfirmJoin { target, via });
             }
             Message::Escape => {
@@ -4997,7 +6072,9 @@ impl FluxChat {
                 } else if !self.emoji_completions.is_empty() {
                     self.emoji_completions.clear();
                 } else if self.modal.is_some() {
-                    self.modal = self.modal_after_close();
+                    // As the close button does: Settings' mic test would
+                    // otherwise keep the microphone open behind a closed dialog.
+                    return self.update(Message::CloseModal);
                 } else if self.tmux_prefix {
                     crate::panes::PREFIX_ARMED.store(false, std::sync::atomic::Ordering::Relaxed);
                     self.tmux_prefix = false;
@@ -5186,7 +6263,7 @@ impl FluxChat {
                 | Message::SetAliasPublished(..) | Message::ConfirmRoomUpgrade(_)
                 | Message::RoomUpgraded(..) | Message::JoinRequestsWatching(..)
                 | Message::JoinRequestsUpdated(..) | Message::ToggleJoinRequests
-                | Message::RespondJoinRequest(..)) => {
+                | Message::RespondJoinRequest(..) | Message::JoinRequestFailed(..)) => {
                 if let Some(task) = self.handle_room_admin_message(msg) {
                     return task;
                 }
@@ -5343,6 +6420,22 @@ impl FluxChat {
             Message::Batch(messages) => {
                 let tasks: Vec<Task<Message>> = messages.into_iter().map(|m| self.update(m)).collect();
                 return Task::batch(tasks);
+            }
+            Message::UrlPreviewFailed(url) => {
+                // Left alone for a while. Only dropped from the pending set,
+                // it was asked for again on every timeline update — each URL
+                // without a preview, which is all of them where the server
+                // has previews turned off.
+                self.url_previews_pending.remove(&url);
+                let now = std::time::Instant::now();
+                self.url_preview_failed.retain(|_, at| now.duration_since(*at) < URL_PREVIEW_RETRY_AFTER);
+                self.url_preview_failed.insert(url, now);
+            }
+            Message::ShowMoreMembers => {
+                if let Some(key) = self.selected_room_id.clone() {
+                    let rows = self.member_rows_shown() + crate::view_members::MEMBER_ROWS_MORE;
+                    self.member_rows = Some((key, rows));
+                }
             }
             Message::Noop => {}
         }
@@ -5663,6 +6756,90 @@ impl FluxChat {
         self.update(Message::PaginateBack(key))
     }
 
+    /// Leaving view `prev`: keep what's typed in the main composer as its draft.
+    pub(crate) fn stash_draft(&mut self, prev: String) {
+        let draft = std::mem::take(&mut self.input_text);
+        if draft.trim().is_empty() {
+            self.drafts.remove(&prev);
+        } else {
+            self.drafts.insert(prev, draft);
+        }
+    }
+
+    /// View `key` stopped being the main view. If a pane still shows it, give
+    /// that pane its composer, holding the view's draft (a room first opened
+    /// as the main view had none, so its side pane came without a composer).
+    pub(crate) fn show_draft_in_pane(&mut self, key: &str) {
+        if !self.shown_in_pane(key) {
+            return;
+        }
+        let draft = self.drafts.get(key).map(String::as_str).unwrap_or("");
+        self.pane_inputs.insert(key.to_string(), iced::widget::text_editor::Content::with_text(draft));
+    }
+
+    /// Whether a view that doesn't fill may fetch another page by itself
+    /// (`key`: also only once its first rows are in).
+    fn can_fill(&self, key: Option<&str>) -> bool {
+        self.underfill_pages < MAX_UNDERFILL_PAGES
+            && key.is_none_or(|k| self.messages_by_room.contains_key(k))
+    }
+
+    /// Put the main list's scrollable where we believe the view is (after
+    /// its widget state was recreated).
+    fn restore_scroll(&self) -> Task<Message> {
+        let id = crate::view::messages_scrollable_id();
+        if self.messages_at_bottom {
+            iced::widget::operation::snap_to_end(id)
+        } else {
+            iced::widget::operation::scroll_to(
+                id,
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: self.last_scroll_offset },
+            )
+        }
+    }
+
+    /// Fetch a page of older history for a view in a side pane: its list has
+    /// room for more (`auto`, capped per view) or was scrolled up at its top.
+    /// `budget` is how many more pages may follow if this one shows nothing.
+    pub(crate) fn load_older_in_pane(&mut self, key: String, auto: bool, budget: u8) -> Task<Message> {
+        // The main view pages for itself; a pane only shows so many rows.
+        if self.selected_room_id.as_deref() == Some(key.as_str())
+            || self.history_start.contains(&key)
+            || !self.shown_in_pane(&key)
+            || !self.messages_by_room.contains_key(&key)
+        {
+            return Task::none();
+        }
+        let visible = self.visible_count(&key);
+        if visible >= crate::view_thread_pane::SIDE_PANE_ROWS {
+            return Task::none();
+        }
+        let fill = self.pane_fill.entry(key.clone()).or_default();
+        if fill.in_flight || (auto && fill.auto_pages >= MAX_PANE_FILL_PAGES) {
+            return Task::none();
+        }
+        fill.in_flight = true;
+        if auto {
+            fill.auto_pages += 1;
+        }
+        let core = self.core.clone();
+        let k = key.clone();
+        Task::perform(
+            async move {
+                use futures_util::FutureExt;
+                let client = core.get_client().await.ok()?;
+                let timeline = fluxchat_core::timeline::get_or_create_for_key(&client, &core.timelines, &k).boxed().await.ok()?;
+                let outcome = timeline.paginate_backwards(UNDERFILL_PAGE_EVENTS).await
+                    .map_err(|e| tracing::warn!("Back-pagination failed for pane {k}: {e}"))
+                    .ok();
+                // The page's rows reach us through the timeline watcher.
+                tokio::time::sleep(PAGINATE_SETTLE).await;
+                outcome
+            },
+            move |outcome| Message::PanePaged(key.clone(), visible, budget, outcome),
+        )
+    }
+
     /// Persist window size, panel widths and the pane layout if changed.
     fn flush_layout(&mut self) {
         if !self.layout_dirty {
@@ -5689,6 +6866,9 @@ impl FluxChat {
             self.members_by_room.remove(key);
             self.thread_counts.remove(key);
             self.forget_agent_view(key);
+            // Its Timeline goes too: the next one starts from what's cached.
+            self.history_start.remove(key);
+            self.pane_fill.remove(key);
         }
         let core = self.core.clone();
         Task::perform(
@@ -6321,6 +7501,7 @@ impl FluxChat {
                 let core = self.core.clone();
                 let mxc_clone = mxc.clone();
                 let event_id = msg.event_id.clone();
+                let is_video = msg.is_video;
                 let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
                 tasks.push(Task::perform(
                     async move {
@@ -6338,13 +7519,19 @@ impl FluxChat {
                         }
                         let client = core.get_client().await.ok()?;
                         let _permit = MEDIA_FETCHES.acquire().await.ok()?;
-                        // Try event-based fetch first (handles encrypted media)
-                        let event_result = fluxchat_core::media::get_event_media_bytes(
-                            &client, &real_room, &event_id,
-                        ).await;
+                        // Try event-based fetch first (handles encrypted media).
+                        // A video's image is its thumbnail: the event's own
+                        // media is the video.
+                        let event_result = if is_video {
+                            video_thumbnail_bytes(&client, &real_room, &event_id).await
+                        } else {
+                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
+                                .ok()
+                                .map(|(bytes, _mime)| bytes)
+                        };
                         let data = match event_result {
-                            Ok((bytes, _mime)) => bytes,
-                            Err(_) => {
+                            Some(bytes) => bytes,
+                            None => {
                                 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
                                 use matrix_sdk::ruma::events::room::MediaSource;
                                 use matrix_sdk::ruma::MxcUri;
@@ -6391,10 +7578,9 @@ impl FluxChat {
                     let core = self.core.clone();
                     let event_id = msg.event_id.clone();
                     let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
-                    let failed_key = thumb_key.clone();
+                    let cache_key = format!("iced_img:{thumb_key}");
                     tasks.push(Task::perform(
                         async move {
-                            let cache_key = format!("iced_img:{thumb_key}");
                             // Cached thumbnail (dimensions read from its header).
                             let cached = {
                                 let core = core.clone();
@@ -6411,35 +7597,41 @@ impl FluxChat {
                                 }).await.ok().flatten()
                             };
                             if let Some((data, w, h)) = cached {
-                                return Some((thumb_key, data, w, h));
+                                return Preview::Ready(data, w, h);
                             }
-                            let client = core.get_client().await.ok()?;
-                            let (data, _mime) = {
-                                let _permit = MEDIA_FETCHES.acquire().await.ok()?;
-                                fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id)
-                                    .await.ok()?
+                            let Ok(client) = core.get_client().await else { return Preview::Failed };
+                            let fetched = {
+                                let Ok(_permit) = MEDIA_FETCHES.acquire().await else { return Preview::Failed };
+                                fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
                             };
+                            let Ok((data, _mime)) = fetched else { return Preview::Failed };
                             // GStreamer reads a file and blocks: off the async workers.
-                            let (data, w, h) = tokio::task::spawn_blocking(move || {
-                                let tmp = std::env::temp_dir().join(format!("fluxchat_thumb_{}.tmp", safe_file_stem(&event_id)));
-                                std::fs::write(&tmp, &data).ok()?;
-                                let result = extract_video_thumbnail(&tmp);
-                                let _ = std::fs::remove_file(&tmp);
-                                result
-                            }).await.ok().flatten()?;
+                            let frame = tokio::task::spawn_blocking(move || {
+                                let tmp = TempFile(std::env::temp_dir().join(format!("fluxchat_thumb_{}.tmp", safe_file_stem(&event_id))));
+                                write_private(&tmp.0, &data).ok()?;
+                                Some(extract_video_thumbnail(&tmp.0))
+                            }).await;
+                            let (data, w, h) = match frame {
+                                Ok(Some(Some(thumb))) => thumb,
+                                // The temp file couldn't be written.
+                                Ok(None) => return Preview::Failed,
+                                // No frame in it we can decode (or the decoder
+                                // panicked): the same next time.
+                                Ok(Some(None)) | Err(_) => return Preview::Unavailable,
+                            };
                             let to_store = data.clone();
                             drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
-                            Some((thumb_key, data, w, h))
+                            Preview::Ready(data, w, h)
                         },
-                        move |result| match result {
-                            Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
-                            None => Message::ImageFailed(failed_key.clone()),
-                        },
+                        move |preview| preview_message(thumb_key.clone(), preview),
                     ));
                 }
             }
-            // PDFs: their first page, rendered here (and cached).
-            let is_pdf = msg.file_mimetype.as_deref() == Some("application/pdf");
+            // PDFs: their first page, rendered here (and cached). Not where
+            // the room's images are hidden: the page isn't shown there, and
+            // making it means downloading the file.
+            let is_pdf = msg.file_mimetype.as_deref() == Some("application/pdf")
+                && !self.room_media_hidden(view_key);
             let small = msg.file_size.is_none_or(|s| s <= PDF_PREVIEW_MAX_BYTES);
             if let (true, true, Some(fmxc)) = (is_pdf, small, msg.file_mxc.as_ref()) {
                 let key = format!("pdf_preview:{fmxc}");
@@ -6452,10 +7644,9 @@ impl FluxChat {
                 let core = self.core.clone();
                 let event_id = msg.event_id.clone();
                 let real_room = fluxchat_core::timeline::real_room_id(view_key).to_string();
-                let failed_key = key.clone();
+                let cache_key = format!("iced_img:{key}");
                 tasks.push(Task::perform(
                     async move {
-                        let cache_key = format!("iced_img:{key}");
                         let cached = {
                             let core = core.clone();
                             let cache_key = cache_key.clone();
@@ -6467,24 +7658,25 @@ impl FluxChat {
                             }).await.ok().flatten()
                         };
                         if let Some((data, w, h)) = cached {
-                            return Some((key, data, w, h));
+                            return Preview::Ready(data, w, h);
                         }
-                        let client = core.get_client().await.ok()?;
-                        let (data, _mime) = {
-                            let _permit = MEDIA_FETCHES.acquire().await.ok()?;
-                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await.ok()?
+                        let Ok(client) = core.get_client().await else { return Preview::Failed };
+                        let fetched = {
+                            let Ok(_permit) = MEDIA_FETCHES.acquire().await else { return Preview::Failed };
+                            fluxchat_core::media::get_event_media_bytes(&client, &real_room, &event_id).await
                         };
-                        let (png, w, h) = tokio::task::spawn_blocking(move || {
+                        let Ok((data, _mime)) = fetched else { return Preview::Failed };
+                        let page = tokio::task::spawn_blocking(move || {
                             fluxchat_core::media::pdf_preview(&data, PDF_PREVIEW_WIDTH)
-                        }).await.ok().flatten()?;
+                        }).await.ok().flatten();
+                        // Encrypted, broken, or beyond the renderer: the same
+                        // next time.
+                        let Some((png, w, h)) = page else { return Preview::Unavailable };
                         let to_store = png.clone();
                         drop(tokio::task::spawn_blocking(move || core.db.cache_media(&cache_key, &to_store)));
-                        Some((key, png, w, h))
+                        Preview::Ready(png, w, h)
                     },
-                    move |result| match result {
-                        Some((key, data, w, h)) => Message::VideoThumbResolved(key, data, w, h),
-                        None => Message::ImageFailed(failed_key.clone()),
-                    },
+                    move |preview| preview_message(key.clone(), preview),
                 ));
             }
             // Location cards: composed OSM tile preview (fetched once, cached).
@@ -6565,7 +7757,9 @@ impl FluxChat {
         let mut tasks = Vec::new();
         for msg in messages {
             for url in extract_urls(&msg.body) {
-                if self.url_previews.contains_key(&url) || self.url_previews_pending.contains(&url) {
+                if self.url_previews.contains_key(&url) || self.url_previews_pending.contains(&url)
+                    || self.url_preview_failed.get(&url).is_some_and(|t| t.elapsed() < URL_PREVIEW_RETRY_AFTER)
+                {
                     continue;
                 }
                 self.url_previews_pending.insert(url.clone());
@@ -6573,18 +7767,17 @@ impl FluxChat {
                 let url_clone = url.clone();
                 tasks.push(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        let preview = fluxchat_core::preview::get_url_preview(
-                            &client,
-                            &core.preview_cache,
-                            &url_clone,
-                        ).await.ok()?;
-                        Some((url_clone, preview))
+                        let preview = match core.get_client().await {
+                            Ok(client) => fluxchat_core::preview::get_url_preview(
+                                &client,
+                                &core.preview_cache,
+                                &url_clone,
+                            ).await.ok().flatten(),
+                            Err(_) => None,
+                        };
+                        (url_clone, preview)
                     },
-                    |result| match result {
-                        Some((url, preview)) => Message::UrlPreviewFetched(url, preview),
-                        None => Message::Noop,
-                    },
+                    |(url, preview)| url_preview_message(url, preview),
                 ));
             }
         }
@@ -6953,6 +8146,18 @@ impl FluxChat {
     }
 }
 
+/// How long a URL the server had no preview for is left alone.
+const URL_PREVIEW_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// What a preview request came to. A miss is its own message: the URL must
+/// not look unasked, or the next timeline update asks for it again.
+fn url_preview_message(url: String, preview: Option<fluxchat_core::UrlPreview>) -> Message {
+    match preview {
+        Some(preview) => Message::UrlPreviewFetched(url, Some(preview)),
+        None => Message::UrlPreviewFailed(url),
+    }
+}
+
 /// Convert (line, byte_index) in a multi-line string to a flat byte offset.
 fn line_index_to_offset(text: &str, line: usize, index: usize) -> usize {
     let mut offset = 0;
@@ -6992,6 +8197,80 @@ fn create_video_player(uri: &url::Url) -> Result<iced_video_player::Video, iced_
         .map_err(|_| iced_video_player::Error::Cast)?;
 
     iced_video_player::Video::from_gst_pipeline(pipeline, video_sink, None)
+}
+
+/// How making a preview image (a video's first frame, a PDF's first page)
+/// went.
+enum Preview {
+    Ready(Vec<u8>, u32, u32),
+    /// The file was fetched and nothing can be drawn from it.
+    Unavailable,
+    /// The file couldn't be fetched.
+    Failed,
+}
+
+/// What a preview task reports for its `key`. A file nothing can be drawn
+/// from reports nothing, so its key stays pending and it's looked at once:
+/// reported as a failure it was downloaded again every `IMAGE_RETRY_AFTER`,
+/// with the same result.
+fn preview_message(key: String, preview: Preview) -> Message {
+    match preview {
+        Preview::Ready(data, w, h) => Message::VideoThumbResolved(key, data, w, h),
+        Preview::Unavailable => Message::Noop,
+        Preview::Failed => Message::ImageFailed(key),
+    }
+}
+
+/// A temp file that goes away with this, whichever way its scope ends.
+struct TempFile(std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Write `data` to a new file only this user can read. The temp folder is
+/// shared on Linux, and what goes here is decrypted media; a file (or link)
+/// someone else put at `path` is replaced, never written through.
+fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(data)
+}
+
+/// Sets a pipeline back to Null when dropped. GStreamer doesn't free one
+/// that's let go of in any other state: its threads stay, and so does the
+/// file it was reading, deleted or not.
+struct StopOnDrop(gstreamer::Pipeline);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.set_state(gstreamer::State::Null);
+    }
+}
+
+/// A raw RGB frame's pixels as `width * 3` bytes per row. GStreamer pads
+/// each row to a multiple of four bytes; read as if it didn't, every row of
+/// a frame whose width isn't a multiple of four starts a little further off
+/// (a slanted picture in the wrong colours).
+fn packed_rgb(data: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let row = (width as usize).checked_mul(3)?;
+    let rows = height as usize;
+    if row == 0 || rows == 0 {
+        return None;
+    }
+    let padded = row.checked_add(3)? & !3;
+    let stride = [padded, row].into_iter()
+        .find(|stride| stride.checked_mul(rows - 1).and_then(|n| n.checked_add(row)).is_some_and(|n| n <= data.len()))?;
+    Some(data.chunks(stride).take(rows).flat_map(|line| &line[..row]).copied().collect())
 }
 
 /// Extract the first frame of a video as a PNG thumbnail using GStreamer.
@@ -7039,28 +8318,37 @@ fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
         "uridecodebin uri=\"{}\" ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true",
         uri.as_str()
     );
-    let pipeline = gstreamer::parse::launch(&pipeline_str).ok()?
-        .downcast::<gstreamer::Pipeline>().ok()?;
+    let pipeline = StopOnDrop(gstreamer::parse::launch(&pipeline_str).ok()?
+        .downcast::<gstreamer::Pipeline>().ok()?);
 
-    let sink = pipeline.by_name("sink")?
+    let sink = pipeline.0.by_name("sink")?
         .downcast::<gstreamer_app::AppSink>().ok()?;
 
-    pipeline.set_state(gstreamer::State::Playing).ok()?;
-    pipeline.state(gstreamer::ClockTime::from_seconds(5)).0.ok()?;
+    pipeline.0.set_state(gstreamer::State::Playing).ok()?;
+    // Until the first frame is there, or it's clear there won't be one (no
+    // decoder for it, not a video): an error ends the wait at once instead
+    // of after both timeouts.
+    let settled = pipeline.0.bus()?.timed_pop_filtered(
+        gstreamer::ClockTime::from_seconds(5),
+        &[gstreamer::MessageType::Error, gstreamer::MessageType::AsyncDone],
+    );
+    let failed = settled.is_some_and(|m| m.type_() == gstreamer::MessageType::Error);
+    pipeline.0.state(gstreamer::ClockTime::ZERO).0.ok()?;
 
-    let sample = sink.try_pull_sample(gstreamer::ClockTime::from_seconds(5))?;
+    // After an error there's a frame only if it's there already.
+    let wait = if failed { gstreamer::ClockTime::ZERO } else { gstreamer::ClockTime::from_seconds(5) };
+    let sample = sink.try_pull_sample(wait)?;
     let caps = sample.caps()?;
     let s = caps.structure(0)?;
-    let width = s.get::<i32>("width").ok()? as u32;
-    let height = s.get::<i32>("height").ok()? as u32;
+    let width = u32::try_from(s.get::<i32>("width").ok()?).ok()?;
+    let height = u32::try_from(s.get::<i32>("height").ok()?).ok()?;
 
     let buffer = sample.buffer()?;
     let map = buffer.map_readable().ok()?;
-    let rgb_data = map.as_slice();
+    let rgb = packed_rgb(map.as_slice(), width, height)?;
+    drop(pipeline);
 
-    pipeline.set_state(gstreamer::State::Null).ok()?;
-
-    let img = image::RgbImage::from_raw(width, height, rgb_data.to_vec())?;
+    let img = image::RgbImage::from_raw(width, height, rgb)?;
 
     // Apply rotation from metadata
     let rotated = match rotation {
@@ -7075,8 +8363,9 @@ fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
     let max_w = 350u32;
     let max_h = 500u32;
     let scale = (max_w as f64 / rw as f64).min(max_h as f64 / rh as f64).min(1.0);
-    let new_w = (rw as f64 * scale) as u32;
-    let new_h = (rh as f64 * scale) as u32;
+    // At least a pixel each way, however thin the frame.
+    let new_w = ((rw as f64 * scale) as u32).max(1);
+    let new_h = ((rh as f64 * scale) as u32).max(1);
 
     let resized = image::imageops::resize(&rotated, new_w, new_h, image::imageops::FilterType::Triangle);
 
@@ -7091,20 +8380,28 @@ fn extract_video_thumbnail(path: &std::path::Path) -> Option<(Vec<u8>, u32, u32)
     Some((png_buf, new_w, new_h))
 }
 
-/// Guess MIME type from file extension.
+/// Guess MIME type from file extension. The video types are the ones the
+/// player takes (`video_temp_path`): a `.mov` screen recording sent as a
+/// plain file gets a download card instead of the player.
 fn mime_from_extension(filename: &str) -> String {
-    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let ext = filename.rsplit_once('.').map(|(_, ext)| ext.to_lowercase()).unwrap_or_default();
     match ext.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
         "svg" => "image/svg+xml",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "ogv" => "video/ogg",
+        "avi" => "video/x-msvideo",
         "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
+        "ogg" | "oga" | "opus" => "audio/ogg",
         "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "flac" => "audio/flac",
         "pdf" => "application/pdf",
         "txt" => "text/plain",
         _ => "application/octet-stream",
@@ -7112,25 +8409,58 @@ fn mime_from_extension(filename: &str) -> String {
     .to_string()
 }
 
-/// Extract URLs from message text (max 2 per message).
+/// Extract URLs from message text (the first five).
 pub(crate) fn extract_urls(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|w| w.trim_matches(|c: char| c == '`' || c == '<' || c == '>' || c == '"' || c == '\''))
+        // What a sentence puts in front: "(https://…", "<https://…>", quotes.
+        .map(|w| w.trim_start_matches(['(', '[', '<', '`', '"', '\'']))
         .filter(|w| (w.starts_with("http://") || w.starts_with("https://")) && w.len() > 10)
         .take(5)
-        .map(|w| w.trim_end_matches(['.', ',', ')', ']']).to_string())
+        // The end a link in the text has too: cut short, the preview was
+        // asked for a page that doesn't exist.
+        .map(|w| crate::html::trim_url_end(w).to_string())
         .collect()
 }
 
-/// Whether `data` starts like an image format we display.
+/// Whether `data` starts like an image format we display. The RIFF and
+/// `ftyp` containers hold video too (AVI, MP4): only their image kinds count,
+/// or a video stored where an image belongs is taken for one.
 fn looks_like_image(data: &[u8]) -> bool {
+    const FTYP_IMAGES: [&[u8]; 6] = [b"avif", b"avis", b"heic", b"heix", b"mif1", b"msf1"];
     data.len() > 100 && (
         data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) || // PNG
         data.starts_with(&[0xFF, 0xD8, 0xFF]) ||       // JPEG
         data.starts_with(b"GIF") ||                     // GIF
-        data.starts_with(b"RIFF") ||                    // WebP
-        &data[4..8] == b"ftyp"                          // MP4/HEIF
+        (data.starts_with(b"RIFF") && &data[8..12] == b"WEBP") ||
+        (&data[4..8] == b"ftyp" && FTYP_IMAGES.contains(&&data[8..12])) // AVIF/HEIF
     )
+}
+
+/// Where a video message says its thumbnail is.
+fn video_thumbnail_source(
+    event: &matrix_sdk::ruma::events::AnySyncTimelineEvent,
+) -> Option<matrix_sdk::ruma::events::room::MediaSource> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent};
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(msg))) = event else {
+        return None;
+    };
+    let MessageType::Video(video) = &msg.content.msgtype else { return None };
+    video.info.as_ref()?.thumbnail_source.clone()
+}
+
+/// A video message's thumbnail, fetched through its event so an encrypted
+/// one decrypts. (`get_event_media_bytes` gives a message's own media: for a
+/// video the whole video, which used to stand in for the thumbnail — every
+/// video on screen downloaded in full, for a picture that couldn't draw.)
+async fn video_thumbnail_bytes(client: &matrix_sdk::Client, room_id: &str, event_id: &str) -> Option<Vec<u8>> {
+    use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
+    let room = client.get_room(&matrix_sdk::ruma::RoomId::parse(room_id).ok()?)?;
+    let event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+    let event = room.event(&event_id, None).await.ok()?;
+    let source = video_thumbnail_source(&event.raw().deserialize().ok()?)?;
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    client.media().get_media_content(&request, false).await.ok()
 }
 
 /// A cached inline image, if present and plausibly an image (a failed fetch
@@ -7291,6 +8621,28 @@ fn video_temp_path(event_id: &str, filename: &str) -> std::path::PathBuf {
 }
 
 #[cfg(test)]
+mod scroll_tests {
+    use super::list_astray;
+
+    #[test]
+    fn a_new_scrollable_at_the_top_is_astray_from_a_view_at_the_bottom() {
+        // 5000 px of rows, believed at the bottom; the new scrollable says 0.
+        assert!(list_astray(true, 4200.0, 0.0, 4200.0));
+        // Already put at the end (the room switch got there first): fine.
+        assert!(!list_astray(true, 0.0, 4200.0, 4200.0));
+        assert!(!list_astray(true, 0.0, 4170.0, 4200.0), "within reach of the bottom");
+    }
+
+    #[test]
+    fn a_view_scrolled_up_goes_back_to_its_offset() {
+        assert!(list_astray(false, 1300.0, 0.0, 4200.0));
+        assert!(!list_astray(false, 1300.0, 1300.4, 4200.0));
+        // The list got shorter than where we were: its end is as close as it gets.
+        assert!(!list_astray(false, 1300.0, 900.0, 900.0));
+    }
+}
+
+#[cfg(test)]
 mod temp_path_tests {
     use super::*;
 
@@ -7363,5 +8715,294 @@ mod selection_tests {
         app.selection_texts.borrow_mut().insert(wid("$1", 0), "🔥 DEAL".into());
         let _ = app.update(Message::SelectionMoved(wid("$1", 0), 0, 99));
         assert_eq!(app.extract_selection_text().as_deref(), Some("🔥 DEAL"));
+    }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+    use fluxchat_core::MessageInfo;
+
+    fn text(body: &str) -> MessageInfo {
+        MessageInfo { event_id: "$t".into(), sender: "@a:x".into(), body: body.into(), ..Default::default() }
+    }
+
+    fn pdf(id: &str) -> MessageInfo {
+        MessageInfo {
+            event_id: id.into(), sender: "@a:x".into(), body: "doc.pdf".into(),
+            file_mxc: Some(format!("mxc://x/{id}")), file_mimetype: Some("application/pdf".into()),
+            file_size: Some(1000), ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_url_the_server_has_no_preview_for_is_not_asked_for_on_every_update() {
+        let mut app = crate::panes::flow_tests::app();
+        let url = "https://example.org/page";
+        let msgs = vec![text("see https://example.org/page")];
+        assert_eq!(app.resolve_url_previews(&msgs).units(), 1);
+        assert!(app.url_previews_pending.contains(url));
+        // The same list again (a reaction, a receipt): still in flight.
+        assert_eq!(app.resolve_url_previews(&msgs).units(), 0);
+
+        // No preview (most servers have them turned off).
+        let _ = app.update(url_preview_message(url.into(), None));
+        assert!(app.url_previews_pending.is_empty());
+        assert_eq!(app.resolve_url_previews(&msgs).units(), 0, "asked again with every timeline update");
+
+        // Asked once more when the wait is over.
+        if let Some(long_ago) = std::time::Instant::now().checked_sub(URL_PREVIEW_RETRY_AFTER) {
+            app.url_preview_failed.insert(url.into(), long_ago);
+            assert_eq!(app.resolve_url_previews(&msgs).units(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_arrives_is_kept_and_a_miss_is_its_own_message() {
+        let preview = fluxchat_core::UrlPreview {
+            url: "https://example.org".into(), title: Some("Example".into()),
+            description: None, image_url: None, site_name: None,
+        };
+        assert!(matches!(
+            url_preview_message("https://example.org".into(), Some(preview)),
+            Message::UrlPreviewFetched(_, Some(_)),
+        ));
+        assert!(matches!(url_preview_message("https://example.org".into(), None), Message::UrlPreviewFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn pdf_first_pages_are_not_fetched_where_the_rooms_images_are_hidden() {
+        let mut app = crate::panes::flow_tests::app();
+        app.hidden_media_rooms.insert("!hidden:x".into());
+        assert_eq!(app.resolve_images("!hidden:x", &[pdf("$a")]).units(), 0);
+        assert_eq!(app.resolve_images("thread::!hidden:x::$root", &[pdf("$a")]).units(), 0, "threads follow their room");
+        assert!(app.image_cache_pending.is_empty());
+        // Elsewhere, and here once the room's images show again.
+        assert_eq!(app.resolve_images("!other:x", &[pdf("$b")]).units(), 1);
+        app.hidden_media_rooms.clear();
+        assert_eq!(app.resolve_images("!hidden:x", &[pdf("$a")]).units(), 1);
+        assert!(app.image_cache_pending.contains("pdf_preview:mxc://x/$a"));
+    }
+
+    fn event(content: serde_json::Value) -> matrix_sdk::ruma::events::AnySyncTimelineEvent {
+        serde_json::from_value(serde_json::json!({
+            "type": "m.room.message",
+            "event_id": "$e:x",
+            "sender": "@a:x",
+            "origin_server_ts": 1_700_000_000_000u64,
+            "content": content,
+        })).unwrap()
+    }
+
+    #[test]
+    fn a_videos_picture_is_its_thumbnail_not_the_video() {
+        use matrix_sdk::ruma::events::room::MediaSource;
+        let plain = video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4", "url": "mxc://x/video",
+            "info": { "thumbnail_url": "mxc://x/thumb" },
+        })));
+        assert!(matches!(plain, Some(MediaSource::Plain(uri)) if uri == "mxc://x/thumb"));
+        // In an encrypted room the thumbnail has keys of its own.
+        let encrypted = video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4",
+            "file": {
+                "url": "mxc://x/video", "v": "v2", "iv": "AAAAAAAAAAAAAAAAAAAAAA",
+                "hashes": { "sha256": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU" },
+                "key": { "kty": "oct", "key_ops": ["encrypt", "decrypt"], "alg": "A256CTR", "ext": true,
+                    "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+            },
+            "info": { "thumbnail_file": {
+                "url": "mxc://x/thumb", "v": "v2", "iv": "AAAAAAAAAAAAAAAAAAAAAA",
+                "hashes": { "sha256": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU" },
+                "key": { "kty": "oct", "key_ops": ["encrypt", "decrypt"], "alg": "A256CTR", "ext": true,
+                    "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+            } },
+        })));
+        assert!(matches!(encrypted, Some(MediaSource::Encrypted(file)) if file.url == "mxc://x/thumb"));
+        // None to fetch: its first frame is used instead.
+        assert!(video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.video", "body": "clip.mp4", "url": "mxc://x/video",
+        }))).is_none());
+        assert!(video_thumbnail_source(&event(serde_json::json!({
+            "msgtype": "m.image", "body": "cat.png", "url": "mxc://x/cat",
+            "info": { "thumbnail_url": "mxc://x/thumb" },
+        }))).is_none());
+    }
+
+    #[test]
+    fn video_files_are_not_taken_for_images() {
+        let with = |head: &[u8]| {
+            let mut data = head.to_vec();
+            data.resize(200, 0);
+            data
+        };
+        assert!(looks_like_image(&with(&[0x89, b'P', b'N', b'G'])));
+        assert!(looks_like_image(&with(&[0xFF, 0xD8, 0xFF, 0xE0])));
+        assert!(looks_like_image(&with(b"GIF89a")));
+        assert!(looks_like_image(&with(b"RIFF\x10\0\0\0WEBPVP8 ")));
+        assert!(looks_like_image(&with(b"\0\0\0\x1cftypavif")));
+        // What a video's thumbnail used to be stored as.
+        assert!(!looks_like_image(&with(b"\0\0\0\x18ftypisom")));
+        assert!(!looks_like_image(&with(b"\0\0\0\x14ftypqt  ")));
+        assert!(!looks_like_image(&with(b"RIFF\x10\0\0\0AVI LIST")));
+        assert!(!looks_like_image(&with(&[0x1A, 0x45, 0xDF, 0xA3])));
+        assert!(!looks_like_image(&[0x89, b'P', b'N', b'G']), "too short to be one");
+    }
+
+    #[test]
+    fn a_file_nothing_can_be_drawn_from_is_not_fetched_again() {
+        // No report: its key stays pending, so `resolve_images` skips it.
+        assert!(matches!(preview_message("video_thumb:mxc://x/v".into(), Preview::Unavailable), Message::Noop));
+        // A failed download is tried again later.
+        assert!(matches!(
+            preview_message("video_thumb:mxc://x/v".into(), Preview::Failed),
+            Message::ImageFailed(key) if key == "video_thumb:mxc://x/v",
+        ));
+        assert!(matches!(
+            preview_message("pdf_preview:mxc://x/p".into(), Preview::Ready(vec![1], 2, 3)),
+            Message::VideoThumbResolved(key, _, 2, 3) if key == "pdf_preview:mxc://x/p",
+        ));
+    }
+
+    #[test]
+    fn padded_rgb_rows_are_packed() {
+        // 2×2: six bytes a row, padded to eight.
+        let padded = [1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 9, 10, 11, 12, 0, 0];
+        assert_eq!(packed_rgb(&padded, 2, 2).unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        // The last row may come without its padding.
+        assert_eq!(packed_rgb(&padded[..14], 2, 2).unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        // A width that needs none, and rows that came packed already.
+        let tight: Vec<u8> = (0..24).collect();
+        assert_eq!(packed_rgb(&tight, 4, 2).unwrap(), tight);
+        assert_eq!(packed_rgb(&tight[..12], 2, 2).unwrap(), &tight[..12]);
+        // Not a whole frame.
+        assert!(packed_rgb(&tight[..11], 2, 2).is_none());
+        assert!(packed_rgb(&tight, 0, 2).is_none());
+        assert!(packed_rgb(&tight, u32::MAX, u32::MAX).is_none());
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("fluxchat-media-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_media_is_private_and_never_written_through_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch_dir("private");
+        let path = dir.join("fluxchat_thumb_x.tmp");
+        // Someone else's link, waiting where the file will go.
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"mine").unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        {
+            let tmp = TempFile(path.clone());
+            write_private(&tmp.0, b"decrypted").unwrap();
+            assert_eq!(std::fs::read(&victim).unwrap(), b"mine");
+            assert_eq!(std::fs::read(&path).unwrap(), b"decrypted");
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            assert!(meta.is_file());
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
+        assert!(!path.exists(), "gone with its scope");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A three-frame, 18×16, all-red video (raw frames in an AVI), or `None`
+    /// where this GStreamer can't make one.
+    fn red_video(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        gstreamer::init().ok()?;
+        let path = dir.join("red.avi");
+        let pipeline = gstreamer::parse::launch(&format!(
+            "videotestsrc num-buffers=3 pattern=red ! video/x-raw,format=I420,width=18,height=16,framerate=5/1 \
+             ! avimux ! filesink location=\"{}\"",
+            path.display(),
+        )).ok()?;
+        pipeline.set_state(gstreamer::State::Playing).ok()?;
+        let done = pipeline.bus()?.timed_pop_filtered(
+            gstreamer::ClockTime::from_seconds(10),
+            &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
+        );
+        let _ = pipeline.set_state(gstreamer::State::Null);
+        done.filter(|m| m.type_() == gstreamer::MessageType::Eos).map(|_| path)
+    }
+
+    /// Whether this process holds `path` open.
+    #[cfg(target_os = "linux")]
+    fn held_open(path: &std::path::Path) -> bool {
+        std::fs::read_dir("/proc/self/fd").unwrap()
+            .filter_map(|fd| std::fs::read_link(fd.ok()?.path()).ok())
+            .any(|target| target == path)
+    }
+
+    #[test]
+    fn a_video_whose_width_is_not_a_multiple_of_four_gets_a_straight_thumbnail() {
+        let dir = scratch_dir("thumb");
+        let Some(video) = red_video(&dir) else {
+            eprintln!("skipped: no GStreamer test source / AVI muxer here");
+            return;
+        };
+        // 18 px: 54 bytes a row, which GStreamer pads to 56.
+        let (png, w, h) = extract_video_thumbnail(&video).expect("a frame");
+        assert_eq!((w, h), (18, 16));
+        let img = image::load_from_memory(&png).unwrap().to_rgb8();
+        for (x, y, p) in img.enumerate_pixels() {
+            assert!(p.0[0] > 200 && p.0[1] < 60 && p.0[2] < 60, "pixel {x},{y} is {:?}, not red", p.0);
+        }
+        #[cfg(target_os = "linux")]
+        assert!(!held_open(&video));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_no_frame_comes_out_of_is_let_go_of() {
+        if gstreamer::init().is_err() {
+            return;
+        }
+        let dir = scratch_dir("garbage");
+        let path = dir.join("not-a-video.mp4");
+        std::fs::write(&path, vec![0u8; 64 * 1024]).unwrap();
+        let started = std::time::Instant::now();
+        assert!(extract_video_thumbnail(&path).is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "an error doesn't wait out the timeouts");
+        assert!(!held_open(&path), "the pipeline was stopped: it kept the file, and its threads");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn videos_the_player_takes_are_sent_as_videos() {
+        for name in ["clip.mp4", "Screen Recording.MOV", "a.b.webm", "x.mkv", "x.m4v", "x.ogv", "x.avi"] {
+            assert!(mime_from_extension(name).starts_with("video/"), "{name}");
+            // The same list the player goes by for what it's handed.
+            let ext = name.rsplit_once('.').unwrap().1.to_ascii_lowercase();
+            assert_eq!(video_temp_path("$e", name).extension().unwrap().to_str(), Some(ext.as_str()));
+        }
+        assert_eq!(mime_from_extension("voice.m4a"), "audio/mp4");
+        assert_eq!(mime_from_extension("notes.txt"), "text/plain");
+        assert_eq!(mime_from_extension("archive.tar.zst"), "application/octet-stream");
+        assert_eq!(mime_from_extension("png"), "application/octet-stream", "a name, not an extension");
+    }
+
+    #[test]
+    fn urls_lose_the_sentence_around_them_and_keep_their_own_brackets() {
+        assert_eq!(extract_urls("see https://example.org/a, https://example.org/b."), ["https://example.org/a", "https://example.org/b"]);
+        assert_eq!(
+            extract_urls("https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+            ["https://en.wikipedia.org/wiki/Rust_(programming_language)"],
+        );
+        assert_eq!(
+            extract_urls("(read https://en.wikipedia.org/wiki/Rust_(programming_language))"),
+            ["https://en.wikipedia.org/wiki/Rust_(programming_language)"],
+        );
+        assert_eq!(extract_urls("(https://example.org/page)"), ["https://example.org/page"]);
+        assert_eq!(extract_urls("is it https://example.org/page?! <https://example.org/x>"), ["https://example.org/page", "https://example.org/x"]);
+        assert_eq!(extract_urls("`https://example.org/code` \"https://example.org/q\""), ["https://example.org/code", "https://example.org/q"]);
+        assert_eq!(extract_urls("https://example.org/?q=a&b=[1]"), ["https://example.org/?q=a&b=[1]"]);
+        assert!(extract_urls("no links, not even http://x").is_empty());
+        assert_eq!(extract_urls(&"https://example.org/x ".repeat(9)).len(), 5);
     }
 }

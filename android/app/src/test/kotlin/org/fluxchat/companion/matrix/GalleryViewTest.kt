@@ -130,6 +130,37 @@ class GalleryViewTest {
         assertEquals("the tap retries", 2, pager.calls)
     }
 
+    /** A timeline at the start of its history, whose events the test changes. */
+    private class Live(first: List<Msg>) : GalleryPager {
+        val shown = MutableStateFlow(first)
+        override val messages: StateFlow<List<Msg>> = shown
+        override val atStart: StateFlow<Boolean> = MutableStateFlow(true)
+
+        override suspend fun paginate(events: Int): Boolean = false
+
+        override fun close() {}
+    }
+
+    @Test
+    fun aDeletedAttachmentLeavesTheGalleryAndAChangedOneIsBroughtUpToDate() {
+        val pager = Live(listOf(image("i1", 10), image("i2", 20)))
+        val view = GalleryView("!r:x", null, scope)
+        // Seen on screen, further back than this timeline has loaded.
+        view.seed(listOf(image("old", 5)))
+        view.attach(pager)
+        assertEquals(listOf("i2", "i1", "old"), view.state.value.items.map { it.id })
+        // i1 is deleted (the timeline keeps the event, as a deleted message); i2 gets a caption.
+        pager.shown.value = listOf(
+            image("i1", 10).copy(body = "Message deleted", media = null, isMessage = false),
+            image("i2", 20).copy(body = "the wiring diagram"),
+        )
+        assertEquals("a deleted photo stayed, and opened, until the view was dropped", listOf("i2", "old"), view.state.value.items.map { it.id })
+        assertEquals("the wiring diagram", view.state.value.items.first().body)
+        // A sync gap empties the timeline: what it no longer holds says nothing about it.
+        pager.shown.value = emptyList()
+        assertEquals(listOf("i2", "old"), view.state.value.items.map { it.id })
+    }
+
     @Test
     fun closingReleasesTheTimelineAndStopsTheView() {
         val pager = Paged(listOf(listOf(image("i1", 10))))

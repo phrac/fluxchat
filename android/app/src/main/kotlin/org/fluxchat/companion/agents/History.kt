@@ -16,7 +16,7 @@ data class RunRecord(
     val room: String,
     val agent: String,
     val title: String,
-    /** "working" / "needs you" / "done" / "failed" / "stalled". */
+    /** "working" / "needs you" / "done" / "failed" / "stalled" / "stopped". */
     val state: String,
     /** ms since the epoch. */
     val started: Long,
@@ -52,6 +52,8 @@ object History {
     const val HISTORY_LIMIT = 500
     /** History state of a run that went quiet while working. */
     const val STALLED = "stalled"
+    /** History state of a run you stopped (the agent answered your stop command). */
+    const val STOPPED = "stopped"
     /** A working run silent this long has stalled (agents.rs STALE_RUN_MS). */
     const val STALE_RUN_MS = 2 * 60 * 60 * 1000L
 
@@ -150,7 +152,8 @@ object History {
             // behind must not flip the record working↔stalled) — but a run
             // that outlasted the silence and then finished is no longer
             // "stalled": it takes its real outcome, cost and end.
-            if (rec.state == STALLED && live) return moved
+            // (Stopped likewise: its 👀 stays on the request for good.)
+            if ((rec.state == STALLED || rec.state == STOPPED) && live) return moved
             val reopened = rec.state == STALLED
             val cost = run.costUsd?.let { c -> rec.costUsd?.let { maxOf(it, c) } ?: c } ?: rec.costUsd
             val model = run.model ?: rec.model
@@ -201,6 +204,54 @@ object History {
         if (i < 0) return false
         history[i] = history[i].copy(state = stateLabel(RunState.Done), ended = now)
         return true
+    }
+
+    /**
+     * Close the record of a run you stopped (`stopped`): ended when you said
+     * so, [at] (the desktop's `end_stopped_run`). Returns whether a record
+     * was closed.
+     */
+    fun stop(history: MutableList<RunRecord>, view: ViewKey, started: Long, at: Long, runId: String? = null): Boolean {
+        val key = keyOf(view)
+        val i = history.indexOfFirst {
+            it.key == key && it.ended == null && (it.started == started || (!runId.isNullOrEmpty() && it.runId == runId))
+        }
+        if (i < 0) return false
+        history[i] = history[i].copy(state = STOPPED, ended = at.coerceAtLeast(history[i].started))
+        return true
+    }
+
+    /** The view a record's key ([keyOf]) names. */
+    fun viewOf(rec: RunRecord): ViewKey = ViewKey(rec.room, rec.key.removePrefix(rec.room + "::").takeIf { it != rec.key })
+
+    /**
+     * Give [roomId]'s open records their end when their view's run
+     * ([runs]) is another one by now. A view reports one run — its newest
+     * request's — so a run that a later request took the view from (queued
+     * behind it, or asked while this phone wasn't looking: a session is one
+     * thread, a DM one room) is never reported again. Its record stayed
+     * "working" for as long as the session went on, then closed as stalled
+     * at the session's last message, hours or days on. [past]: how such a
+     * run ended, by its own request ([Runs.pastRun]); null = that doesn't
+     * say, and the record is left to the sweep. Returns whether any changed.
+     */
+    fun settlePast(
+        history: MutableList<RunRecord>,
+        roomId: String,
+        runs: Map<ViewKey, RunInfo?>,
+        now: Long,
+        past: (RunRecord, ViewKey) -> RunInfo?,
+    ): Boolean {
+        var changed = false
+        for (rec in history.toList()) {
+            if (rec.room != roomId || rec.ended != null) continue
+            val view = viewOf(rec)
+            val shown = runs[view] ?: continue
+            if (shown.since == rec.started || (rec.runId != null && rec.runId == shown.runId)) continue
+            val run = past(rec, view)?.takeIf { !it.state.live } ?: continue
+            if (record(history, view, run, rec.title, rec.request, now)) changed = true
+        }
+        return changed
     }
 
     /**

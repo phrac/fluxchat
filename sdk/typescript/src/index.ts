@@ -59,7 +59,13 @@ export function fields(f: Fields = {}): Record<string, unknown> {
   if (f.state !== undefined && !STATES.includes(f.state)) {
     throw new RangeError(`state must be one of ${STATES.join(", ")}, got ${String(f.state)}`);
   }
-  if (f.steps !== undefined && f.steps < 0) throw new RangeError("steps can't be negative");
+  if (f.steps !== undefined && !(Number.isInteger(f.steps) && f.steps >= 0)) {
+    throw new RangeError(`steps must be a whole number, zero or more, got ${f.steps}`);
+  }
+  // NaN and Infinity aren't JSON (they'd go out as null).
+  if (f.cost_usd !== undefined && !(Number.isFinite(f.cost_usd) && f.cost_usd >= 0)) {
+    throw new RangeError(`cost_usd must be a finite amount, zero or more, got ${f.cost_usd}`);
+  }
   const out: Record<string, unknown> = { v: VERSION };
   const entries: [string, unknown][] = [
     ["run", f.run], ["state", f.state], ["step", f.step], ["steps", f.steps],
@@ -146,7 +152,10 @@ export class Run {
 
   /** Model / context / cwd / cost for the next updates. */
   updateRuntime(runtime: Pick<Fields, "model" | "context" | "cwd" | "cost_usd">): void {
-    Object.assign(this.runtime, runtime);
+    // What isn't given stays as it was (`{ model: undefined }` is not "forget the model").
+    for (const [k, v] of Object.entries(runtime)) {
+      if (v !== undefined) (this.runtime as Record<string, unknown>)[k] = v;
+    }
   }
 
   start(step?: string): Promise<string> {

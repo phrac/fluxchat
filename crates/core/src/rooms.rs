@@ -158,16 +158,29 @@ pub async fn get_space_tree(client: &matrix_sdk::Client)
         }
     }
 
+    space_tree(&all_spaces, &children_map, &is_child)
+}
+
+/// The depth-annotated list and descendant map for `get_space_tree`, from
+/// the joined spaces, each space's child spaces, and the set of spaces that
+/// are someone's child.
+fn space_tree(
+    all_spaces: &HashMap<String, RoomInfo>,
+    children_map: &HashMap<String, Vec<String>>,
+    is_child: &HashSet<String>,
+) -> (Vec<SpaceNode>, HashMap<String, Vec<String>>) {
+    let by_name = |ids: &mut Vec<&str>| ids.sort_by(|a, b| {
+        let na = all_spaces.get(*a).map(|s| s.name.to_lowercase()).unwrap_or_default();
+        let nb = all_spaces.get(*b).map(|s| s.name.to_lowercase()).unwrap_or_default();
+        na.cmp(&nb).then_with(|| a.cmp(b))
+    });
+
     // Find top-level spaces (not a child of any other space)
     let mut top_level: Vec<&str> = all_spaces.keys()
         .filter(|id| !is_child.contains(id.as_str()))
         .map(|s| s.as_str())
         .collect();
-    top_level.sort_by(|a, b| {
-        let na = all_spaces.get(*a).map(|s| s.name.to_lowercase()).unwrap_or_default();
-        let nb = all_spaces.get(*b).map(|s| s.name.to_lowercase()).unwrap_or_default();
-        na.cmp(&nb)
-    });
+    by_name(&mut top_level);
 
     // DFS traversal
     let mut result: Vec<SpaceNode> = Vec::new();
@@ -211,7 +224,20 @@ pub async fn get_space_tree(client: &matrix_sdk::Client)
     }
 
     for &root in &top_level {
-        dfs(root, 0, &all_spaces, &children_map, &mut visited, &mut result, &mut descendants);
+        dfs(root, 0, all_spaces, children_map, &mut visited, &mut result, &mut descendants);
+    }
+
+    // Spaces that list each other as children (A in B and B in A) are all
+    // someone's child, so none of them is top-level and the walk above never
+    // reaches them: they, and everything under them, were missing from the
+    // spaces bar. The first of each loop by name stands in as its top.
+    let mut unreached: Vec<&str> = all_spaces.keys()
+        .filter(|id| !visited.contains(id.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+    by_name(&mut unreached);
+    for root in unreached {
+        dfs(root, 0, all_spaces, children_map, &mut visited, &mut result, &mut descendants);
     }
 
     (result, descendants)
@@ -479,8 +505,15 @@ pub async fn set_user_power_level(client: &matrix_sdk::Client, room_id: &str, us
     let room_id = parse_room_id(room_id)?;
     let user_id = parse_user_id(user_id)?;
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
-    room.update_power_levels(vec![(&user_id, Int::new(power_level).unwrap_or(Int::MIN))]).await?;
+    room.update_power_levels(vec![(&user_id, power_level_int(power_level)?)]).await?;
     Ok(())
+}
+
+/// A power level as the integer Matrix events carry (±2^53). One that
+/// doesn't fit is refused: it used to be sent as the lowest level there is,
+/// so a mistyped, too-long number demoted the member below everyone.
+fn power_level_int(level: i64) -> Result<Int, AppError> {
+    Int::new(level).ok_or_else(|| AppError::Other(format!("Power level out of range: {level}")))
 }
 
 /// Set the display name of a room.
@@ -831,4 +864,64 @@ pub async fn set_room_favourite(client: &matrix_sdk::Client, room_id: &str, favo
     let room = client.get_room(&room_id).ok_or(AppError::RoomNotFound(room_id.to_string()))?;
     room.set_is_favourite(favourite, None).await.map_err(|e| AppError::Other(format!("Failed to set favourite: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tree's rows (space, depth) and each space's descendants.
+    type Tree = (Vec<(String, usize)>, HashMap<String, Vec<String>>);
+
+    /// A tree from (space, name) and (parent, child) pairs.
+    fn tree(spaces: &[(&str, &str)], links: &[(&str, &str)]) -> Tree {
+        let all: HashMap<String, RoomInfo> = spaces.iter()
+            .map(|(id, name)| (id.to_string(), RoomInfo { room_id: id.to_string(), name: name.to_string(), is_space: true, ..Default::default() }))
+            .collect();
+        let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        let mut is_child = HashSet::new();
+        for (parent, child) in links {
+            children.entry(parent.to_string()).or_default().push(child.to_string());
+            is_child.insert(child.to_string());
+        }
+        let (nodes, descendants) = space_tree(&all, &children, &is_child);
+        (nodes.into_iter().map(|n| (n.info.room_id, n.depth)).collect(), descendants)
+    }
+
+    fn rows(rows: &[(&str, usize)]) -> Vec<(String, usize)> {
+        rows.iter().map(|(id, depth)| (id.to_string(), *depth)).collect()
+    }
+
+    #[test]
+    fn spaces_nest_under_their_parents_by_name() {
+        let (nodes, descendants) = tree(
+            &[("!work", "Work"), ("!eng", "Engineering"), ("!ops", "Ops"), ("!home", "Home")],
+            &[("!work", "!ops"), ("!work", "!eng")],
+        );
+        assert_eq!(nodes, rows(&[("!home", 0), ("!work", 0), ("!eng", 1), ("!ops", 1)]));
+        assert_eq!(descendants["!work"], vec!["!work", "!eng", "!ops"]);
+        assert_eq!(descendants["!ops"], vec!["!ops"]);
+    }
+
+    #[test]
+    fn spaces_that_contain_each_other_still_show() {
+        // A lists B and B lists A: neither is top-level by the usual rule.
+        let (nodes, descendants) = tree(
+            &[("!a", "Alpha"), ("!b", "Beta"), ("!c", "Gamma"), ("!solo", "Solo")],
+            &[("!a", "!b"), ("!b", "!a"), ("!b", "!c")],
+        );
+        assert_eq!(nodes, rows(&[("!solo", 0), ("!a", 0), ("!b", 1), ("!c", 2)]));
+        assert_eq!(descendants["!a"], vec!["!a", "!b", "!c"]);
+        assert_eq!(descendants["!c"], vec!["!c"]);
+    }
+
+    #[test]
+    fn a_power_level_that_does_not_fit_is_refused() {
+        assert_eq!(power_level_int(100).unwrap(), Int::from(100));
+        assert_eq!(power_level_int(-1).unwrap(), Int::from(-1));
+        // 2^53 and up can't be sent; it must not turn into the minimum.
+        assert!(power_level_int(9_007_199_254_740_992).is_err());
+        assert!(power_level_int(i64::MAX).is_err());
+        assert!(power_level_int(i64::MIN).is_err());
+    }
 }

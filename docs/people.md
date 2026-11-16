@@ -32,6 +32,7 @@ The people button in the room header toggles it.
 - **Grouping**: admins and moderators are listed first.
 - **Presence**: a green dot means online, yellow means away. Presence is fetched from people's servers in rooms of up to 50 members.
 - **Status messages** show under names.
+- **Long sections** list their first thirty people; **Show more** under a section adds a hundred at a time. The filter box searches everyone, shown or not.
 - **Filter**: the box at the top filters by name or user ID.
 - **Width**: drag its left edge to resize.
 

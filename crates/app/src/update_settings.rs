@@ -13,20 +13,13 @@ impl FluxChat {
                 Some(Task::none())
             }
             Message::SettingsSaveNick => {
-                let nick = self.settings_nick_input.clone();
-                if nick.trim().is_empty() {
+                let nick = self.settings_nick_input.trim().to_string();
+                if nick.is_empty() {
                     return Some(Task::none());
                 }
-                self.display_name = Some(nick.clone());
-                let core = self.core.clone();
-                Some(Task::perform(
-                    async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::set_display_name(&client, &nick).await.ok();
-                        Some(())
-                    },
-                    |_| Message::SettingsStatus("Display name updated".into()),
-                ))
+                // The change `/nick` makes; NickSet says how it went (this
+                // used to report "updated" whatever the server answered).
+                Some(self.update(Message::SetNick(nick)))
             }
             Message::SettingsLoadDevices => {
                 let core = self.core.clone();
@@ -60,10 +53,19 @@ impl FluxChat {
                     let core = self.core.clone();
                     Some(Task::perform(
                         async move {
-                            let client = core.get_client().await.ok()?;
-                            fluxchat_core::devices::delete_devices(&client, &[device_id], &password).await.ok()
+                            let client = core.get_client().await.map_err(|e| e.to_string())?;
+                            fluxchat_core::devices::delete_devices(&client, &[device_id], &password).await
+                                .map_err(|e| e.to_string())
                         },
-                        |_| Message::SettingsLoadDevices,
+                        |result: Result<(), String>| match result {
+                            Ok(()) => Message::SettingsLoadDevices,
+                            // A wrong password closed the prompt like a success
+                            // would: say that the session is still signed in.
+                            Err(e) => Message::Batch(vec![
+                                Message::SettingsLoadDevices,
+                                Message::ShowError(format!("Couldn't sign out that session: {e}")),
+                            ]),
+                        },
                     ))
                 } else {
                     Some(Task::none())
@@ -149,12 +151,17 @@ impl FluxChat {
                 let core = self.core.clone();
                 Some(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::remove_avatar(&client).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::profile::remove_avatar(&client).await.map_err(|e| e.to_string())
                     },
-                    |result| match result {
-                        Some(()) => Message::SettingsLoadProfile,
-                        None => Message::Noop,
+                    // Reloaded either way: on failure the picture cleared
+                    // above is still the account's, and comes back.
+                    |result: Result<(), String>| match result {
+                        Ok(()) => Message::SettingsLoadProfile,
+                        Err(e) => Message::Batch(vec![
+                            Message::SettingsLoadProfile,
+                            Message::SettingsStatus(format!("Couldn't remove the avatar: {e}")),
+                        ]),
                     },
                 ))
             }
@@ -235,12 +242,15 @@ impl FluxChat {
                 let core = self.core.clone();
                 Some(Task::perform(
                     async move {
-                        let client = core.get_client().await.ok()?;
-                        fluxchat_core::profile::remove_banner(&client).await.ok()
+                        let client = core.get_client().await.map_err(|e| e.to_string())?;
+                        fluxchat_core::profile::remove_banner(&client).await.map_err(|e| e.to_string())
                     },
-                    |result| match result {
-                        Some(()) => Message::SettingsLoadProfile,
-                        None => Message::Noop,
+                    |result: Result<(), String>| match result {
+                        Ok(()) => Message::SettingsLoadProfile,
+                        Err(e) => Message::Batch(vec![
+                            Message::SettingsLoadProfile,
+                            Message::SettingsStatus(format!("Couldn't remove the banner: {e}")),
+                        ]),
                     },
                 ))
             }
@@ -695,20 +705,10 @@ impl FluxChat {
                 self.profile_power_input = val;
                 Some(Task::none())
             }
-            Message::ProfileSetPowerLevel => {
-                if let Some(crate::state::Modal::Profile { ref user_id }) = self.modal {
-                    if let Ok(level) = self.profile_power_input.trim().parse::<i64>() {
-                        if let Some(ref room_id) = self.selected_room_id {
-                            return Some(self.update(Message::SetPowerLevel(
-                                room_id.clone(),
-                                user_id.clone(),
-                                level,
-                            )));
-                        }
-                    }
-                }
-                Some(Task::none())
-            }
+            Message::ProfileSetPowerLevel => Some(match self.profile_power_change() {
+                Some(change) => self.update(change),
+                None => Task::none(),
+            }),
             Message::SendDmToUser(user_id) => {
                 self.modal = None;
                 let core = self.core.clone();
@@ -754,7 +754,11 @@ impl FluxChat {
             Message::ManualVerifyResult(user_id, result) => {
                 match &result {
                     Ok(()) => {
-                        self.profile_user_verified = Some(true);
+                        // Only on their own card: the answer can arrive with
+                        // someone else's profile open by now.
+                        if self.profile_open_for(&user_id) {
+                            self.profile_user_verified = Some(true);
+                        }
                         self.help_text = Some(format!("Verified {user_id}"));
                     }
                     Err(e) => {
@@ -763,8 +767,10 @@ impl FluxChat {
                 }
                 Some(Task::none())
             }
-            Message::UserVerifiedStatus(_user_id, verified) => {
-                self.profile_user_verified = Some(verified);
+            Message::UserVerifiedStatus(user_id, verified) => {
+                if self.profile_open_for(&user_id) {
+                    self.profile_user_verified = Some(verified);
+                }
                 Some(Task::none())
             }
 
@@ -786,6 +792,21 @@ impl FluxChat {
 
             _ => None,
         }
+    }
+
+    /// Whether the profile card on screen is this user's.
+    fn profile_open_for(&self, user_id: &str) -> bool {
+        matches!(&self.modal, Some(crate::state::Modal::Profile { user_id: open }) if open == user_id)
+    }
+
+    /// The change the profile card's "Custom level" asks for. The room is
+    /// the real one: in a thread view the selection is the thread's key,
+    /// which the server knows nothing about (the change just failed there).
+    fn profile_power_change(&self) -> Option<Message> {
+        let Some(crate::state::Modal::Profile { user_id }) = &self.modal else { return None };
+        let level = self.profile_power_input.trim().parse::<i64>().ok()?;
+        let room_id = self.active_real_room()?;
+        Some(Message::SetPowerLevel(room_id.to_string(), user_id.clone(), level))
     }
 
     /// Load the account's ignore list.
@@ -828,5 +849,46 @@ impl FluxChat {
             }
         }
         Task::batch(tasks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+    use crate::state::Modal;
+
+    #[tokio::test]
+    async fn another_users_verification_does_not_mark_the_profile_on_screen() {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        // Asked about (or trusted) on @a's card, answered with @b's open.
+        let _ = app.update(Message::OpenModal(Modal::Profile { user_id: "@b:x".into() }));
+        let _ = app.update(Message::UserVerifiedStatus("@a:x".into(), true));
+        assert_eq!(app.profile_user_verified, None);
+        let _ = app.update(Message::ManualVerifyResult("@a:x".into(), Ok(())));
+        assert_eq!(app.profile_user_verified, None, "@b is not the one who was verified");
+        // Their own answer does.
+        let _ = app.update(Message::UserVerifiedStatus("@b:x".into(), false));
+        assert_eq!(app.profile_user_verified, Some(false));
+        let _ = app.update(Message::ManualVerifyResult("@b:x".into(), Ok(())));
+        assert_eq!(app.profile_user_verified, Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_custom_power_level_set_from_a_thread_goes_to_its_room() {
+        let mut app = app();
+        app.user_id = "@me:x".into();
+        let _ = app.update(Message::SelectRoom("thread::!a:x::$root".into()));
+        let _ = app.update(Message::OpenModal(Modal::Profile { user_id: "@u:x".into() }));
+        app.profile_power_input = " 50 ".into();
+        match app.profile_power_change() {
+            Some(Message::SetPowerLevel(room, user, level)) => {
+                assert_eq!((room.as_str(), user.as_str(), level), ("!a:x", "@u:x", 50));
+            }
+            other => panic!("a power level change, not {other:?}"),
+        }
+        app.profile_power_input = "admin".into();
+        assert!(app.profile_power_change().is_none());
     }
 }

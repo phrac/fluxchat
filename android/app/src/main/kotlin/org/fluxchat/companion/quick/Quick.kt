@@ -38,6 +38,8 @@ object Quick {
     const val EXTRA_ROOM = "room"
     const val EXTRA_VOICE = "voice"
     private const val DRAFT = "draft:"
+    private const val NAME = "name:"
+    private const val AGENT = "agent:"
 
     /** The room a quick prompt goes to by default: the last one you sent a request in. */
     fun room(context: Context): String? = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_ROOM, null)
@@ -83,20 +85,36 @@ object Quick {
     }
 
     /**
+     * The account has signed out. Its drafts go, and so do the project it
+     * last used and the names the widget is drawn from: the widget went on
+     * reading "Ask hermes… · New session · Ops" on the home screen of a
+     * signed-out phone, and under the next account until that had sent
+     * something. Which project a widget was set to stays — the phone's
+     * setup, good again when the account is back.
+     */
+    internal fun signedOut(context: Context) {
+        clearDrafts(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val gone = prefs.all.keys.filter { it == KEY_ROOM || it.startsWith(NAME) || it.startsWith(AGENT) }
+        if (gone.isNotEmpty()) prefs.edit().apply { gone.forEach { remove(it) } }.apply()
+        QuickWidget.refresh(context)
+    }
+
+    /**
      * Room and agent names as last seen, for the widget: it's drawn when the
      * app may not have synced yet (or isn't running).
      */
     fun label(context: Context, roomId: String): Pair<String, String?>? {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val name = p.getString("name:$roomId", null) ?: return null
-        return name to p.getString("agent:$roomId", null)
+        val name = p.getString("$NAME$roomId", null) ?: return null
+        return name to p.getString("$AGENT$roomId", null)
     }
 
-    private fun saveLabels(context: Context, labels: List<Triple<String, String, String?>>) {
+    internal fun saveLabels(context: Context, labels: List<Triple<String, String, String?>>) {
         val e = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
         for ((id, name, agent) in labels) {
-            e.putString("name:$id", name)
-            if (agent != null) e.putString("agent:$id", agent) else e.remove("agent:$id")
+            e.putString("$NAME$id", name)
+            if (agent != null) e.putString("$AGENT$id", agent) else e.remove("$AGENT$id")
         }
         e.apply()
     }
@@ -113,12 +131,12 @@ object Quick {
     @OptIn(kotlinx.coroutines.FlowPreview::class)
     fun start(context: Context) {
         val app = context.applicationContext
-        // Signing out takes the drafts along (a session that was there and now
-        // isn't — not the app starting up with none).
+        // Signing out takes the account's things along (a session that was
+        // there and now isn't — not the app starting up with none).
         var was: Auth? = null
         Matrix.auth
             .onEach { now ->
-                if (now == Auth.SignedOut && was != null && was != Auth.Starting && was != Auth.SignedOut) clearDrafts(app)
+                if (now == Auth.SignedOut && was != null && was != Auth.Starting && was != Auth.SignedOut) signedOut(app)
                 was = now
             }
             .let { flow -> Matrix.supervise("Keeping the quick entry points current") { flow.collect {} } }

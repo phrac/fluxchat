@@ -192,8 +192,20 @@ impl PlaybackHandle {
     }
 }
 
+/// Longest clip decoded for in-process playback. The whole clip is decoded
+/// up front (4 bytes a sample), and how long it runs is the file's to say,
+/// not its size: an empty Opus frame is a couple of bytes for 120 ms, so a
+/// 100 KB "voice message" can ask for gigabytes. Anything longer is refused
+/// here and goes to the system player, which streams.
+const MAX_DECODED_SECS: usize = 20 * 60;
+
 /// Decode OGG Opus bytes to interleaved f32 PCM at 48 kHz. Returns (samples, channels).
 pub fn decode_ogg_opus(bytes: &[u8]) -> Result<(Vec<f32>, usize), String> {
+    decode_ogg_opus_up_to(bytes, MAX_DECODED_SECS * 48_000)
+}
+
+/// `decode_ogg_opus`, giving up past `max_frames` samples per channel.
+fn decode_ogg_opus_up_to(bytes: &[u8], max_frames: usize) -> Result<(Vec<f32>, usize), String> {
     use ogg::reading::PacketReader;
 
     let mut reader = PacketReader::new(std::io::Cursor::new(bytes));
@@ -234,6 +246,9 @@ pub fn decode_ogg_opus(bytes: &[u8]) -> Result<(Vec<f32>, usize), String> {
         };
         let frames = dec.decode(&data, &mut out, false).map_err(|e| format!("Opus decode error: {e}"))?;
         pcm.extend(out[..frames * channels].iter().map(|&s| s as f32 / 32768.0));
+        if pcm.len() / channels > max_frames {
+            return Err("Too long to play in-process".into());
+        }
     }
 
     if pcm.is_empty() {
@@ -323,4 +338,24 @@ pub fn play_pcm(
         .map_err(|e| format!("Failed to spawn playback thread: {e}"))?;
 
     Ok(PlaybackHandle { stop })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clip_past_the_limit_is_not_decoded() {
+        // Two seconds of a 440 Hz tone, as a voice message.
+        let tone: Vec<i16> = (0..96_000)
+            .map(|i| ((i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 12_000.0) as i16)
+            .collect();
+        let (ogg, _) = encode_opus_ogg(&tone, 48_000, 2_000).unwrap();
+
+        let (pcm, channels) = decode_ogg_opus(&ogg).expect("an ordinary clip plays");
+        assert_eq!((pcm.len(), channels), (96_000, 1));
+        // The same clip against a one-second limit, then one it fits in.
+        assert!(decode_ogg_opus_up_to(&ogg, 48_000).is_err());
+        assert!(decode_ogg_opus_up_to(&ogg, 96_000).is_ok());
+    }
 }

@@ -1,6 +1,8 @@
 package org.fluxchat.companion
 
+import android.app.KeyguardManager
 import android.content.Context
+import android.os.SystemClock
 import androidx.activity.result.ActivityResultLauncher
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -38,6 +40,21 @@ object AppLock {
      */
     @Volatile private var hopping = false
 
+    /** When the detour began ([SystemClock.elapsedRealtime]): its pass runs out [HOP_PASS_MS] later. */
+    @Volatile private var hoppedAt = 0L
+
+    /**
+     * How long a detour's pass is good for, from the tap that started it. A
+     * pass with no end let anyone in: Home out of the camera instead of
+     * taking the photo, and the app stayed unlocked behind it for as long as
+     * it took someone to open it again. Past this, coming back asks like any
+     * other return — the screen you left, attachment included, is still
+     * there behind the lock.
+     */
+    const val HOP_PASS_MS = 5 * 60_000L
+
+    private fun onPass(now: Long) = hopping && now - hoppedAt <= HOP_PASS_MS
+
     /**
      * Whether the lock screen should raise the system prompt by itself, the
      * moment its window can show one. Armed on every arrival at a locked app
@@ -68,16 +85,32 @@ object AppLock {
     }
 
     /** Mark the upcoming backgrounding as our own picker/camera detour. */
-    fun hop() {
+    fun hop(now: Long = SystemClock.elapsedRealtime()) {
         hopping = true
+        hoppedAt = now
+    }
+
+    /**
+     * The detour is over and the app never left the foreground for it: the
+     * photo picker is a sheet drawn over the app (paused, never stopped), and
+     * a camera that isn't installed opens nothing at all. Neither is ever
+     * "come back from", so the pass stayed in hand — and the next real
+     * leaving (Home, another app) was waved through as "our own detour",
+     * with the app unlocked behind it. Called when the main activity is in
+     * front again, and when a launch fails.
+     */
+    fun hopOver() {
+        hopping = false
     }
 
     /**
      * The app came to the front: the detour pass is spent, and a lock screen
      * that's waiting (even one you dismissed the prompt on before leaving)
-     * asks again by itself.
+     * asks again by itself. A detour its pass ran out on is a return like
+     * any other: it locks.
      */
-    fun onForeground() {
+    fun onForeground(now: Long = SystemClock.elapsedRealtime()) {
+        if (hopping && enabled.value && !onPass(now)) locked.value = true
         hopping = false
         arm()
     }
@@ -108,8 +141,8 @@ object AppLock {
     }
 
     /** The last activity stopped: content must not come back without an unlock. */
-    fun onBackground() {
-        if (enabled.value && !hopping) {
+    fun onBackground(now: Long = SystemClock.elapsedRealtime()) {
+        if (enabled.value && !onPass(now)) {
             locked.value = true
             arm()
         }
@@ -143,6 +176,17 @@ object AppLock {
             onDone(true)
             return
         }
+        // The phone's own screen lock was removed since the lock was turned
+        // on: the prompt has nothing left to ask with and fails every time,
+        // and the switch that turns the lock off is behind it — the app could
+        // only be opened again by clearing its data, session and keys with
+        // it. Removing a screen lock takes the old one, so it was you.
+        if (!canAsk(activity)) {
+            Diag.note("app lock: this phone has no screen lock any more, opening without asking")
+            unlocked()
+            onDone(true)
+            return
+        }
         // BiometricPrompt drops a request made while the activity's state is
         // saved (stopped) without telling anyone: stay armed for the return.
         if (activity.supportFragmentManager.isStateSaved) {
@@ -161,6 +205,9 @@ object AppLock {
 
                 // Canceled / no hardware: stay locked; the screen offers a retry.
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    // A prompt you (or the system) took down is ordinary; one
+                    // that can't be shown at all is why the app won't open.
+                    if (errorCode !in DISMISSALS) Diag.error("app lock: the unlock prompt failed ($errorCode: $errString)")
                     promptFailed(errorCode)
                     onDone(false)
                 }
@@ -174,6 +221,16 @@ object AppLock {
         )
     }
 
+    /** Whether the phone still has a screen lock to ask for (a fingerprint or a face needs one too). */
+    internal fun canAsk(context: Context): Boolean =
+        context.getSystemService(KeyguardManager::class.java)?.isDeviceSecure != false
+
+    private val DISMISSALS = setOf(
+        BiometricPrompt.ERROR_CANCELED,
+        BiometricPrompt.ERROR_USER_CANCELED,
+        BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+    )
+
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }
@@ -181,5 +238,11 @@ object AppLock {
 /** `launch()` that tells the lock this detour is ours (camera, pickers). */
 fun <I> ActivityResultLauncher<I>.launchHopping(input: I) {
     AppLock.hop()
-    launch(input)
+    try {
+        launch(input)
+    } catch (e: Exception) {
+        // Nothing opened (no camera app on the phone): no detour to excuse.
+        AppLock.hopOver()
+        throw e
+    }
 }

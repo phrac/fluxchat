@@ -393,10 +393,7 @@ impl FluxChat {
     /// Lightbox controls when it was opened from the gallery: previous /
     /// next and Jump to message.
     pub(crate) fn gallery_lightbox_controls(&self, url: &str) -> Vec<Element<'_, Message>> {
-        let Some(g) = &self.gallery else { return Vec::new() };
-        let images: Vec<&MessageInfo> = g.items.iter()
-            .filter(|m| m.image_mxc.is_some() && !m.is_video && !self.media_hidden(&g.view_key, m))
-            .collect();
+        let images = self.gallery_lightbox_images();
         let Some(pos) = images.iter().position(|m| m.image_mxc.as_deref() == Some(url)) else { return Vec::new() };
         let event_id = images[pos].event_id.clone();
         vec![

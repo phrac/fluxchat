@@ -52,6 +52,8 @@ pub enum Message {
     ScrollMessagesBy(f32),
     /// Member list filter text changed.
     MemberFilterChanged(String),
+    /// List more of the room's members than the first rows of each section.
+    ShowMoreMembers,
     /// Lightbox: save the image (by MXC URI) via a file dialog.
     SaveImage(String),
     /// Lightbox: copy the image (by MXC URI) to the clipboard.
@@ -107,7 +109,9 @@ pub enum Message {
     // --- Search ---
     SearchQueryChanged(String),
     SearchSubmit,
-    SearchResults(Vec<fluxchat_core::messages::SearchResult>),
+    /// What a search found, with the room and the query it was for: results
+    /// that are late for either aren't shown.
+    SearchResults(String, String, Vec<fluxchat_core::messages::SearchResult>),
     SearchSelectResult(usize),
     SearchArrowDown,
     SearchArrowUp,
@@ -131,6 +135,9 @@ pub enum Message {
     RunsQuery(String),
     /// Save a run's thread as a Markdown transcript (view key).
     ExportRun(String),
+    /// The same for one of a view's recorded runs (view key, the record's
+    /// start in ms): a History row's, not the view's latest.
+    ExportRunOf(String, u64),
     /// Review the diffs in a message (view key, event ID).
     OpenReview(String, String),
     /// A patch file for the open review, downloaded (event ID, text).
@@ -386,10 +393,12 @@ pub enum Message {
     DirectorySearch,
     DirectorySearchChanged(String),
     DirectoryServerChanged(String),
-    DirectoryResults(Vec<fluxchat_core::rooms::PublicRoomResult>, Option<String>), // results, next_batch
+    DirectoryResults(u64, Vec<fluxchat_core::rooms::PublicRoomResult>, Option<String>), // search it answers, results, next_batch
     DirectoryLoadMore,
     DirectoryJoinRoom(String), // room_id
     SetNick(String),                            // new display name
+    /// The display name change went through, or not: (the name to put back, error).
+    NickSet(Result<(), (Option<String>, String)>),
     SendDm(String, String),                     // user_id, body
 
     // --- File upload ---
@@ -447,6 +456,13 @@ pub enum Message {
     VerificationAccept(String, String),  // user_id, flow_id
     VerificationConfirm(String, String), // user_id, flow_id
     VerificationCancel(String, String),  // user_id, flow_id
+    /// A verification we asked for went out (its flow ID, which cancelling
+    /// it needs) or couldn't be started: (user ID, flow ID or error).
+    VerificationRequested(String, Result<String, String>),
+    /// A verification with this user is over (confirmed here, or declined,
+    /// timed out or cancelled elsewhere, possibly long after its dialog was
+    /// closed): closes that dialog only. `Some`: what went wrong.
+    VerificationEnded(String, Option<String>),
 
     // --- Avatars ---
     AvatarsResolved(Vec<(String, Option<Vec<u8>>)>), // (mxc_uri, image bytes or None if the fetch failed)
@@ -459,6 +475,8 @@ pub enum Message {
 
     // --- URL Previews ---
     UrlPreviewFetched(String, Option<fluxchat_core::UrlPreview>), // url, preview
+    /// The server has no preview for a URL (or couldn't be asked).
+    UrlPreviewFailed(String),
     UrlPreviewImageResolved(String, Vec<u8>), // image_url, bytes
 
     // --- Message hover ---
@@ -495,6 +513,9 @@ pub enum Message {
     JoinRequestsWatching(String, crate::state::TaskGuard),
     ToggleJoinRequests,
     RespondJoinRequest(String, fluxchat_core::room_admin::JoinResponse), // user_id
+    /// An answer to a join request didn't go through: room, the request
+    /// that was taken off the list (and where it was), error.
+    JoinRequestFailed(String, Option<(usize, Box<fluxchat_core::room_admin::JoinRequest>)>, String),
     KnockRoom(String, Option<String>), // room_id_or_alias, reason
     CancelKnock(String), // room_id
     SendLocation(String), // geo_uri (e.g. "geo:51.5074,-0.1278")
@@ -510,7 +531,7 @@ pub enum Message {
     VideoEndOfStream,
     VideoClose,
     VideoThumbResolved(String, Vec<u8>, u32, u32), // thumb_key, png_data, width, height
-    AudioFinished,
+    AudioFinished(u64), // the playback that ended (`audio_token`)
     StartVoiceRecording,
     /// Mic pressed: start recording (push to talk), or stop a tapped one.
     MicPressed,
@@ -666,6 +687,19 @@ pub enum Message {
 
     // --- Scroll ---
     MessagesScrolled(iced::widget::scrollable::Viewport),
+    /// The main message list's widget state is new (its pane changed, or the
+    /// layout around it): its scrollable starts over at the top.
+    MessagesMounted,
+    /// The main message list doesn't fill its viewport (iced's scrollable
+    /// reports nothing then): (list bounds, content height).
+    MessagesFit(iced::Rectangle, f32),
+    /// A side pane's list doesn't fill it: load older history for that view.
+    PaneFit(String),
+    /// A scroll-up at the top of a side pane's list: load older history.
+    PaneLoadOlder(String),
+    /// A side pane's page of history has landed: (view key, visible rows
+    /// before it, automatic pages left, Some(reached the start) or None on error).
+    PanePaged(String, usize, u8, Option<bool>),
     ScrollToBottom,
 
     // --- Calls/RTC ---
@@ -697,6 +731,8 @@ pub enum Message {
     Escape, // close modals/panels/completions
     Tick, // periodic refresh
     Noop,
+    /// `/logs`: show where the log file is and open its folder.
+    OpenLogs,
 }
 
 /// Successful login info.

@@ -6,6 +6,11 @@
 //! — a bottom-anchored side-pane list read the main list's "at the bottom"
 //! offset as "at the top". Wrapping the side-pane body in `Isolated` makes the
 //! tags differ at its root, so either side starts with fresh state.
+//!
+//! The node also remembers which view it holds (`key`) and starts its content
+//! over when that changes: a pane that swaps one thread for another (an agent
+//! thread-follow), or a pane with the same id in another window, otherwise
+//! showed the new view at the old one's scroll position.
 
 use iced::advanced::layout;
 use iced::advanced::mouse;
@@ -16,16 +21,17 @@ use iced::advanced::widget::Operation;
 use iced::advanced::{Clipboard, Layout, Shell, Widget};
 use iced::{Element, Event, Length, Rectangle, Size, Vector};
 
-/// Tag type of the wrapper's tree node.
-struct Marker;
+/// The wrapper's tree state: the view its content belongs to.
+struct Held(String);
 
 pub struct Isolated<'a, Message> {
+    key: String,
     content: Element<'a, Message>,
 }
 
 impl<'a, Message> Isolated<'a, Message> {
-    pub fn new(content: impl Into<Element<'a, Message>>) -> Self {
-        Self { content: content.into() }
+    pub fn new(key: impl Into<String>, content: impl Into<Element<'a, Message>>) -> Self {
+        Self { key: key.into(), content: content.into() }
     }
 }
 
@@ -39,11 +45,11 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Isolated<'a, 
     }
 
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Marker>()
+        tree::Tag::of::<Held>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::None
+        tree::State::new(Held(self.key.clone()))
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -51,7 +57,14 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Isolated<'a, 
     }
 
     fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_ref(&self.content));
+        let held = tree.state.downcast_mut::<Held>();
+        if held.0 != self.key {
+            // Another view: nothing of the old one's state applies.
+            held.0.clone_from(&self.key);
+            tree.children = self.children();
+        } else {
+            tree.diff_children(std::slice::from_ref(&self.content));
+        }
     }
 
     fn layout(

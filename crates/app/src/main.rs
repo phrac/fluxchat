@@ -17,6 +17,8 @@ mod hover_bar;
 mod html;
 mod icons;
 mod isolated;
+mod list_probe;
+mod logfile;
 mod measured;
 mod panes;
 mod prefs;
@@ -85,12 +87,25 @@ fn main() -> iced::Result {
     // matrix_sdk_crypto::backups warns on every received key while this
     // session isn't connected to the server-side key backup — once is plenty.
     let default_filter = "warn,fluxchat=info,matrix_sdk_crypto=warn,matrix_sdk_crypto::backups=error,html5ever=error";
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter)),
-        )
-        .init();
+    // The file also takes the SDK's notes on Olm sessions it has to rebuild
+    // ("Marking session to be unwedged"): with the warning that precedes
+    // them, they date and explain a message that never became readable.
+    let file_filter = format!("{default_filter},matrix_sdk_crypto::session_manager=info");
+    let filter = |default: &str| tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
+    {
+        use tracing_subscriber::prelude::*;
+        // Started from the Finder or a launcher, what it prints goes nowhere: the
+        // same lines are kept in a file (`logfile`, `/logs` opens its folder).
+        let to_file = logfile::init().map(|writer| {
+            tracing_subscriber::fmt::layer().with_ansi(false).with_writer(writer).with_filter(filter(&file_filter))
+        });
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_filter(filter(default_filter)))
+            .with(to_file)
+            .init();
+    }
+    tracing::info!("fluxchat {} starting", env!("CARGO_PKG_VERSION"));
 
     // Set macOS notification app identity to avoid "Where is use_default?" dialog
     #[cfg(target_os = "macos")]

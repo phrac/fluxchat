@@ -75,6 +75,17 @@ fn moved_enough(start: Point, now: Option<Point>) -> bool {
     now.is_none_or(|p| start.distance(p) > DRAG_THRESHOLD)
 }
 
+/// Where the press recorded in `source` was, if it was on the row `key` laid
+/// out at `bounds`. The key alone doesn't say which row: a thread is listed
+/// under its room and in the threads sidebar, a favourite room twice in the
+/// room list. Each list scrolls by itself, so the copy that wasn't pressed
+/// saw the cursor a scroll offset away from the press (which is in the
+/// pressed row's coordinates) and called every click with a pixel of
+/// movement a drag: the click did nothing.
+fn pressed_at(source: Option<&(String, Point)>, key: &str, bounds: Rectangle) -> Option<Point> {
+    source.filter(|(k, at)| k == key && bounds.contains(*at)).map(|(_, at)| *at)
+}
+
 /// The left button was released (`SidebarDragEnd`; drop targets have
 /// already seen the release by then).
 pub fn released() {
@@ -212,7 +223,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for DragSource<'_> {
             // The pressed row decides when its press becomes a drag.
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let mut d = drag();
-                let start = d.source.as_ref().filter(|(k, _)| *k == self.key).map(|(_, s)| *s);
+                let start = pressed_at(d.source.as_ref(), &self.key, layout.bounds());
                 if let Some(start) = start.filter(|_| !d.active) {
                     if moved_enough(start, cursor.land().position()) {
                         d.active = true;
@@ -352,6 +363,23 @@ mod tests {
         assert!(!moved_enough(start, Some(Point::new(103.0, 902.0))), "a click with a little jitter");
         assert!(moved_enough(start, Some(Point::new(100.0, 920.0))));
         assert!(moved_enough(start, None), "left the window");
+    }
+
+    #[test]
+    fn only_the_row_that_was_pressed_can_start_the_drag() {
+        // One thread, listed in the threads sidebar (pressed there) and
+        // under its room in the room list, which is scrolled 300 px.
+        let key = "thread::!a:x::$t";
+        let in_sidebar = Rectangle { x: 880.0, y: 50.0, width: 270.0, height: 60.0 };
+        let in_room_list = Rectangle { x: 68.0, y: 480.0, width: 200.0, height: 24.0 };
+        let press = Point::new(1000.0, 70.0);
+        let source = (key.to_string(), press);
+        assert_eq!(pressed_at(Some(&source), key, in_sidebar), Some(press));
+        // The room list's row sees the cursor at (1000, 370): 300 px from
+        // the press without the mouse having moved at all.
+        assert_eq!(pressed_at(Some(&source), key, in_room_list), None, "the other copy of the row");
+        assert_eq!(pressed_at(Some(&source), "!b:x", in_sidebar), None, "another row");
+        assert_eq!(pressed_at(None, key, in_sidebar), None, "nothing pressed");
     }
 
     #[test]

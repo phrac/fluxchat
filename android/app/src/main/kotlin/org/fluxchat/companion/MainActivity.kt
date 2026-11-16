@@ -60,6 +60,9 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // In front again: a detour that never took the app out of the
+        // foreground (a picker drawn over it) ends here, not at the next Home.
+        AppLock.hopOver()
         applySecure()
     }
 

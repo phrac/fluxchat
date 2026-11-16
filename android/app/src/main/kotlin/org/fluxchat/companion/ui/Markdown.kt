@@ -96,14 +96,17 @@ fun MarkdownText(
                         )
                     }
                     is Block.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        for (item in b.items) {
+                        // Folded, a list stops at the fold like any other block: it was
+                        // always shown whole, so an answer that is one long list (most
+                        // are) wasn't folded at all, and "Show all" changed nothing.
+                        for ((item, lines) in foldedItems(b.items, linesLeft)) {
                             Row(Modifier.padding(start = (item.depth * 18).dp)) {
                                 Text(
                                     item.marker, style = style, color = scheme.onSurfaceVariant,
                                     modifier = Modifier.widthIn(min = if (item.marker.length > 2) 26.dp else 18.dp),
                                 )
                                 val text = remember(item.text, colors) { inline(item.text, colors) }
-                                Text(text, color = color, style = style, modifier = Modifier.weight(1f))
+                                Text(text, color = color, style = style, maxLines = lines, modifier = Modifier.weight(1f))
                             }
                         }
                     }
@@ -111,7 +114,7 @@ fun MarkdownText(
                         Box(Modifier.width(3.dp).fillMaxHeight().background(scheme.outlineVariant, RoundedCornerShape(2.dp)))
                         Spacer(Modifier.width(10.dp))
                         val text = remember(b.text, colors) { inline(b.text, colors) }
-                        Text(text, color = scheme.onSurfaceVariant, style = style.copy(fontStyle = FontStyle.Italic))
+                        Text(text, color = scheme.onSurfaceVariant, style = style.copy(fontStyle = FontStyle.Italic), maxLines = linesLeft)
                     }
                     Block.Rule -> HorizontalDivider(color = scheme.outlineVariant)
                     is Block.Code -> CodeBlock(AnnotatedString(b.text), b.lang, maxLines = linesLeft)
@@ -174,6 +177,22 @@ internal sealed interface Block {
     data class Table(val rows: List<List<String>>, val header: Boolean = false) : Block { override val lines get() = rows.size }
 }
 
+/**
+ * The items of a list that show within [lines] lines, each with the lines it
+ * may take: as many as fit, the last one cut where the fold is (all of them
+ * when nothing is folded — [lines] is then as good as endless).
+ */
+internal fun foldedItems(items: List<Block.Item>, lines: Int): List<Pair<Block.Item, Int>> {
+    val out = ArrayList<Pair<Block.Item, Int>>()
+    var left = lines
+    for (item in items) {
+        if (left <= 0) break
+        out += item to left
+        left -= item.text.lines().size
+    }
+    return out
+}
+
 private val HEADING = Regex("^(#{1,6})\\s+(.*)$")
 private val ITEM = Regex("^(\\s*)([-*+•]|\\d{1,3}[.)])\\s+(.*)$")
 private val RULE = Regex("^(-{3,}|\\*{3,}|_{3,})$")
@@ -193,14 +212,21 @@ internal fun parseBlocks(body: String): List<Block> {
         val line = raw.trim()
         when {
             line.startsWith("```") -> {
-                flush()
                 val ticks = line.takeWhile { it == '`' }.length
                 val rest = line.drop(ticks).trim()
                 if (rest.endsWith("```") && rest.trim('`').isNotBlank()) {
                     // ```cmd``` on one line is the whole block (it used to
                     // open a fence that swallowed the rest of the message).
+                    flush()
                     out += Block.Code(rest.trimEnd('`').trim(), null)
+                } else if ('`' in rest) {
+                    // "```make test``` and read the log": code at the start of
+                    // a sentence, not a fence — what follows a fence's ticks
+                    // (its language) holds no backtick. As an opener this
+                    // too turned the rest of the message into one code block.
+                    para += line
                 } else {
+                    flush()
                     val lang = rest.takeIf { it.isNotEmpty() }
                     // A fence inside a list item is indented with it: that
                     // much comes off each line of the code.
@@ -266,7 +292,7 @@ internal fun parseBlocks(body: String): List<Block> {
                         items += Block.Item(marker, 0, m.groupValues[3])
                         indents += indentWidth(m.groupValues[1])
                         i++
-                    } else if (lines[i].trim().startsWith("```")) {
+                    } else if (isFence(lines[i].trim())) {
                         // A code block under an item: the fence is its own
                         // block (as a "continuation line" it showed as text,
                         // and YAML's `- name:` lines inside became bullets).
@@ -288,6 +314,19 @@ internal fun parseBlocks(body: String): List<Block> {
     flush()
     return out
 }
+
+/**
+ * Whether a (trimmed) line is a code fence — an opener, a closer, or a whole
+ * block on one line — rather than a sentence that starts with ```code```.
+ */
+private fun isFence(line: String): Boolean {
+    if (!line.startsWith("```")) return false
+    val rest = line.trimStart('`').trim()
+    return '`' !in rest || (rest.endsWith("```") && rest.trim('`').isNotBlank())
+}
+
+/** Whether a (trimmed) line opens a code fence: ticks, then at most a language, which holds no backtick. */
+internal fun opensFence(line: String): Boolean = line.startsWith("```") && '`' !in line.trimStart('`')
 
 /** How far a list marker is indented, in columns: a tab runs to the next multiple of four. */
 internal fun indentWidth(prefix: String): Int {

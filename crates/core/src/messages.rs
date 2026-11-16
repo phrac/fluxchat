@@ -201,7 +201,8 @@ pub fn location_message(geo_uri: &str) -> RoomMessageEventContent {
 /// and MSC3952 intentional mentions (m.mentions).
 /// Build emote content (for /me commands). Uses m.emote msgtype.
 pub async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
-    let has_markdown = body.contains("**") || body.contains('`') || body.contains("~~");
+    // (`*` alone too: an emote with only `*italics*` went out as plain text.)
+    let has_markdown = body.contains('*') || body.contains('`') || body.contains("~~");
 
     
 
@@ -222,69 +223,110 @@ pub async fn build_emote_content(_room: &matrix_sdk::Room, body: &str) -> RoomMe
 pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomMessageEventContent {
     // Only attempt mention resolution if body contains @
     let has_mentions = body.contains('@');
-    let has_headings = body.lines().any(parse_heading_line_is_heading);
-    let has_markdown = body.contains("**") || body.contains('`') || body.contains("~~") || has_headings;
-
-    if !has_mentions && !has_markdown {
+    if !has_mentions && !may_have_markdown(body) {
         return RoomMessageEventContent::text_plain(body);
     }
 
-    // Everything below builds HTML, so the raw text must be escaped first —
-    // otherwise `Vec<u8>` or `a < b` corrupt the formatted body.
-    // Code comes out first: neither mentions nor formatting apply inside it.
-    let (mut html, code) = stash_code(&html_escape(body));
-    let mut changed = !code.is_empty();
-    let mut mentioned_user_ids: std::collections::BTreeSet<matrix_sdk::ruma::OwnedUserId> =
-        std::collections::BTreeSet::new();
-    let mut mentions_room = false;
-
-    // Resolve @mentions
+    let mut members: Vec<(String, String)> = Vec::new();
     if has_mentions {
-        // Detect @room mention
-        // Whole word: "@roommate" isn't a room ping.
-        if replace_mention(body, "@room", "").is_some() {
-            mentions_room = true;
-        }
-
         // Use tokio timeout to prevent hanging
         let members_result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             room.members(matrix_sdk::RoomMemberships::JOIN),
         ).await;
-
-        if let Ok(Ok(members)) = members_result {
-            let mut member_names: Vec<(String, String)> = members.iter()
+        if let Ok(Ok(found)) = members_result {
+            members = found.iter()
                 .map(|m| {
-                    let name = m.display_name().unwrap_or(m.user_id().localpart()).to_string();
-                    let user_id = m.user_id().to_string();
-                    (name, user_id)
+                    // A blank display name is no name: they go by their localpart.
+                    let name = m.display_name().filter(|n| !n.trim().is_empty())
+                        .unwrap_or(m.user_id().localpart());
+                    (name.to_string(), m.user_id().to_string())
                 })
                 .collect();
-            member_names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+        }
+    }
 
-            for (display_name, user_id) in &member_names {
-                let display_name = html_escape(display_name);
-                let mention = format!("@{display_name}");
-                let encoded_uid = user_id.replace('@', "%40").replace(':', "%3A");
-                let link = format!(
-                    "<a href=\"https://matrix.to/#/{encoded_uid}\">{display_name}</a>"
-                );
-                // Whole words only: "@Al" mustn't ping Al inside "@Alexander"
-                // or "me@Alpha.com".
-                if let Some(replaced) = replace_mention(&html, &mention, &link) {
-                    html = replaced;
-                    changed = true;
-                    // Track for m.mentions (MSC3952)
-                    if let Ok(uid) = matrix_sdk::ruma::UserId::parse(user_id) {
-                        mentioned_user_ids.insert(uid);
-                    }
+    let formatted = format_message(body, &members);
+    let mut content = match &formatted.html {
+        Some(html) => RoomMessageEventContent::text_html(body, html),
+        None => RoomMessageEventContent::text_plain(body),
+    };
+
+    // Set m.mentions (MSC3952 intentional mentions)
+    if !formatted.user_ids.is_empty() || formatted.room {
+        let mut mentions = matrix_sdk::ruma::events::Mentions::with_user_ids(formatted.user_ids);
+        mentions.room = formatted.room;
+        content.mentions = Some(mentions);
+    }
+
+    content
+}
+
+/// Whether `body` has anything the markdown passes might format. A lone `*`
+/// counts: `*italic*` with no other markup in the message went out as plain
+/// text (the composer's italic button included).
+fn may_have_markdown(body: &str) -> bool {
+    body.contains('*') || body.contains('`') || body.contains("~~")
+        || body.lines().any(parse_heading_line_is_heading)
+}
+
+/// A typed message, formatted.
+struct Formatted {
+    /// The formatted body; `None` when the message is just its text.
+    html: Option<String>,
+    /// Who it mentions (`m.mentions`).
+    user_ids: std::collections::BTreeSet<matrix_sdk::ruma::OwnedUserId>,
+    /// It mentions `@room`.
+    room: bool,
+}
+
+/// Format a typed message: mentions of `members` (display name, user ID)
+/// as links, then markdown.
+fn format_message(body: &str, members: &[(String, String)]) -> Formatted {
+    // Everything below builds HTML, so the raw text must be escaped first —
+    // otherwise `Vec<u8>` or `a < b` corrupt the formatted body.
+    // Code comes out first: neither mentions nor formatting apply inside it.
+    let (mut html, code) = stash_code(&html_escape(body));
+    let mut changed = !code.is_empty();
+    let mut user_ids = std::collections::BTreeSet::new();
+    let mut room = false;
+
+    // Resolve @mentions
+    if body.contains('@') {
+        // Whole word: "@roommate" isn't a room ping. Looked for where the
+        // other mentions are, outside code: `@room` quoted in backticks
+        // pinged everyone.
+        room = replace_mention(&html, "@room", "").is_some();
+
+        // A member without a name can't be mentioned by it: "@" + nothing
+        // matched every lone "@" in the message ("see you @ 5").
+        let mut member_names: Vec<&(String, String)> = members.iter()
+            .filter(|(name, _)| !name.trim().is_empty())
+            .collect();
+        member_names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+
+        for (display_name, user_id) in member_names {
+            let display_name = html_escape(display_name);
+            let mention = format!("@{display_name}");
+            let encoded_uid = user_id.replace('@', "%40").replace(':', "%3A");
+            let link = format!(
+                "<a href=\"https://matrix.to/#/{encoded_uid}\">{display_name}</a>"
+            );
+            // Whole words only: "@Al" mustn't ping Al inside "@Alexander"
+            // or "me@Alpha.com".
+            if let Some(replaced) = replace_mention(&html, &mention, &link) {
+                html = replaced;
+                changed = true;
+                // Track for m.mentions (MSC3952)
+                if let Ok(uid) = matrix_sdk::ruma::UserId::parse(user_id) {
+                    user_ids.insert(uid);
                 }
             }
         }
     }
 
     // Markdown
-    if has_markdown {
+    if may_have_markdown(body) {
         let before = html.clone();
         html = inline_markdown(&html);
         if html != before {
@@ -293,21 +335,7 @@ pub async fn build_message_content(room: &matrix_sdk::Room, body: &str) -> RoomM
     }
     let html = restore_code(&html, &code);
 
-    let mut content = if changed {
-        let final_html = newlines_to_br(&html);
-        RoomMessageEventContent::text_html(body, &final_html)
-    } else {
-        RoomMessageEventContent::text_plain(body)
-    };
-
-    // Set m.mentions (MSC3952 intentional mentions)
-    if !mentioned_user_ids.is_empty() || mentions_room {
-        let mut mentions = matrix_sdk::ruma::events::Mentions::with_user_ids(mentioned_user_ids);
-        mentions.room = mentions_room;
-        content.mentions = Some(mentions);
-    }
-
-    content
+    Formatted { html: changed.then(|| newlines_to_br(&html)), user_ids, room }
 }
 
 /// Returns true if a line is an ATX-style heading (`#` ... `######` followed by space).
@@ -380,10 +408,20 @@ fn stash_code(text: &str) -> (String, Vec<String>) {
         result = format!("{}{}{}", &result[..start], token, &result[start + 6 + end..]);
     }
     // Inline code (` ... `)
-    while let Some(start) = result.find('`') {
+    let mut from = 0;
+    while let Some(start) = result[from..].find('`').map(|i| from + i) {
+        // Backticks side by side hold no code. Mostly they're a fence that
+        // was never closed: taken as an empty span (and an opening one),
+        // "```js" reached everyone else as "`js".
+        let run = result[start..].bytes().take_while(|b| *b == b'`').count();
+        if run > 1 {
+            from = start + run;
+            continue;
+        }
         let Some(end) = result[start + 1..].find('`') else { break };
         let token = stash(format!("<code>{}</code>", &result[start + 1..start + 1 + end]));
         result = format!("{}{}{}", &result[..start], token, &result[start + 2 + end..]);
+        from = start + token.len();
     }
     (result, code)
 }
@@ -574,6 +612,45 @@ mod tests {
     }
 
     #[test]
+    fn italics_alone_are_formatted() {
+        let f = format_message("this is *important*", &[]);
+        assert_eq!(f.html.as_deref(), Some("this is <em>important</em>"));
+        // Still nothing to format in a sum, so it stays plain text.
+        assert!(format_message("5 * 3 * 2", &[]).html.is_none());
+        assert!(may_have_markdown("*x*") && !may_have_markdown("just text"));
+    }
+
+    #[test]
+    fn room_mentions_are_not_read_out_of_code() {
+        let quoted = format_message("type `@room` to ping everyone", &[]);
+        assert!(!quoted.room);
+        assert_eq!(quoted.html.as_deref(), Some("type <code>@room</code> to ping everyone"));
+        assert!(!format_message("```\nsend(\"@room\")\n```", &[]).room);
+        let meant = format_message("hey @room, lunch?", &[]);
+        assert!(meant.room && meant.html.is_none());
+        assert!(!format_message("ask my @roommate", &[]).room);
+    }
+
+    #[test]
+    fn a_member_without_a_name_is_not_mentioned_by_a_lone_at_sign() {
+        let members = vec![
+            (String::new(), "@ghost:example.org".to_string()),
+            ("  ".to_string(), "@blank:example.org".to_string()),
+            ("Al".to_string(), "@al:example.org".to_string()),
+        ];
+        let f = format_message("see you @ 5 with @Al @ - the usual place", &members);
+        let mentioned: Vec<String> = f.user_ids.iter().map(|u| u.to_string()).collect();
+        assert_eq!(mentioned, vec!["@al:example.org".to_string()]);
+        assert_eq!(
+            f.html.as_deref(),
+            Some("see you @ 5 with <a href=\"https://matrix.to/#/%40al%3Aexample.org\">Al</a> @ - the usual place"),
+        );
+        // Nobody matched: the message stays plain text.
+        let none = format_message("see you @ 5", &members);
+        assert!(none.html.is_none() && none.user_ids.is_empty());
+    }
+
+    #[test]
     fn italics_ignore_arithmetic_and_unclosed() {
         assert_eq!(apply_italics("5 * 3 * 2"), "5 * 3 * 2");
         assert_eq!(apply_italics("a *b"), "a *b");
@@ -603,6 +680,17 @@ mod tests {
             "<pre><code class=\"language-rust\">fn main() {}</code></pre>",
         );
         assert_eq!(simple_markdown("```ls -la```"), "<pre><code>ls -la</code></pre>");
+    }
+
+    #[test]
+    fn an_unclosed_fence_stays_as_typed() {
+        // Nothing to format: the message goes out as plain text.
+        assert!(format_message("```js\nconsole.log(1)", &[]).html.is_none());
+        assert_eq!(simple_markdown("```"), "```");
+        assert_eq!(simple_markdown("an empty `` pair"), "an empty `` pair");
+        // Code around it still is code.
+        assert_eq!(simple_markdown("```\nand `this` is code"), "```\nand <code>this</code> is code");
+        assert_eq!(simple_markdown("`a``b`"), "<code>a</code><code>b</code>");
     }
 
     #[test]

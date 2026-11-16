@@ -59,6 +59,33 @@ class NotifierApprovalTest {
     }
 
     @Test
+    fun aPersonsMentionThatOpensWithAnEmojiIsNotAStepLog() {
+        // "👍 @you, merged" is an emoji, a space and some words on every
+        // line — how an agent logs a step. From a person it is a message.
+        val note = Notifier.noteFor(
+            "!r:x", "$e", null, "@anna:x", "Anna", "maintdx",
+            "👍 @derek, merged — thanks", null, hermes, now, now, fromAgent = false,
+        )
+        assertEquals(Note.Kind.Message, note?.kind)
+        assertEquals("Anna · maintdx", note?.title)
+        assertEquals("👍 @derek, merged — thanks", note?.body)
+        // Nor is "❓ did you see this @derek" an agent's question, with a reply box asking for an answer.
+        val asked = Notifier.noteFor(
+            "!r:x", "$e", null, "@anna:x", "Anna", "maintdx",
+            "❓ did you see this @derek", null, hermes, now, now, fromAgent = false,
+        )
+        assertEquals(Note.Kind.Message, asked?.kind)
+        assertEquals("Anna · maintdx", asked?.title)
+    }
+
+    @Test
+    fun aPromptInADirectChatNamesTheAgentOnce() {
+        // The watcher's own title read "Hermes · Hermes needs you" there.
+        assertEquals("Hermes needs you", Notifier.needsYouTitle("Hermes", "Hermes"))
+        assertEquals("maintdx · Hermes needs you", Notifier.needsYouTitle("maintdx", "Hermes"))
+    }
+
+    @Test
     fun denyChoiceFindsTheApprovalsDeny() {
         val approval = listOf("✅" to "Approve once", "🌀" to "For this session", "❌" to "Deny")
         assertEquals("❌", Runs.denyChoice(approval))

@@ -140,6 +140,24 @@ impl FluxChat {
         total
     }
 
+    /// What one record's run itself cost: the increase of its session-total
+    /// `cost_usd` over the session's record before it (whole on a drop: a new
+    /// session) — the share of it `spent` counts. A History row showing the
+    /// running total said every follow-up in a long session had cost what
+    /// the whole session had.
+    pub(crate) fn run_cost(&self, rec: &crate::history::RunRecord) -> Option<f64> {
+        let cost = rec.cost_usd?;
+        let before = self.run_history.iter()
+            .filter(|r| r.agent == rec.agent && r.key == rec.key && r.started < rec.started)
+            .filter_map(|r| Some((r.started, r.cost_usd?)))
+            .max_by_key(|(started, _)| *started)
+            .map(|(_, c)| c);
+        Some(match before {
+            Some(p) if cost >= p => cost - p,
+            _ => cost,
+        })
+    }
+
     pub(crate) fn budget_status(&self, agent: &str) -> Option<Status> {
         let budget = *self.prefs.agent_budgets.get(agent)?;
         if budget.usd <= 0.0 {
@@ -200,9 +218,30 @@ impl FluxChat {
         })
     }
 
+    /// Whether a send in view `key` is waiting on "Send anyway": held, and
+    /// what's in its composer is still what a hold is about — a task for an
+    /// agent over its limit. The hold outlived the message (sent as a command
+    /// instead, deleted, or meant for another agent now): the bar went on
+    /// asking, and "Send anyway" waived the limit for the period over nothing.
+    pub(crate) fn budget_held(&self, key: &str) -> bool {
+        if self.budgets.hold.as_deref() != Some(key) {
+            return false;
+        }
+        let text = if self.selected_room_id.as_deref() == Some(key) {
+            self.input_text.clone()
+        } else {
+            self.pane_inputs.get(key).map(|c| c.text()).unwrap_or_default()
+        };
+        !text.trim().is_empty() && self.budget_blocks(key, &text)
+    }
+
     pub(crate) fn handle_budget_message(&mut self, message: Message) -> Option<Task<Message>> {
         match message {
             Message::BudgetSendAnyway(key) => {
+                if !self.budget_held(&key) {
+                    self.budgets.hold = None;
+                    return Some(Task::none());
+                }
                 if let Some(agent) = self.agent_in(&key).map(str::to_string) {
                     if let Some(st) = self.budget_status(&agent) {
                         self.budgets.acked.insert((agent, st.since));
@@ -251,7 +290,7 @@ impl FluxChat {
         let over = st.level == Level::Over;
         let color = if over { colors.red } else { colors.yellow };
         let name = self.agent_name(key, agent);
-        let held = self.budgets.hold.as_deref() == Some(key);
+        let held = self.budget_held(key);
         let what = if held {
             format!("{name} is over its budget ({} of {} {}). Send anyway?",
                 format_usd(st.spent), format_usd(st.budget.usd), st.budget.period.this())
@@ -349,6 +388,14 @@ mod tests {
         // Only runs in the period, but still as increases.
         assert!((app.spent("@bot:x", 2_500) - 0.40).abs() < 1e-9);
         assert_eq!(app.spent("@other:x", 0), 0.0);
+        // A row's cost is its run's share of that, not the session's total.
+        let costs: Vec<f64> = app.run_history.iter().map(|r| app.run_cost(r).unwrap()).collect();
+        for (cost, want) in costs.iter().zip([0.50, 0.20, 0.30, 0.10]) {
+            assert!((cost - want).abs() < 1e-9, "{costs:?}");
+        }
+        assert!((costs.iter().sum::<f64>() - app.spent("@bot:x", 0)).abs() < 1e-9);
+        app.run_history[0].cost_usd = None;
+        assert_eq!(app.run_cost(&app.run_history[0]), None);
     }
 
     #[tokio::test]
@@ -372,6 +419,31 @@ mod tests {
         let st = app.budget_status("@bot:x").unwrap();
         app.budgets.acked.insert(("@bot:x".into(), st.since));
         assert!(!app.budget_blocks("!r:x", "do the thing"));
+    }
+
+    #[tokio::test]
+    async fn a_hold_is_over_once_its_task_is_no_longer_waiting() {
+        let mut app = crate::panes::flow_tests::app();
+        app.prefs.agents = vec!["@bot:x".into()];
+        app.messages_by_room.insert("!r:x".into(), vec![fluxchat_core::MessageInfo {
+            event_id: "$1".into(), sender: "@bot:x".into(), body: "hi".into(), ..Default::default()
+        }]);
+        app.run_history = vec![rec("!r:x", now_ms() - 1_000, 6.0)];
+        app.prefs.agent_budgets.insert("@bot:x".into(), Budget { usd: 5.0, period: Period::Day });
+        app.selected_room_id = Some("!r:x".into());
+        app.input_text = "do the thing".into();
+        let _ = app.update(Message::SendMessage);
+        assert!(app.budget_held("!r:x"));
+        assert_eq!(app.input_text, "do the thing", "the task waits in the composer");
+        // Changed to a command (those always go through), or deleted: nothing
+        // waits, so nothing is asked — and "Send anyway" has nothing to waive.
+        app.input_text = "!status".into();
+        assert!(!app.budget_held("!r:x"));
+        app.input_text.clear();
+        assert!(!app.budget_held("!r:x"));
+        let _ = app.update(Message::BudgetSendAnyway("!r:x".into()));
+        assert!(app.budgets.acked.is_empty() && app.budgets.hold.is_none());
+        assert!(app.budget_blocks("!r:x", "do the thing"), "the limit still holds the next task");
     }
 
     #[test]

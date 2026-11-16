@@ -28,14 +28,26 @@ object QuickSend {
     const val SENT_WAIT_MS = 8_000L
 
     /**
+     * How far back a message's time may lie and still be the one just sent:
+     * the server stamps the event that replaces the local echo, and its
+     * clock needn't agree with the phone's.
+     */
+    const val CLOCK_SLACK_MS = 60_000L
+
+    /**
      * What the timeline says about the message just queued: a message of
      * ours that wasn't there [before] the send (its local echo first, then
      * the event that replaces it — a new ID both times). Not matched on the
      * text: the body that comes back needn't be the text that went in. Null
      * while it's still on its way.
+     *
+     * Nor one from before the send ([since], ms): the sheet opens on a cold
+     * start as often as not, with the project's history still loading, and
+     * an older message of yours arriving with it read as "Sent" — said at
+     * once, and the sheet closed, with the new one still in the queue.
      */
-    internal fun echoState(before: Set<String>, msgs: List<Msg>): SendState? {
-        val ours = msgs.filter { it.isOwn && it.isMessage && it.id !in before }
+    internal fun echoState(before: Set<String>, msgs: List<Msg>, since: Long = 0): SendState? {
+        val ours = msgs.filter { it.isOwn && it.isMessage && it.id !in before && it.ts >= since - CLOCK_SLACK_MS }
         return when {
             ours.any { it.sendState == SendState.Sent } -> SendState.Sent
             ours.any { it.sendState == SendState.Failed } -> SendState.Failed
@@ -71,9 +83,10 @@ object QuickSend {
         val timeline = Matrix.roomTimeline(roomId)
             ?: return if (Matrix.sendText(roomId, null, out, inReplyTo = null)) Outcome.Sent else Outcome.Failed
         val before = timeline.messages.value.mapTo(HashSet()) { it.id }
+        val since = System.currentTimeMillis()
         timeline.send(out)
         val state = withTimeoutOrNull(SENT_WAIT_MS) {
-            timeline.messages.map { echoState(before, it) }.first { it != null }
+            timeline.messages.map { echoState(before, it, since) }.first { it != null }
         }
         return when (state) {
             SendState.Sent -> Outcome.Sent

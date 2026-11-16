@@ -231,6 +231,25 @@ object Runs {
         else -> all.filter { it.id == root || it.threadRoot == root }
     }
 
+    /** Own-message ↔ run-start match tolerance (echo vs server timestamps). */
+    const val REQUEST_MATCH_SLACK_MS = 2_000L
+
+    /**
+     * The request behind the run that began at [since] in a view: your
+     * message sent then, else — a prompt with no request to hang on, a run
+     * dated from a status message — the thread's root. Not always the root:
+     * a session is one thread, so `!usage` asked in it was held against the
+     * session's first request, which is a task, and was recorded as a run
+     * of its own (lone commands aren't tasks, [History.isLoneCommand]).
+     * With slack: a local echo (`~txn`) gets re-timestamped with the
+     * server's origin_server_ts when the real event lands.
+     */
+    fun requestOf(all: List<Msg>, key: ViewKey, since: Long): Msg? =
+        viewMessages(all, key).asReversed()
+            .filter { it.isOwn && kotlin.math.abs(it.ts - since) <= REQUEST_MATCH_SLACK_MS }
+            .minByOrNull { kotlin.math.abs(it.ts - since) }
+            ?: key.threadRoot?.let { root -> all.firstOrNull { it.id == root } }
+
     /** Thread roots with replies loaded among `all`. */
     private fun loadedThreads(all: List<Msg>): Set<String> = all.mapNotNullTo(HashSet()) { it.threadRoot }
 
@@ -255,7 +274,53 @@ object Runs {
         roomMsgs.asReversed().firstOrNull { it.isOwn && it.threadRoot == null && requestState(h, it, agent) == RunState.Done }
             ?.let { it.hasThread || it.id in loaded } ?: (h.replyInThread && !isDm)
 
-    data class Result(val runs: Map<ViewKey, RunInfo?>, val prompts: List<String>)
+    /**
+     * Whether [body] is the harness's stop command and nothing else (`!stop`;
+     * with the agent's mention in front for harnesses that take it that way)
+     * — agents.rs `is_stop_command`.
+     */
+    fun isStopCommand(body: String, h: Harness): Boolean {
+        if (h.stop.isEmpty()) return false
+        val stop = h.command(h.stop)
+        val words = body.split(' ', '\n', '\t', '\r').filter { it.isNotEmpty() }
+        return when (words.size) {
+            1 -> words[0].equals(stop, ignoreCase = true)
+            2 -> h.mentionCommands && words[0].startsWith("@") && words[1].equals(stop, ignoreCase = true)
+            else -> false
+        }
+    }
+
+    /**
+     * When you stopped the run that began at [since], going by one session's
+     * messages in order ([viewMessages]): your stop command after it, once
+     * the agent has answered — a status reaction on it, or anything it posted
+     * afterwards ("⚡ Stopped. You can continue this session.", which reads
+     * as a step line, so those count). Nothing else says such a run is over:
+     * Hermes leaves its 👀 on a request it was told to stop, and a working
+     * status bubble as it was, so the run showed as working until it counted
+     * as stalled two hours later (agents.rs `stopped_at`).
+     */
+    fun stoppedAt(msgs: List<Msg>, agent: String, h: Harness, since: Long): Long? {
+        var asked: Long? = null
+        for (m in msgs) {
+            if (!m.isMessage) continue
+            if (m.isOwn && m.ts > since && isStopCommand(m.body, h)) {
+                if (requestState(h, m, agent) != null) return m.ts
+                if (asked == null) asked = m.ts
+            } else if (asked != null && m.sender == agent && !m.isLocal) {
+                return asked
+            }
+        }
+        return null
+    }
+
+    /**
+     * [runs]: per view, its run. From [agentUpdates] a run you stopped is
+     * still in there, marked ([RunInfo.stopped]), so agents' reports merge
+     * by rank; [roomRuns] takes those out — null in [runs], listed in
+     * [stopped] for the history.
+     */
+    data class Result(val runs: Map<ViewKey, RunInfo?>, val prompts: List<String>, val stopped: Map<ViewKey, RunInfo> = emptyMap())
 
     /**
      * What `agent`'s signals say about the runs in a room (all its loaded
@@ -314,8 +379,10 @@ object Runs {
             val msgs = view(key)
             val open = viewPrompts(msgs)
             prompts += open.map { it.id }
+            // (A stop command is never a request: answered with ✅ when
+            // nothing was running, it would stand in for the run it didn't stop.)
             val latest = msgs.asReversed().firstNotNullOfOrNull { m ->
-                if (m.isOwn) requestState(h, m, agent)?.let { RunInfo(it, m.ts) } else null
+                if (m.isOwn && !isStopCommand(m.body, h)) requestState(h, m, agent)?.let { RunInfo(it, m.ts) } else null
             }
             updates[key] = settle(latest, open.maxOfOrNull { it.ts })?.let { dated(msgs, withStep(msgs, it)) }
         }
@@ -325,7 +392,7 @@ object Runs {
         val expectThread = repliesInThreads(roomMsgs, agent, h, isDm, loaded)
         var latestUnthreaded: RunInfo? = null
         for (m in roomMsgs) {
-            if (!m.isOwn) continue
+            if (!m.isOwn || isStopCommand(m.body, h)) continue
             val state = requestState(h, m, agent) ?: continue
             val threaded = m.hasThread || m.id in loaded || (expectThread && state == RunState.Working)
             val tk = ViewKey(roomId, m.id)
@@ -337,13 +404,19 @@ object Runs {
         updates[ViewKey(roomId)] = settle(latestUnthreaded, open.maxOfOrNull { it.ts })?.let { dated(roomMsgs, withStep(roomMsgs, it)) }
 
         // The protocol wins: several runs on one view → the newest, or one waiting on you.
+        // A live run you stopped ([stoppedAt]), in its own session.
+        fun stopped(k: ViewKey, r: RunInfo): RunInfo =
+            if (r.stopped != null || !r.state.live) r else r.copy(stopped = stoppedAt(view(k), agent, h, r.since))
         val byKey = HashMap<ViewKey, RunInfo>()
-        for ((k, run) in protocolRuns(roomId, all, agent, h)) {
+        for ((k, found) in protocolRuns(roomId, all, agent, h)) {
+            // One you stopped never outranks the session's next run: its
+            // status can say `waiting` for good.
+            val run = stopped(k, found)
             val old = byKey[k]
-            if (old == null || compareValuesBy(run, old, { it.state == RunState.NeedsYou }, { it.since }) > 0) byKey[k] = run
+            if (old == null || compareValuesBy(run, old, { it.stopped == null }, { it.state == RunState.NeedsYou }, { it.since }) > 0) byKey[k] = run
         }
         for ((k, run) in byKey) updates[k] = dated(view(k), run)
-        return Result(updates.mapValues { (_, r) -> r?.copy(agent = agent) }, prompts)
+        return Result(updates.mapValues { (k, r) -> r?.let { stopped(k, it) }?.copy(agent = agent) }, prompts)
     }
 
     /**
@@ -361,6 +434,41 @@ object Runs {
             last = t
         }
         return last
+    }
+
+    /**
+     * How a run that is no longer its view's run ended, going by its own
+     * request: the agent's ✅ / ❌ on your message sent at [since] — for a
+     * run the agent describes itself, the message [runId] names, and its
+     * own final status first. Null while that still says it's going, or
+     * when the request isn't loaded. Ended at the agent's last word before
+     * the session's next request, else when that one was sent.
+     *
+     * A view reports one run, its newest request's ([agentUpdates]), so a
+     * run that a later request took the view from — queued behind it, or
+     * asked while this phone wasn't looking — is never reported finished.
+     * Only its own request still says so ([History.settlePast]).
+     */
+    fun pastRun(roomId: String, all: List<Msg>, key: ViewKey, agent: String, h: Harness, since: Long, runId: String? = null): RunInfo? {
+        val msgs = viewMessages(all, key)
+        if (!runId.isNullOrEmpty()) {
+            val described = protocolRuns(roomId, all, agent, h)
+            described.firstOrNull { it.second.runId == runId }?.let { (k, run) ->
+                if (k != key || run.state.live) return null
+                val next = described.filter { it.first == key && it.second.since > run.since }.minOfOrNull { it.second.since }
+                val said = lastWord(if (next == null) msgs else msgs.filter { it.ts < next }, agent, run.since)
+                return run.copy(ended = listOfNotNull(run.ended, said).maxOrNull())
+            }
+        }
+        val i = msgs.indices.filter { at ->
+            val m = msgs[at]
+            m.isOwn && !m.isLocal && !isStopCommand(m.body, h) &&
+                if (runId.isNullOrEmpty()) kotlin.math.abs(m.ts - since) <= REQUEST_MATCH_SLACK_MS else m.id == runId
+        }.minByOrNull { kotlin.math.abs(msgs[it].ts - since) } ?: return null
+        val state = requestState(h, msgs[i], agent)?.takeIf { !it.live } ?: return null
+        val next = msgs.drop(i + 1).firstOrNull { it.isOwn && !isStopCommand(it.body, h) && requestState(h, it, agent) != null }?.ts
+        val said = lastWord(if (next == null) msgs else msgs.filter { it.ts < next }, agent, since)
+        return RunInfo(state, since, agent = agent, ended = said ?: next?.takeIf { it >= since }, runId = runId?.ifEmpty { null })
     }
 
     /** Runs the agent describes with the protocol, keyed by the view they're in. */
@@ -433,16 +541,20 @@ object Runs {
 
     /**
      * The run an agent's typing stands for (agents.rs `note_agent_typing` +
-     * `live_run`): the first of your [agents] among those [typing] in a
-     * room, when its harness says typing means working — Working, dated
-     * from when it started typing ([since]: per agent, null = not known).
-     * Claude Code bridges, OpenClaw and generic agents signal work this way;
-     * without it they show no run, no Stop and no busy mode at all.
+     * `typing_run`): of your [agents] among those [typing] in a room whose
+     * harness says typing means working, the one typing longest — Working,
+     * dated from when it started typing ([since]: per agent, null = not
+     * known). Claude Code bridges, OpenClaw and generic agents signal work
+     * this way; without it they show no run, no Stop and no busy mode at
+     * all. Not simply the first one typing: beside a Hermes agent (whose
+     * typing is only typing) that was Hermes as often as not, and the
+     * bridge at work next to it showed no run.
      */
     fun typingRun(typing: List<String>, agents: Collection<String>, harnessOf: (String) -> Harness, since: (String) -> Long?): RunInfo? {
-        val agent = typing.firstOrNull { it in agents } ?: return null
-        if (!harnessOf(agent).typingMeansWorking) return null
-        return RunInfo(RunState.Working, since(agent) ?: return null, agent = agent, typing = true)
+        val (agent, at) = typing.filter { it in agents && harnessOf(it).typingMeansWorking }
+            .mapNotNull { a -> since(a)?.let { a to it } }
+            .minWithOrNull(compareBy({ it.second }, { it.first })) ?: return null
+        return RunInfo(RunState.Working, at, agent = agent, typing = true)
     }
 
     /**
@@ -496,7 +608,11 @@ object Runs {
                 }
             }
         }
-        return Result(merged, prompts)
+        // You stopped it and the agent said so: not running, though its
+        // request still carries the working reaction.
+        val stopped = LinkedHashMap<ViewKey, RunInfo>()
+        for ((k, run) in merged) if (run?.stopped != null) stopped[k] = run
+        return Result(merged.mapValues { (_, r) -> r?.takeIf { it.stopped == null } }, prompts, stopped)
     }
 
     /**
@@ -554,6 +670,15 @@ class RunWatch {
     }
 
     private val seen = HashMap<ViewKey, Seen>()
+
+    /**
+     * Whether the run that began at [since] on [key] was live at a look
+     * no more than [WATCHING_MS] before [now], on a timeline following
+     * the server: if it's over at this look, it ended just now. Ask
+     * before [date], which forgets a run once its view shows another.
+     */
+    fun watching(key: ViewKey, since: Long, now: Long): Boolean =
+        seen[key]?.let { it.since == since && !it.finished && it.lastLive > 0 && now - it.lastLive <= WATCHING_MS } == true
 
     /**
      * Note one room's [runs] as of [now] and give them back with the

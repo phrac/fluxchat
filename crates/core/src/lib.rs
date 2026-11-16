@@ -20,6 +20,8 @@ pub mod spaces;
 pub mod state;
 pub mod store_migration;
 pub mod sync_service;
+#[cfg(test)]
+mod test_http;
 pub mod voice;
 pub mod timeline;
 pub mod transcripts;

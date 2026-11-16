@@ -96,6 +96,7 @@ static COMMANDS: &[Command] = &[
     Command { name: "/plain", usage: "<text>", description: "Send without markdown formatting", needs_room: true },
     Command { name: "/upgraderoom", usage: "<version>", description: "Upgrade room to a new version", needs_room: true },
     Command { name: "/devtools", usage: "", description: "Open developer tools", needs_room: true },
+    Command { name: "/logs", usage: "", description: "Open the folder with fluxchat's log file", needs_room: false },
     Command { name: "/snippet", usage: "<name> <text>", description: "Save a prompt to reuse (Ctrl+R); no text lists them", needs_room: false },
     Command { name: "/unsnippet", usage: "<name>", description: "Remove a saved prompt", needs_room: false },
 ];
@@ -563,6 +564,7 @@ pub fn dispatch(input: &str, state: &FluxChat) -> CommandResult {
             }
         }
         "/pollend" => CommandResult::Messages(vec![Message::PollEnd(None, None)]),
+        "/logs" => CommandResult::Messages(vec![Message::OpenLogs]),
 
         // --- Mute/unmute ---
         "/mute" => CommandResult::Messages(vec![Message::MuteRoom]),

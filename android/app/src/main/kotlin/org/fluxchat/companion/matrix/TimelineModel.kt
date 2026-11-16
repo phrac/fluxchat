@@ -130,11 +130,6 @@ class TimelineModel(
     /** A reset arrived while a refill was running: run another when it ends. */
     @Volatile private var refillAgain = false
 
-    private fun release() = synchronized(items) {
-        held = false
-        _messages.value = items.filterNotNull()
-    }
-
     /**
      * Back-paginate until there's a screenful again (or the start), with some
      * of the room's own messages among it: in agent rooms the newest events
@@ -142,8 +137,10 @@ class TimelineModel(
      * run is going) sit further back.
      */
     fun refill() {
-        if (refilling) return
-        refilling = true
+        synchronized(items) {
+            if (refilling) return
+            refilling = true
+        }
         _atStart.value = false
         scope.launch {
             try {
@@ -154,13 +151,24 @@ class TimelineModel(
                     if (msgs.size >= REFILL_BELOW && (threadRoot != null || own >= REFILL_TOP_LEVEL) || !paginateBack()) return@launch
                 }
             } finally {
-                refilling = false
-                if (refillAgain) {
-                    refillAgain = false
-                    refill()
-                } else {
-                    release()
+                // Under the lock `apply` holds, so a reset can't fall between
+                // "this refill is over" and the release: one that did (it was
+                // being applied as the refill ended) saw no refill running,
+                // started its own, and then had its emptied list published
+                // by this release — what holding the list back is there to
+                // prevent — for as long as that refill took.
+                val again = synchronized(items) {
+                    refilling = false
+                    if (refillAgain) {
+                        refillAgain = false
+                        true
+                    } else {
+                        held = false
+                        _messages.value = items.filterNotNull()
+                        false
+                    }
                 }
+                if (again) refill()
             }
         }
     }
@@ -180,7 +188,12 @@ class TimelineModel(
     /** Load older messages. False once the start of the timeline is reached. */
     suspend fun paginateBack(events: Int = 40): Boolean = io {
         val hitStart = runCatching { timeline.paginateBackwards(events.toUShort()) }
-            .onFailure { if (pageErrors++ < 3) org.fluxchat.companion.Diag.error("Loading older messages in $roomId", it) }
+            .onFailure {
+                // Leaving the screen mid-page is not a failed page: counted as
+                // one, three of those used up the errors this timeline reports.
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                if (pageErrors++ < 3) org.fluxchat.companion.Diag.error("Loading older messages in $roomId", it)
+            }
             .getOrDefault(false)
         if (hitStart) _atStart.value = true
         !hitStart
@@ -270,7 +283,11 @@ class TimelineModel(
 
     suspend fun markRead() = io {
         runCatching { timeline.markAsRead(ReceiptType.READ) }
-            .onFailure { if (readErrors++ < 3) org.fluxchat.companion.Diag.error("Marking $roomId read", it) }
+            .onFailure {
+                // (the screen was left meanwhile: not an error, see paginateBack)
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                if (readErrors++ < 3) org.fluxchat.companion.Diag.error("Marking $roomId read", it)
+            }
     }
 
     private var readErrors = 0

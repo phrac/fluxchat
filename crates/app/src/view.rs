@@ -539,6 +539,19 @@ impl FluxChat {
         )
     }
 
+    /// What a click on a pinned message does: go to it in this view if it
+    /// is loaded here, else in the room (the pins are the room's), loading
+    /// older history until it turns up. A bare `JumpToEvent` only scrolls
+    /// to a row that's already there: an older pin — most are — did
+    /// nothing when clicked, and none did from one of the room's threads.
+    fn pin_jump(&self, event_id: &str) -> Message {
+        let view = self.selected_room_id.as_deref().unwrap_or_default();
+        let here = self.messages_by_room.get(view)
+            .is_some_and(|msgs| msgs.iter().any(|m| m.event_id == event_id));
+        let key = if here { view } else { fluxchat_core::timeline::real_room_id(view) };
+        Message::OpenMention(key.to_string(), event_id.to_string())
+    }
+
     /// Pinned messages sidebar: the room's pins (in the room's pin order).
     /// Click to jump; the pin button unpins.
     fn view_pins_sidebar(&self) -> Element<'_, Message> {
@@ -589,7 +602,7 @@ impl FluxChat {
                             text(when).font(self.sidebar_font()).size(11).color(theme::colors().text_dim),
                         ].spacing(4),
                     )
-                    .on_press(Message::JumpToEvent(msg.event_id.clone()))
+                    .on_press(self.pin_jump(&msg.event_id))
                     .padding([7, 8])
                     .width(Fill)
                     .clip(true)
@@ -813,20 +826,33 @@ impl FluxChat {
     }
 
     /// Dimmed full-window layer holding a palette near the top; clicking
-    /// outside sends `on_dismiss`.
+    /// outside sends `on_dismiss`. The keyboard is the palette's: ↑ / ↓
+    /// move its selection here (not through the key subscription, which
+    /// only hears what no widget took — and the composer underneath took
+    /// ↑ to edit your last message whenever it was empty).
     fn palette_layer<'a>(&self, card: Element<'a, Message>, on_dismiss: Message) -> Element<'a, Message> {
-        opaque(
-            mouse_area(
-                container(column![Space::new().height(90), opaque(card)])
-                    .width(Fill)
-                    .center_x(Fill)
-                    .height(Fill)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
-                        ..Default::default()
-                    }),
-            )
-            .on_press(on_dismiss),
+        ui::keep_keys(
+            opaque(
+                mouse_area(
+                    container(column![Space::new().height(90), opaque(card)])
+                        .width(Fill)
+                        .center_x(Fill)
+                        .height(Fill)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                            ..Default::default()
+                        }),
+                )
+                .on_press(on_dismiss),
+            ),
+            |key, modifiers| {
+                use iced::keyboard::{key::Named, Key};
+                match key {
+                    Key::Named(Named::ArrowUp) if !modifiers.alt() => Some(Message::SearchArrowUp),
+                    Key::Named(Named::ArrowDown) if !modifiers.alt() => Some(Message::SearchArrowDown),
+                    _ => None,
+                }
+            },
         )
     }
 
@@ -1030,13 +1056,16 @@ impl FluxChat {
         let main_content = self.view_pane_grid();
 
         use crate::state::ResizeTarget;
-        let mut main_area = row![sidebar];
+        // Everything left of the panes is one child, so the pane grid keeps
+        // its place in the row (and with it its widget state: scroll
+        // positions, selections) when the room list is hidden or shown.
+        let mut left = row![sidebar];
         if !self.room_list_collapsed {
-            main_area = main_area
+            left = left
                 .push(container(room_list).width(Length::Fixed(self.sidebar_width)))
                 .push(self.resize_handle(ResizeTarget::RoomList));
         }
-        let mut main_area = main_area.push(main_content);
+        let mut main_area = row![left.height(Fill), main_content];
 
         // Pinned messages sidebar
         if self.pins_open && self.selected_room_id.is_some() {
@@ -1083,7 +1112,9 @@ impl FluxChat {
         let mut layers: Vec<Element<Message>> = vec![base.into()];
         crate::view_gallery::set_lightbox_nav(crate::view_gallery::is_gallery_lightbox(self.modal.as_ref()));
         if self.modal.is_some() {
-            layers.push(
+            // A dialog has the keyboard: what its fields don't take must
+            // not reach the views behind it.
+            layers.push(ui::keep_keys(
                 opaque(
                     mouse_area(
                         center(opaque(self.view_modal_content()))
@@ -1096,7 +1127,8 @@ impl FluxChat {
                     )
                     .on_press(Message::CloseModal),
                 ),
-            );
+                |_, _| None,
+            ));
         }
         // Search overlay (command-palette style, shared with the switcher)
         if self.search_open {
@@ -2490,12 +2522,20 @@ impl FluxChat {
         // Fixed 18px slot so names line up whether the room has an avatar
         // (18px) or a glyph (14px).
         row_content = row_content.push(container(room_icon).width(18).center_x(18));
+        // The name takes what the markers after it leave (they are laid out
+        // first) and is clipped there: at its full width, a name of some
+        // fifteen characters pushed "waiting for you" and the call icon
+        // out of the row.
         row_content = row_content.push(
-            text(&room.name)
-                .font(self.sidebar_font())
-                .size(13)
-                .color(name_color)
-                .wrapping(iced::widget::text::Wrapping::None),
+            container(
+                text(&room.name)
+                    .font(self.sidebar_font())
+                    .size(13)
+                    .color(name_color)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            )
+            .width(Fill)
+            .clip(true),
         );
 
         // Collapse / expand this room's threads in the sidebar.
@@ -2504,9 +2544,6 @@ impl FluxChat {
         // Right-hand markers: an agent waiting for you, an active call.
         let needs_you = self.room_needs_you(&room.room_id);
         let in_call = self.rooms_with_calls.contains(&room.room_id);
-        if needs_you || in_call {
-            row_content = row_content.push(Space::new().width(Fill));
-        }
         if needs_you {
             row_content = row_content.push(crate::ui::with_tooltip(
                 crate::agents::state_dot(crate::agents::RunState::NeedsYou, 7.0),
@@ -2564,6 +2601,17 @@ impl FluxChat {
             ctx_menu,
             true,
         )
+    }
+
+    /// The header's call button for view `key`: whether we are in the call
+    /// of its room, and what a press does. A call is its room's: from a
+    /// thread view the button asked to join "thread::…" (an error), and
+    /// offered to join the call we were already in instead of hanging up.
+    fn call_action(&self, key: &str) -> (bool, Message) {
+        let room = fluxchat_core::timeline::real_room_id(key);
+        let in_call = self.call_room_id.as_deref() == Some(room)
+            && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
+        (in_call, if in_call { Message::CallLeave } else { Message::CallJoin(room.to_string()) })
     }
 
     /// Main content area (tabs + messages + input).
@@ -2630,17 +2678,9 @@ impl FluxChat {
             .into()
         };
 
-        // Call button — start/join or hang up (hidden if calls not supported)
-        let selected_rid = self.selected_room_id.clone().unwrap_or_default();
-        let in_call = self.call_room_id.as_deref() == Some(selected_rid.as_str())
-            && self.call_state == fluxchat_core::rtc::CallConnectionState::Connected;
         // Call: start / join or hang up; only where calls work.
+        let (in_call, call_msg) = self.call_action(room_id);
         let call_btn: Option<Element<Message>> = (self.calls_supported || in_call).then(|| {
-            let call_msg = if in_call {
-                Message::CallLeave
-            } else {
-                Message::CallJoin(selected_rid)
-            };
             let handle = iced::widget::svg::Handle::from_memory(SVG_PHONE);
             let icon_color = if in_call { theme::colors().green } else { theme::tint(0.4) };
             button(
@@ -2830,11 +2870,17 @@ impl FluxChat {
 
     pub(crate) fn view_content(&self) -> Element<'_, Message> {
         let mut content = column![].width(Fill).height(Fill);
+        // Everything above the message list is one child of `content`, so
+        // the list keeps its place (iced keeps widget state by position)
+        // whatever comes and goes up there. The header alone used to shift
+        // it on every split and on closing down to one pane: the list's
+        // scroll position was thrown away while we still believed in it.
+        let mut above = column![].spacing(0).width(Fill);
 
         // Room header: in a split the focused pane's title bar carries it.
         let in_title = self.window().grid.len() > 1;
         if let Some(room_id) = self.selected_room_id.as_deref().filter(|_| !in_title) {
-            content = content.push(
+            above = above.push(
                 container(self.view_room_header(room_id, None))
                     .width(Fill)
                     .style(|_: &Theme| container::Style {
@@ -2857,7 +2903,7 @@ impl FluxChat {
             if let Some(room) = self.rooms.iter().find(|r| r.room_id == *room_id) {
                 if let Some(topic) = &room.topic {
                     if !topic.is_empty() {
-                        content = content.push(
+                        above = above.push(
                             container(
                                 text(topic.as_str())
                                     .font(self.sidebar_font())
@@ -2880,10 +2926,7 @@ impl FluxChat {
                 }
             }
 
-            // Collect all optional panels into a single column so the content
-            // column always has the same number of children. This prevents Iced
-            // from losing the messages scrollable's scroll state when panels
-            // are toggled on/off.
+            // Optional panels go in the same column as the header and topic.
             let mut panels_col: iced::widget::Column<'_, Message> = column![].spacing(0);
 
             // Search is now rendered as a modal overlay (like quick switcher)
@@ -2903,8 +2946,7 @@ impl FluxChat {
                 ));
             }
 
-            // Always push the panels column — empty when no panels are open
-            content = content.push(panels_col.width(Fill));
+            content = content.push(above.push(panels_col.width(Fill)));
 
             set_scroll_room(room_id);
             let messages = self.messages_by_room.get(room_id);
@@ -2995,13 +3037,20 @@ impl FluxChat {
                 msg_col = msg_col.push(self.view_placeholder_rows(PLACEHOLDER_ROWS));
             }
 
+            // The probe reports what the scrollable doesn't: a list that
+            // doesn't fill its viewport, and a scrollable that is a new one.
             let msg_scrollable = mouse_area(
-                scrollable(container(msg_col).width(Fill))
-                    .id(messages_scrollable_id().clone())
-                    .width(Fill)
-                    .height(Fill)
-                    .on_scroll(Message::MessagesScrolled)
-                    .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
+                crate::list_probe::ListProbe::new(
+                    room_id.as_str(),
+                    scrollable(container(msg_col).width(Fill))
+                        .id(messages_scrollable_id().clone())
+                        .width(Fill)
+                        .height(Fill)
+                        .on_scroll(Message::MessagesScrolled)
+                        .direction(iced::widget::scrollable::Direction::Vertical(iced::widget::scrollable::Scrollbar::new().width(4).scroller_width(4))).style(thin_scrollbar),
+                )
+                .on_mount(Message::MessagesMounted)
+                .on_fit(Message::MessagesFit),
             )
             .on_exit(Message::HoverLeft(None));
 
@@ -3112,16 +3161,24 @@ impl FluxChat {
         base
     }
 
-    /// IRC-style status bar at the bottom.
+    /// IRC-style status bar at the bottom: where you are on the left, the
+    /// state of the connection and the account on the right.
     fn view_status_bar(&self) -> Element<Message> {
+        // Where you are. It takes what the status on the right leaves and
+        // is clipped there; nothing in the bar wraps. (One row of
+        // everything: a thread's title, a second window or an agent's
+        // runtime line pushed "reconnecting…", "unverified" and the update
+        // chip out of the window, and the squeezed labels wrapped, making
+        // the bar three lines tall.)
         let mut bar = row![].spacing(0).align_y(iced::Alignment::Center);
+        let one_line = iced::widget::text::Wrapping::None;
 
-        let sep = || text(" \u{2502} ").font(self.sidebar_font()).size(13).color(theme::colors().text_dim);
+        let sep = || text(" \u{2502} ").font(self.sidebar_font()).size(13).color(theme::colors().text_dim).wrapping(one_line);
 
         let open_security = Message::OpenModal(crate::state::Modal::Settings { tab: "security".into() });
         // Status-bar text that opens a settings tab when clicked.
         let link = |label: String, color: Color, msg: Message| -> Element<Message> {
-            button(text(label).font(self.sidebar_font()).size(13).color(color))
+            button(text(label).font(self.sidebar_font()).size(13).color(color).wrapping(one_line))
                 .on_press(msg)
                 .padding([1, 4])
                 .style(crate::ui::row_style(false))
@@ -3137,7 +3194,7 @@ impl FluxChat {
 
         // User ID in green (like IRC)
         bar = bar.push(
-            text(&self.user_id).font(self.sidebar_font()).size(13).color(theme::colors().green)
+            text(&self.user_id).font(self.sidebar_font()).size(13).color(theme::colors().green).wrapping(one_line)
         );
 
         // Current room info
@@ -3170,7 +3227,7 @@ impl FluxChat {
                 };
                 if let Some((label, color, tip)) = rank {
                     // Slimmer than ui::badge: it mustn't make the bar taller.
-                    let pill = container(text(label).font(self.sidebar_font()).size(11).color(color))
+                    let pill = container(text(label).font(self.sidebar_font()).size(11).color(color).wrapping(one_line))
                         .padding([0, 6])
                         .style(move |_: &Theme| container::Style {
                             background: Some(theme::with_alpha(color, 0.14).into()),
@@ -3187,7 +3244,7 @@ impl FluxChat {
                 bar = bar.push(sep());
                 bar = bar.push(
                     text(format!("{} nicks", members.len()))
-                        .font(self.sidebar_font()).size(13).color(theme::colors().text_muted),
+                        .font(self.sidebar_font()).size(13).color(theme::colors().text_muted).wrapping(one_line),
                 );
             }
 
@@ -3202,11 +3259,11 @@ impl FluxChat {
                             iced::widget::svg(lock_handle)
                                 .width(11).height(11)
                                 .style(|_, _| iced::widget::svg::Style { color: Some(theme::colors().green) }),
-                            text(" encrypted").font(self.sidebar_font()).size(13).color(theme::colors().green),
+                            text(" encrypted").font(self.sidebar_font()).size(13).color(theme::colors().green).wrapping(one_line),
                         ].spacing(2).align_y(iced::Alignment::Center)
                     );
                 } else {
-                    bar = bar.push(text("unencrypted").font(self.sidebar_font()).size(13).color(theme::colors().text_muted));
+                    bar = bar.push(text("unencrypted").font(self.sidebar_font()).size(13).color(theme::colors().text_muted).wrapping(one_line));
                 }
             }
 
@@ -3234,14 +3291,15 @@ impl FluxChat {
                 bar = bar.push(
                     button(text(format!("{i}:{name}{}", if active { "*" } else { "" }))
                         .font(self.sidebar_font()).size(13)
-                        .color(if active { theme::colors().accent } else { theme::colors().text_muted }))
+                        .color(if active { theme::colors().accent } else { theme::colors().text_muted })
+                        .wrapping(one_line))
                         .on_press(Message::WindowSelect(i))
                         .padding([1, 4])
                         .style(crate::ui::row_style(false)),
                 );
             }
             if self.tmux_prefix {
-                bar = bar.push(text("  [prefix]").font(self.sidebar_font()).size(13).color(theme::colors().yellow));
+                bar = bar.push(text("  [prefix]").font(self.sidebar_font()).size(13).color(theme::colors().yellow).wrapping(one_line));
             }
         }
 
@@ -3258,7 +3316,7 @@ impl FluxChat {
             bar = bar.push(crate::ui::tooltip_at(
                 button(row![
                     crate::ui::icon(crate::icons::SVG_BOT, 12.0, color),
-                    text(label).font(self.sidebar_font()).size(13).color(color),
+                    text(label).font(self.sidebar_font()).size(13).color(color).wrapping(one_line),
                 ].spacing(4).align_y(iced::Alignment::Center))
                     .on_press(Message::OpenModal(crate::state::Modal::Runs))
                     .padding([1, 4])
@@ -3268,7 +3326,8 @@ impl FluxChat {
             ));
         }
 
-        bar = bar.push(Space::new().width(Fill));
+        // The state of things, on the right: laid out first, always whole.
+        let mut status = row![].spacing(0).align_y(iced::Alignment::Center);
 
         // Sync lag / connection state
         let (lag_label, lag_color) = if let Some(status) = &self.sync_status {
@@ -3285,21 +3344,21 @@ impl FluxChat {
             };
             (format!("{}ms", self.sync_lag_ms), color)
         };
-        bar = bar.push(text(lag_label).font(self.sidebar_font()).size(13).color(lag_color));
+        status = status.push(text(lag_label).font(self.sidebar_font()).size(13).color(lag_color).wrapping(one_line));
 
         // Verification status
         if let Some(ref sec) = self.security_state {
-            bar = bar.push(sep());
+            status = status.push(sep());
             if sec.is_verified {
-                bar = bar.push(link("\u{2713} verified".into(), theme::colors().green, open_security.clone()));
+                status = status.push(link("\u{2713} verified".into(), theme::colors().green, open_security.clone()));
             } else {
-                bar = bar.push(link("\u{2717} unverified".into(), theme::colors().yellow, open_security.clone()));
+                status = status.push(link("\u{2717} unverified".into(), theme::colors().yellow, open_security.clone()));
             }
             // A server-side key backup this session isn't using means missing
             // keys for old messages that could simply be fetched.
             if sec.backup_exists && !sec.backup_enabled {
-                bar = bar.push(sep());
-                bar = bar.push(link("key backup not connected".into(), theme::colors().yellow, open_security));
+                status = status.push(sep());
+                status = status.push(link("key backup not connected".into(), theme::colors().yellow, open_security));
             }
         }
 
@@ -3308,15 +3367,15 @@ impl FluxChat {
         // upgrade path — honest for unsigned builds, no self-installer.
         if let Some(version) = &self.update_available {
             let page = format!("{}/tag/v{version}", fluxchat_core::release::RELEASES_PAGE);
-            bar = bar.push(sep());
-            bar = bar.push(crate::ui::tooltip_at(
+            status = status.push(sep());
+            status = status.push(crate::ui::tooltip_at(
                 link(format!("Update available (v{version})"), theme::colors().yellow, Message::OpenUrl(page)),
                 "Open the release page to download it",
                 iced::widget::tooltip::Position::Top,
             ));
         }
 
-        container(bar)
+        container(row![container(bar).width(Fill).clip(true), status].spacing(8).align_y(iced::Alignment::Center))
             .width(Fill)
             .padding([2, 8])
             .style(|_: &Theme| container::Style {
@@ -3821,5 +3880,310 @@ mod ellipsize_tests {
         assert_eq!(ellipsize("short", 10), "short");
         assert_eq!(ellipsize("add heart of the beast to seerr", 12), "add heart o\u{2026}");
         assert_eq!(ellipsize("ab cd", 4), "ab\u{2026}");
+    }
+}
+
+/// Views laid out and driven for real, without a window: iced's software
+/// renderer measures text in the bundled font, and the root widget gets its
+/// layout and its events directly (as the runtime's `UserInterface` does;
+/// overlays — tooltips, menus — are left out).
+#[cfg(test)]
+pub(crate) mod bench {
+    use iced::advanced::widget::Tree;
+    use iced::advanced::{layout, Layout, Shell};
+    use iced::mouse::Cursor;
+    use iced::{Element, Event, Point, Rectangle, Size};
+
+    use crate::message::Message;
+
+    /// A press of `key`, no modifiers held.
+    pub(crate) fn key_press(key: iced::keyboard::key::Named) -> Event {
+        use iced::keyboard::{self, key::Named, Key};
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Named(key),
+            modified_key: Key::Named(key),
+            physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::empty(),
+            text: (key == Named::Enter).then(|| "\r".into()),
+            repeat: false,
+        })
+    }
+
+    pub(crate) struct Bench<'a> {
+        root: Element<'a, Message>,
+        tree: Tree,
+        node: layout::Node,
+        renderer: iced::Renderer,
+        size: Size,
+        cursor: Cursor,
+    }
+
+    impl<'a> Bench<'a> {
+        /// `root` laid out in a window of `size`.
+        pub(crate) async fn new(root: impl Into<Element<'a, Message>>, size: (f32, f32)) -> Self {
+            use iced::advanced::renderer::Headless;
+            {
+                let mut fonts = iced::advanced::graphics::text::font_system()
+                    .write().unwrap_or_else(|e| e.into_inner());
+                fonts.load_font(include_bytes!("../fonts/JetBrainsMonoNerdFont-Regular.ttf").as_slice().into());
+                fonts.load_font(include_bytes!("../fonts/JetBrainsMonoNerdFont-Bold.ttf").as_slice().into());
+            }
+            let renderer = <iced::Renderer as Headless>::new(super::MONO, iced::Pixels(16.0), Some("tiny-skia"))
+                .await
+                .expect("iced's software renderer");
+            let mut root = root.into();
+            let mut tree = Tree::new(&root);
+            let size = Size::new(size.0, size.1);
+            let node = root.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size));
+            Self { root, tree, node, renderer, size, cursor: Cursor::Unavailable }
+        }
+
+        /// Height the view took.
+        pub(crate) fn height(&self) -> f32 {
+            self.node.size().height
+        }
+
+        /// Where every leaf of the layout ended up, in drawing order (inside
+        /// a scrollable: before scrolling).
+        pub(crate) fn leaves(&self) -> Vec<Rectangle> {
+            fn collect(layout: Layout<'_>, out: &mut Vec<Rectangle>) {
+                if layout.children().next().is_none() {
+                    out.push(layout.bounds());
+                }
+                for child in layout.children() {
+                    collect(child, out);
+                }
+            }
+            let mut out = Vec::new();
+            collect(Layout::new(&self.node), &mut out);
+            out
+        }
+
+        /// Move the cursor to `position`.
+        pub(crate) fn move_to(&mut self, position: Point) -> Vec<Message> {
+            self.cursor = Cursor::Available(position);
+            self.send(Event::Mouse(iced::mouse::Event::CursorMoved { position }))
+        }
+
+        /// Hand `event` to the view; the messages it published.
+        pub(crate) fn send(&mut self, event: Event) -> Vec<Message> {
+            let mut messages = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            self.root.as_widget_mut().update(
+                &mut self.tree,
+                &event,
+                Layout::new(&self.node),
+                self.cursor,
+                &self.renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(self.size),
+            );
+            messages
+        }
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::bench::Bench;
+    use crate::message::Message;
+    use crate::panes::flow_tests::app;
+    use crate::state::Screen;
+
+    fn room(id: &str, name: &str) -> fluxchat_core::RoomInfo {
+        fluxchat_core::RoomInfo { room_id: id.into(), name: name.into(), ..Default::default() }
+    }
+
+    fn row(id: &str, body: &str) -> fluxchat_core::MessageInfo {
+        fluxchat_core::MessageInfo { event_id: id.into(), body: body.into(), sender: "@u:x".into(), ..Default::default() }
+    }
+
+    fn thread(root: &str, body: &str) -> fluxchat_core::ThreadPreview {
+        fluxchat_core::ThreadPreview {
+            root_id: root.into(),
+            sender: "@u:x".into(),
+            sender_name: "u".into(),
+            body: body.into(),
+            reply_count: 2,
+            last_activity: 0,
+            latest_sender: None,
+            latest_sender_name: None,
+            full_body: body.into(),
+            latest_body: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pinned_message_that_is_not_loaded_is_looked_for_in_the_rooms_history() {
+        let mut app = app();
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![row("$recent", "hi")]);
+        // Pinned long ago: not among the rows that are loaded.
+        let click = app.pin_jump("$old");
+        let _ = app.update(click);
+        assert_eq!(app.pending_jump, Some(("!a:x".to_string(), "$old".to_string())));
+        assert!(app.paginating, "older history is fetched until it turns up");
+        // One that is loaded is a plain jump in this view.
+        assert!(matches!(app.pin_jump("$recent"), Message::OpenMention(view, _) if view == "!a:x"));
+
+        // From one of the room's threads: the pin is in the room.
+        let t = fluxchat_core::timeline::thread_key("!a:x", "$root");
+        let _ = app.update(Message::OpenAt(t.clone(), crate::panes::Placement::Here));
+        app.messages_by_room.insert(t.clone(), vec![row("$root", "the root"), row("$reply", "a reply")]);
+        assert_eq!(app.selected_room_id.as_deref(), Some(t.as_str()));
+        // ...unless it is one of the thread's own messages.
+        assert!(matches!(app.pin_jump("$reply"), Message::OpenMention(view, _) if view == t));
+        let click = app.pin_jump("$old");
+        let _ = app.update(click);
+        assert_eq!(app.selected_room_id.as_deref(), Some("!a:x"));
+        assert_eq!(app.pending_jump, Some(("!a:x".to_string(), "$old".to_string())));
+    }
+
+    #[tokio::test]
+    async fn the_call_button_of_a_thread_view_is_its_rooms() {
+        let mut app = app();
+        let t = fluxchat_core::timeline::thread_key("!a:x", "$root");
+        assert!(matches!(app.call_action(&t), (false, Message::CallJoin(room)) if room == "!a:x"));
+        // In the room's call: its threads offer to hang up too.
+        app.call_room_id = Some("!a:x".into());
+        app.call_state = fluxchat_core::rtc::CallConnectionState::Connected;
+        assert!(matches!(app.call_action(&t), (true, Message::CallLeave)));
+        assert!(matches!(app.call_action("!a:x"), (true, Message::CallLeave)));
+        assert!(matches!(app.call_action("!b:x"), (false, Message::CallJoin(room)) if room == "!b:x"));
+    }
+
+    #[tokio::test]
+    async fn a_long_room_name_leaves_the_rows_markers_in_view() {
+        let mut app = app();
+        let room = room("!a:x", "a-room-with-quite-a-long-name-indeed");
+        app.rooms_with_calls.insert(room.room_id.clone());
+        let width = app.sidebar_width;
+        let bench = Bench::new(app.view_room_entry(&room, false), (width, 60.0)).await;
+        // The call icon is the last thing in the row.
+        let icon = *bench.leaves().last().expect("a row");
+        assert_eq!(icon.width, 12.0, "squeezed out by the name: {icon:?}");
+        assert!(icon.x + icon.width <= width, "{icon:?}");
+    }
+
+    #[tokio::test]
+    async fn the_status_bar_stays_one_line_and_keeps_its_right_hand_side() {
+        const WIDTH: f32 = 900.0;
+        let plain = app();
+        let one_line = Bench::new(plain.view_status_bar(), (WIDTH, 200.0)).await.height();
+
+        // A thread of a long-named room, a second window, and everything
+        // the right-hand side can say.
+        let mut app = app();
+        app.user_id = "@someone:matrix.example.org".into();
+        app.rooms = vec![room("!a:x", "fluxchat-development"), room("!b:x", "other")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        let t = fluxchat_core::timeline::thread_key("!a:x", "$root");
+        let _ = app.update(Message::OpenAt(t.clone(), crate::panes::Placement::Here));
+        app.messages_by_room.insert(t, vec![row("$root", "please look into the flaky pagination test on the build host")]);
+        let _ = app.update(Message::WindowNew);
+        let _ = app.update(Message::SelectRoom("!b:x".into()));
+        let _ = app.update(Message::WindowSelect(0));
+        app.security_state = Some(crate::state::SecurityState {
+            is_verified: false,
+            backup_exists: true,
+            backup_enabled: false,
+            recovery_state: String::new(),
+        });
+        app.sync_status = Some("reconnecting\u{2026}".into());
+        app.update_available = Some("9.9.9".into());
+
+        let bench = Bench::new(app.view_status_bar(), (WIDTH, 200.0)).await;
+        assert_eq!(bench.height(), one_line, "squeezed labels wrapped");
+        // The update chip is the bar's last piece: whole, and in the window.
+        let chip = *bench.leaves().last().expect("a bar");
+        assert!(chip.width > 100.0, "{chip:?}");
+        assert!(chip.x + chip.width <= WIDTH, "{chip:?}");
+    }
+
+    #[tokio::test]
+    async fn arrows_in_the_switcher_move_its_selection_and_stay_there() {
+        use iced::keyboard::key::Named;
+        let mut app = app();
+        app.screen = Screen::Main;
+        app.rooms = vec![room("!a:x", "alpha"), room("!b:x", "beta")];
+        // A room with an empty composer: ↑ there means "edit my last message".
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![row("$1", "hello")]);
+        let _ = app.update(Message::ToggleQuickSwitcher);
+        app.window_size = (1200.0, 600.0);
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        let up = bench.send(super::bench::key_press(Named::ArrowUp));
+        assert!(matches!(up.as_slice(), [Message::SearchArrowUp]), "{up:?}");
+        let down = bench.send(super::bench::key_press(Named::ArrowDown));
+        assert!(matches!(down.as_slice(), [Message::SearchArrowDown]), "{down:?}");
+        // The same in the message search.
+        drop(bench);
+        let _ = app.update(Message::ToggleQuickSwitcher);
+        let _ = app.update(Message::ToggleSearch);
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        let up = bench.send(super::bench::key_press(Named::ArrowUp));
+        assert!(matches!(up.as_slice(), [Message::SearchArrowUp]), "{up:?}");
+    }
+
+    #[tokio::test]
+    async fn keys_pressed_in_a_dialog_do_not_reach_the_composer_behind_it() {
+        use iced::keyboard::key::Named;
+        let mut app = app();
+        app.screen = Screen::Main;
+        app.rooms = vec![room("!a:x", "alpha"), room("!b:x", "beta")];
+        let _ = app.update(Message::SelectRoom("!a:x".into()));
+        app.messages_by_room.insert("!a:x".into(), vec![row("$1", "hello")]);
+        app.input_text = "not ready to go".into();
+        app.input_content = iced::widget::text_editor::Content::with_text(&app.input_text);
+        // The forward dialog: its search field has nothing to do on Enter.
+        let _ = app.update(Message::ForwardMessage("hello".into(), String::new(), None));
+        app.window_size = (1200.0, 600.0);
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        for key in [Named::Enter, Named::ArrowUp, Named::PageUp] {
+            let out = bench.send(super::bench::key_press(key));
+            assert!(out.is_empty(), "{key:?} went through to the room: {out:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_click_on_a_thread_listed_twice_is_not_a_drag() {
+        use iced::mouse;
+        use iced::{Event, Point};
+        // A room's thread shows under the room in the room list and in the
+        // threads sidebar: two rows for one key, in two lists.
+        let mut app = app();
+        app.screen = Screen::Main;
+        app.rooms = (0..40).map(|i| room(&format!("!r{i}:x"), &format!("room-{i}"))).collect();
+        let threads = vec![thread("$t1", "first thread"), thread("$t2", "second thread")];
+        app.room_threads.insert("!r0:x".into(), threads.clone());
+        let _ = app.update(Message::SelectRoom("!r0:x".into()));
+        app.messages_by_room.insert("!r0:x".into(), vec![row("$a", "hello")]);
+        app.threads_open = true;
+        app.thread_list = threads;
+        app.show_member_list = false;
+        app.window_size = (1200.0, 500.0);
+
+        let mut bench = Bench::new(app.view(), app.window_size).await;
+        // The room list is scrolled a little; the threads sidebar is not.
+        let _ = bench.move_to(Point::new(150.0, 300.0));
+        let _ = bench.send(Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -40.0 },
+        }));
+        // A click on the sidebar's first thread, the mouse moving a pixel
+        // between press and release (as it does).
+        let _ = bench.move_to(Point::new(1000.0, 70.0));
+        let _ = bench.send(Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)));
+        let _ = bench.move_to(Point::new(1001.0, 70.0));
+        let dragging = crate::dnd::was_drag();
+        let clicked = bench.send(Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)));
+        crate::dnd::released();
+        let t1 = fluxchat_core::timeline::thread_key("!r0:x", "$t1");
+        assert!(
+            clicked.iter().any(|m| matches!(m, Message::ListClick(key, _) if *key == t1)),
+            "the click landed on the thread's row: {clicked:?}",
+        );
+        assert!(!dragging, "the copy of the row in the other list took the click for a drag");
     }
 }

@@ -56,8 +56,11 @@ object SessionSearch {
 
     /** A short line of the hit around the first word that matched. */
     fun snippet(body: String, words: List<String>, radius: Int = 70): String {
-        val lower = body.lowercase()
-        val at = words.firstNotNullOfOrNull { w -> lower.indexOf(w).takeIf { it >= 0 } }
+        // Looked for in the text itself, not in a lowercased copy: lowercasing
+        // can lengthen a string ("İ" becomes two characters), and the copy's
+        // index then pointed past the hit — past the end, in a long enough
+        // message, and the search screen went down with it.
+        val at = words.firstNotNullOfOrNull { w -> body.indexOf(w, ignoreCase = true).takeIf { it >= 0 } }
             ?: return body.replace('\n', ' ').take(radius) + if (body.length > radius) "…" else ""
         val from = (at - radius).coerceAtLeast(0)
         val to = (at + radius).coerceAtMost(body.length)

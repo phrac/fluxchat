@@ -276,6 +276,72 @@ class RunsTest {
     }
 
     @Test
+    fun aStopCommandIsTheHarnessStopAndNothingElse() {
+        // agents.rs `a_stop_command_is_the_harness_stop_and_nothing_else`.
+        assertTrue(Runs.isStopCommand("!stop", hermes) && Runs.isStopCommand("  !Stop\n", hermes))
+        assertFalse("a task that starts with it", Runs.isStopCommand("!stop the deploy too", hermes))
+        assertFalse(Runs.isStopCommand("/stop", hermes) || Runs.isStopCommand("stop", hermes) || Runs.isStopCommand("", hermes))
+        val claw = Harness.parse(File("../../assets/agents/openclaw.toml").readText())
+        assertTrue(Runs.isStopCommand("@claw:x ${claw.command(claw.stop)}", claw))
+        assertFalse(Runs.isStopCommand("@bot:x !stop", hermes))
+        assertFalse("no stop command, no stop", Runs.isStopCommand("/stop", Harness()))
+    }
+
+    @Test
+    fun aRunYouStoppedIsOverThoughItsRequestStillSaysWorking() {
+        // agents.rs `a_run_you_stopped_is_over_though_its_request_still_says_working`:
+        // Hermes leaves its 👀 on a request it was told to stop, so the run
+        // read "Working" under "⚡ Stopped." until the stall sweep.
+        val key = ViewKey(room, "ask")
+        val ask = msg("ask", me, now - 32 * 60_000, "fix the library scan", working to listOf(agent), threadCount = 3)
+        val step = msg("step", agent, now - 120_000, "⚙️ process_manage: \"wait proc_94cd 180s\"", threadRoot = "ask")
+        val stop = msg("stop", me, now - 60_000, "!stop", threadRoot = "ask")
+        fun look(vararg more: Msg) = Runs.roomRuns(room, listOf(ask, step, stop) + more, listOf(agent), { hermes }, isDm = false, now = now)
+        // Said, not answered yet: still running as far as anyone can tell.
+        assertEquals(RunState.Working, look().runs[key]?.state)
+        assertTrue(look().stopped.isEmpty())
+        // The agent answers (a line that reads as a step: it still counts).
+        val stopped = msg("stopped", agent, now - 58_000, "⚡ Stopped. You can continue this session.", threadRoot = "ask")
+        val r = look(stopped)
+        assertNull(r.runs[key])
+        assertEquals(stop.ts, r.stopped[key]?.stopped)
+        assertEquals(ask.ts, r.stopped[key]?.since)
+        // Said again: ✅ and "No active task to stop." A stop is never a
+        // request, so that ✅ doesn't make it a finished run of its own.
+        val again = msg("stop2", me, now - 50_000, "!stop", done to listOf(agent), threadRoot = "ask")
+        val none = msg("none", agent, now - 49_000, "No active task to stop.", threadRoot = "ask")
+        assertNull(look(stopped, again, none).runs[key])
+        // The session goes on: the next request is a run of its own.
+        val next = msg("next", me, now - 10_000, "try it another way", working to listOf(agent), threadRoot = "ask")
+        val after = look(stopped, again, none, next)
+        assertEquals(RunState.Working, after.runs[key]?.state)
+        assertEquals(next.ts, after.runs[key]?.since)
+        assertTrue(after.stopped.isEmpty())
+    }
+
+    @Test
+    fun aStopEndsItsOwnSessionsRunOnlyAndOutranksAWorkingStatus() {
+        // agents.rs `a_stop_ends_its_own_sessions_runs_only_and_outranks_a_working_status`.
+        val a = msg("a", me, now - 600_000, "session a", working to listOf(agent), threadCount = 2)
+        val b = msg("b", me, now - 550_000, "session b", working to listOf(agent), threadCount = 2)
+        // a's status bubble says `working` and always will: the gateway
+        // doesn't settle a turn it was told to stop.
+        val bubble = msg("bubble", agent, now - 500_000, "💻 terminal: make", threadRoot = "a")
+            .copy(agent = Protocol(run = "a", state = "working", steps = 4))
+        val bReply = msg("rb", agent, now - 400_000, "on it", threadRoot = "b")
+        val stop = msg("stop", me, now - 60_000, "!stop", threadRoot = "a")
+        val stopped = msg("stopped", agent, now - 59_000, "⚡ Stopped. You can continue this session.", threadRoot = "a")
+        // A stop said in the room itself is no session's.
+        val stray = msg("stray", me, now - 30_000, "!stop", done to listOf(agent))
+        val none = msg("none", agent, now - 29_000, "No active task to stop.")
+        val r = Runs.roomRuns(room, listOf(a, b, bubble, bReply, stop, stopped, stray, none), listOf(agent), { hermes }, isDm = false, now = now)
+        assertNull(r.runs[ViewKey(room, "a")])
+        assertEquals(setOf(ViewKey(room, "a")), r.stopped.keys)
+        assertEquals(RunState.Working, r.runs[ViewKey(room, "b")]?.state)
+        assertNull("and the stop isn't the room's run", r.runs[ViewKey(room)])
+    }
+
+    @Test
     fun loadedRepliesSayAnAgentAnswersInThreads() {
         // The thread summary can trail the replies: the last finished request
         // has a reply loaded but no count yet.
@@ -344,6 +410,27 @@ class RunsTest {
         // A typing notice nobody took back is dropped by the same rule as any dead run.
         assertTrue(Runs.stalled(run, run.since, run.since + History.STALE_RUN_MS + 1))
         assertFalse(Runs.stalled(run, run.since, run.since + 30 * 60_000))
+    }
+
+    @Test
+    fun theTypingRunIsTheLongestTypingAgentWhoseHarnessWorksThatWay() {
+        // agents.rs `typing_run`. Going by whoever the server listed first,
+        // Hermes typing beside a Claude Code bridge hid the bridge's run.
+        val claude = Harness.parse(File("../../assets/agents/claude-code.toml").readText())
+        val bot = "@claude:x"
+        val other = "@aider:x"
+        val harnessOf = { id: String -> if (id == agent) hermes else claude }
+        val since = { id: String -> mapOf(agent to now - 90_000, bot to now - 40_000, other to now - 60_000)[id] }
+        val mine = listOf(agent, bot, other)
+        val beside = Runs.typingRun(listOf(agent, bot), mine, harnessOf, since)!!
+        assertEquals(bot, beside.agent)
+        assertEquals(now - 40_000, beside.since)
+        // Two that work that way: the one at it longest, whatever order they're listed in.
+        assertEquals(other, Runs.typingRun(listOf(bot, other), mine, harnessOf, since)!!.agent)
+        assertEquals(other, Runs.typingRun(listOf(other, agent, bot), mine, harnessOf, since)!!.agent)
+        // One whose start isn't known doesn't stand in the way of one whose is.
+        val unknown = { id: String -> if (id == bot) now - 40_000 else null }
+        assertEquals(bot, Runs.typingRun(listOf(other, bot), mine, harnessOf, unknown)!!.agent)
     }
 
     @Test
@@ -463,6 +550,130 @@ class RunsTest {
         w.date("!other:x", mapOf(other to live), now, following = true)
         w.date(room, emptyMap(), now + 1_000, following = true)
         assertEquals(now + 2_000, w.date("!other:x", mapOf(other to over), now + 2_000, following = true)[other]!!.ended)
+    }
+
+    @Test
+    fun aRunIsWatchedWhileItWasLiveAMomentAgoOnATimelineFollowingTheServer() {
+        val now = 100 * 3_600_000L
+        val key = ViewKey(room, "req")
+        val since = now - 15 * 60_000
+        val live = RunInfo(RunState.Working, since, agent = agent)
+        val w = RunWatch()
+        assertFalse("never seen", w.watching(key, since, now))
+        w.date(room, mapOf(key to live), now - 30_000, following = true)
+        assertTrue(w.watching(key, since, now))
+        assertFalse("another run on that view", w.watching(key, since + 1, now))
+        assertFalse("not looked at for too long (the phone slept)", w.watching(key, since, now + RunWatch.WATCHING_MS))
+        // Seen live only while catching up: what changes then didn't happen just now.
+        val c = RunWatch()
+        c.date(room, mapOf(key to live), now - 2_000, following = false)
+        assertFalse(c.watching(key, since, now))
+        // Over already at the last look: not being watched any more.
+        w.date(room, mapOf(key to live.copy(state = RunState.Done)), now, following = true)
+        assertFalse(w.watching(key, since, now + 1_000))
+    }
+
+    @Test
+    fun aLoneCommandAskedInsideASessionIsNotARunOfThatSession() {
+        // A session is one thread: `!usage` asked in it used to be held
+        // against the thread's root — a task — and was recorded as a run.
+        val key = ViewKey(room, "root")
+        val root = msg("root", me, now - 600_000, "fix the library scan", done to listOf(agent), threadCount = 2)
+        val answer = msg("ans", agent, now - 500_000, "Fixed.", threadRoot = "root")
+        val usage = msg("u", me, now - 5_000, "!usage", working to listOf(agent), threadRoot = "root")
+        val all = listOf(root, answer, usage)
+        val run = Runs.agentUpdates(room, all, agent, hermes, isDm = false, now = now).runs[key]!!
+        assertEquals(usage.ts, run.since)
+        assertEquals(usage, Runs.requestOf(all, key, run.since))
+        val h = ArrayList<RunRecord>()
+        assertFalse(History.record(h, key, run, "fix the library scan", Runs.requestOf(all, key, run.since)?.body, now))
+        assertTrue(h.isEmpty())
+        // A follow-up that is a task is a run, remembered with its own request.
+        val more = msg("m", me, now - 4_000, "now the thumbnails too", working to listOf(agent), threadRoot = "root")
+        val next = Runs.agentUpdates(room, all + more, agent, hermes, isDm = false, now = now).runs[key]!!
+        assertTrue(History.record(h, key, next, "fix the library scan", Runs.requestOf(all + more, key, next.since)?.body, now))
+        assertEquals("now the thumbnails too", h.single().request)
+        // The session's first run is the root's, and so is one with no request of its own (a prompt).
+        assertEquals(root, Runs.requestOf(all, key, root.ts))
+        assertEquals(root, Runs.requestOf(all, key, now - 300_000))
+        // In a room: your message then (an echo's clock may be off the server's), else none.
+        val ask = msg("d", me, now - 9_000, "!status")
+        assertEquals(ask, Runs.requestOf(listOf(ask, usage), ViewKey(room), ask.ts + 1_500))
+        assertNull(Runs.requestOf(listOf(ask, usage), ViewKey(room), ask.ts + 60_000))
+    }
+
+    @Test
+    fun aRunTheNextRequestTookTheViewFromEndedAsItsOwnRequestSays() {
+        // One session, two requests. The phone saw the first one working,
+        // then (it was away, or both changes came in one sync) the first is
+        // ✅ and the second is the session's run. Nothing reports the first
+        // again: its record sat "working", then closed as stalled at the
+        // session's last message.
+        val key = ViewKey(room, "a")
+        val going = msg("a", me, now - 600_000, "fix the scan", working to listOf(agent), threadCount = 3)
+        val step = msg("s1", agent, now - 590_000, "📖 Reading scan.py", threadRoot = "a")
+        val h = ArrayList<RunRecord>()
+        val first = Runs.roomRuns(room, listOf(going, step), listOf(agent), { hermes }, isDm = false, now = now).runs[key]!!
+        assertTrue(History.record(h, key, first, "fix the scan", "fix the scan", now - 580_000))
+        val a = going.copy(reactions = listOf(Reaction(done, listOf(agent))))
+        val answer = msg("ans", agent, now - 500_000, "Fixed: the scan skips symlinks now.", threadRoot = "a")
+        val b = msg("b", me, now - 100_000, "now the thumbnails", working to listOf(agent), threadRoot = "a")
+        val bStep = msg("s2", agent, now - 50_000, "📖 Reading thumbs.py", threadRoot = "a")
+        val all = listOf(a, step, answer, b, bStep)
+        val runs = Runs.roomRuns(room, all, listOf(agent), { hermes }, isDm = false, now = now).runs
+        assertEquals("the session's run is the second request's", b.ts, runs[key]!!.since)
+        assertTrue(History.record(h, key, runs[key]!!, "fix the scan", "now the thumbnails", now))
+        assertEquals("working", h[0].state)
+        val past = { rec: RunRecord, k: ViewKey -> Runs.pastRun(room, all, k, rec.agent, hermes, rec.started, rec.runId) }
+        assertTrue(History.settlePast(h, room, runs, now, past))
+        assertEquals("done", h[0].state)
+        assertEquals("at the agent's last word before the next request, not at the session's", answer.ts, h[0].ended)
+        assertEquals("the second run is still going", "working" to null, h[1].state to h[1].ended)
+        assertFalse("settled once", History.settlePast(h, room, runs, now, past))
+
+        // ❌ is its verdict as much as ✅; a 👀 still on it says nothing (the sweep's, as before).
+        val failedA = a.copy(reactions = listOf(Reaction(failed, listOf(agent))))
+        assertEquals(RunState.Failed, Runs.pastRun(room, listOf(failedA, step, answer, b), key, agent, hermes, a.ts)?.state)
+        assertNull(Runs.pastRun(room, listOf(going, step, b), key, agent, hermes, a.ts))
+        // Its request isn't loaded: nothing to go by.
+        assertNull(Runs.pastRun(room, listOf(step, answer, b), key, agent, hermes, a.ts))
+        // Nothing said before the next request: no later than that request.
+        assertEquals(b.ts, Runs.pastRun(room, listOf(a, b, bStep), key, agent, hermes, a.ts)?.ended)
+        // No later request at all: the agent's last word.
+        assertEquals(answer.ts, Runs.pastRun(room, listOf(a, step, answer), key, agent, hermes, a.ts)?.ended)
+        // A stop command is never the request, whatever was put on it.
+        val stop = msg("stop", me, a.ts, "!stop", done to listOf(agent), threadRoot = "a")
+        assertNull(Runs.pastRun(room, listOf(stop, answer), key, agent, hermes, a.ts))
+
+        // The same in a DM, where every request is the room's run.
+        val dm = ViewKey(room)
+        val one = msg("one", me, now - 600_000, "first", done to listOf(agent))
+        val said = msg("r1", agent, now - 550_000, "Done.")
+        val two = msg("two", me, now - 100_000, "second", working to listOf(agent))
+        assertEquals(RunInfo(RunState.Done, one.ts, agent = agent, ended = said.ts), Runs.pastRun(room, listOf(one, said, two), dm, agent, hermes, one.ts))
+    }
+
+    @Test
+    fun aProtocolRunTheNextOneTookTheViewFromEndedAsItsOwnStatusSays() {
+        val generic = Harness()
+        val key = ViewKey(room, "root")
+        val root = msg("root", me, now - 600_000, "start", threadCount = 4)
+        val a = msg("a", me, now - 500_000, "first", threadRoot = "root")
+        val aStatus = msg("sa", agent, now - 490_000, "All green.", threadRoot = "root")
+            .copy(agent = Protocol(run = "a", state = "done", costUsd = 1.2, result = "All 42 tests pass."))
+        val aLast = msg("la", agent, now - 300_000, "Report attached.", threadRoot = "root")
+        val b = msg("b", me, now - 100_000, "second", threadRoot = "root")
+        val bStatus = msg("sb", agent, now - 90_000, "working", threadRoot = "root").copy(agent = Protocol(run = "b", state = "working", costUsd = 1.5))
+        val all = listOf(root, a, aStatus, aLast, b, bStatus)
+        assertEquals("b", Runs.roomRuns(room, all, listOf(agent), { generic }, isDm = false, now = now).runs[key]!!.runId)
+        val past = Runs.pastRun(room, all, key, agent, generic, a.ts, "a")!!
+        assertEquals(RunState.Done, past.state)
+        assertEquals(1.2, past.costUsd!!, 1e-9)
+        assertEquals("All 42 tests pass.", past.result)
+        assertEquals("its last word, not the next run's", aLast.ts, past.ended)
+        // Still going by its own status: not over, whoever has the view.
+        val open = aStatus.copy(agent = Protocol(run = "a", state = "working"))
+        assertNull(Runs.pastRun(room, listOf(root, a, open, b, bStatus), key, agent, generic, a.ts, "a"))
     }
 
     @Test

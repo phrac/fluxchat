@@ -163,6 +163,16 @@ impl PaletteAction {
     }
 }
 
+/// Older history being loaded for a view in a side pane.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PaneFill {
+    /// A page is on its way.
+    pub in_flight: bool,
+    /// Pages fetched because the pane's list didn't fill it (capped: a long
+    /// stretch of events the pane doesn't show can't page forever).
+    pub auto_pages: u8,
+}
+
 /// Resizable panels (each has a drag divider).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeTarget {
@@ -228,6 +238,10 @@ pub struct FluxChat {
     pub space_tree: Vec<fluxchat_core::rooms::SpaceNode>,
     pub space_descendants: HashMap<String, Vec<String>>,
     pub invited_rooms: Vec<RoomInfo>,
+    /// Invites in the server's list as last received (`None`: no list yet
+    /// this session). What makes an invite new: `invited_rooms` can't say,
+    /// answering an invite takes it out of there before the server has.
+    pub known_invites: Option<HashSet<String>>,
     /// Invites dialog: "Decline all" asked for, awaiting confirmation.
     pub decline_all_armed: bool,
     /// Rooms we just put in a space (room -> space) that the server's room
@@ -264,6 +278,9 @@ pub struct FluxChat {
     pub notices_open: bool,
     pub gifs_open: bool,
     pub audio_playing: Option<String>,      // event_id of currently playing audio
+    /// Which playback `audio_playing` is: every play and stop takes the next
+    /// number, so a download or a player that ends late is known as stale.
+    pub audio_token: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub voice_recording: bool,
     /// The mic is held down (push to talk), since when.
     pub ptt_held: Option<std::time::Instant>,
@@ -323,6 +340,8 @@ pub struct FluxChat {
     pub directory_server: String,                      // server to query ("" = own homeserver)
     pub directory_next_batch: Option<String>,
     pub directory_loading: bool,
+    /// The directory search the results on screen answer (older ones are dropped).
+    pub directory_request: u64,
     pub gif_query: String,
     pub gif_searched: bool, // true after a search has completed
     pub help_text: Option<String>,
@@ -470,6 +489,8 @@ pub struct FluxChat {
     pub url_previews: HashMap<String, fluxchat_core::UrlPreview>,
     pub url_preview_images: HashMap<String, iced::widget::image::Handle>, // og:image mxc/url -> handle
     pub url_previews_pending: std::collections::HashSet<String>, // URLs currently being fetched
+    /// URLs the server had no preview for, and when it was asked.
+    pub url_preview_failed: HashMap<String, std::time::Instant>,
 
     // Login form state
     pub login_homeserver: String,
@@ -478,6 +499,12 @@ pub struct FluxChat {
     pub login_error: Option<String>,
     pub login_submitting: bool,
     pub login_caps: Option<fluxchat_core::auth::LoginCapabilities>,
+    /// The SSO sign-in in flight: it waits for the browser to come back,
+    /// which it may never do, so a password sign-in may take its place.
+    pub login_sso: Option<iced::task::Handle>,
+    /// Counts changes of the homeserver field: a login-type lookup waiting
+    /// out its pause is dropped once a later change has moved this on.
+    pub login_lookup: Arc<std::sync::atomic::AtomicU64>,
 
     // Room list UI
     pub collapsed_sections: HashSet<String>,
@@ -513,6 +540,9 @@ pub struct FluxChat {
     pub drafts: HashMap<String, String>,
     /// Member list filter (name / user ID substring).
     pub member_filter: String,
+    /// The view whose member list was asked to show more, and how many rows
+    /// of each section it shows (other views show the first few).
+    pub member_rows: Option<(String, usize)>,
 
     // Settings modal state
     pub settings_devices: Vec<fluxchat_core::devices::DeviceInfo>,
@@ -647,6 +677,11 @@ pub struct FluxChat {
     pub messages_underfilled: bool,
     /// Pages fetched so far to fill the current view (`MAX_UNDERFILL_PAGES`).
     pub underfill_pages: u8,
+    /// The main list's scrollable is a new one (see `Message::MessagesMounted`):
+    /// its first report says where it starts, not where the user went.
+    pub messages_remounted: bool,
+    /// History loading for views in side panes, by view key.
+    pub pane_fill: HashMap<String, PaneFill>,
     /// Views whose history has been loaded back to the room's start.
     pub history_start: std::collections::HashSet<String>,
 
@@ -728,6 +763,7 @@ impl FluxChat {
             space_tree: Vec::new(),
             space_descendants: HashMap::new(),
             invited_rooms: Vec::new(),
+            known_invites: None,
             decline_all_armed: false,
             pending_space_links: HashMap::new(),
             pending_favourites: HashMap::new(),
@@ -765,8 +801,10 @@ impl FluxChat {
             directory_server: String::new(),
             directory_next_batch: None,
             directory_loading: false,
+            directory_request: 0,
             gifs_open: false,
             audio_playing: None,
+            audio_token: Default::default(),
             voice_recording: false,
             voice_record_start: None,
             voice_ready: None,
@@ -880,6 +918,8 @@ impl FluxChat {
             login_error: None,
             login_submitting: false,
             login_caps: None,
+            login_sso: None,
+            login_lookup: Default::default(),
             collapsed_sections: HashSet::new(),
             search_query: String::new(),
             search_results: Vec::new(),
@@ -900,6 +940,7 @@ impl FluxChat {
             max_upload_size: None,
             drafts: HashMap::new(),
             member_filter: String::new(),
+            member_rows: None,
             settings_devices: Vec::new(),
             settings_nick_input: String::new(),
             settings_status: None,
@@ -911,6 +952,7 @@ impl FluxChat {
             url_previews: HashMap::new(),
             url_preview_images: HashMap::new(),
             url_previews_pending: std::collections::HashSet::new(),
+            url_preview_failed: HashMap::new(),
             create_room_name: String::new(),
             create_room_topic: String::new(),
             create_room_public: false,
@@ -967,6 +1009,8 @@ impl FluxChat {
             paginate_empty_budget: 0,
             messages_underfilled: false,
             underfill_pages: 0,
+            messages_remounted: false,
+            pane_fill: HashMap::new(),
             history_start: std::collections::HashSet::new(),
             gif_frames_cache: crate::anim::FramesCache::new(crate::anim::FRAMES_CACHE_BYTES),
             gif_results: Vec::new(),

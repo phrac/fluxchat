@@ -157,6 +157,11 @@ fn aside_dir(store_dir: &Path) -> PathBuf {
     store_dir.with_extension("previous")
 }
 
+/// Where a store that was set aside goes to be deleted (`drop_aside`).
+fn discard_dir(store_dir: &Path) -> PathBuf {
+    store_dir.with_extension("discard")
+}
+
 /// Move the store out of the way for a sign-in attempt, instead of deleting
 /// it: until the new sign-in has authenticated, the saved session still
 /// belongs to this store, and a mistyped password or a cancelled SSO must
@@ -177,6 +182,8 @@ pub fn set_aside(store_dir: &Path) {
 /// The sign-in failed (or the app quit during it): bring back the store
 /// that was set aside, replacing whatever the attempt created.
 pub fn put_back(store_dir: &Path) {
+    // What's left of a store whose deletion never finished.
+    let _ = std::fs::remove_dir_all(discard_dir(store_dir));
     let aside = aside_dir(store_dir);
     if !aside.exists() {
         return;
@@ -195,7 +202,25 @@ pub fn put_back(store_dir: &Path) {
 /// session's now. Call before saving the new session, so a leftover always
 /// means "put it back".
 pub fn drop_aside(store_dir: &Path) {
-    let _ = std::fs::remove_dir_all(aside_dir(store_dir));
+    if let Some(doomed) = condemn_aside(store_dir) {
+        let _ = std::fs::remove_dir_all(doomed);
+    }
+}
+
+/// Take the store that was set aside out of `put_back`'s reach, in one step,
+/// and return where it went. Deleting a store takes a while: if the app is
+/// killed (or the power goes) halfway through, a half-deleted `.previous`
+/// would be put back over the new sign-in's store at the next start.
+fn condemn_aside(store_dir: &Path) -> Option<PathBuf> {
+    let aside = aside_dir(store_dir);
+    let doomed = discard_dir(store_dir);
+    let _ = std::fs::remove_dir_all(&doomed);
+    match std::fs::rename(&aside, &doomed) {
+        Ok(()) => Some(doomed),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // Can't be moved: deleting it where it is beats keeping it.
+        Err(_) => Some(aside),
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +259,43 @@ mod tests {
         drop_aside(&store);
         put_back(&store);
         assert!(store.join("new-keys").exists() && !store.join("old-keys").exists());
+        assert!(!aside_dir(&store).exists() && !discard_dir(&store).exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_store_whose_deletion_was_cut_short_is_not_put_back() {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("fluxchat-discard-test-{}-{nanos}", std::process::id()));
+        let store = tmp.join("matrix_store");
+        let write = |dir: &Path, name: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(name), name).unwrap();
+        };
+        write(&store, "old-keys");
+        write(&store, "old-state");
+
+        // The new sign-in authenticated and the old store's deletion began,
+        // then the app died with one of its files still there.
+        set_aside(&store);
+        write(&store, "new-keys");
+        let doomed = condemn_aside(&store).expect("there is a store to drop");
+        std::fs::remove_file(doomed.join("old-keys")).unwrap();
+
+        // Next start: half an old store must not replace the new one.
+        put_back(&store);
+        assert!(store.join("new-keys").exists(), "the new sign-in's store is kept");
+        assert!(!store.join("old-state").exists());
+        assert!(!aside_dir(&store).exists() && !discard_dir(&store).exists(), "and the leftovers are gone");
+
+        // A leftover never stops the next drop.
+        set_aside(&store);
+        write(&store, "newer-keys");
+        write(&discard_dir(&store), "stale");
+        drop_aside(&store);
+        put_back(&store);
+        assert!(store.join("newer-keys").exists() && !store.join("new-keys").exists());
+        assert!(!aside_dir(&store).exists() && !discard_dir(&store).exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
     use matrix_sdk_crypto::olm::{Account, SenderData};

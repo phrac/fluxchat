@@ -168,5 +168,6 @@ class RunWidget : AppWidgetProvider() {
                 .putExtra(ActionReceiver.THREAD, r.threadRoot)
                 .putExtra(ActionReceiver.VALUE, r.stop.orEmpty())
                 .putExtra(ActionReceiver.LABEL, "Stop")
+                .putExtra(ActionReceiver.STOP, true)
     }
 }

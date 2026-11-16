@@ -42,7 +42,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,7 +51,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.ViewKey
@@ -116,11 +114,12 @@ fun SessionsPane(roomId: String, current: String?, onOpen: (String) -> Unit, onN
     var query by rememberSaveable { mutableStateOf("") }
     val now by rememberNow(60_000)
     val state = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val togglePin: (String) -> Unit = { root ->
         val on = !pins.isPinned(roomId, root)
-        scope.launch { setPinnedOrSay(context, roomId, root, on) }
+        // On the app's scope: pin a session and open it, and this list's
+        // scope went with the screen — the save was cancelled half-way.
+        Matrix.launch { setPinnedOrSay(app, roomId, root, on) }
     }
     val nearEnd by remember { derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 5 } }
     LaunchedEffect(nearEnd, sessions.size, query) {

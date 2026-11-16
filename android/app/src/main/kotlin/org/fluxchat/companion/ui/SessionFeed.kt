@@ -35,7 +35,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,7 +42,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import org.fluxchat.companion.agents.Msg
 import org.fluxchat.companion.agents.RunInfo
 import org.fluxchat.companion.agents.RunState
@@ -140,7 +138,11 @@ fun plainSummary(body: String): String {
     return body.lineSequence()
         .map { it.trim() }
         .filter { l ->
-            if (l.startsWith("```")) { inCode = !inCode; false } else !inCode && l.isNotEmpty()
+            // A fence opens or closes code. ```cmd``` on one line, or at the
+            // start of a sentence, is a line like any other: taken for an
+            // opener it hid everything after it.
+            val fence = l.startsWith("```") && (inCode || opensFence(l))
+            if (fence) { inCode = !inCode; false } else !inCode && l.isNotEmpty()
         }
         .map { l ->
             l.replace(Regex("^#{1,6}\\s+"), "")
@@ -177,15 +179,16 @@ fun SessionFeed(
     val cards = remember(sessions, all, runs, agents) { sessionCards(roomId, sessions, all, runs, agents) }
     val pins by Matrix.pins.collectAsState()
     val state = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext
     // A request still on its way out has no session to open yet: its card
     // is keyed on a send id that stops existing once it lands (opening it
     // asked the SDK for a thread on that id).
     val openCard: (String) -> Unit = { r -> if (!r.startsWith("~")) onOpen(r) }
     val togglePin: (String) -> Unit = { root ->
         val on = !pins.isPinned(roomId, root)
-        scope.launch { setPinnedOrSay(context, roomId, root, on) }
+        // On the app's scope: pin a session and open it, and this screen's
+        // scope went with the screen — the save was cancelled half-way.
+        Matrix.launch { setPinnedOrSay(app, roomId, root, on) }
     }
     val nearEnd by remember { derivedStateOf { (state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= state.layoutInfo.totalItemsCount - 4 } }
     LaunchedEffect(nearEnd, sessions.size) {

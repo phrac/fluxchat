@@ -7,6 +7,19 @@ test("only given fields, validated", () => {
   assert.throws(() => fields({ progress: 1.5 }));
   assert.throws(() => fields({ choices: [] }));
   assert.throws(() => fields({ state: "busy" as any }));
+  for (const bad of [{ cost_usd: NaN }, { cost_usd: Infinity }, { cost_usd: -1 }, { steps: 1.5 }, { steps: -1 }]) {
+    assert.throws(() => fields(bad), JSON.stringify(bad));
+  }
+});
+
+test("runtime updates keep what they don't mention", async () => {
+  const sent: any[] = [];
+  const send = async (c: any) => { sent.push(c); return `$e${sent.length}`; };
+  const run = new Run(send, "$req", { runtime: { model: "opus-5" } });
+  run.updateRuntime({ model: undefined, cost_usd: 2 });
+  await run.start();
+  assert.equal(sent[0][KEY].model, "opus-5");
+  assert.equal(sent[0][KEY].cost_usd, 2);
 });
 
 test("edits carry the fields in m.new_content", () => {

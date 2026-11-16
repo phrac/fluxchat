@@ -144,14 +144,13 @@ pub fn replace_emoticons(text: &str) -> String {
             out.push_str(segment);
             continue;
         }
-        let mut first = true;
-        for word in segment.split(' ') {
-            if !first {
-                out.push(' ');
-            }
-            first = false;
+        // Any whitespace ends a word: split on spaces alone, an emoticon at
+        // the end of a line (`:)\n`) was never one.
+        for piece in segment.split_inclusive(char::is_whitespace) {
+            let word = piece.trim_end_matches(char::is_whitespace);
             let replaced = EMOTICONS.iter().find(|(from, _)| *from == word).map(|(_, to)| *to);
             out.push_str(replaced.unwrap_or(word));
+            out.push_str(&piece[word.len()..]);
         }
     }
     out
@@ -198,6 +197,14 @@ mod tests {
         assert_eq!(replace_emoticons("hi :) there"), "hi \u{1f642} there");
         assert_eq!(replace_emoticons("see `a :) b` ok :D"), "see `a :) b` ok \u{1f600}");
         assert_eq!(replace_emoticons("http://x:)"), "http://x:)");
+    }
+
+    #[test]
+    fn an_emoticon_at_the_end_of_a_line_is_replaced_too() {
+        assert_eq!(replace_emoticons("great :)\nsee you <3"), "great \u{1f642}\nsee you \u{2764}\u{fe0f}");
+        assert_eq!(replace_emoticons(":D\n\n:(\tok"), "\u{1f600}\n\n\u{1f641}\tok");
+        // Spacing is kept as typed.
+        assert_eq!(replace_emoticons("a  :)  b\n"), "a  \u{1f642}  b\n");
     }
 
     #[test]
