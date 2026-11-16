@@ -20,6 +20,7 @@ returns the new event's ID.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Awaitable, Callable, Iterable, Optional, Sequence, Tuple, Union
 
 __all__ = ["KEY", "VERSION", "STATES", "fields", "message", "edit", "Run", "choice_from_reaction"]
@@ -32,13 +33,36 @@ Choice = Union[Tuple[str, str], dict]
 Send = Callable[[dict], Awaitable[str]]
 
 
-def _unit(name: str, value: Optional[float]) -> Optional[float]:
+Number = Union[int, float]
+
+
+def _number(value: float) -> Number:
+    """A whole number as an int. Matrix's canonical JSON has no floats, and
+    servers enforce that on unencrypted events (Synapse in room versions 6+
+    answers 400 "Bad JSON value: float"): ``1.0`` would get the message that
+    ends a run rejected. A fraction stays a float, which only encrypted rooms
+    carry (docs/agent-protocol.md, "Numbers")."""
+    value = float(value)
+    return int(value) if value.is_integer() else value
+
+
+def _unit(name: str, value: Optional[float]) -> Optional[Number]:
     if value is None:
         return None
     value = float(value)
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"{name} must be between 0 and 1, got {value}")
-    return value
+    return _number(value)
+
+
+def _cost(value: Optional[float]) -> Optional[Number]:
+    if value is None:
+        return None
+    value = float(value)
+    # NaN and infinity aren't JSON at all.
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"cost_usd must be a finite amount, zero or more, got {value}")
+    return _number(value)
 
 
 def _choices(choices: Optional[Iterable[Choice]]) -> Optional[list]:
@@ -72,14 +96,14 @@ def fields(
     """The ``org.fluxchat.agent`` object (only the fields given)."""
     if state is not None and state not in STATES:
         raise ValueError(f"state must be one of {STATES}, got {state!r}")
-    if steps is not None and steps < 0:
-        raise ValueError("steps can't be negative")
+    if steps is not None and (steps < 0 or int(steps) != steps):
+        raise ValueError(f"steps must be a whole number, zero or more, got {steps}")
     out: dict[str, Any] = {"v": VERSION}
     for name, value in (
-        ("run", run), ("state", state), ("step", step), ("steps", steps),
+        ("run", run), ("state", state), ("step", step), ("steps", None if steps is None else int(steps)),
         ("progress", _unit("progress", progress)), ("model", model),
         ("context", _unit("context", context)), ("cwd", cwd),
-        ("cost_usd", None if cost_usd is None else float(cost_usd)),
+        ("cost_usd", _cost(cost_usd)),
         ("result", result),
         ("choices", _choices(choices)),
     ):
@@ -181,8 +205,11 @@ class Run:
 
     async def answered(self, prompt_event_id: str, note: str = "Answered") -> None:
         """The prompt is resolved: edit it out of "waiting", resume working."""
+        # No `ask` on this object (a prompt from before a restart): no choices
+        # to repeat, and an empty list isn't valid.
         question, choices = getattr(self, "_prompt", ("", ()))
-        await self._send(edit(prompt_event_id, f"{question}\n\n{note}".strip(), **self._meta(state="working", choices=choices)))
+        await self._send(edit(prompt_event_id, f"{question}\n\n{note}".strip(),
+                              **self._meta(state="working", choices=choices or None)))
         await self._status(self.step_text or "Working…", state="working", step=self.step_text, steps=self.steps or None)
 
     async def done(self, summary: str = "Done", *, result: Optional[str] = None) -> str:

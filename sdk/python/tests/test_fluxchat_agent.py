@@ -25,6 +25,17 @@ class FieldsTest(unittest.TestCase):
             fa.fields(progress=1.5)
         with self.assertRaises(ValueError):
             fa.fields(choices=[])
+        for bad in ({"cost_usd": float("nan")}, {"cost_usd": float("inf")}, {"cost_usd": -1}, {"steps": 1.5}, {"steps": -1}):
+            with self.assertRaises(ValueError, msg=bad):
+                fa.fields(**bad)
+
+    def test_whole_numbers_are_integers_on_the_wire(self):
+        # Servers reject floats in unencrypted events, and "1.0" is one.
+        import json
+        sent = fa.fields(progress=1.0, context=0.0, cost_usd=3.0, steps=2.0)
+        self.assertEqual(json.dumps(sent), '{"v": 1, "steps": 2, "progress": 1, "context": 0, "cost_usd": 3}')
+        # A fraction can only stay one.
+        self.assertEqual(json.dumps(fa.fields(progress=0.5, cost_usd=0.18)), '{"v": 1, "progress": 0.5, "cost_usd": 0.18}')
 
     def test_edits_carry_fields_in_new_content(self):
         c = fa.edit("$s", "Testing", state="working", progress=0.5)
@@ -63,7 +74,20 @@ class RunTest(unittest.TestCase):
         self.assertEqual(ask[fa.KEY]["choices"], [{"key": "✅", "label": "Yes"}, {"key": "❌", "label": "No"}])
         last = send.sent[-1]["m.new_content"][fa.KEY]
         self.assertEqual((last["state"], last["progress"], last["steps"]), ("done", 1.0, 2))
+        self.assertIsInstance(last["progress"], int)
         self.assertEqual(last["result"], "Deployed v1.0")
+
+    def test_a_prompt_from_before_a_restart_can_be_answered(self):
+        send = Recorder()
+
+        async def go():
+            run = fa.Run(send, "$req")
+            await run.answered("$old-prompt", "Approved")
+
+        asyncio.run(go())
+        resolved = send.sent[0]
+        self.assertEqual(resolved["m.relates_to"], {"rel_type": "m.replace", "event_id": "$old-prompt"})
+        self.assertEqual(resolved["m.new_content"][fa.KEY], {"v": 1, "run": "$req", "state": "working"})
 
 
 if __name__ == "__main__":
